@@ -19,6 +19,7 @@ Keep the plugin directory intact. Paths below are relative to the plugin root un
 | `skills/follow-dev-flow/agents/openai.yaml` | `<plugin-root>/skills/follow-dev-flow/agents/openai.yaml` | UI metadata for the main skill |
 | `skills/follow-dev-flow/assets/direct-contract-template.md` | `<plugin-root>/skills/follow-dev-flow/assets/direct-contract-template.md` | Compact plan template for the direct route |
 | `skills/follow-dev-flow/references/state-machine.md` | `<plugin-root>/skills/follow-dev-flow/references/state-machine.md` | States, commands, gates, and execution rules |
+| `skills/follow-dev-flow/references/index-routing.md` | `<plugin-root>/skills/follow-dev-flow/references/index-routing.md` | Dual-index roles, naming, freshness, and explicit project routing |
 | `skills/follow-dev-flow/references/openspec-route.md` | `<plugin-root>/skills/follow-dev-flow/references/openspec-route.md` | Dynamic OpenSpec route guidance |
 | `skills/follow-dev-flow/references/recovery.md` | `<plugin-root>/skills/follow-dev-flow/references/recovery.md` | Resume, drift, collision, and failure recovery |
 | `skills/analyze-change-impact/SKILL.md` | `<plugin-root>/skills/analyze-change-impact/SKILL.md` | codebase-memory impact-analysis procedure |
@@ -69,6 +70,10 @@ codex plugin add dev-flow-orchestrator@<marketplace-name-printed-above>
 
 The cachebuster helper preserves the base version and replaces any older `+codex.<token>` suffix with one UTC-timestamp suffix. The no-argument marketplace-name helper reads the default personal marketplace at `~/.agents/plugins/marketplace.json`; do not run `codex plugin marketplace add` for that default location. For a different confirmed local marketplace, pass `--marketplace-path <path-to-marketplace.json>` to `read_marketplace_name.py`, ensure that non-default marketplace is configured, and reinstall using the name it prints. Start a new Codex task after reinstall so updated skills and hooks are loaded.
 
+### Upgrading from 0.1.x
+
+The dual-index release keeps state schema version 1 and reads existing tasks without rewriting them on load. Existing `repositories[].index` records remain the current baseline records; additive `repositories[].workspace_index` starts empty and `repositories[].index_history` starts as an empty list when absent. Later reindexing archives complete superseded records in that history. A task that has not created its implementation worktree continues normally. A task at `WORKSPACE_READY`, `PLANNING`, `IMPLEMENTING`, or `VERIFYING` must index each recorded implementation worktree with the current generation's workspace-specific project name and `persistence=false`, then record the exact returned ID with `record-index --role workspace` before the next guarded transition or review snapshot. Do not repurpose the old baseline project ID. A legacy task already in `REVIEWING` or `FINALIZING` may finish against its existing immutable snapshot/review chain; if it needs implementation or planning rework, perform a supported impact reassessment to `INDEXED` and recreate the downstream workspace/index evidence instead of bypassing the new gate.
+
 ## Repository-scoped alternative
 
 For a shared marketplace rooted at `<marketplace-root>`:
@@ -110,3 +115,5 @@ Codex supplies a private `PLUGIN_DATA` path to each installed plugin's hook comm
 The unnumbered workspace path is generation 0; impact reassessment retires its recorded workspaces and uses `r1`, `r2`, and later generation directories. `workspace-registry.json` is the controller's durable cross-task ownership registry for worktree paths and repository branches; its lock serializes competing plans. `tasks/<task-id>/artifacts/` is the task's controlled location for impact reports, direct contracts, and independent review reports. The controller exclusively owns registry/lock files, `state.json`, `events.jsonl`, review snapshots, analysis worktrees, and implementation-worktree records; do not edit them manually.
 
 These paths are not source files and must not be copied into a business repository or committed with the plugin.
+
+The state records each repository's current baseline/workspace codebase-memory project identifiers, full superseded-index history, and provenance. The graph database itself remains owned by codebase-memory and is not stored under `PLUGIN_DATA`; index with `persistence=false` so no portable graph artifact is written into a business worktree. Retired and superseded project IDs remain in workflow history for audit, and the plugin does not delete external codebase-memory projects automatically. Cleanup is a separate explicitly authorized maintenance action.

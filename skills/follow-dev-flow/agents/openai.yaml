@@ -6,4 +6,4 @@ dependencies:
   tools:
     - type: "mcp"
       value: "codebase-memory-mcp"
-      description: "Indexes pinned repository baselines and traces change impact"
+      description: "Maintains explicit baseline and current-workspace projects and traces change impact"

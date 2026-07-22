@@ -15,10 +15,13 @@
 - Reconcile disagreements explicitly. Prefer current source and reproducible behavior over summaries; prefer the approved requirement over implementation convenience.
 - Stay read-only. Do not fix findings during the review, update planning artifacts, stage files, commit, or change task checkboxes.
 - Run a test only when it is safe and expected not to modify the reviewed worktree. Otherwise use existing evidence or run in a disposable copy outside the reviewed worktree when separately authorized. Recheck repository status after any command and report test-created pollution.
+- If codebase-memory is used for discovery, pass the controller-selected current workspace project ID explicitly on every call. It never chooses between baseline and workspace projects automatically. A missing/stale workspace project is an evidence limitation to resolve or report, not permission to fall back silently to baseline.
 
 ## Capture each repository snapshot
 
 Start from the workflow's recorded implementation worktree and exact base commit. Confirm that the base object exists and report the current branch, `HEAD`, index state, and worktree state. Do not substitute the merge base, default branch, or an assumed `main`/`master` commit.
+
+Confirm that the recorded workspace-index generation, path, branch, `HEAD`, workspace-plan hash, and Git fingerprint still match. Use that project only to discover candidate symbols and relationships; the sanitized snapshot and direct source reads remain canonical. For before/after graph comparison, issue separate, explicitly labelled baseline and workspace queries. Never mix project roles or workspace generations in one cross-repository result.
 
 When `review-snapshot` produced a manifest, verify its hash, read all referenced committed/cached/unstaged patches, inspect the untracked manifest and archive without extracting into the reviewed repository, and compare their fingerprints with the live worktree. The controller records the committed patch as `base...HEAD`; also inspect the exact `base..HEAD` commit/diff boundary below. Explain any difference caused by ancestry or merges instead of silently dropping it.
 
@@ -44,7 +47,7 @@ Fail closed when an initialized submodule worktree itself has staged, unstaged, 
 
 Also fail closed when any tracked path carries Git's `assume-unchanged` or `skip-worktree` index flag, checking recursively inside every initialized nested submodule as well as the top-level repository. Those flags—including sparse-checkout entries—can suppress real worktree bytes from both the nested repository and its parent status/diff evidence. Require the user to restore a complete, normally tracked view through a separately authorized action and regenerate all fingerprints/tests/snapshots; never clear the flags during review.
 
-Fail closed as well when a tracked path selects a Git clean/process content filter, including Git LFS, at any initialized submodule depth. v0.1 cannot prove the relationship between worktree bytes, filtered index bytes, and review patches without filter-specific evidence. Do not remove filter attributes or rewrite LFS files during review; route the repository through a separately governed compatible flow.
+Fail closed as well when a tracked path selects a Git clean/process content filter, including Git LFS, at any initialized submodule depth. The current controller cannot prove the relationship between worktree bytes, filtered index bytes, and review patches without filter-specific evidence. Do not remove filter attributes or rewrite LFS files during review; route the repository through a separately governed compatible flow.
 
 Build a per-repository manifest:
 
@@ -131,6 +134,8 @@ Choose the overall verdict:
 - `PASS` only when no blocking or conditional finding remains, required evidence is present, and the reviewed snapshot matches the approved scope. Advisory notes may remain.
 
 An OpenSpec validation or verification success cannot force `PASS`; a failure from it is evidence to investigate and classify independently.
+
+The controller's index receipt proves recorded provenance but not a cryptographic digest of every graph source byte. A graph result alone cannot close a finding or justify `PASS`; confirm it in the current workspace/snapshot.
 
 ## Report format
 

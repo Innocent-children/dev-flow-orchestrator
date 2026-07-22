@@ -6,4 +6,4 @@ dependencies:
   tools:
     - type: "mcp"
       value: "codebase-memory-mcp"
-      description: "Indexes repository source and exposes architecture, search, and trace tools"
+      description: "Indexes pinned baselines and requires their explicit project IDs for architecture, search, and trace tools"

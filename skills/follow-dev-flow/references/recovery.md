@@ -9,6 +9,8 @@
 5. Reuse completed matching work. Record recoverable unrecorded evidence through the controller only after verifying identity and content. Never repeat a side effect just because its original response was lost.
 6. Use the latest returned revision for one mutation, reload, and repeat.
 
+For every codebase-memory call, read the controller's current `index_selection` and pass the named `recorded_project` explicitly. The MCP server does not select between baseline and workspace projects for you.
+
 ## Reconcile common interruptions
 
 ### Controller succeeded, response was lost
@@ -18,6 +20,8 @@ Reload the task. If state/evidence already reflects the action, continue. If not
 ### Worktree or branch already exists
 
 Reload the latest current-generation `workspace-plan` and workspace approval. Verify the canonical worktree path, Git common directory, branch, baseline ancestry, generation, and task identity. Retry `prepare-workspace --execute` only with the exact options that produced the approved plan. A worktree already recorded by the task may contain expected implementation changes; a not-yet-recorded worktree is accepted only as a clean partial side effect when its path, branch, exact base `HEAD`, common directory, and approved plan all match and a porcelain status including ignored entries is empty. Paths and branches claimed by another task or retired by this task are not adoptable. Treat staged, unstaged, untracked, ignored, cross-task-owned, retired, or otherwise nonmatching collisions as user-owned; record a new dry-run plan with a new per-repository path/branch override, approve its returned hash, and execute that exact plan. Never delete, detach, reset, or repoint the collision automatically.
+
+After a workspace is created or adopted, create and record its current-generation workspace index before continuing to `PLANNING`. Do not reuse the baseline project ID or a retired generation's project ID.
 
 ### Workspace-plan response was lost
 
@@ -40,9 +44,17 @@ Let the controller re-hash the recorded path; do not alter state to match new by
 - For a changed review report while still in `REVIEWING`, record it again and obtain a new review approval bound to its hash and latest snapshot.
 - For a changed impact report before route approval, record the corrected `impact` in `INDEXED` or `IMPACT_REVIEW` and approve the latest hash. After `ROUTE_APPROVED`, restore the exact approved content when mutation was accidental. For a legitimate reassessment, call `transition --to INDEXED --note <reason>`, then record a new impact and repeat route, workspace, plan, test, and review gates.
 
-### Index is stale or incomplete
+### Baseline or workspace index is stale or incomplete
 
-Resolve freshness before calling `set-route`. While still `BASELINED` or `INDEXED`, refresh the affected baseline analysis workspace, record the returned project identifier/mode, rerun dependent cross-repository intelligence, and record a new impact report in `INDEXED`. If material staleness is discovered after entering `IMPACT_REVIEW`, correct the report before approval when existing index provenance remains valid; otherwise restart the task. After route approval, use `transition --to INDEXED --note <reason>` for a supported impact reassessment and repeat every downstream gate.
+First read `show.index_selection`; codebase-memory never chooses the correct project automatically.
+
+- For baseline staleness, resolve freshness before calling `set-route`. While still `BASELINED` or `INDEXED`, refresh the affected detached analysis workspace under its baseline-specific project name with `persistence=false`, record the exact returned project identifier with `record-index --role baseline`, rerun dependent cross-repository intelligence, and record a new impact report in `INDEXED`. If material baseline staleness is discovered after entering `IMPACT_REVIEW`, correct the report before approval when existing index provenance remains valid; otherwise restart the task. After route approval, use `transition --to INDEXED --note <reason>` for a supported impact reassessment and repeat every downstream gate.
+- For workspace staleness, index the current recorded implementation path under the current generation's workspace-specific name with `persistence=false`, then call `record-index --role workspace`. Refresh after staged, unstaged, untracked, committed, OpenSpec, generated, or test-created changes before crossing the next workspace-index gate. A missing or stale workspace project is not permission to query the baseline project.
+- For multi-repository queries, refresh every member of the same role/generation first. Never combine baseline and workspace projects, or current and retired workspace generations, in one claimed-complete cross-repository result.
+
+For an upgraded 0.1.x task that reached `REVIEWING` or `FINALIZING` before workspace indexes existed, preserve and finish the already immutable snapshot/review chain when no rework is needed. If implementation or planning must resume, use the supported impact reassessment to `INDEXED` and rebuild the downstream workspace/index evidence; do not bypass the new gate or repurpose the baseline project.
+
+If a recorded receipt hash no longer matches, treat the record as stale and refresh it. The controller validates project provenance against path, branch, `HEAD`, plan, generation, and the complete Git fingerprint, but the MCP receipt does not expose a cryptographic digest of every graph source byte; confirm material conclusions in source.
 
 ### OpenSpec is unavailable or inconsistent
 
@@ -50,7 +62,7 @@ Preserve the OpenSpec route and planning evidence. Diagnose availability, projec
 
 ### Implementation requires replanning
 
-From `IMPLEMENTING`, `VERIFYING`, `REVIEWING`, or `FINALIZING`, call `transition --to PLANNING --note <reason>`. Expect the controller to clear plan/review approvals and review snapshots. Update the direct contract under the task evidence root or the OpenSpec `changeRoot` in the managed implementation workspace, record the new plan only while in `PLANNING`, bind a new plan approval, and return through implementation and verification. Record a new passing result for every repository after the new approval because tests are tied to the current plan SHA-256 and unique approval ID; then create and review a fresh snapshot. Keep prior evidence in history.
+From `IMPLEMENTING`, `VERIFYING`, `REVIEWING`, or `FINALIZING`, call `transition --to PLANNING --note <reason>`. Expect the controller to clear plan/review approvals and review snapshots. Update the direct contract under the task evidence root or the OpenSpec `changeRoot` in the managed implementation workspace, record the new plan only while in `PLANNING`, bind a new plan approval, refresh every workspace index, and return through implementation and verification. Record a new passing result for every repository after the new approval because tests are tied to the current plan SHA-256 and unique approval ID; refresh the workspace indexes again after implementation/testing changes, then create and review a fresh snapshot. Keep prior evidence in history.
 
 ### Tests or review fail
 

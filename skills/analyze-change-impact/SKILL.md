@@ -16,10 +16,10 @@ Produce a read-only, evidence-backed impact report. Treat the knowledge graph as
 
 ## Build evidence
 
-1. Call `index_repository` once for every repository, using its pinned baseline analysis workspace as `repo_path` when supplied. Verify that workspace's `HEAD` equals the recorded baseline before indexing. Use `fast` by default; select `moderate` or `full` only when the investigation needs the additional semantic or inventory coverage described in the reference. Record the exact project identifier returned by each call.
-2. For every indexed project, call `get_architecture`, narrow symbol candidates with `search_graph`, trace relevant relationships with `trace_path`, search literals and configuration with `search_code`, and inspect exact symbols with `get_code_snippet`. Detect truncated results and refine or paginate instead of assuming the first page is complete.
+1. Call `index_repository` once for every repository, using its pinned baseline analysis workspace as `repo_path` when supplied. Verify that workspace's `HEAD` equals the recorded baseline before indexing. Pass the controller-recommended baseline-specific `name` and `persistence=false`; never let a same-named feature worktree overwrite this project. Use `fast` by default; select `moderate` or `full` only when the investigation needs the additional semantic or inventory coverage described in the reference. Record the exact project identifier returned by each call with role `baseline`.
+2. For every indexed project, call `get_architecture`, narrow symbol candidates with `search_graph`, trace relevant relationships with `trace_path`, search literals and configuration with `search_code`, and inspect exact symbols with `get_code_snippet`. Pass that baseline project's exact returned ID as `project` on every call. Detect truncated results and refine or paginate instead of assuming the first page is complete.
 3. Open the relevant source and test files directly from the indexed baseline workspace. Cite repository-relative paths and symbols for confirmed findings; label graph-only observations as unconfirmed.
-4. For multi-repository work, refresh every participating index first. Then call `index_repository` in `cross-repo-intelligence` mode with the affected project identifiers and trace the discovered cross-service paths. Do not infer cross-repository safety from independently stale indexes.
+4. For multi-repository work, refresh every participating baseline index first. Then call `index_repository` in `cross-repo-intelligence` mode with only those baseline project identifiers and trace the discovered cross-service paths. Do not mix workspace projects into impact analysis or infer cross-repository safety from independently stale indexes.
 
 ## Deliver the report
 

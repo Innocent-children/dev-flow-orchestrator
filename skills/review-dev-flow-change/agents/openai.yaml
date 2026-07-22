@@ -2,3 +2,8 @@ interface:
   display_name: "Review Dev Flow Change"
   short_description: "Independently gate the complete Git change snapshot"
   default_prompt: "Use $review-dev-flow-change to independently review the completed change before handoff."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "codebase-memory-mcp"
+      description: "Uses the explicitly selected current workspace project for review discovery"

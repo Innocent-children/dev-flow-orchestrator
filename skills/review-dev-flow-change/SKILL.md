@@ -9,12 +9,14 @@ Perform an independent, read-only review of the complete implementation. Use a f
 
 ## Establish the review contract
 
-1. Collect the original requirement, repository paths, recorded base commit for each repository, impact report, selected route, recorded test evidence, and the controller-generated review manifest when available.
+1. Collect the original requirement, repository paths, recorded base commit for each repository, impact report, selected route, recorded test evidence, the controller-generated review manifest, and each repository's current workspace-index project ID when available.
 2. For the direct route, read the approved compact contract: goal, scope, non-goals, acceptance criteria, tests, and risks.
 3. For the OpenSpec route, query current JSON status and instructions, then read the concrete artifact paths they return. Discover relevant project-generated `.codex/skills/openspec-*` guidance instead of assuming a fixed schema or artifact sequence.
 4. Read [references/independent-review.md](references/independent-review.md) before inspecting changes.
 
 If a base commit, repository, route contract, or required artifact is missing or ambiguous, identify the gap explicitly. Do not invent the comparison boundary.
+
+Use codebase-memory only as a discovery aid. During review, explicitly pass the current-generation workspace project ID from `show.index_selection` to every graph query. The MCP server does not select it automatically. Use the baseline project only for a separately labelled before-state query, never as a fallback for a missing or stale workspace index. Confirm every material conclusion in current source and the controller snapshot.
 
 ## Inspect the complete snapshot
 

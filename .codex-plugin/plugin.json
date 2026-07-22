@@ -1,6 +1,6 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A guarded, resumable development workflow for Codex, OpenSpec, Git, and codebase-memory.",
   "author": {
     "name": "Local developer"
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Dev Flow Orchestrator",
     "shortDescription": "Guard and resume Git-to-OpenSpec development work",
-    "longDescription": "Checks repository baselines, builds evidence-backed impact reports, routes work through direct or OpenSpec planning, and verifies the complete change before handoff.",
+    "longDescription": "Checks repository baselines, routes explicit baseline/workspace codebase-memory indexes by phase, builds evidence-backed impact reports, guides direct or OpenSpec planning, and verifies the complete change before handoff.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": ["Interactive", "Read", "Write"],

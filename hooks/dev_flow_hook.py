@@ -41,10 +41,10 @@ NEXT_ACTIONS = {
     "INDEXED": "review change impact and select a route",
     "IMPACT_REVIEW": "approve the selected route",
     "ROUTE_APPROVED": "approve and prepare the managed workspace",
-    "WORKSPACE_READY": "create or confirm the implementation plan",
-    "PLANNING": "approve the plan before implementation",
-    "IMPLEMENTING": "run verification",
-    "VERIFYING": "capture the snapshot and run the independent review",
+    "WORKSPACE_READY": "create or refresh every workspace index, then create the implementation plan",
+    "PLANNING": "create and approve the plan, then refresh workspace indexes before implementation",
+    "IMPLEMENTING": "implement the approved scope, then refresh workspace indexes before verification",
+    "VERIFYING": "run checks, refresh workspace indexes, then capture and independently review the snapshot",
     "REVIEWING": "approve the review and then finalize",
     "FINALIZING": "complete the handoff",
     "DONE": "no further action",
@@ -147,6 +147,54 @@ def _pending_gate(task: Mapping[str, Any]) -> str:
     return label
 
 
+def _index_stage(task: Mapping[str, Any]) -> str:
+    stage = _stage(task)
+    if stage == "BLOCKED":
+        blocked = task.get("blocked")
+        if isinstance(blocked, Mapping):
+            stage = str(blocked.get("from_status", "BLOCKED")).upper()
+    return stage
+
+
+def _selected_index_role(task: Mapping[str, Any]) -> Optional[str]:
+    stage = _index_stage(task)
+    if stage in {
+        "BASELINED",
+        "INDEXED",
+        "IMPACT_REVIEW",
+        "ROUTE_APPROVED",
+    }:
+        return "baseline"
+    if stage in {
+        "WORKSPACE_READY",
+        "PLANNING",
+        "IMPLEMENTING",
+        "VERIFYING",
+        "REVIEWING",
+        "FINALIZING",
+        "DONE",
+    }:
+        return "workspace"
+    return None
+
+
+def _index_selection_context(task: Mapping[str, Any]) -> tuple[str, str]:
+    role = _selected_index_role(task)
+    if role is None:
+        return "none", "none"
+    projects: list[str] = []
+    for repo in _task_repositories(task):
+        repository_id = _render(repo.get("id"), "unknown")
+        record = repo.get("index" if role == "baseline" else "workspace_index")
+        project = None
+        if isinstance(record, Mapping):
+            value = record.get("index_id")
+            if isinstance(value, str) and value.strip():
+                project = value.strip()
+        projects.append(f"{repository_id}={project or 'MISSING'}")
+    return role, ", ".join(projects) or "none"
+
+
 def _controller_prefix(data_dir: Path) -> str:
     return (
         f"python3 {shlex.quote(str(CONTROLLER))} "
@@ -172,6 +220,7 @@ def build_context(task: Mapping[str, Any], data_dir: Path) -> str:
     stage = _stage(task)
     prefix = _controller_prefix(data_dir)
     task_id = _render(task.get("task_id"), "unknown")
+    index_role, index_projects = _index_selection_context(task)
     return "\n".join(
         (
             "Dev Flow active-task checkpoint:",
@@ -179,6 +228,9 @@ def build_context(task: Mapping[str, Any], data_dir: Path) -> str:
             f"- Stage: {stage}",
             f"- Route: {_render(task.get('route'), 'not selected')}",
             f"- Pending gate: {_pending_gate(task)}",
+            "- codebase-memory selection: explicit project parameter; never automatic",
+            f"- Active index role: {index_role}",
+            f"- Active index projects: {index_projects}",
             f"- Next action: "
             f"{_render(task.get('next_action'), NEXT_ACTIONS.get(stage, 'inspect task state'))}",
             f"- Controller: {CONTROLLER}",

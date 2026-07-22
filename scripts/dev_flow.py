@@ -79,6 +79,21 @@ REVIEW_VERDICTS = {"PASS", "CONDITIONAL", "FAIL"}
 REVIEW_VERDICT_RE = re.compile(
     r"^Verdict: (PASS|CONDITIONAL|FAIL)$", re.MULTILINE
 )
+BASELINE_INDEX_STATES = {
+    "BASELINED",
+    "INDEXED",
+    "IMPACT_REVIEW",
+    "ROUTE_APPROVED",
+}
+WORKSPACE_INDEX_STATES = {
+    "WORKSPACE_READY",
+    "PLANNING",
+    "IMPLEMENTING",
+    "VERIFYING",
+    "REVIEWING",
+    "FINALIZING",
+    "DONE",
+}
 
 
 class FlowError(Exception):
@@ -181,6 +196,13 @@ def load_state(
             f"unsupported or invalid task state: {path}",
             details={"path": str(path), "schema_version": value.get("schema_version") if isinstance(value, dict) else None},
         )
+    # Schema v1 predates implementation-worktree indexes.  Keep the schema
+    # number stable and make the additive field visible to old task snapshots
+    # without rewriting them merely because they were read.
+    for repository in value.get("repositories", []):
+        if isinstance(repository, dict):
+            repository.setdefault("workspace_index", None)
+            repository.setdefault("index_history", [])
     return value
 
 
@@ -1806,6 +1828,92 @@ def _copy_state(value: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(value))
 
 
+def _recommended_index_name(
+    state_value: dict[str, Any], repo: dict[str, Any], role: str
+) -> str:
+    prefix = f"devflow-{state_value['task_id']}-{repo['id']}"
+    if role == "baseline":
+        return f"{prefix}-baseline"
+    if role == "workspace":
+        generation = int(
+            (state_value.get("workspace") or {}).get("generation", 0)
+        )
+        return f"{prefix}-workspace-r{generation}"
+    raise ValueError(f"unknown index role: {role}")
+
+
+def _index_role_for_status(state_value: dict[str, Any]) -> str | None:
+    status = state_value.get("status")
+    if status == "BLOCKED":
+        status = (state_value.get("blocked") or {}).get("from_status")
+    if status in BASELINE_INDEX_STATES:
+        return "baseline"
+    if status in WORKSPACE_INDEX_STATES:
+        return "workspace"
+    return None
+
+
+def _index_role_summary(
+    state_value: dict[str, Any], repo: dict[str, Any], role: str
+) -> dict[str, Any]:
+    record = repo.get("index" if role == "baseline" else "workspace_index")
+    record = record if isinstance(record, dict) else {}
+    summary: dict[str, Any] = {
+        "role": role,
+        "recorded_project": record.get("index_id"),
+        "recommended_project": _recommended_index_name(
+            state_value, repo, role
+        ),
+        "recorded": bool(record),
+        "repo_path": record.get("repo_path"),
+    }
+    if role == "workspace":
+        summary["workspace_generation"] = record.get(
+            "workspace_generation"
+        )
+    return summary
+
+
+def _index_selection(state_value: dict[str, Any]) -> dict[str, Any]:
+    """Describe the exact phase-selected project without selecting it for callers."""
+
+    selected_role = _index_role_for_status(state_value)
+    repositories: list[dict[str, Any]] = []
+    for repo in state_value.get("repositories", []):
+        baseline = _index_role_summary(state_value, repo, "baseline")
+        workspace = _index_role_summary(state_value, repo, "workspace")
+        selected = (
+            baseline
+            if selected_role == "baseline"
+            else workspace
+            if selected_role == "workspace"
+            else None
+        )
+        repositories.append(
+            {
+                "repository_id": repo.get("id"),
+                "selected_role": selected_role,
+                "role": selected_role,
+                "recorded_project": (
+                    selected.get("recorded_project") if selected else None
+                ),
+                "recommended_project": (
+                    selected.get("recommended_project") if selected else None
+                ),
+                "baseline": baseline,
+                "workspace": workspace,
+            }
+        )
+    return {
+        "automatic": False,
+        "selected_role": selected_role,
+        # ``role`` is retained as a compact compatibility alias.  Consumers
+        # should use selected_role and pass recorded_project explicitly.
+        "role": selected_role,
+        "repositories": repositories,
+    }
+
+
 def _result(command: str, state_value: dict[str, Any], **extra: Any) -> dict[str, Any]:
     response: dict[str, Any] = {
         "ok": True,
@@ -1813,6 +1921,7 @@ def _result(command: str, state_value: dict[str, Any], **extra: Any) -> dict[str
         "task_id": state_value["task_id"],
         "revision": state_value["revision"],
         "status": state_value["status"],
+        "index_selection": _index_selection(state_value),
     }
     response.update(extra)
     return response
@@ -1865,6 +1974,8 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 "analysis_workspace": None,
                 "index": None,
                 "workspace": None,
+                "workspace_index": None,
+                "index_history": [],
                 "workspace_history": [],
             }
         )
@@ -2556,114 +2667,481 @@ def _index_provenance_sha256(state_value: dict[str, Any]) -> str:
     return _sha256_bytes(_json_bytes(_index_provenance_evidence(state_value)))
 
 
+def _index_receipt(path_value: str | None) -> dict[str, Any] | None:
+    if not path_value:
+        return None
+    receipt_path = Path(path_value).expanduser().resolve(strict=True)
+    return {
+        "path": str(receipt_path),
+        "sha256": _sha256_file(receipt_path),
+        "size": receipt_path.stat().st_size,
+    }
+
+
+def _repository_index_history(repo: dict[str, Any]) -> list[dict[str, Any]]:
+    history = repo.setdefault("index_history", [])
+    if not isinstance(history, list) or not all(
+        isinstance(item, dict) for item in history
+    ):
+        raise FlowError(
+            "INDEX_HISTORY_INVALID",
+            f"repository index history has an invalid structure: {repo.get('id')}",
+            details={"repository_id": repo.get("id")},
+        )
+    return history
+
+
+def _archive_replaced_index(
+    repo: dict[str, Any],
+    previous: dict[str, Any] | None,
+    previous_role: str,
+    replacement: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not isinstance(previous, dict):
+        return None, None
+    previous_record = _copy_state(previous)
+    previous_record.setdefault("role", previous_role)
+    replacement_binding = {
+        "role": replacement.get("role"),
+        "project": replacement.get("index_id"),
+        "index_id": replacement.get("index_id"),
+        "index_record_id": replacement.get("index_record_id"),
+    }
+    archived = {
+        **previous_record,
+        "superseded_at": replacement.get("recorded_at") or utc_now(),
+        "replacement_role": replacement_binding["role"],
+        "replacement_project": replacement_binding["project"],
+        "replacement_index_id": replacement_binding["index_id"],
+        "replacement_record_id": replacement_binding["index_record_id"],
+        "replacement_index_record_id": replacement_binding[
+            "index_record_id"
+        ],
+        "replacement": replacement_binding,
+    }
+    _repository_index_history(repo).append(archived)
+    return previous_record, archived
+
+
+def _recorded_index_change(
+    repo: dict[str, Any],
+    previous: dict[str, Any] | None,
+    role: str,
+    replacement: dict[str, Any],
+) -> dict[str, Any]:
+    previous_record, history_entry = _archive_replaced_index(
+        repo, previous, role, replacement
+    )
+    return {
+        "repository_id": repo.get("id"),
+        "role": role,
+        "previous": previous_record,
+        "current": _copy_state(replacement),
+        "history_entry": _copy_state(history_entry)
+        if history_entry is not None
+        else None,
+    }
+
+
+def _archived_workspace_indexes(repo: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    for workspace in repo.get("workspace_history", []):
+        if not isinstance(workspace, dict):
+            continue
+        archived = workspace.get("workspace_index")
+        if isinstance(archived, dict):
+            yield archived
+
+
+def _assert_index_id_available(
+    state_value: dict[str, Any],
+    repo: dict[str, Any],
+    role: str,
+    index_id: str,
+) -> None:
+    conflicts: list[dict[str, Any]] = []
+    current_generation = int(
+        (state_value.get("workspace") or {}).get("generation", 0)
+    )
+    for candidate in state_value.get("repositories", []):
+        baseline = candidate.get("index")
+        if isinstance(baseline, dict) and baseline.get("index_id") == index_id:
+            same_role_refresh = (
+                role == "baseline" and candidate.get("id") == repo.get("id")
+            )
+            if not same_role_refresh:
+                conflicts.append(
+                    {
+                        "repository_id": candidate.get("id"),
+                        "role": "baseline",
+                        "recorded_project": index_id,
+                    }
+                )
+        workspace = candidate.get("workspace_index")
+        if isinstance(workspace, dict) and workspace.get("index_id") == index_id:
+            same_current_record = (
+                role == "workspace"
+                and candidate.get("id") == repo.get("id")
+                and workspace.get("workspace_generation")
+                == current_generation
+            )
+            if not same_current_record:
+                conflicts.append(
+                    {
+                        "repository_id": candidate.get("id"),
+                        "role": "workspace",
+                        "workspace_generation": workspace.get(
+                            "workspace_generation"
+                        ),
+                        "recorded_project": index_id,
+                    }
+                )
+        for historical in _repository_index_history(candidate):
+            if historical.get("index_id") != index_id:
+                continue
+            historical_role = historical.get("role")
+            same_repository_role = (
+                candidate.get("id") == repo.get("id")
+                and historical_role == role
+            )
+            reusable_history = same_repository_role and (
+                role == "baseline"
+                or (
+                    role == "workspace"
+                    and historical.get("workspace_generation")
+                    == current_generation
+                )
+            )
+            if not reusable_history:
+                conflicts.append(
+                    {
+                        "repository_id": candidate.get("id"),
+                        "role": historical_role,
+                        "origin": "index-history",
+                        "workspace_generation": historical.get(
+                            "workspace_generation"
+                        ),
+                        "index_record_id": historical.get(
+                            "index_record_id"
+                        ),
+                        "recorded_project": index_id,
+                    }
+                )
+        for archived in _archived_workspace_indexes(candidate):
+            if archived.get("index_id") == index_id:
+                conflicts.append(
+                    {
+                        "repository_id": candidate.get("id"),
+                        "role": "workspace-history",
+                        "origin": "workspace-history",
+                        "workspace_generation": archived.get(
+                            "workspace_generation"
+                        ),
+                        "recorded_project": index_id,
+                    }
+                )
+    if conflicts:
+        error_code = (
+            "WORKSPACE_INDEX_ID_CONFLICT"
+            if role == "workspace"
+            else "INDEX_ID_CONFLICT"
+        )
+        raise FlowError(
+            error_code,
+            "index project must be distinct across role/repository pairs and retired workspace generations",
+            details={
+                "repository_id": repo.get("id"),
+                "role": role,
+                "index_id": index_id,
+                "conflicts": conflicts,
+            },
+        )
+
+
 def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
-        _assert_status(current, {"BASELINED", "INDEXED"}, "record-index")
+        role = args.role
+        if role == "baseline":
+            _assert_status(current, {"BASELINED", "INDEXED"}, "record-index")
+        else:
+            _assert_status(
+                current,
+                {"WORKSPACE_READY", "PLANNING", "IMPLEMENTING", "VERIFYING"},
+                "record-index --role workspace",
+            )
         state_value = _copy_state(current)
         selected = _repo_by_selector(state_value, args.repo)
         metadata = _parse_json_object(args.metadata_json, "--metadata-json")
         degraded_approval: dict[str, Any] | None = None
         normalized_index_id = args.index_id.strip() if args.index_id else None
-        if normalized_index_id:
+        if role == "workspace":
+            if not normalized_index_id:
+                raise FlowError(
+                    "WORKSPACE_INDEX_ID_REQUIRED",
+                    "workspace indexes require a successful non-empty --index-id",
+                )
+            if metadata.get("status") == "failed":
+                raise FlowError(
+                    "INVALID_INDEX_METADATA",
+                    "workspace index metadata cannot record a failed index",
+                )
+            if metadata.get("persistence") is not False:
+                raise FlowError(
+                    "PERSISTENT_WORKSPACE_INDEX_UNSUPPORTED",
+                    "workspace index metadata must explicitly set persistence=false",
+                )
+            _require_workspace_ready(current)
+            if len(selected) > 1:
+                raise FlowError(
+                    "WORKSPACE_INDEX_ID_CONFLICT",
+                    "one workspace project id cannot be assigned to multiple repositories",
+                    details={
+                        "index_id": normalized_index_id,
+                        "repository_ids": [repo["id"] for repo in selected],
+                    },
+                )
+            _assert_index_id_available(
+                state_value, selected[0], "workspace", normalized_index_id
+            )
+        elif normalized_index_id:
             if metadata.get("status") == "failed":
                 raise FlowError(
                     "INVALID_INDEX_METADATA",
                     "metadata status='failed' is only valid when --index-id is omitted",
                 )
+            if len(selected) > 1:
+                raise FlowError(
+                    "INDEX_ID_CONFLICT",
+                    "one baseline project id cannot be assigned to multiple repositories",
+                    details={
+                        "index_id": normalized_index_id,
+                        "repository_ids": [repo["id"] for repo in selected],
+                    },
+                )
+            _assert_index_id_available(
+                state_value, selected[0], "baseline", normalized_index_id
+            )
         else:
             degraded_approval = _require_gate(current, "impact-degraded")
             _validate_degraded_index_metadata(metadata, degraded_approval)
-        receipt: dict[str, Any] | None = None
-        if args.receipt:
-            receipt_path = Path(args.receipt).expanduser().resolve(strict=True)
-            receipt = {"path": str(receipt_path), "sha256": _sha256_file(receipt_path), "size": receipt_path.stat().st_size}
+        receipt = _index_receipt(args.receipt)
+        index_changes: list[dict[str, Any]] = []
         for repo in selected:
-            analysis_workspace = repo.get("analysis_workspace") or {}
-            if not analysis_workspace.get("ready"):
-                raise FlowError(
-                    "ANALYSIS_WORKSPACE_REQUIRED",
-                    f"materialize the pinned baseline before recording an index: {repo['id']}",
-                    details={"repository_id": repo["id"], "hint": "baseline --materialize"},
+            if role == "baseline":
+                analysis_workspace = repo.get("analysis_workspace") or {}
+                if not analysis_workspace.get("ready"):
+                    raise FlowError(
+                        "ANALYSIS_WORKSPACE_REQUIRED",
+                        f"materialize the pinned baseline before recording an index: {repo['id']}",
+                        details={
+                            "repository_id": repo["id"],
+                            "hint": "baseline --materialize",
+                        },
+                    )
+                integrity_error = _analysis_workspace_integrity_error(repo)
+                if integrity_error:
+                    raise FlowError(
+                        "ANALYSIS_WORKSPACE_CHANGED",
+                        integrity_error,
+                        details={"repository_id": repo["id"]},
+                    )
+                repo_path = Path(analysis_workspace["path"])
+                expected_sha = repo["baseline"]["base_sha"]
+                analysis_head = _git(repo_path, "rev-parse", "HEAD")
+                analysis_branch = _git_optional(
+                    repo_path,
+                    "symbolic-ref",
+                    "--quiet",
+                    "--short",
+                    "HEAD",
                 )
-            integrity_error = _analysis_workspace_integrity_error(repo)
+                status_available, analysis_status = _status_porcelain(repo_path)
+                if (
+                    analysis_head != expected_sha
+                    or analysis_branch is not None
+                    or not status_available
+                    or analysis_status
+                ):
+                    raise FlowError(
+                        "ANALYSIS_WORKSPACE_CHANGED",
+                        f"analysis worktree no longer exactly represents the pinned base: {repo['id']}",
+                        details={
+                            "repository_id": repo["id"],
+                            "expected_head": expected_sha,
+                            "actual_head": analysis_head,
+                            "actual_branch": analysis_branch,
+                            "dirty": bool(analysis_status),
+                        },
+                    )
+                commit_sha = args.commit or expected_sha
+                resolved = _git_optional(
+                    repo_path,
+                    "rev-parse",
+                    "--verify",
+                    f"{commit_sha}^{{commit}}",
+                )
+                if not resolved:
+                    raise FlowError(
+                        "INVALID_COMMIT",
+                        f"index commit does not exist in repository {repo['id']}",
+                        details={
+                            "repository_id": repo["id"],
+                            "commit": commit_sha,
+                        },
+                    )
+                if resolved != expected_sha:
+                    raise FlowError(
+                        "INDEX_BASE_MISMATCH",
+                        f"recorded index must target the pinned base for repository {repo['id']}",
+                        details={
+                            "repository_id": repo["id"],
+                            "expected_commit": expected_sha,
+                            "provided_commit": resolved,
+                        },
+                    )
+                replacement = {
+                    "index_record_id": str(uuid.uuid4()),
+                    "recorded_at": utc_now(),
+                    "role": "baseline",
+                    "commit_sha": resolved,
+                    "repo_path": str(repo_path),
+                    "index_id": normalized_index_id,
+                    "recommended_index_id": _recommended_index_name(
+                        state_value, repo, "baseline"
+                    ),
+                    "receipt": receipt,
+                    "metadata": metadata,
+                    "impact_degraded_approval_id": (
+                        degraded_approval.get("approval_id")
+                        if degraded_approval
+                        else None
+                    ),
+                }
+                index_changes.append(
+                    _recorded_index_change(
+                        repo, repo.get("index"), "baseline", replacement
+                    )
+                )
+                repo["index"] = replacement
+                continue
+
+            workspace = repo.get("workspace") or {}
+            integrity_error = _workspace_integrity_error(state_value, repo)
             if integrity_error:
                 raise FlowError(
-                    "ANALYSIS_WORKSPACE_CHANGED",
+                    "WORKSPACE_INTEGRITY_FAILED",
                     integrity_error,
                     details={"repository_id": repo["id"]},
                 )
-            repo_path = Path(analysis_workspace["path"])
-            expected_sha = repo["baseline"]["base_sha"]
-            analysis_head = _git(repo_path, "rev-parse", "HEAD")
-            analysis_branch = _git_optional(
+            repo_path = Path(workspace["path"]).resolve(strict=True)
+            actual_branch = _git_optional(
                 repo_path, "symbolic-ref", "--quiet", "--short", "HEAD"
             )
-            status_available, analysis_status = _status_porcelain(repo_path)
-            if (
-                analysis_head != expected_sha
-                or analysis_branch is not None
-                or not status_available
-                or analysis_status
-            ):
-                raise FlowError(
-                    "ANALYSIS_WORKSPACE_CHANGED",
-                    f"analysis worktree no longer exactly represents the pinned base: {repo['id']}",
-                    details={
-                        "repository_id": repo["id"],
-                        "expected_head": expected_sha,
-                        "actual_head": analysis_head,
-                        "actual_branch": analysis_branch,
-                        "dirty": bool(analysis_status),
-                    },
-                )
-            commit_sha = args.commit or expected_sha
-            resolved = _git_optional(repo_path, "rev-parse", "--verify", f"{commit_sha}^{{commit}}")
+            actual_head = _git(repo_path, "rev-parse", "HEAD")
+            commit_sha = args.commit or actual_head
+            resolved = _git_optional(
+                repo_path,
+                "rev-parse",
+                "--verify",
+                f"{commit_sha}^{{commit}}",
+            )
             if not resolved:
-                raise FlowError("INVALID_COMMIT", f"index commit does not exist in repository {repo['id']}", details={"repository_id": repo["id"], "commit": commit_sha})
-            if resolved != expected_sha:
                 raise FlowError(
-                    "INDEX_BASE_MISMATCH",
-                    f"recorded index must target the pinned base for repository {repo['id']}",
+                    "INVALID_COMMIT",
+                    f"index commit does not exist in workspace {repo['id']}",
+                    details={"repository_id": repo["id"], "commit": commit_sha},
+                )
+            if resolved != actual_head:
+                raise FlowError(
+                    "INDEX_WORKSPACE_MISMATCH",
+                    f"workspace index must target the current HEAD for repository {repo['id']}",
                     details={
                         "repository_id": repo["id"],
-                        "expected_commit": expected_sha,
+                        "expected_head": actual_head,
                         "provided_commit": resolved,
                     },
                 )
-            repo["index"] = {
+            generation = int(
+                (state_value.get("workspace") or {}).get("generation", 0)
+            )
+            plan_sha = (
+                (state_value.get("workspace") or {}).get("plan") or {}
+            ).get("sha256")
+            fingerprint = _fingerprint_repo(repo_path)
+            replacement = {
                 "index_record_id": str(uuid.uuid4()),
                 "recorded_at": utc_now(),
-                "commit_sha": resolved,
+                "role": "workspace",
+                "commit_sha": actual_head,
                 "repo_path": str(repo_path),
                 "index_id": normalized_index_id,
+                "recommended_index_id": _recommended_index_name(
+                    state_value, repo, "workspace"
+                ),
                 "receipt": receipt,
                 "metadata": metadata,
-                "impact_degraded_approval_id": (
-                    degraded_approval.get("approval_id")
-                    if degraded_approval
-                    else None
-                ),
+                "fingerprint_sha256": fingerprint["sha256"],
+                "workspace_generation": generation,
+                "workspace_plan_sha256": plan_sha,
+                "workspace_branch": actual_branch,
+                "workspace_head_sha": actual_head,
             }
-        all_indexed = all(repo.get("index") for repo in state_value["repositories"])
-        if all_indexed:
-            state_value["status"] = "INDEXED"
+            index_changes.append(
+                _recorded_index_change(
+                    repo,
+                    repo.get("workspace_index"),
+                    "workspace",
+                    replacement,
+                )
+            )
+            repo["workspace_index"] = replacement
+        if role == "baseline":
+            all_indexed = all(
+                repo.get("index") for repo in state_value["repositories"]
+            )
+            if all_indexed:
+                state_value["status"] = "INDEXED"
+        else:
+            all_indexed = all(
+                repo.get("workspace_index")
+                for repo in state_value["repositories"]
+            )
         _commit_state(
             current,
             state_value,
             task_dir,
             "index_recorded",
-            {"repository_ids": [repo["id"] for repo in selected], "complete": all_indexed},
+            {
+                "role": role,
+                "repository_ids": [repo["id"] for repo in selected],
+                "complete": all_indexed,
+                "index_records": index_changes,
+            },
         )
     return _result(
         "record-index",
         state_value,
+        role=role,
         complete=all_indexed,
         repositories=[
             {
                 "id": repo["id"],
-                "repo_path": repo["analysis_workspace"]["path"],
-                "index": repo["index"],
+                "role": role,
+                "repo_path": (
+                    repo["analysis_workspace"]["path"]
+                    if role == "baseline"
+                    else repo["workspace"]["path"]
+                ),
+                "index": (
+                    repo["index"]
+                    if role == "baseline"
+                    else repo["workspace_index"]
+                ),
+                **(
+                    {"workspace_index": repo["workspace_index"]}
+                    if role == "workspace"
+                    else {}
+                ),
             }
             for repo in selected
         ],
@@ -3791,6 +4269,161 @@ def _require_workspace_ready(state_value: dict[str, Any]) -> dict[str, Any]:
     return approval
 
 
+def _workspace_index_staleness(
+    state_value: dict[str, Any],
+    repo: dict[str, Any],
+    index: dict[str, Any],
+) -> dict[str, Any] | None:
+    repository_id = repo.get("id")
+    if index.get("role") != "workspace" or not index.get("index_id"):
+        return {
+            "repository_id": repository_id,
+            "reason": "workspace index role or project id is invalid",
+        }
+    if (index.get("metadata") or {}).get("persistence") is not False:
+        return {
+            "repository_id": repository_id,
+            "reason": "workspace index does not explicitly disable persistence",
+        }
+    receipt = index.get("receipt")
+    if receipt is not None:
+        if not isinstance(receipt, dict) or not receipt.get("path"):
+            return {
+                "repository_id": repository_id,
+                "reason": "workspace index receipt metadata is incomplete",
+            }
+        receipt_path = Path(str(receipt["path"]))
+        try:
+            actual_sha = (
+                _sha256_file(receipt_path) if receipt_path.is_file() else None
+            )
+            actual_size = (
+                receipt_path.stat().st_size if receipt_path.is_file() else None
+            )
+        except OSError:
+            actual_sha = None
+            actual_size = None
+        if (
+            actual_sha != receipt.get("sha256")
+            or actual_size != receipt.get("size")
+        ):
+            return {
+                "repository_id": repository_id,
+                "reason": "workspace index receipt is missing or changed",
+                "receipt_path": str(receipt_path),
+                "expected_receipt_sha256": receipt.get("sha256"),
+                "actual_receipt_sha256": actual_sha,
+            }
+
+    integrity_error = _workspace_integrity_error(state_value, repo)
+    if integrity_error:
+        return {
+            "repository_id": repository_id,
+            "reason": integrity_error,
+        }
+    workspace = repo.get("workspace") or {}
+    workspace_path_value = workspace.get("path")
+    recorded_path_value = index.get("repo_path")
+    if not workspace_path_value or not recorded_path_value:
+        return {
+            "repository_id": repository_id,
+            "reason": "workspace index path binding is incomplete",
+        }
+    workspace_path = Path(workspace_path_value).resolve(strict=False)
+    recorded_path = Path(recorded_path_value).resolve(strict=False)
+    generation = int(
+        (state_value.get("workspace") or {}).get("generation", 0)
+    )
+    plan_sha = (
+        (state_value.get("workspace") or {}).get("plan") or {}
+    ).get("sha256")
+    actual_branch = _git_optional(
+        workspace_path, "symbolic-ref", "--quiet", "--short", "HEAD"
+    )
+    actual_head = _git_optional(workspace_path, "rev-parse", "HEAD")
+    bindings = {
+        "path": (str(recorded_path), str(workspace_path)),
+        "workspace_generation": (
+            index.get("workspace_generation"),
+            generation,
+        ),
+        "workspace_plan_sha256": (
+            index.get("workspace_plan_sha256"),
+            plan_sha,
+        ),
+        "workspace_branch": (
+            index.get("workspace_branch"),
+            actual_branch,
+        ),
+        "commit_sha": (index.get("commit_sha"), actual_head),
+        "workspace_head_sha": (
+            index.get("workspace_head_sha"),
+            actual_head,
+        ),
+    }
+    mismatches = {
+        name: {"recorded": recorded, "current": current}
+        for name, (recorded, current) in bindings.items()
+        if recorded != current
+    }
+    if mismatches:
+        return {
+            "repository_id": repository_id,
+            "reason": "workspace identity, generation, branch or HEAD changed",
+            "mismatches": mismatches,
+        }
+    try:
+        current_fingerprint = _fingerprint_repo(workspace_path)["sha256"]
+    except (FlowError, OSError) as exc:
+        return {
+            "repository_id": repository_id,
+            "reason": f"workspace fingerprint cannot be verified: {exc}",
+        }
+    if current_fingerprint != index.get("fingerprint_sha256"):
+        return {
+            "repository_id": repository_id,
+            "reason": "workspace content changed after indexing",
+            "recorded_fingerprint_sha256": index.get("fingerprint_sha256"),
+            "current_fingerprint_sha256": current_fingerprint,
+        }
+    return None
+
+
+def _require_current_workspace_indexes(
+    state_value: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    missing = [
+        repo.get("id")
+        for repo in state_value.get("repositories", [])
+        if not isinstance(repo.get("workspace_index"), dict)
+        or not (repo.get("workspace_index") or {}).get("index_id")
+    ]
+    if missing:
+        raise FlowError(
+            "WORKSPACE_INDEX_REQUIRED",
+            "every repository requires a recorded workspace index for the current implementation worktree",
+            details={
+                "repository_ids": missing,
+                "selected_role": "workspace",
+            },
+        )
+    stale: list[dict[str, Any]] = []
+    records: dict[str, dict[str, Any]] = {}
+    for repo in state_value.get("repositories", []):
+        index = repo["workspace_index"]
+        records[repo["id"]] = index
+        error = _workspace_index_staleness(state_value, repo, index)
+        if error:
+            stale.append(error)
+    if stale:
+        raise FlowError(
+            "STALE_WORKSPACE_INDEX",
+            "one or more workspace indexes no longer describe the current implementation worktree",
+            details={"repositories": stale, "selected_role": "workspace"},
+        )
+    return records
+
+
 def _current_planning_context(state_value: dict[str, Any]) -> dict[str, Any]:
     route_approval, impact = _require_route_gate(state_value)
     workspace_approval = _require_workspace_ready(state_value)
@@ -4083,7 +4716,18 @@ def command_prepare_workspace(args: argparse.Namespace) -> dict[str, Any]:
         for plan in plans:
             outcome = _execute_worktree(plan)
             outcomes.append(outcome)
-            by_id[plan["repository_id"]]["workspace"] = outcome
+            repository = by_id[plan["repository_id"]]
+            previous_workspace = repository.get("workspace") or {}
+            same_workspace = (
+                previous_workspace.get("ready")
+                and previous_workspace.get("path") == outcome.get("path")
+                and previous_workspace.get("branch") == outcome.get("branch")
+                and previous_workspace.get("workspace_generation")
+                == outcome.get("workspace_generation")
+            )
+            if not same_workspace:
+                repository["workspace_index"] = None
+            repository["workspace"] = outcome
         for outcome in outcomes:
             if not (
                 outcome.get("created") or outcome.get("recovered_unrecorded")
@@ -4321,6 +4965,7 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
         _assert_status(current, {"VERIFYING", "REVIEWING"}, "review-snapshot")
+        _require_current_workspace_indexes(current)
         _require_workspace_ready(current)
         route_value = (current.get("route") or {}).get("value")
         plan_kind = "direct-contract" if route_value == "direct" else "openspec-plan"
@@ -4445,6 +5090,8 @@ def _transition_guard(state_value: dict[str, Any], target: str) -> None:
         raise FlowError("INDEX_REQUIRED", "all repositories must have a recorded index")
     if target == "ROUTE_APPROVED":
         _require_route_gate(state_value)
+    if target in {"PLANNING", "IMPLEMENTING", "VERIFYING"}:
+        _require_current_workspace_indexes(state_value)
     if target in {"WORKSPACE_READY", "PLANNING", "IMPLEMENTING", "VERIFYING", "REVIEWING", "FINALIZING", "DONE"}:
         _require_route_gate(state_value)
         _require_workspace_ready(state_value)
@@ -4547,11 +5194,13 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
                     history.append(
                         {
                             **previous_workspace,
+                            "workspace_index": repo.get("workspace_index"),
                             "retired_at": reassessed_at,
                             "retired_reason": args.note,
                         }
                     )
                 repo["workspace"] = None
+                repo["workspace_index"] = None
             previous_generation = int(
                 (state_value.get("workspace") or {}).get("generation", 0)
             )
@@ -4678,8 +5327,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     record_index = subparsers.add_parser("record-index", help="record codebase-memory indexing provenance")
     _add_mutation(record_index)
+    record_index.add_argument(
+        "--role",
+        choices=["baseline", "workspace"],
+        default="baseline",
+        help="index role; baseline is the backward-compatible default",
+    )
     record_index.add_argument("--repo", action="append", help="repository id or path; defaults to all")
-    record_index.add_argument("--commit", help="indexed commit; defaults to the pinned base commit")
+    record_index.add_argument(
+        "--commit",
+        help="indexed commit; defaults to pinned base for baseline or current HEAD for workspace",
+    )
     record_index.add_argument(
         "--index-id",
         help="external index id; omission requires impact-degraded approval and failed metadata",
@@ -4687,7 +5345,7 @@ def build_parser() -> argparse.ArgumentParser:
     record_index.add_argument("--receipt", help="optional index receipt file to hash")
     record_index.add_argument(
         "--metadata-json",
-        help="JSON provenance; degraded mode requires status, approval id, error and fallback_coverage",
+        help="JSON provenance; workspace requires persistence:false; degraded baseline requires failure provenance",
     )
     record_index.set_defaults(handler=command_record_index)
 

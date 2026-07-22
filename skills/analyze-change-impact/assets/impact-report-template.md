@@ -5,7 +5,7 @@
 - Requirement: <normalized requirement>
 - Acceptance signals: <observable outcomes>
 - Repositories and baselines: <repository, source path, analysis-workspace path, baseline commit>
-- Index coverage: <project identifier, mode, result for each repository>
+- Baseline index coverage: <exact returned project identifier, requested name, mode, persistence=false, result for each repository>
 - Overall coverage: <complete or degraded, with reason>
 
 ## Requirement interpretation

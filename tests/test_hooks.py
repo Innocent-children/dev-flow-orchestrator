@@ -150,6 +150,75 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertEqual(specific["hookEventName"], "UserPromptSubmit")
         self.assertIn("Next action: write the plan", specific["additionalContext"])
 
+    def test_context_selects_baseline_index_explicitly_before_workspace(self) -> None:
+        self.activate(
+            "INDEXED",
+            repository={
+                "id": "service",
+                "path": str(self.cwd),
+                "index": {"index_id": "task-service-baseline"},
+            },
+        )
+        stdout, _ = self.invoke(
+            {"hook_event_name": "SessionStart", "source": "resume"}
+        )
+        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(
+            "codebase-memory selection: explicit project parameter; never automatic",
+            context,
+        )
+        self.assertIn("Active index role: baseline", context)
+        self.assertIn("Active index projects: service=task-service-baseline", context)
+
+    def test_context_requires_workspace_index_after_workspace_creation(self) -> None:
+        self.activate(
+            "WORKSPACE_READY",
+            repository={
+                "id": "service",
+                "path": str(self.cwd),
+                "index": {"index_id": "task-service-baseline"},
+            },
+            next_action=None,
+        )
+        stdout, _ = self.invoke(
+            {"hook_event_name": "UserPromptSubmit", "prompt": "continue"}
+        )
+        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Active index role: workspace", context)
+        self.assertIn("Active index projects: service=MISSING", context)
+        self.assertIn(
+            "Next action: create or refresh every workspace index, then create the implementation plan",
+            context,
+        )
+
+    def test_context_selects_current_workspace_project_and_blocked_origin(self) -> None:
+        repository = {
+            "id": "service",
+            "path": str(self.cwd),
+            "index": {"index_id": "task-service-baseline"},
+            "workspace_index": {"index_id": "task-service-workspace-r0"},
+        }
+        state_file = self.activate("IMPLEMENTING", repository=repository)
+        stdout, _ = self.invoke(
+            {"hook_event_name": "SessionStart", "source": "resume"}
+        )
+        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Active index role: workspace", context)
+        self.assertIn(
+            "Active index projects: service=task-service-workspace-r0", context
+        )
+
+        task = json.loads(state_file.read_text(encoding="utf-8"))
+        task["status"] = "BLOCKED"
+        task["blocked"] = {"from_status": "INDEXED", "reason": "example"}
+        state_file.write_text(json.dumps(task), encoding="utf-8")
+        stdout, _ = self.invoke(
+            {"hook_event_name": "UserPromptSubmit", "prompt": "resume"}
+        )
+        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Active index role: baseline", context)
+        self.assertIn("Active index projects: service=task-service-baseline", context)
+
     def test_context_uses_controller_gate_keys_and_stage_actions(self) -> None:
         state_file = self.activate(
             "PREFLIGHTED", pending_gate=None, next_action=None, approvals={}

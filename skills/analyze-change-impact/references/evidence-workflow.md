@@ -10,14 +10,16 @@ Use one mode per repository and record the choice in the report.
 | `moderate` | Vocabulary differs from the requirement or semantic discovery is likely to reveal relevant code | Adds similarity and semantic edges over filtered files |
 | `full` | The repository needs the broadest supported inventory and semantic coverage, and the extra indexing cost is justified | Highest cost; do not select reflexively |
 
-Do not reuse an index merely because a project with the same name exists. When the orchestrated workflow supplies `analysis_workspace.path`, confirm its `HEAD` equals the pinned `base_sha` and index that path instead of the user's possibly dirty or feature-branch worktree. Otherwise index the supplied repository path and record its current commit and dirt limitations. Retain the exact project identifier returned by the tool.
+Do not reuse an index merely because a project with the same name exists. When the orchestrated workflow supplies `analysis_workspace.path`, confirm its `HEAD` equals the pinned `base_sha` and index that path instead of the user's possibly dirty or feature-branch worktree. Pass the controller-recommended baseline-specific `name` and `persistence=false`. Otherwise index the supplied repository path and record its current commit and dirt limitations. Retain the exact project identifier returned by the tool; the requested name is not proof of the returned ID.
+
+This skill builds the `baseline` side of Dev Flow's dual-index structure. It does not create or refresh the implementation `workspace` index. Codebase-memory does not select an index automatically: every subsequent query must pass the exact baseline project identifier explicitly. A before/after comparison requires two separately labelled calls, never an ambiguous or mixed project.
 
 ## Query each repository
 
 Apply this sequence, narrowing as evidence improves:
 
-1. Call `get_architecture` with `overview`, `entry_points`, `boundaries`, `routes`, `hotspots`, and `clusters`. Add `file_tree` only when directory placement is itself uncertain.
-2. Call `search_graph` with requirement concepts and domain terms. Prefer natural-language `query` for discovery and `name_pattern` or `qn_pattern` for known identifiers. Use `include_connected` when adjacent nodes help explain impact. If `has_more` is true, narrow first or paginate with `offset` until the relevant result set is covered.
+1. Call `get_architecture` with the exact baseline project ID plus `overview`, `entry_points`, `boundaries`, `routes`, `hotspots`, and `clusters`. Add `file_tree` only when directory placement is itself uncertain.
+2. Call `search_graph` with the same explicit project ID, requirement concepts, and domain terms. Prefer natural-language `query` for discovery and `name_pattern` or `qn_pattern` for known identifiers. Use `include_connected` when adjacent nodes help explain impact. If `has_more` is true, narrow first or paginate with `offset` until the relevant result set is covered.
 3. Call `trace_path` from exact symbols:
    - use `calls` with `inbound` to find dependants and `outbound` to find dependencies;
    - use `data_flow` for validation, transformation, persistence, or sensitive-value propagation;
@@ -49,10 +51,10 @@ Never turn absence from search results into proof that code or risk does not exi
 
 ## Analyze multiple repositories
 
-1. Index every participating repository's verified baseline analysis workspace with `fast`, `moderate`, or `full` and capture its returned project identifier.
+1. Index every participating repository's verified baseline analysis workspace with an explicit baseline-specific name, `persistence=false`, and `fast`, `moderate`, or `full`; capture its returned project identifier.
 2. Stop and report degraded coverage if a required repository cannot be refreshed. Do not run cross-repository matching against a knowingly stale participant and call the result complete.
-3. After all required refreshes succeed, call `index_repository` with mode `cross-repo-intelligence`, an affected analysis-workspace path/name, and `target_projects` containing the other refreshed identifiers. Follow the tool response if matching must be repeated from additional source projects.
-4. Call `trace_path` with mode `cross_service` from relevant routes, clients, publishers, consumers, or handlers.
+3. After all required refreshes succeed, call `index_repository` with mode `cross-repo-intelligence`, an affected analysis-workspace path/name, and `target_projects` containing only the other refreshed baseline identifiers. Follow the tool response if matching must be repeated from additional source projects.
+4. Call `trace_path` with the explicit baseline project and mode `cross_service` from relevant routes, clients, publishers, consumers, or handlers.
 5. Confirm protocol details in source on both sides: route and method, payload/schema, authentication, retry/idempotency, versioning, event/channel name, ordering, and rollout assumptions.
 6. Record the safe implementation and deployment order. Mark cyclic or lockstep changes as elevated risk.
 

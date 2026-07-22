@@ -18,6 +18,7 @@ Run the controller's `--help` and the selected subcommand's `--help` before the 
 Use these resources before advancing:
 
 - [references/state-machine.md](references/state-machine.md) for states, gates, controller usage, and route-neutral execution.
+- [references/index-routing.md](references/index-routing.md) before any codebase-memory indexing or query; it defines the dual-index roles and explicit project selection.
 - [references/openspec-route.md](references/openspec-route.md) after the user selects OpenSpec.
 - [references/recovery.md](references/recovery.md) whenever resuming, reconciling drift, or handling a failed side effect.
 - [assets/direct-contract-template.md](assets/direct-contract-template.md) to create the approved direct-route contract.
@@ -39,5 +40,7 @@ Use these resources before advancing:
 6. Continue until `DONE`, `CANCELLED`, or a genuine blocker requires user input.
 
 Always preflight and baseline every repository before impact analysis. Always run impact analysis before route selection. Require an isolated task branch/worktree for both direct and OpenSpec routes. Require approved planning before implementation and independent full-snapshot review before final handoff.
+
+Maintain one current baseline index over the immutable pinned analysis worktree and one refreshable current-generation workspace index for every repository; retain superseded records in controller history. `codebase-memory-mcp` never chooses between them: pass the controller-selected project's exact ID on every query. Never substitute the baseline index when the workspace index is missing or stale.
 
 Do not stash, reset, clean, force-push, rebase, merge, delete a worktree, commit, push, archive an OpenSpec change, or cancel a task unless the user explicitly authorizes that specific action. Never write the controller's state files directly.
