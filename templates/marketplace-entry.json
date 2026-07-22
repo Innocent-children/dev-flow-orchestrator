@@ -1,0 +1,12 @@
+{
+  "name": "dev-flow-orchestrator",
+  "source": {
+    "source": "local",
+    "path": "./plugins/dev-flow-orchestrator"
+  },
+  "policy": {
+    "installation": "AVAILABLE",
+    "authentication": "ON_INSTALL"
+  },
+  "category": "Productivity"
+}

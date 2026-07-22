@@ -1,0 +1,42 @@
+{
+  "description": "Restore Dev Flow context and guard operations that must pass through the orchestrator.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "timeout": 10,
+            "statusMessage": "Loading the active Dev Flow task"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking Dev Flow guardrails"
+          }
+        ]
+      }
+    ]
+  }
+}

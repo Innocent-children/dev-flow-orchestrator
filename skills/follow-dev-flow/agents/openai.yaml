@@ -1,0 +1,9 @@
+interface:
+  display_name: "Follow Dev Flow"
+  short_description: "Run the guarded resumable development workflow"
+  default_prompt: "Use $follow-dev-flow to start or safely resume this development request."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "codebase-memory-mcp"
+      description: "Indexes pinned repository baselines and traces change impact"

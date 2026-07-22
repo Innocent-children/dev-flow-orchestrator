@@ -1,0 +1,9 @@
+interface:
+  display_name: "Analyze Change Impact"
+  short_description: "Map change impact with source-backed graph evidence"
+  default_prompt: "Use $analyze-change-impact to map this requirement across the affected repositories before implementation."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "codebase-memory-mcp"
+      description: "Indexes repository source and exposes architecture, search, and trace tools"
