@@ -91,13 +91,16 @@ class DevFlowTest(unittest.TestCase):
             arguments.extend(["--repo", str(repo)])
         return self.cli(*arguments)
 
-    def mutate(self, command: str, task: dict, *arguments: str) -> dict:
+    def mutate(
+        self, command: str, task: dict, *arguments: str, expected_code: int = 0
+    ) -> dict:
         return self.cli(
             command,
             task["task_id"],
             "--expected-revision",
             str(task["revision"]),
             *arguments,
+            expected_code=expected_code,
         )
 
     def ready_workspace_task(
@@ -4348,6 +4351,338 @@ class DevFlowTest(unittest.TestCase):
         self.cli("scope", "--add", str(repo))
         accepted = self.start(repo, task_id="in-scope")
         self.assertEqual(accepted["task"]["status"], "INTAKE")
+
+    def start_lite(self, *repos: Path, task_id: str = "lite-1") -> dict:
+        arguments = [
+            "start",
+            "--task-id",
+            task_id,
+            "--flow",
+            "lite",
+            "--requirement",
+            "Fix a bounded bug in place",
+        ]
+        for repo in repos:
+            arguments.extend(["--repo", str(repo)])
+        return self.cli(*arguments)
+
+    def approved_lite_task(
+        self, repo: Path, *, task_id: str = "lite-1", allow_dirty: bool = False
+    ) -> dict:
+        self.start_lite(repo, task_id=task_id)
+        task = dev_flow.load_state(task_id, self.data)
+        self.mutate("preflight", task)
+        task = dev_flow.load_state(task_id, self.data)
+        arguments = ["--gate", "lite", "--note", "in-place fix approved"]
+        if allow_dirty:
+            arguments.append("--allow-dirty")
+        self.mutate("approve", task, *arguments)
+        return dev_flow.load_state(task_id, self.data)
+
+    def test_lite_flow_runs_in_place_to_done(self) -> None:
+        repo, _ = self.make_repo("lite-repo")
+        response = self.start_lite(repo)
+        self.assertEqual(response["flow"], "lite")
+        task = response["task"]
+        self.assertEqual(task["flow"], "lite")
+        self.assertEqual(task["workspace"]["strategy"], "in-place")
+        self.assertIsNone(response["index_selection"]["selected_role"])
+
+        self.mutate("preflight", task)
+        task = dev_flow.load_state("lite-1", self.data)
+        self.assertEqual(task["status"], "PREFLIGHTED")
+
+        approved = self.mutate(
+            "approve", task, "--gate", "lite", "--note", "fix in place"
+        )
+        self.assertTrue(approved["approval"]["preflight_evidence_sha256"])
+        self.assertEqual(
+            approved["approval"]["preflight_evidence_sha256"],
+            dev_flow._lite_preflight_evidence_sha256(
+                dev_flow.load_state("lite-1", self.data)
+            ),
+        )
+
+        task = dev_flow.load_state("lite-1", self.data)
+        self.mutate("transition", task, "--to", "IMPLEMENTING")
+        task = dev_flow.load_state("lite-1", self.data)
+        self.assertEqual(task["status"], "IMPLEMENTING")
+        self.assertIsNone(
+            dev_flow._index_selection(task)["selected_role"]
+        )
+
+        (repo / "tracked.txt").write_text("fixed in place\n", encoding="utf-8")
+        self.mutate("transition", task, "--to", "VERIFYING")
+        task = dev_flow.load_state("lite-1", self.data)
+
+        recorded = self.mutate(
+            "record-test",
+            task,
+            "--name",
+            "unit",
+            "--command",
+            "pytest -q",
+            "--exit-code",
+            "0",
+        )
+        self.assertIn("lite_approval_id", recorded["test"])
+        self.assertNotIn("plan_artifact_sha256", recorded["test"])
+        task = dev_flow.load_state("lite-1", self.data)
+        self.mutate("transition", task, "--to", "DONE")
+        self.assertEqual(dev_flow.load_state("lite-1", self.data)["status"], "DONE")
+
+    def test_lite_flow_rejects_full_flow_commands_and_gates(self) -> None:
+        repo, _ = self.make_repo("lite-guard")
+        self.start_lite(repo, task_id="lite-guard")
+        task = dev_flow.load_state("lite-guard", self.data)
+        self.mutate("preflight", task)
+        task = dev_flow.load_state("lite-guard", self.data)
+
+        for arguments in (
+            ["approve", "--gate", "baseline-fetch", "--note", "no"],
+            ["baseline", "--materialize"],
+            ["record-index", "--index-id", "nope"],
+            ["set-route", "direct", "--reason", "no"],
+            ["prepare-workspace"],
+            ["review-snapshot"],
+        ):
+            with self.subTest(command=arguments[0], arguments=arguments[1:]):
+                rejected = self.mutate(
+                    arguments[0], task, *arguments[1:], expected_code=2
+                )
+                self.assertEqual(rejected["error"]["code"], "FLOW_MISMATCH")
+
+        blocked_transition = self.mutate(
+            "transition", task, "--to", "BASELINED", expected_code=2
+        )
+        self.assertEqual(
+            blocked_transition["error"]["code"], "INVALID_TRANSITION"
+        )
+        self.assertEqual(
+            blocked_transition["error"]["details"]["allowed"],
+            ["BLOCKED", "CANCELLED", "IMPLEMENTING"],
+        )
+
+        full_repo, _ = self.make_repo("full-guard")
+        self.start(full_repo, task_id="full-guard")
+        full_task = dev_flow.load_state("full-guard", self.data)
+        rejected = self.mutate(
+            "approve",
+            full_task,
+            "--gate",
+            "lite",
+            "--note",
+            "not applicable",
+            expected_code=2,
+        )
+        self.assertEqual(rejected["error"]["code"], "FLOW_MISMATCH")
+
+    def test_lite_gate_requires_allow_dirty_and_a_fresh_preflight(self) -> None:
+        repo, _ = self.make_repo("lite-dirty")
+        (repo / "tracked.txt").write_text("uncommitted\n", encoding="utf-8")
+        self.start_lite(repo, task_id="lite-dirty")
+        task = dev_flow.load_state("lite-dirty", self.data)
+        self.mutate("preflight", task)
+        task = dev_flow.load_state("lite-dirty", self.data)
+
+        rejected = self.mutate(
+            "approve",
+            task,
+            "--gate",
+            "lite",
+            "--note",
+            "dirty tree",
+            expected_code=2,
+        )
+        self.assertEqual(rejected["error"]["code"], "DIRTY_APPROVAL_REQUIRED")
+
+        approved = self.mutate(
+            "approve",
+            task,
+            "--gate",
+            "lite",
+            "--note",
+            "dirty tree accepted",
+            "--allow-dirty",
+        )
+        self.assertTrue(approved["approval"]["dirty_allowed"])
+
+        # A refreshed preflight invalidates the earlier lite approval.
+        task = dev_flow.load_state("lite-dirty", self.data)
+        self.mutate("preflight", task)
+        task = dev_flow.load_state("lite-dirty", self.data)
+        self.assertNotIn("lite", task["approvals"])
+        rejected = self.mutate(
+            "transition", task, "--to", "IMPLEMENTING", expected_code=2
+        )
+        self.assertEqual(rejected["error"]["code"], "APPROVAL_REQUIRED")
+
+    def test_lite_implementation_entry_rejects_checkout_drift(self) -> None:
+        repo, _ = self.make_repo("lite-drift")
+        task = self.approved_lite_task(repo, task_id="lite-drift")
+
+        (repo / "tracked.txt").write_text("early edit\n", encoding="utf-8")
+        rejected = self.mutate(
+            "transition", task, "--to", "IMPLEMENTING", expected_code=2
+        )
+        self.assertEqual(
+            rejected["error"]["code"], "PREFLIGHT_WORKTREE_CHANGED"
+        )
+
+        (repo / "tracked.txt").write_text("initial lite-drift\n", encoding="utf-8")
+        git(repo, "checkout", "-q", "-b", "elsewhere")
+        task = dev_flow.load_state("lite-drift", self.data)
+        rejected = self.mutate(
+            "transition", task, "--to", "IMPLEMENTING", expected_code=2
+        )
+        self.assertEqual(rejected["error"]["code"], "CHECKOUT_DRIFT")
+
+        git(repo, "checkout", "-q", "main")
+        task = dev_flow.load_state("lite-drift", self.data)
+        self.mutate("transition", task, "--to", "IMPLEMENTING")
+        self.assertEqual(
+            dev_flow.load_state("lite-drift", self.data)["status"],
+            "IMPLEMENTING",
+        )
+
+    def test_lite_done_requires_current_passing_tests(self) -> None:
+        repo, _ = self.make_repo("lite-verify")
+        task = self.approved_lite_task(repo, task_id="lite-verify")
+        self.mutate("transition", task, "--to", "IMPLEMENTING")
+        task = dev_flow.load_state("lite-verify", self.data)
+        (repo / "tracked.txt").write_text("candidate fix\n", encoding="utf-8")
+        self.mutate("transition", task, "--to", "VERIFYING")
+        task = dev_flow.load_state("lite-verify", self.data)
+
+        self.mutate(
+            "record-test",
+            task,
+            "--name",
+            "unit",
+            "--command",
+            "pytest -q",
+            "--exit-code",
+            "1",
+        )
+        task = dev_flow.load_state("lite-verify", self.data)
+        rejected = self.mutate(
+            "transition", task, "--to", "DONE", expected_code=2
+        )
+        self.assertEqual(rejected["error"]["code"], "CURRENT_TEST_REQUIRED")
+
+        self.mutate(
+            "record-test",
+            task,
+            "--name",
+            "unit",
+            "--command",
+            "pytest -q",
+            "--exit-code",
+            "0",
+        )
+        task = dev_flow.load_state("lite-verify", self.data)
+        (repo / "tracked.txt").write_text("changed after tests\n", encoding="utf-8")
+        rejected = self.mutate(
+            "transition", task, "--to", "DONE", expected_code=2
+        )
+        self.assertEqual(rejected["error"]["code"], "CURRENT_TEST_REQUIRED")
+
+        self.mutate(
+            "record-test",
+            task,
+            "--name",
+            "unit",
+            "--command",
+            "pytest -q",
+            "--exit-code",
+            "0",
+        )
+        task = dev_flow.load_state("lite-verify", self.data)
+        self.mutate("transition", task, "--to", "DONE")
+        self.assertEqual(
+            dev_flow.load_state("lite-verify", self.data)["status"], "DONE"
+        )
+
+    def test_lite_rework_reopens_scope_with_note_and_invalidates_tests(self) -> None:
+        repo, _ = self.make_repo("lite-rework")
+        task = self.approved_lite_task(repo, task_id="lite-rework")
+        self.mutate("transition", task, "--to", "IMPLEMENTING")
+        task = dev_flow.load_state("lite-rework", self.data)
+        (repo / "tracked.txt").write_text("first attempt\n", encoding="utf-8")
+        self.mutate("transition", task, "--to", "VERIFYING")
+        task = dev_flow.load_state("lite-rework", self.data)
+        self.mutate(
+            "record-test",
+            task,
+            "--name",
+            "unit",
+            "--command",
+            "pytest -q",
+            "--exit-code",
+            "0",
+        )
+        task = dev_flow.load_state("lite-rework", self.data)
+
+        rejected = self.mutate(
+            "transition", task, "--to", "PREFLIGHTED", expected_code=2
+        )
+        self.assertEqual(rejected["error"]["code"], "INVALID_ARGUMENT")
+        self.mutate(
+            "transition",
+            task,
+            "--to",
+            "PREFLIGHTED",
+            "--note",
+            "scope grew beyond the approved fix",
+        )
+        task = dev_flow.load_state("lite-rework", self.data)
+        self.assertEqual(task["status"], "PREFLIGHTED")
+
+        # The edited tree no longer matches the approved snapshot, so a fresh
+        # preflight and a new dirty-approval are required to continue.
+        rejected = self.mutate(
+            "transition", task, "--to", "IMPLEMENTING", expected_code=2
+        )
+        self.assertEqual(
+            rejected["error"]["code"], "PREFLIGHT_WORKTREE_CHANGED"
+        )
+        self.mutate("preflight", task)
+        task = dev_flow.load_state("lite-rework", self.data)
+        self.mutate(
+            "approve",
+            task,
+            "--gate",
+            "lite",
+            "--note",
+            "wider fix approved",
+            "--allow-dirty",
+        )
+        task = dev_flow.load_state("lite-rework", self.data)
+        self.mutate("transition", task, "--to", "IMPLEMENTING")
+        task = dev_flow.load_state("lite-rework", self.data)
+        self.mutate("transition", task, "--to", "VERIFYING")
+        task = dev_flow.load_state("lite-rework", self.data)
+
+        # Tests recorded under the earlier approval are historical only.
+        rejected = self.mutate(
+            "transition", task, "--to", "DONE", expected_code=2
+        )
+        self.assertEqual(rejected["error"]["code"], "CURRENT_TEST_REQUIRED")
+        self.mutate(
+            "record-test",
+            task,
+            "--name",
+            "unit",
+            "--command",
+            "pytest -q",
+            "--exit-code",
+            "0",
+        )
+        task = dev_flow.load_state("lite-rework", self.data)
+        self.mutate("transition", task, "--to", "DONE")
+        self.assertEqual(
+            dev_flow.load_state("lite-rework", self.data)["status"], "DONE"
+        )
 
 
 if __name__ == "__main__":

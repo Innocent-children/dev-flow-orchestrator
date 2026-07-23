@@ -2,6 +2,8 @@
 
 This plugin drives a guarded development workflow across Git repositories, `codebase-memory-mcp`, and OpenSpec. It persists machine-readable task state, keeps human approvals explicit, and reviews committed, staged, unstaged, and untracked changes before handoff.
 
+Every task selects one of two flows at `start`. The default full flow runs the complete pipeline below. The lite flow (`start --flow lite`) covers ordinary bounded work — a small bug fix, a localized tweak — inside the configured scope without paying for the full pipeline: it runs `preflight -> lite approval -> implement -> verify -> done` directly in the user's checkout, with no baseline worktree, impact analysis, OpenSpec, managed implementation worktree, or independent-review machinery. It keeps the parts that make the workflow trustworthy: fail-closed preflight evidence, one explicit human gate bound to the exact branch/`HEAD`/working-tree snapshot (dirty trees need explicit `--allow-dirty`), drift detection at every transition, and test records that must pass and match the final worktree fingerprint before `DONE`. See [Lite flow](#lite-flow).
+
 It uses a dual-index model per repository. A baseline project indexes the immutable detached analysis worktree for impact analysis and route decisions; a workspace project indexes the current-generation implementation worktree for planning, implementation, verification, and review discovery. Codebase-memory does not choose between them automatically: every query must pass the phase-selected project's exact returned ID. The controller exposes that choice in `show.index_selection`, archives every superseded index record for audit/ID isolation, and blocks downstream gates when a required workspace index is missing or stale.
 
 It deliberately does not switch or pull the developer's current checkout. After preflight and explicit authorization, it resolves the configured remote's default branch, optionally fetches that remote, pins an immutable base commit, and creates a detached analysis worktree. Both direct and OpenSpec implementation then use separate task branches in isolated linked worktrees. Existing source-branch and dirty-state evidence remains visible and untouched; proceeding around an exact dirty snapshot requires structured approval.
@@ -45,6 +47,21 @@ Do not copy the hook or helper scripts into each business repository. Install th
 - An enabled `codebase-memory-mcp` server for baseline impact analysis and current-workspace discovery
 
 The plugin intentionally does not bundle a machine-specific `.mcp.json`; use the existing user- or project-scoped MCP configuration.
+
+## Lite flow
+
+The directory scope decides *where* the plugin is active; the flow decides *how much* pipeline a task inside that scope pays for. A lite task's state machine is `INTAKE -> PREFLIGHTED -> IMPLEMENTING -> VERIFYING -> DONE`:
+
+```bash
+python3 <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --flow lite --requirement "fix ..." --repo <path>
+```
+
+- The flow is chosen at `start` and immutable, like the requirement and repository set. When a lite change outgrows its scope, cancel/replace it as a full task; there is no in-place upgrade.
+- The lite gate (`approve --gate lite`) replaces the baseline/route/workspace/plan/review gates with one explicit decision: work in place on the exact recorded checkouts. It binds each repository's branch, `HEAD`, and working-tree fingerprint; every new `preflight` clears it, and entering implementation re-verifies all three live.
+- Full-only commands and gates (`baseline`, `record-index`, `set-route`, `prepare-workspace`, `review-snapshot`, plan/route/review approvals) fail with `FLOW_MISMATCH` on a lite task, and vice versa for the lite gate on a full task.
+- Test records bind the current lite approval instead of a plan hash. Each repository still needs a current passing result whose fingerprint matches the final tree before `DONE`.
+- The hooks allow file writes into the source checkouts only while a lite task is `IMPLEMENTING` or `VERIFYING`; the command guardrails (no `git reset --hard`, `clean`, `pull`, branch switching, or protected-branch commits) apply unchanged. Commit and push remain separate explicitly authorized actions.
+- Lite tasks record no controller-bound codebase-memory indexes; `show.index_selection.selected_role` is `none`, and ad-hoc queries stay outside the evidence chain.
 
 ## Directory scope
 

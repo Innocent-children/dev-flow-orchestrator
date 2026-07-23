@@ -72,6 +72,31 @@ IMPACT_REASSESS_SOURCES = {
 }
 for _reassess_source in IMPACT_REASSESS_SOURCES:
     REWORK_EDGES.setdefault(_reassess_source, set()).add("INDEXED")
+FLOW_MODES = ("full", "lite")
+DEFAULT_FLOW = "full"
+LITE_GATE = "lite"
+# The lite flow works in place inside the user's own checkouts.  It keeps
+# preflight evidence, one explicit human gate, and test-currency enforcement,
+# and deliberately has no baseline, index, impact, route, managed workspace,
+# plan, or independent-review machinery.
+LITE_ORDERED_STATES = [
+    "INTAKE",
+    "PREFLIGHTED",
+    "IMPLEMENTING",
+    "VERIFYING",
+    "DONE",
+]
+LITE_FORWARD_EDGES = {
+    state: {LITE_ORDERED_STATES[index + 1]}
+    for index, state in enumerate(LITE_ORDERED_STATES[:-1])
+}
+LITE_FORWARD_EDGES["DONE"] = set()
+# Backward edges: rework the implementation, or re-open scope evidence with a
+# fresh preflight when the checkout drifted or the fix outgrew its approval.
+LITE_REWORK_EDGES = {
+    "IMPLEMENTING": {"PREFLIGHTED"},
+    "VERIFYING": {"IMPLEMENTING", "PREFLIGHTED"},
+}
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_PROTECTED_BRANCHES = ["main", "master", "trunk"]
@@ -206,6 +231,8 @@ def load_state(
         if isinstance(repository, dict):
             repository.setdefault("workspace_index", None)
             repository.setdefault("index_history", [])
+    # Tasks recorded before flow selection are full-flow tasks by definition.
+    value.setdefault("flow", DEFAULT_FLOW)
     return value
 
 
@@ -1410,6 +1437,21 @@ def _assert_status(state_value: dict[str, Any], allowed: set[str], command: str)
         )
 
 
+def _flow(state_value: dict[str, Any]) -> str:
+    value = state_value.get("flow")
+    return value if value in FLOW_MODES else DEFAULT_FLOW
+
+
+def _assert_flow(state_value: dict[str, Any], required: str, command: str) -> None:
+    actual = _flow(state_value)
+    if actual != required:
+        raise FlowError(
+            "FLOW_MISMATCH",
+            f"{command} is not part of the {actual} flow",
+            details={"flow": actual, "required_flow": required, "command": command},
+        )
+
+
 def _operation_state(repo: Path) -> dict[str, bool]:
     git_dir_text = _git(repo, "rev-parse", "--absolute-git-dir")
     git_dir = Path(git_dir_text)
@@ -2069,6 +2111,10 @@ def _recommended_index_name(
 
 
 def _index_role_for_status(state_value: dict[str, Any]) -> str | None:
+    if _flow(state_value) == "lite":
+        # Lite tasks record no controller-bound indexes; ad-hoc codebase-memory
+        # use stays outside the evidence chain.
+        return None
     status = state_value.get("status")
     if status == "BLOCKED":
         status = (state_value.get("blocked") or {}).get("from_status")
@@ -2147,6 +2193,7 @@ def _result(command: str, state_value: dict[str, Any], **extra: Any) -> dict[str
         "task_id": state_value["task_id"],
         "revision": state_value["revision"],
         "status": state_value["status"],
+        "flow": _flow(state_value),
         "index_selection": _index_selection(state_value),
     }
     response.update(extra)
@@ -2157,6 +2204,13 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
     requirement = (args.requirement_option or args.requirement or "").strip()
     if not requirement:
         raise FlowError("INVALID_ARGUMENT", "start requires a non-empty requirement")
+    flow = getattr(args, "flow", None) or DEFAULT_FLOW
+    if flow not in FLOW_MODES:
+        raise FlowError(
+            "INVALID_ARGUMENT",
+            f"flow must be one of: {', '.join(FLOW_MODES)}",
+            details={"flow": flow},
+        )
     task_id = args.task_id or f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     _validate_task_id(task_id)
     if not args.repo:
@@ -2221,6 +2275,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
             "revision": 0,
             "created_at": created,
             "updated_at": created,
+            "flow": flow,
             "route": None,
             "repositories": repositories,
             "artifacts": [],
@@ -2229,7 +2284,11 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
             "review_snapshots": [],
             "impact_generation": 0,
             "planning_generation": 0,
-            "workspace": {"strategy": "worktree", "ready": False, "generation": 0},
+            "workspace": {
+                "strategy": "in-place" if flow == "lite" else "worktree",
+                "ready": False,
+                "generation": 0,
+            },
             "blocked": None,
             "cancelled": None,
         }
@@ -2260,6 +2319,7 @@ def command_list(args: argparse.Namespace) -> dict[str, Any]:
                     "task_id": state_value.get("task_id"),
                     "requirement": state_value.get("requirement"),
                     "status": state_value.get("status"),
+                    "flow": _flow(state_value),
                     "revision": state_value.get("revision"),
                     "updated_at": state_value.get("updated_at"),
                     "repositories": [repo.get("path") for repo in state_value.get("repositories", [])],
@@ -2382,8 +2442,10 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
             state_value["status"] = "PREFLIGHTED"
             state_value["blocked"] = None
         # Remote/base selection and HEAD evidence were just refreshed.  A
-        # previous baseline approval must never authorize this new preflight.
+        # previous baseline or lite approval must never authorize this new
+        # preflight.
         state_value["approvals"].pop("baseline-fetch", None)
+        state_value["approvals"].pop(LITE_GATE, None)
         _commit_state(
             current,
             state_value,
@@ -2523,6 +2585,123 @@ def _require_baseline_fetch_approval(state_value: dict[str, Any]) -> dict[str, A
                 details={
                     "repository_id": repo["id"],
                     "recorded_fingerprint_sha256": recorded_fingerprint,
+                    "actual_fingerprint_sha256": actual_fingerprint,
+                },
+            )
+    return approval
+
+
+def _lite_preflight_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
+    """The exact checkout identity a lite approval authorizes working inside."""
+
+    repositories: list[dict[str, Any]] = []
+    for repo in state_value.get("repositories", []):
+        preflight = repo.get("preflight")
+        if not isinstance(preflight, dict):
+            raise FlowError(
+                "PREFLIGHT_REQUIRED",
+                f"repository is missing preflight evidence: {repo.get('id')}",
+            )
+        repositories.append(
+            {
+                "repository_id": repo["id"],
+                "branch": preflight.get("branch"),
+                "head_sha": preflight.get("head_sha"),
+                "remote": preflight.get("remote"),
+                "remote_url": preflight.get("remote_url"),
+                "dirty": bool(preflight.get("dirty")),
+                "worktree_fingerprint_sha256": preflight.get(
+                    "worktree_fingerprint_sha256"
+                ),
+            }
+        )
+    repositories.sort(key=lambda item: item["repository_id"])
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "task_id": state_value["task_id"],
+        "repositories": repositories,
+    }
+
+
+def _lite_preflight_evidence_sha256(state_value: dict[str, Any]) -> str:
+    return _sha256_bytes(_json_bytes(_lite_preflight_evidence(state_value)))
+
+
+def _require_lite_gate(
+    state_value: dict[str, Any], *, verify_worktree: bool = False
+) -> dict[str, Any]:
+    """Require a lite approval bound to the current preflight evidence.
+
+    The approval authorizes in-place work on the exact recorded checkouts, so
+    the branch identity is revalidated live at every downstream gate.  The
+    worktree fingerprint and ``HEAD`` are only revalidated when entering
+    implementation: after that point the edits themselves legitimately change
+    both, and test currency binds the final tree instead.
+    """
+
+    approval = _require_gate(state_value, LITE_GATE)
+    current_evidence_sha = _lite_preflight_evidence_sha256(state_value)
+    if approval.get("preflight_evidence_sha256") != current_evidence_sha:
+        raise FlowError(
+            "STALE_APPROVAL",
+            "lite approval does not bind the current preflight evidence",
+            details={
+                "expected_preflight_evidence_sha256": current_evidence_sha,
+                "approved_preflight_evidence_sha256": approval.get(
+                    "preflight_evidence_sha256"
+                ),
+            },
+        )
+    dirty_repositories = [
+        repo["id"]
+        for repo in state_value.get("repositories", [])
+        if (repo.get("preflight") or {}).get("dirty")
+    ]
+    if dirty_repositories and approval.get("dirty_allowed") is not True:
+        raise FlowError(
+            "DIRTY_NOT_APPROVED",
+            "dirty preflight snapshots require lite approval with --allow-dirty",
+            details={"repository_ids": dirty_repositories},
+        )
+    for repo in state_value.get("repositories", []):
+        preflight = repo.get("preflight") or {}
+        path = Path(repo["path"])
+        actual_branch = _git_optional(
+            path, "symbolic-ref", "--quiet", "--short", "HEAD"
+        )
+        if actual_branch != preflight.get("branch"):
+            raise FlowError(
+                "CHECKOUT_DRIFT",
+                f"checkout branch changed after lite approval: {repo['id']}",
+                details={
+                    "repository_id": repo["id"],
+                    "approved_branch": preflight.get("branch"),
+                    "actual_branch": actual_branch,
+                },
+            )
+        if not verify_worktree:
+            continue
+        actual_head = _git_optional(path, "rev-parse", "HEAD")
+        if actual_head != preflight.get("head_sha"):
+            raise FlowError(
+                "CHECKOUT_DRIFT",
+                f"checkout HEAD changed after lite approval: {repo['id']}",
+                details={
+                    "repository_id": repo["id"],
+                    "approved_head_sha": preflight.get("head_sha"),
+                    "actual_head_sha": actual_head,
+                },
+            )
+        actual_fingerprint = _fingerprint_repo(path)["sha256"]
+        if actual_fingerprint != preflight.get("worktree_fingerprint_sha256"):
+            raise FlowError(
+                "PREFLIGHT_WORKTREE_CHANGED",
+                f"repository worktree changed after lite approval: {repo['id']}",
+                details={
+                    "repository_id": repo["id"],
+                    "recorded_fingerprint_sha256": preflight.get(
+                        "worktree_fingerprint_sha256"
+                    ),
                     "actual_fingerprint_sha256": actual_fingerprint,
                 },
             )
@@ -2704,6 +2883,7 @@ def _analysis_workspace_integrity_error(repo: dict[str, Any]) -> str | None:
 def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+        _assert_flow(current, "full", "baseline")
         _assert_status(current, {"PREFLIGHTED", "BASELINED"}, "baseline")
         baseline_approval = _require_baseline_fetch_approval(current)
         if args.fetch and baseline_approval.get("fetch_allowed") is not True:
@@ -3170,6 +3350,7 @@ def _assert_index_id_available(
 def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+        _assert_flow(current, "full", "record-index")
         role = args.role
         if role == "baseline":
             _assert_status(current, {"BASELINED", "INDEXED"}, "record-index")
@@ -3609,6 +3790,7 @@ def command_set_route(args: argparse.Namespace) -> dict[str, Any]:
     if route not in {"direct", "openspec"}:
         raise FlowError("INVALID_ARGUMENT", "route must be 'direct' or 'openspec'")
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+        _assert_flow(current, "full", "set-route")
         _assert_status(current, {"INDEXED", "IMPACT_REVIEW"}, "set-route")
         impact = _require_current_impact(current)
         state_value = _copy_state(current)
@@ -3648,10 +3830,10 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
                 "INVALID_ARGUMENT",
                 "--allow-fetch is only valid for the baseline-fetch gate",
             )
-        if args.allow_dirty and args.gate != "baseline-fetch":
+        if args.allow_dirty and args.gate not in {"baseline-fetch", LITE_GATE}:
             raise FlowError(
                 "INVALID_ARGUMENT",
-                "--allow-dirty is only valid for the baseline-fetch gate",
+                "--allow-dirty is only valid for the baseline-fetch and lite gates",
             )
         if artifact_sha and not any(item.get("sha256") == artifact_sha for item in current.get("artifacts", [])):
             raise FlowError("ARTIFACT_NOT_FOUND", "approval artifact hash is not recorded on this task", details={"sha256": artifact_sha})
@@ -3661,6 +3843,16 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
         route_impact: dict[str, Any] | None = None
         plan_artifact: dict[str, Any] | None = None
         plan_context: dict[str, Any] | None = None
+        lite_evidence: dict[str, Any] | None = None
+        if args.gate in {
+            "baseline-fetch",
+            "impact-degraded",
+            "route",
+            "workspace",
+            "plan",
+            "review",
+        }:
+            _assert_flow(current, "full", f"approve --gate {args.gate}")
         if args.gate == "route":
             _assert_status(current, {"IMPACT_REVIEW"}, "approve --gate route")
             _, route_impact = _require_current_route_selection(current)
@@ -3722,6 +3914,21 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
                 {"BASELINED", "INDEXED"},
                 "approve --gate impact-degraded",
             )
+        elif args.gate == LITE_GATE:
+            _assert_flow(current, "lite", "approve --gate lite")
+            _assert_status(current, {"PREFLIGHTED"}, "approve --gate lite")
+            lite_evidence = _lite_preflight_evidence(current)
+            dirty_repositories = [
+                repo["id"]
+                for repo in current.get("repositories", [])
+                if (repo.get("preflight") or {}).get("dirty")
+            ]
+            if dirty_repositories and not args.allow_dirty:
+                raise FlowError(
+                    "DIRTY_APPROVAL_REQUIRED",
+                    "approving a dirty preflight snapshot requires --allow-dirty",
+                    details={"repository_ids": dirty_repositories},
+                )
         elif args.gate == "workspace":
             _assert_status(current, {"ROUTE_APPROVED", "WORKSPACE_READY"}, "approve --gate workspace")
             required_artifact_kind = "workspace-plan"
@@ -3785,6 +3992,12 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
             )
             approval["preflight_remotes"] = baseline_remote_evidence["repositories"]
             approval["fetch_allowed"] = bool(args.allow_fetch)
+            approval["dirty_allowed"] = bool(args.allow_dirty)
+        if args.gate == LITE_GATE:
+            approval["preflight_evidence_sha256"] = _sha256_bytes(
+                _json_bytes(lite_evidence)
+            )
+            approval["preflight_repositories"] = lite_evidence["repositories"]
             approval["dirty_allowed"] = bool(args.allow_dirty)
         if args.gate == "route":
             approval["artifact_id"] = route_impact["artifact_id"]
@@ -4842,6 +5055,7 @@ def command_prepare_workspace(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     data_root = resolve_data_dir(args.data_dir)
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+        _assert_flow(current, "full", "prepare-workspace")
         _assert_status(current, {"ROUTE_APPROVED", "WORKSPACE_READY"}, "prepare-workspace")
         selected_current = _repo_by_selector(current, args.repo)
         configured_ids = {repo["id"] for repo in current.get("repositories", [])}
@@ -5095,12 +5309,27 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
         output_record = {"path": str(output_path), "sha256": _sha256_file(output_path), "size": output_path.stat().st_size}
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
         _assert_status(current, {"IMPLEMENTING", "VERIFYING"}, "record-test")
-        _require_workspace_ready(current)
-        route_value = (current.get("route") or {}).get("value")
-        plan_kind = "direct-contract" if route_value == "direct" else "openspec-plan"
-        plan_approval, plan_artifact = _require_current_plan_gate(
-            current, plan_kind
-        )
+        if _flow(current) == "lite":
+            # Lite tests bind the lite approval instead of a plan artifact:
+            # re-approving the gate invalidates older results the same way a
+            # plan reapproval does on the full flow.
+            lite_approval = _require_lite_gate(current)
+            binding = {
+                "lite_approval_id": lite_approval["approval_id"],
+                "lite_approved_at": lite_approval["approved_at"],
+            }
+        else:
+            _require_workspace_ready(current)
+            route_value = (current.get("route") or {}).get("value")
+            plan_kind = "direct-contract" if route_value == "direct" else "openspec-plan"
+            plan_approval, plan_artifact = _require_current_plan_gate(
+                current, plan_kind
+            )
+            binding = {
+                "plan_artifact_sha256": plan_artifact["sha256"],
+                "plan_approved_at": plan_approval["approved_at"],
+                "plan_approval_id": plan_approval["approval_id"],
+            }
         state_value = _copy_state(current)
         selected = _repo_by_selector(state_value, args.repo)
         fingerprints = {repo["id"]: _fingerprint_repo(_working_path(repo)) for repo in selected}
@@ -5114,9 +5343,7 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
             "recorded_at": utc_now(),
             "repository_ids": [repo["id"] for repo in selected],
             "fingerprints": fingerprints,
-            "plan_artifact_sha256": plan_artifact["sha256"],
-            "plan_approved_at": plan_approval["approved_at"],
-            "plan_approval_id": plan_approval["approval_id"],
+            **binding,
             "output": output_record,
         }
         state_value["tests"].append(test_record)
@@ -5201,24 +5428,41 @@ def _write_review_repo(snapshot_root: Path, repo: dict[str, Any]) -> dict[str, A
 def _latest_passing_test_is_current(state_value: dict[str, Any]) -> tuple[bool, str | None]:
     """Require each repo's newest relevant test record to pass and remain current."""
 
-    route_value = (state_value.get("route") or {}).get("value")
-    plan_kind = "direct-contract" if route_value == "direct" else "openspec-plan"
-    plan_approval, plan_artifact = _require_current_plan_gate(
-        state_value, plan_kind
-    )
+    if _flow(state_value) == "lite":
+        lite_approval = _require_lite_gate(state_value)
+
+        def _bound_to_current_approval(test: dict[str, Any]) -> bool:
+            return test.get("lite_approval_id") == lite_approval.get(
+                "approval_id"
+            ) and str(test.get("recorded_at", "")) >= str(
+                lite_approval.get("approved_at", "")
+            )
+
+        missing_message = "no test result for the current lite approval covers repository"
+    else:
+        route_value = (state_value.get("route") or {}).get("value")
+        plan_kind = "direct-contract" if route_value == "direct" else "openspec-plan"
+        plan_approval, plan_artifact = _require_current_plan_gate(
+            state_value, plan_kind
+        )
+
+        def _bound_to_current_approval(test: dict[str, Any]) -> bool:
+            return (
+                test.get("plan_artifact_sha256") == plan_artifact.get("sha256")
+                and test.get("plan_approval_id")
+                == plan_approval.get("approval_id")
+                and str(test.get("recorded_at", ""))
+                >= str(plan_approval.get("approved_at", ""))
+            )
+
+        missing_message = "no test result for the current plan approval covers repository"
     tests = state_value.get("tests", [])
     for repo in state_value["repositories"]:
         latest_by_identity: dict[str, dict[str, Any]] = {}
         for test in tests:
             if repo["id"] not in test.get("repository_ids", []):
                 continue
-            if test.get("plan_artifact_sha256") != plan_artifact.get("sha256"):
-                continue
-            if test.get("plan_approval_id") != plan_approval.get("approval_id"):
-                continue
-            if str(test.get("recorded_at", "")) < str(
-                plan_approval.get("approved_at", "")
-            ):
+            if not _bound_to_current_approval(test):
                 continue
             identity = test.get("test_identity") or _test_identity(
                 test.get("name"), test.get("command")
@@ -5227,7 +5471,7 @@ def _latest_passing_test_is_current(state_value: dict[str, Any]) -> tuple[bool, 
         if not latest_by_identity:
             return (
                 False,
-                f"no test result for the current plan approval covers repository: {repo['id']}",
+                f"{missing_message}: {repo['id']}",
             )
         current = _fingerprint_repo(_working_path(repo))
         for latest in latest_by_identity.values():
@@ -5274,6 +5518,7 @@ def _latest_passing_test_is_current(state_value: dict[str, Any]) -> tuple[bool, 
 def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+        _assert_flow(current, "full", "review-snapshot")
         _assert_status(current, {"VERIFYING", "REVIEWING"}, "review-snapshot")
         _require_current_workspace_indexes(current)
         _require_workspace_ready(current)
@@ -5390,7 +5635,30 @@ def _review_is_current(state_value: dict[str, Any]) -> tuple[bool, str | None]:
     return True, None
 
 
+def _lite_transition_guard(state_value: dict[str, Any], target: str) -> None:
+    repositories = state_value.get("repositories", [])
+    if target == "PREFLIGHTED" and not all((repo.get("preflight") or {}).get("ready") for repo in repositories):
+        raise FlowError("PREFLIGHT_REQUIRED", "all repositories must pass preflight")
+    if target == "IMPLEMENTING":
+        # Entering implementation from PREFLIGHTED must find the exact approved
+        # checkouts untouched; re-entering from rework legitimately finds the
+        # tree already edited, so only branch identity is revalidated there.
+        _require_lite_gate(
+            state_value,
+            verify_worktree=state_value.get("status") == "PREFLIGHTED",
+        )
+    if target in {"VERIFYING", "DONE"}:
+        _require_lite_gate(state_value)
+    if target == "DONE":
+        test_current, test_reason = _latest_passing_test_is_current(state_value)
+        if not test_current:
+            raise FlowError("CURRENT_TEST_REQUIRED", test_reason or "a current passing test is required")
+
+
 def _transition_guard(state_value: dict[str, Any], target: str) -> None:
+    if _flow(state_value) == "lite":
+        _lite_transition_guard(state_value, target)
+        return
     repositories = state_value.get("repositories", [])
     if target == "PREFLIGHTED" and not all((repo.get("preflight") or {}).get("ready") for repo in repositories):
         raise FlowError("PREFLIGHT_REQUIRED", "all repositories must pass preflight")
@@ -5449,7 +5717,10 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
             if target != expected:
                 raise FlowError("INVALID_TRANSITION", f"blocked task can only resume to {expected}", details={"from": source, "to": target, "allowed": [expected]})
         else:
-            allowed = set(FORWARD_EDGES.get(source, set())) | set(REWORK_EDGES.get(source, set()))
+            lite = _flow(current) == "lite"
+            forward_edges = LITE_FORWARD_EDGES if lite else FORWARD_EDGES
+            rework_edges = LITE_REWORK_EDGES if lite else REWORK_EDGES
+            allowed = set(forward_edges.get(source, set())) | set(rework_edges.get(source, set()))
             if target not in allowed:
                 raise FlowError("INVALID_TRANSITION", f"transition {source} -> {target} is not allowed", details={"from": source, "to": target, "allowed": sorted(allowed | {"BLOCKED", "CANCELLED"})})
             if (
@@ -5466,6 +5737,17 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
                 raise FlowError(
                     "INVALID_ARGUMENT",
                     "impact reassessment requires --note",
+                    details={"from": source, "to": target},
+                )
+            if (
+                lite
+                and target == "PREFLIGHTED"
+                and source in {"IMPLEMENTING", "VERIFYING"}
+                and not args.note
+            ):
+                raise FlowError(
+                    "INVALID_ARGUMENT",
+                    "reopening lite scope evidence requires --note",
                     details={"from": source, "to": target},
                 )
         _transition_guard(current, target)
@@ -5596,6 +5878,15 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--requirement", dest="requirement_option", help="requirement text (alternative to positional form)")
     start.add_argument("--repo", action="append", required=True, help="Git repository path; repeat for multiple repositories")
     start.add_argument("--task-id", help="stable task id (generated when omitted)")
+    start.add_argument(
+        "--flow",
+        choices=sorted(FLOW_MODES),
+        default=DEFAULT_FLOW,
+        help=(
+            "full runs baseline, impact, managed worktrees and independent review; "
+            "lite works in place through preflight, one lite approval, implementation and verification"
+        ),
+    )
     start.add_argument("--protected-branch", action="append", help="protected branch name; repeat as needed")
     _add_data_dir(start)
     start.set_defaults(handler=command_start)
@@ -5746,7 +6037,7 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument(
         "--allow-dirty",
         action="store_true",
-        help="approve the exact dirty preflight snapshot (only for baseline-fetch)",
+        help="approve the exact dirty preflight snapshot (only for baseline-fetch or lite)",
     )
     approve.set_defaults(handler=command_approve)
 

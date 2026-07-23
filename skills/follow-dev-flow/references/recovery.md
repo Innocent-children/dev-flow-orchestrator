@@ -70,6 +70,10 @@ Record the exact command/verdict and failure evidence. A structured `FAIL` revie
 
 After any new `review-snapshot`, treat every older `review-report` and review approval as stale. Record the new report while still in `REVIEWING` with its exact `--verdict`, verify its automatic `metadata.review_snapshot_sha256` and verdict bindings, and obtain a new approval bound to the new report SHA-256.
 
+### Lite task drifted or outgrew its approval
+
+A lite task has no baseline or managed worktree to restore; its recoverable evidence is the preflight snapshot, the lite approval, and the test records. On `CHECKOUT_DRIFT` or `PREFLIGHT_WORKTREE_CHANGED`, show the recorded and observed branch/`HEAD`/fingerprint values and ask how to proceed; returning the checkout to the approved snapshot is the user's action, never an automatic reset. To continue with the changed reality, transition back to `PREFLIGHTED` with a note when needed, rerun `preflight`, and obtain a new `approve --gate lite` decision (`--allow-dirty` for the now-dirty tree); older test records become historical because they bind the superseded approval ID. If the change no longer fits a bounded in-place fix, stop and ask the user to cancel/replace the task as a full task — the flow is immutable.
+
 ### Revision conflict
 
 Treat optimistic-lock failure as evidence another invocation advanced the task. Reload and reconcile. Never overwrite state or retry a mutation with a fabricated `--expected-revision`.

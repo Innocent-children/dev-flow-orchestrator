@@ -4,7 +4,9 @@
 
 - [Controller protocol](#controller-protocol)
 - [Command templates](#command-templates)
+- [Flow selection](#flow-selection)
 - [Legal state order](#legal-state-order)
+- [Lite flow](#lite-flow)
 - [Artifact lifecycle](#artifact-lifecycle)
 - [Intake and repository preflight](#intake-and-repository-preflight)
 - [Baseline gate](#baseline-gate)
@@ -45,10 +47,11 @@ Let `<ctl>` mean `python3 "<absolute-controller-path>" --data-dir "<state-dir>"`
 <ctl> list --active-only
 <ctl> show --task <task-id>
 <ctl> scope [--check <directory>] [--add <directory>] [--add-exclude <directory>] [--remove <directory>] [--remove-exclude <directory>] [--mode <all|allowlist>] [--clear]
-<ctl> start --requirement <text> --repo <path> [--repo <path> ...]
+<ctl> start --requirement <text> --repo <path> [--repo <path> ...] [--flow <full|lite>]
 <ctl> preflight --task <task-id> --expected-revision <revision> [--repo <id> ...] [--remote <name>] [--base <branch>]
 <ctl> approve --task <task-id> --expected-revision <revision> --gate <gate> --note <note> [--artifact-sha256 <sha256>]
 <ctl> approve --task <task-id> --expected-revision <revision> --gate baseline-fetch --note <note> [--allow-fetch] [--allow-dirty]
+<ctl> approve --task <task-id> --expected-revision <revision> --gate lite --note <note> [--allow-dirty]
 <ctl> baseline --task <task-id> --expected-revision <revision> --materialize [--fetch]
 <ctl> record-index --task <task-id> --expected-revision <revision> --role baseline --repo <id> --commit <base-sha> --index-id <project-id> --metadata-json <json-object>
 <ctl> record-artifact --task <task-id> --expected-revision <revision> --path <file-or-directory> --kind <kind> [--metadata-json <json-object>]
@@ -66,9 +69,18 @@ Let `<ctl>` mean `python3 "<absolute-controller-path>" --data-dir "<state-dir>"`
 
 Treat `prepare-workspace` as plan recording unless `--execute` is present. It never changes Git during planning, but it records a deterministic `workspace-plan` artifact and normally increments the revision. Treat `record-test` as a recorder only: run the stated command yourself, observe its exit code, then record exactly what ran. Never use controller metadata to claim an action occurred when it did not.
 
+## Flow selection
+
+Every task is created as either a `full` or a `lite` task with `start --flow`; the default is `full` and the choice is immutable for the task's lifetime, like the requirement and repository set. Choose at intake, before `start`, and let the user decide:
+
+- `full` (default): the complete pipeline below — baseline, dual indexes, impact analysis, route choice, managed worktrees, approved planning, and independent review. Required for cross-repository, public-contract, migration, security, infrastructure, architecture-sensitive, or materially ambiguous work, and whenever isolation from the user's checkout matters.
+- `lite`: an in-place path for a bounded, low-risk, well-understood change — a small bug fix, a localized tweak, a docs or config edit — where creating analysis and implementation worktrees would cost more than the change itself. It keeps preflight evidence, one explicit human gate, guarded transitions, and test-currency enforcement, and skips everything else. See [Lite flow](#lite-flow).
+
+Recommend a flow from the request's apparent scope, present the trade-off, and call `start` only with the user's explicit choice. When a lite task turns out to need impact analysis, isolation, or planning rigor, stop and ask the user to cancel/replace it as a full task; there is no in-place upgrade, because the full flow's evidence chain starts at baseline approval.
+
 ## Legal state order
 
-Advance only through this order:
+A full task advances only through this order:
 
 ```text
 INTAKE
@@ -86,11 +98,27 @@ INTAKE
   -> DONE
 ```
 
+A lite task advances only through `INTAKE -> PREFLIGHTED -> IMPLEMENTING -> VERIFYING -> DONE`; the controller rejects every full-only state, command, and gate for it with `FLOW_MISMATCH` or `INVALID_TRANSITION`.
+
 `BLOCKED` and `CANCELLED` are exceptional states. Use `BLOCKED` only through controller-supported recovery when progress cannot safely continue; retain the last good evidence and explain the unblock condition. Use `cancel` only after explicit user instruction. Do not treat `DONE` or `CANCELLED` as resumable implementation states.
 
-Do not skip a state even if the implementation is small. Keep low-risk work lightweight by making the evidence and direct contract concise, not by bypassing gates. Use only the supported backward paths described below: return to `PLANNING` for replanning or to `INDEXED` for impact reassessment, always with a reason.
+Do not skip a state even if the implementation is small. The supported way to keep genuinely small work light is choosing the lite flow at `start`, not bypassing gates inside a full task; within a full task, keep low-risk work lightweight by making the evidence and direct contract concise. Use only the supported backward paths described below: return to `PLANNING` for replanning or to `INDEXED` for impact reassessment, always with a reason.
 
 Prefer the domain commands that advance automatically: successful all-repository `preflight` enters `PREFLIGHTED`; `baseline --materialize` enters `BASELINED`; the last required `record-index` enters `INDEXED`; `set-route` enters `IMPACT_REVIEW`; `approve --gate route` enters `ROUTE_APPROVED`; all-repository `prepare-workspace --execute` enters `WORKSPACE_READY`; and `review-snapshot` enters `REVIEWING`. Use `transition` for the remaining legal edges and supported rework/blocking paths, not to duplicate those automatic changes.
+
+## Lite flow
+
+A lite task works directly inside the user's source checkouts: no baseline, no analysis worktree, no controller-bound codebase-memory index, no route, no managed implementation worktree, no plan artifact, and no controller-enforced independent review. `show.index_selection.selected_role` is always `none`; use codebase-memory ad hoc for navigation if helpful, outside the evidence chain. The compensating controls are the preflight evidence chain, one explicit human gate, and the same fingerprint-bound test currency the full flow enforces.
+
+Run it in this order:
+
+1. **Preflight.** Call `preflight` exactly as on the full flow. The same blockers fail closed (detached `HEAD`, conflicts, active operations, hidden index flags, content filters); dirty files pause the flow and are preserved, never absorbed.
+2. **Lite gate.** Present the requirement plus each repository's branch, `HEAD`, and exact working-tree evidence, and obtain explicit approval to change these checkouts in place. Record it as `approve --gate lite --note <note>`, adding `--allow-dirty` only when the user explicitly accepts working around the exact recorded dirty snapshot. The approval binds a hash of the complete per-repository branch/`HEAD`/working-tree evidence, and every later `preflight` clears it because that evidence may have changed.
+3. **Implement.** Call `transition --to IMPLEMENTING`. The controller verifies live that every repository still matches the approved branch, `HEAD`, and working-tree fingerprint; drift fails closed with `CHECKOUT_DRIFT` or `PREFLIGHT_WORKTREE_CHANGED` and requires a fresh preflight and approval. Keep edits within the approved scope. The current branch must never change mid-task; the controller re-checks branch identity at every later gate.
+4. **Verify.** Call `transition --to VERIFYING`, run the appropriate checks yourself, and record each with `record-test` exactly as on the full flow. Lite test records bind the current lite approval's unique ID instead of a plan hash: a re-approval invalidates older results, and each repository's latest result per test identity must pass and match the current worktree fingerprint before `DONE`.
+5. **Finish.** Call `transition --to DONE` only after presenting the change summary. Commit, push, and PR creation remain separate explicitly authorized actions; on protected branches the hook additionally blocks direct commits.
+
+Supported backward paths: `VERIFYING -> IMPLEMENTING` for rework, and `IMPLEMENTING/VERIFYING -> PREFLIGHTED` with a required `--note` when the checkout drifted or the change outgrew the approved scope. Reopening scope leads through a fresh `preflight` (which records the now-dirty tree) and a new `approve --gate lite --allow-dirty` decision; tests recorded under the earlier approval become historical evidence only. If the request stops being bounded and low-risk, stop and replace the task with a full task after explicit user direction.
 
 ## Artifact lifecycle
 
@@ -229,11 +257,13 @@ At `FINALIZING`, summarize scope, artifacts, repository/branch/worktree paths, t
 
 Never infer approval from silence or from an earlier generic request. Require explicit approval for:
 
-1. repository scope plus baseline fetch/materialization;
-2. accepting materially degraded impact coverage;
-3. direct versus OpenSpec route selection;
-4. branch/worktree creation plan;
-5. direct contract or OpenSpec apply-ready plan;
-6. material impact or contract corrections for the same immutable requirement discovered during implementation;
-7. accepting the independent review verdict, including any allowed condition;
-8. cancellation and any commit, push, merge, archive, or cleanup action.
+1. full versus lite flow selection at `start`;
+2. repository scope plus baseline fetch/materialization;
+3. accepting materially degraded impact coverage;
+4. direct versus OpenSpec route selection;
+5. branch/worktree creation plan;
+6. direct contract or OpenSpec apply-ready plan;
+7. material impact or contract corrections for the same immutable requirement discovered during implementation;
+8. accepting the independent review verdict, including any allowed condition;
+9. the lite gate: changing the exact recorded checkouts in place, including any dirty snapshot;
+10. cancellation and any commit, push, merge, archive, or cleanup action.

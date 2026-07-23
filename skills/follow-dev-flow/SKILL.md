@@ -27,8 +27,10 @@ Use these resources before advancing:
 
 1. Query existing tasks before creating state.
 2. Resume when the user supplies a task ID or deliberately selects a matching active task. Load it with `show` and continue from its recorded state and revision.
-3. Start only when the request is new. Normalize the requirement and repository set, call `start`, and retain the returned task ID and revision.
+3. Start only when the request is new. Normalize the requirement and repository set, recommend a flow — `--flow lite` for a bounded, low-risk, well-understood in-place change such as a small bug fix; the default full flow for everything larger, riskier, or ambiguous — and call `start` only with the user's explicit flow choice. Retain the returned task ID and revision.
 4. Never merge a new request into a merely convenient active task. Never replace, rewind, or cancel existing state without the user's explicit direction.
+
+A lite task runs `preflight -> approve --gate lite -> IMPLEMENTING -> VERIFYING -> DONE` directly inside the source checkouts, with no baseline, impact analysis, route, managed worktree, plan artifact, or controller-bound index; the state-machine reference's [Lite flow](references/state-machine.md#lite-flow) section governs it. The rest of this skill's baseline/index/route/workspace requirements apply to full tasks.
 
 ## Run one guarded loop
 

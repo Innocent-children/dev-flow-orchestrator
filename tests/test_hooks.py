@@ -652,6 +652,85 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertEqual(specific["permissionDecision"], "deny")
         self.assertIn("BLOCKED", specific["permissionDecisionReason"])
 
+    def test_lite_task_checkpoint_names_flow_gate_and_no_index_role(self) -> None:
+        self.write_core_state(
+            "LITE-7",
+            "PREFLIGHTED",
+            flow="lite",
+            route=None,
+            next_action=None,
+        )
+        stdout, stderr = self.invoke(
+            {"hook_event_name": "SessionStart", "source": "resume"}
+        )
+        self.assertEqual(stderr, "")
+        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Active task: LITE-7", context)
+        self.assertIn("Flow: lite (in place, no managed worktree)", context)
+        self.assertIn("Pending gate: lite in-place approval", context)
+        self.assertIn("Active index role: none", context)
+        self.assertIn(
+            "Next action: present the in-place scope and obtain the lite approval",
+            context,
+        )
+
+    def test_lite_task_source_writes_follow_the_stage(self) -> None:
+        state_file = self.write_core_state(
+            "LITE-7",
+            "PREFLIGHTED",
+            flow="lite",
+        )
+        artifacts = self.data_dir / "tasks" / "LITE-7" / "artifacts"
+        artifacts.mkdir(parents=True)
+
+        # Before implementation, only the artifacts directory is writable.
+        stdout, _ = self.invoke(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(self.cwd / "bug.py")},
+            }
+        )
+        specific = json.loads(stdout)["hookSpecificOutput"]
+        self.assertEqual(specific["permissionDecision"], "deny")
+        stdout, stderr = self.invoke(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(artifacts / "scope.md")},
+            }
+        )
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+
+        # During implementation the source checkout itself is the workspace.
+        task = json.loads(state_file.read_text(encoding="utf-8"))
+        task["status"] = "IMPLEMENTING"
+        state_file.write_text(json.dumps(task), encoding="utf-8")
+        stdout, stderr = self.invoke(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(self.cwd / "bug.py")},
+            }
+        )
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+
+        # A blocked lite task blocks writes again.
+        task["status"] = "BLOCKED"
+        state_file.write_text(json.dumps(task), encoding="utf-8")
+        stdout, _ = self.invoke(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(self.cwd / "bug.py")},
+            }
+        )
+        specific = json.loads(stdout)["hookSpecificOutput"]
+        self.assertEqual(specific["permissionDecision"], "deny")
+        self.assertIn("BLOCKED", specific["permissionDecisionReason"])
+
     def test_unified_exec_cmd_alias_is_guarded(self) -> None:
         self.activate("INTAKE")
         stdout, _ = self.invoke(

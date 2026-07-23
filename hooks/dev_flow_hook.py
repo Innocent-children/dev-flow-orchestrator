@@ -50,12 +50,24 @@ NEXT_ACTIONS = {
     "DONE": "no further action",
     "BLOCKED": "resolve the recorded blocker",
 }
+LITE_NEXT_ACTIONS = {
+    "INTAKE": "run preflight",
+    "PREFLIGHTED": "present the in-place scope and obtain the lite approval",
+    "IMPLEMENTING": "implement the approved scope inside the source checkout",
+    "VERIFYING": "run checks and record results, then finish",
+    "DONE": "no further action",
+    "BLOCKED": "resolve the recorded blocker",
+}
 PENDING_GATES = {
     "PREFLIGHTED": ("baseline-fetch", "baseline fetch/materialization approval"),
     "IMPACT_REVIEW": ("route", "route approval"),
     "ROUTE_APPROVED": ("workspace", "workspace approval"),
     "PLANNING": ("plan", "planning approval"),
     "REVIEWING": ("review", "review approval"),
+    "BLOCKED": ("unblock", "unblock decision"),
+}
+LITE_PENDING_GATES = {
+    "PREFLIGHTED": ("lite", "lite in-place approval"),
     "BLOCKED": ("unblock", "unblock decision"),
 }
 
@@ -144,6 +156,11 @@ def _stage(task: Mapping[str, Any]) -> str:
     return str(value).upper()
 
 
+def _flow(task: Mapping[str, Any]) -> str:
+    value = task.get("flow")
+    return value if value in {"full", "lite"} else "full"
+
+
 def _render(value: Any, fallback: str) -> str:
     if value is None or value == "":
         return fallback
@@ -163,7 +180,8 @@ def _pending_gate(task: Mapping[str, Any]) -> str:
     explicit = task.get("pending_gate", task.get("pendingGate"))
     if explicit not in (None, ""):
         return _render(explicit, "none")
-    gate = PENDING_GATES.get(_stage(task))
+    gates = LITE_PENDING_GATES if _flow(task) == "lite" else PENDING_GATES
+    gate = gates.get(_stage(task))
     if gate is None:
         return "none"
     key, label = gate
@@ -183,6 +201,8 @@ def _index_stage(task: Mapping[str, Any]) -> str:
 
 
 def _selected_index_role(task: Mapping[str, Any]) -> Optional[str]:
+    if _flow(task) == "lite":
+        return None
     stage = _index_stage(task)
     if stage in {
         "BASELINED",
@@ -246,12 +266,15 @@ def build_context(
     task: Mapping[str, Any], data_dir: Path, in_scope: bool = True
 ) -> str:
     stage = _stage(task)
+    flow = _flow(task)
     prefix = _controller_prefix(data_dir)
     task_id = _render(task.get("task_id"), "unknown")
     index_role, index_projects = _index_selection_context(task)
+    next_actions = LITE_NEXT_ACTIONS if flow == "lite" else NEXT_ACTIONS
     lines = [
         "Dev Flow active-task checkpoint:",
         f"- Active task: {task_id}",
+        f"- Flow: {'lite (in place, no managed worktree)' if flow == 'lite' else 'full'}",
         f"- Stage: {stage}",
         f"- Route: {_render(task.get('route'), 'not selected')}",
         f"- Pending gate: {_pending_gate(task)}",
@@ -259,7 +282,7 @@ def build_context(
         f"- Active index role: {index_role}",
         f"- Active index projects: {index_projects}",
         f"- Next action: "
-        f"{_render(task.get('next_action'), NEXT_ACTIONS.get(stage, 'inspect task state'))}",
+        f"{_render(task.get('next_action'), next_actions.get(stage, 'inspect task state'))}",
         f"- Controller: {CONTROLLER}",
         f"- Data directory: {data_dir}",
         f"- Resume command: {prefix} show --task {shlex.quote(task_id)}",
@@ -278,6 +301,8 @@ def build_context(
 
 def _stage_allows_writes(task: Mapping[str, Any]) -> bool:
     stage = _stage(task)
+    if _flow(task) == "lite":
+        return stage in {"IMPLEMENTING", "VERIFYING"}
     return stage not in {"BLOCKED", "CANCELLED", "DONE"} and STAGE_INDEX.get(
         stage, -1
     ) >= STAGE_INDEX["WORKSPACE_READY"]
@@ -301,6 +326,14 @@ def _task_repositories(task: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 def _ready_workspaces(task: Mapping[str, Any]) -> list[Path]:
     result: list[Path] = []
+    if _flow(task) == "lite":
+        # The lite flow implements directly inside the source checkouts, so
+        # they are its writable workspaces once the stage allows writes.
+        for repo in _task_repositories(task):
+            for value in (repo.get("path"), repo.get("canonical_path")):
+                if isinstance(value, str) and value:
+                    result.append(_path(value))
+        return result
     for repo in _task_repositories(task):
         workspace = repo.get("workspace")
         if not isinstance(workspace, Mapping) or workspace.get("ready") is not True:
@@ -312,6 +345,8 @@ def _ready_workspaces(task: Mapping[str, Any]) -> list[Path]:
 
 
 def _non_writable_roots(task: Mapping[str, Any]) -> list[Path]:
+    if _flow(task) == "lite":
+        return []
     result: list[Path] = []
     for repo in _task_repositories(task):
         for value in (repo.get("path"), repo.get("canonical_path")):
