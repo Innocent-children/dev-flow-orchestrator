@@ -241,10 +241,19 @@ def _index_selection_context(task: Mapping[str, Any]) -> tuple[str, str]:
     return role, ", ".join(projects) or "none"
 
 
+def _quote(value: str) -> str:
+    """Quote one argument for the shell family native to this platform."""
+    if os.name == "nt":
+        return subprocess.list2cmdline([value])
+    return shlex.quote(value)
+
+
 def _controller_prefix(data_dir: Path) -> str:
+    # sys.executable, not "python3": the interpreter running this hook is the
+    # one the registration chose, and "python3" does not exist on stock Windows.
     return (
-        f"python3 {shlex.quote(str(CONTROLLER))} "
-        f"--data-dir {shlex.quote(str(data_dir))}"
+        f"{_quote(sys.executable)} {_quote(str(CONTROLLER))} "
+        f"--data-dir {_quote(str(data_dir))}"
     )
 
 
@@ -257,7 +266,7 @@ def build_bootstrap_context(data_dir: Path) -> str:
             f"- Data directory: {data_dir}",
             f"- Bootstrap command: {prefix} list",
             f"Every controller call must explicitly include "
-            f"--data-dir {shlex.quote(str(data_dir))}; do not rely on environment fallback.",
+            f"--data-dir {_quote(str(data_dir))}; do not rely on environment fallback.",
         )
     )
 
@@ -285,7 +294,7 @@ def build_context(
         f"{_render(task.get('next_action'), next_actions.get(stage, 'inspect task state'))}",
         f"- Controller: {CONTROLLER}",
         f"- Data directory: {data_dir}",
-        f"- Resume command: {prefix} show --task {shlex.quote(task_id)}",
+        f"- Resume command: {prefix} show --task {_quote(task_id)}",
     ]
     if not in_scope:
         lines.append(
@@ -294,7 +303,7 @@ def build_context(
         )
     lines.append(
         f"Every controller call must explicitly include "
-        f"--data-dir {shlex.quote(str(data_dir))}; do not rely on environment fallback."
+        f"--data-dir {_quote(str(data_dir))}; do not rely on environment fallback."
     )
     return "\n".join(lines)
 
@@ -801,10 +810,26 @@ def handle(payload: Mapping[str, Any], environ: Mapping[str, str]) -> Optional[d
     return _deny(reason) if reason else None
 
 
+def _cli_data_dir(argv: Sequence[str]) -> Optional[str]:
+    for index, arg in enumerate(argv):
+        if arg == "--data-dir" and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--data-dir="):
+            return arg.split("=", 1)[1]
+    return None
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
-        output = handle(payload, os.environ) if isinstance(payload, Mapping) else None
+        # Codex global hook registrations run without PLUGIN_DATA in the
+        # environment, so the installer passes --data-dir explicitly; the
+        # argument outranks any inherited variable.
+        environ: Mapping[str, str] = os.environ
+        data_dir = _cli_data_dir(sys.argv[1:])
+        if data_dir:
+            environ = {**os.environ, "PLUGIN_DATA": data_dir}
+        output = handle(payload, environ) if isinstance(payload, Mapping) else None
     except Exception:
         # Hooks are an auxiliary defense; malformed state must not disable Codex.
         return 0

@@ -609,9 +609,11 @@ class DevFlowTest(unittest.TestCase):
         global_home.mkdir()
         attributes = global_home / "global-attributes"
         attributes.write_text("tracked.txt filter=hide\n", encoding="utf-8")
+        # Git config treats backslashes as escapes, so a raw Windows path breaks
+        # parsing; forward slashes are accepted for paths on every platform.
         (global_home / ".gitconfig").write_text(
             "[core]\n"
-            f"\tattributesFile = {attributes}\n"
+            f"\tattributesFile = {attributes.as_posix()}\n"
             "[filter \"hide\"]\n"
             "\tclean = git show HEAD:tracked.txt\n"
             "\tsmudge = cat\n",

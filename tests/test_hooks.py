@@ -152,6 +152,43 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertIn("Every controller call must explicitly include", context)
         self.assertNotIn("$PLUGIN_ROOT", context)
 
+    def test_data_dir_argument_replaces_missing_plugin_data(self) -> None:
+        # Global registrations run without PLUGIN_DATA and pass --data-dir.
+        environment = os.environ.copy()
+        environment.pop("PLUGIN_DATA", None)
+        environment["PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+        completed = subprocess.run(
+            [sys.executable, str(HOOK), "--data-dir", str(self.data_dir)],
+            input=json.dumps(
+                {"hook_event_name": "SessionStart", "cwd": str(self.cwd)}
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        context = json.loads(completed.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Dev Flow controller bootstrap:", context)
+        self.assertIn(f"Data directory: {self.data_dir.resolve()}", context)
+
+    def test_data_dir_argument_outranks_inherited_plugin_data(self) -> None:
+        other = Path(self.temporary.name) / "stale-plugin-data"
+        other.mkdir()
+        completed = subprocess.run(
+            [sys.executable, str(HOOK), f"--data-dir={self.data_dir}"],
+            input=json.dumps(
+                {"hook_event_name": "SessionStart", "cwd": str(self.cwd)}
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+            env={**os.environ, "PLUGIN_DATA": str(other)},
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        context = json.loads(completed.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(f"Data directory: {self.data_dir.resolve()}", context)
+
     def test_user_prompt_submit_uses_its_own_output_event_name(self) -> None:
         self.activate("PLANNING", pending_gate=None, next_action="write the plan")
         stdout, _ = self.invoke(

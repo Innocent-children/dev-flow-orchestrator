@@ -26,10 +26,15 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-try:  # POSIX is the primary Codex environment; the fallback still works single-process.
+try:  # POSIX is the primary Codex environment; Windows uses msvcrt below.
     import fcntl
 except ImportError:  # pragma: no cover - exercised only on Windows
     fcntl = None  # type: ignore[assignment]
+
+try:  # Windows byte-range locking; absent on POSIX where fcntl is used instead.
+    import msvcrt
+except ImportError:  # pragma: no cover - exercised only on POSIX
+    msvcrt = None  # type: ignore[assignment]
 
 
 SCHEMA_VERSION = 1
@@ -294,7 +299,15 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, mode)
+        # mkstemp already creates the file 0o600 on POSIX; fchmod only reaffirms
+        # it there. It is absent on Windows before Python 3.13, and file modes
+        # are not a meaningful ACL there anyway, so never let it abort the write.
+        _fchmod = getattr(os, "fchmod", None)
+        if _fchmod is not None:
+            try:
+                _fchmod(descriptor, mode)
+            except OSError:
+                pass
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
@@ -337,58 +350,69 @@ def _append_event(path: Path, event: dict[str, Any]) -> None:
         os.close(descriptor)
 
 
+def _acquire_exclusive(handle: Any) -> None:
+    """Take an exclusive advisory lock on an open lock file.
+
+    POSIX uses ``fcntl.flock``; Windows uses ``msvcrt.locking`` over a one-byte
+    range.  Both release automatically when the process exits, so a crash never
+    strands a lock.  On Windows the lock is best-effort: if it cannot be taken
+    (heavy contention past msvcrt's retry window), the caller proceeds unlocked,
+    matching the pre-existing Windows behaviour rather than aborting the command.
+    """
+
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    elif msvcrt is not None:
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        except OSError:
+            pass
+
+
+def _release_exclusive(handle: Any) -> None:
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    elif msvcrt is not None:
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+
+
 @contextlib.contextmanager
-def _task_lock(task_dir: Path) -> Iterator[None]:
-    _ensure_dir(task_dir)
-    lock_path = task_dir / "state.lock"
+def _file_lock(directory: Path, name: str) -> Iterator[None]:
+    _ensure_dir(directory)
+    lock_path = directory / name
     with lock_path.open("a+b") as handle:
         try:
             lock_path.chmod(0o600)
         except OSError:
             pass
-        if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _acquire_exclusive(handle)
         try:
             yield
         finally:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            _release_exclusive(handle)
+
+
+@contextlib.contextmanager
+def _task_lock(task_dir: Path) -> Iterator[None]:
+    with _file_lock(task_dir, "state.lock"):
+        yield
 
 
 @contextlib.contextmanager
 def _workspace_registry_lock(data_root: Path) -> Iterator[None]:
-    _ensure_dir(data_root)
-    lock_path = data_root / "workspace-registry.lock"
-    with lock_path.open("a+b") as handle:
-        try:
-            lock_path.chmod(0o600)
-        except OSError:
-            pass
-        if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with _file_lock(data_root, "workspace-registry.lock"):
+        yield
 
 
 @contextlib.contextmanager
 def _config_lock(data_root: Path) -> Iterator[None]:
-    _ensure_dir(data_root)
-    lock_path = data_root / "config.lock"
-    with lock_path.open("a+b") as handle:
-        try:
-            lock_path.chmod(0o600)
-        except OSError:
-            pass
-        if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with _file_lock(data_root, "config.lock"):
+        yield
 
 
 def config_path(data_dir: str | os.PathLike[str] | None = None) -> Path:
