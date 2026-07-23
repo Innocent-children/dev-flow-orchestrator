@@ -57,6 +57,16 @@ Copy the complete plugin root to `~/plugins/dev-flow-orchestrator/`. If `~/.agen
 
 Restart the ChatGPT desktop app, install the plugin from the personal marketplace, and start a new Codex task after installation or an update so the skills and hooks are reloaded.
 
+### Limiting the plugin to specific directories
+
+A personal installation is visible to every project. To keep it out of unrelated ones, record a directory scope in `<PLUGIN_DATA>/config.json` through the controller. Take `<PLUGIN_DATA>` from the bootstrap context the hook injects at session start:
+
+```bash
+python3 ~/plugins/dev-flow-orchestrator/scripts/dev_flow.py scope --data-dir <PLUGIN_DATA> --add ~/work
+```
+
+The first `--add` switches the scope from active-everywhere to allowlist mode. Outside the scope the hooks emit nothing and `start` refuses the repository, so those sessions behave as if the plugin were not installed. Verify a directory with `scope --check <dir>` and reverse the change with `scope --clear`. See the README's `Directory scope` section for excludes, the deepest-match rule, the `DEV_FLOW_SCOPE` override, and the active-task carve-out. Because the hook reads this file on every event, a scope change applies to the next Codex event without reinstalling the plugin.
+
 ### Updating an already installed local copy
 
 Do not hand-edit the existing marketplace entry merely to defeat Codex caching. After replacing the files in the marketplace's referenced local plugin source, use the bundled `plugin-creator` skill helpers from its own skill root:
@@ -99,6 +109,8 @@ Codex supplies a private `PLUGIN_DATA` path to each installed plugin's hook comm
 
 ```text
 <PLUGIN_DATA>/
+├── config.json
+├── config.lock
 ├── workspace-registry.json
 ├── workspace-registry.lock
 ├── tasks/<task-id>/state.json
@@ -112,7 +124,7 @@ Codex supplies a private `PLUGIN_DATA` path to each installed plugin's hook comm
 └── workspaces/<task-id>/r<generation>/<repository-id>/
 ```
 
-The unnumbered workspace path is generation 0; impact reassessment retires its recorded workspaces and uses `r1`, `r2`, and later generation directories. `workspace-registry.json` is the controller's durable cross-task ownership registry for worktree paths and repository branches; its lock serializes competing plans. `tasks/<task-id>/artifacts/` is the task's controlled location for impact reports, direct contracts, and independent review reports. The controller exclusively owns registry/lock files, `state.json`, `events.jsonl`, review snapshots, analysis worktrees, and implementation-worktree records; do not edit them manually.
+The unnumbered workspace path is generation 0; impact reassessment retires its recorded workspaces and uses `r1`, `r2`, and later generation directories. `config.json` holds the directory scope and is the only one of these files meant to be changed by the user, through the controller's `scope` command. `workspace-registry.json` is the controller's durable cross-task ownership registry for worktree paths and repository branches; its lock serializes competing plans. `tasks/<task-id>/artifacts/` is the task's controlled location for impact reports, direct contracts, and independent review reports. The controller exclusively owns registry/lock files, `state.json`, `events.jsonl`, review snapshots, analysis worktrees, and implementation-worktree records; do not edit them manually.
 
 These paths are not source files and must not be copied into a business repository or committed with the plugin.
 

@@ -24,10 +24,12 @@
 Use `<plugin-root>/scripts/dev_flow.py` as the sole writer of workflow state. It keeps state outside target repositories and exposes these commands:
 
 ```text
-start  show  list  preflight  baseline  record-index  record-artifact
+start  show  list  scope  preflight  baseline  record-index  record-artifact
 set-route  approve  transition  prepare-workspace  record-test
 review-snapshot  cancel
 ```
+
+`scope` is the only command that reads and writes plugin configuration rather than task state, so it takes no task ID or `--expected-revision`. It reports the directories where this plugin is active and, when `start` returns `OUT_OF_SCOPE`, is the supported way to widen that scope. Changing the scope is the user's decision: present the current `summary` and the rejected path, and run a `scope` mutation only after an explicit choice.
 
 Read each command's installed help for its exact arguments. Every mutation of an existing task requires its task ID and the revision currently returned by `show` as `--expected-revision`. Parse the one JSON object written to stdout and replace the in-memory revision with the returned revision. On a revision conflict, reload with `show`, reconcile completed work, and decide the next action; do not retry with a guessed revision.
 
@@ -42,6 +44,7 @@ Let `<ctl>` mean `python3 "<absolute-controller-path>" --data-dir "<state-dir>"`
 ```text
 <ctl> list --active-only
 <ctl> show --task <task-id>
+<ctl> scope [--check <directory>] [--add <directory>] [--add-exclude <directory>] [--remove <directory>] [--remove-exclude <directory>] [--mode <all|allowlist>] [--clear]
 <ctl> start --requirement <text> --repo <path> [--repo <path> ...]
 <ctl> preflight --task <task-id> --expected-revision <revision> [--repo <id> ...] [--remote <name>] [--base <branch>]
 <ctl> approve --task <task-id> --expected-revision <revision> --gate <gate> --note <note> [--artifact-sha256 <sha256>]

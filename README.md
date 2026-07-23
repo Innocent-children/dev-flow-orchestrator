@@ -6,7 +6,7 @@ It uses a dual-index model per repository. A baseline project indexes the immuta
 
 It deliberately does not switch or pull the developer's current checkout. After preflight and explicit authorization, it resolves the configured remote's default branch, optionally fetches that remote, pins an immutable base commit, and creates a detached analysis worktree. Both direct and OpenSpec implementation then use separate task branches in isolated linked worktrees. Existing source-branch and dirty-state evidence remains visible and untouched; proceeding around an exact dirty snapshot requires structured approval.
 
-The lifecycle hooks inject the plugin's absolute controller and private data-directory paths at session start and prompt submission. The main skill passes that data directory explicitly on every controller call, because `PLUGIN_DATA` belongs to the hook process and is not assumed to reach later shell tools. The hooks also provide task-scoped guardrails, not a security boundary: they protect recognized file-write tools and common dangerous Git commands only while a matching task is active; shell scripts, nested tooling, hosted tools, or disabled/untrusted hooks can bypass them. The controller's state, artifact hashes, explicit approvals, and final independent review remain the source of truth. Unrelated Codex tasks are not globally restricted by installing this plugin.
+The lifecycle hooks inject the plugin's absolute controller and private data-directory paths at session start and prompt submission. The main skill passes that data directory explicitly on every controller call, because `PLUGIN_DATA` belongs to the hook process and is not assumed to reach later shell tools. A configurable directory scope decides where the hooks activate at all; see [Directory scope](#directory-scope). The hooks also provide task-scoped guardrails, not a security boundary: they protect recognized file-write tools and common dangerous Git commands only while a matching task is active; shell scripts, nested tooling, hosted tools, or disabled/untrusted hooks can bypass them. The controller's state, artifact hashes, explicit approvals, and final independent review remain the source of truth. Unrelated Codex tasks are not globally restricted by installing this plugin.
 
 The evidence pipeline fails closed when Git cannot expose complete bytes reliably: tracked `assume-unchanged`/`skip-worktree` entries (including sparse checkouts), dirty initialized submodules, and clean/process content filters such as Git LFS are rejected. These are deliberate current limitations, not silently degraded coverage; normalize the checkout or use a separately governed repository/flow before continuing.
 
@@ -45,6 +45,27 @@ Do not copy the hook or helper scripts into each business repository. Install th
 - An enabled `codebase-memory-mcp` server for baseline impact analysis and current-workspace discovery
 
 The plugin intentionally does not bundle a machine-specific `.mcp.json`; use the existing user- or project-scoped MCP configuration.
+
+## Directory scope
+
+A personal installation is visible to every project on the machine. The directory scope narrows that: outside it the hooks emit nothing, so unrelated Codex sessions see no bootstrap context and the plugin behaves as if it were not installed. The scope lives in `<PLUGIN_DATA>/config.json` and is read by both the hooks and the controller. With no configuration file the plugin is active everywhere, which is the pre-existing behavior.
+
+Manage it through the controller rather than by editing the file:
+
+```bash
+python3 <plugin-root>/scripts/dev_flow.py scope --data-dir <PLUGIN_DATA> --add ~/work
+```
+
+- `--add` includes a directory and its subdirectories. The first included directory switches the mode from `all` to `allowlist`, because an include recorded under `all` would silently do nothing.
+- `--add-exclude` excludes a directory and its subdirectories. Excludes apply in both modes, so `--mode all --add-exclude <dir>` is a denylist.
+- The deepest configured directory decides. Including `~/work`, excluding `~/work/vendor`, and including `~/work/vendor/mine` activates the plugin in the first and third. An exactly equal include/exclude pair resolves to the exclusion.
+- `--remove`, `--remove-exclude`, and `--clear` reverse those edits. `--remove` fails on a directory that is not configured, so a typo is not silently ignored.
+- `scope --check [DIR]` reports the decision for one directory, defaulting to the current one. Every `scope` call also returns `effective`, `summary`, and `missing_paths` for configured directories that do not exist.
+- `DEV_FLOW_SCOPE` replaces the included directories for one process and forces allowlist mode; `DEV_FLOW_SCOPE_EXCLUDE` replaces the excluded ones. Both take an `os.pathsep` separated list, and `scope` reports them under `overrides`.
+
+Two deliberate carve-outs keep the scope from becoming a failure mode. An active task whose repositories or workspaces contain the current directory keeps the hooks enabled there even when the scope excludes it, so narrowing the scope mid-flight cannot silently drop that task's checkpoint or guardrails; the injected checkpoint says so. An unreadable configuration or an unimportable controller fails open to active-everywhere, because failing closed would hide the workflow instead of scoping it.
+
+The scope is enforcement, not only quiet: `start` rejects a repository outside the effective scope with `OUT_OF_SCOPE` and names the configuration path. It is still a scoping mechanism rather than a security boundary — the same limits described for the hook guardrails apply.
 
 ## Development validation
 

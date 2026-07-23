@@ -23,12 +23,23 @@ class DevFlowHookTests(unittest.TestCase):
         self.cwd = Path(self.temporary.name) / "repository"
         self.cwd.mkdir()
 
+    def write_scope(self, *, include: list[Path] | None = None, exclude: list[Path] | None = None) -> None:
+        scope = {
+            "mode": "allowlist" if include else "all",
+            "include": [str(path) for path in include or []],
+            "exclude": [str(path) for path in exclude or []],
+        }
+        (self.data_dir / "config.json").write_text(
+            json.dumps({"schema_version": 1, "scope": scope}), encoding="utf-8"
+        )
+
     def invoke(
         self,
         payload: dict,
         *,
         cwd: Path | None = None,
         include_plugin_root: bool = True,
+        env: dict[str, str] | None = None,
     ) -> tuple[str, str]:
         invocation = dict(payload)
         invocation.setdefault("cwd", str(cwd or self.cwd))
@@ -38,6 +49,7 @@ class DevFlowHookTests(unittest.TestCase):
         else:
             environment.pop("PLUGIN_ROOT", None)
         environment["PLUGIN_DATA"] = str(self.data_dir)
+        environment.update(env or {})
         completed = subprocess.run(
             [sys.executable, str(HOOK)],
             input=json.dumps(invocation),
@@ -682,6 +694,79 @@ class DevFlowHookTests(unittest.TestCase):
         )
         self.assertEqual(stdout, "")
         self.assertEqual(stderr, "")
+
+    def test_bootstrap_is_silent_outside_the_configured_scope(self) -> None:
+        included = Path(self.temporary.name) / "included"
+        included.mkdir()
+        self.write_scope(include=[included])
+        for event in ("SessionStart", "UserPromptSubmit"):
+            with self.subTest(event=event):
+                stdout, stderr = self.invoke({"hook_event_name": event})
+                self.assertEqual(stdout, "")
+                self.assertEqual(stderr, "")
+        stdout, _ = self.invoke({"hook_event_name": "SessionStart"}, cwd=included)
+        self.assertIn(
+            "Dev Flow controller bootstrap",
+            json.loads(stdout)["hookSpecificOutput"]["additionalContext"],
+        )
+
+    def test_scope_accepts_subdirectories_and_the_environment_override(self) -> None:
+        nested = self.cwd / "packages" / "api"
+        nested.mkdir(parents=True)
+        excluded = self.cwd / "vendor"
+        excluded.mkdir()
+        self.write_scope(include=[self.cwd], exclude=[excluded])
+        stdout, _ = self.invoke({"hook_event_name": "SessionStart"}, cwd=nested)
+        self.assertIn("Dev Flow controller bootstrap", stdout)
+        stdout, _ = self.invoke({"hook_event_name": "SessionStart"}, cwd=excluded)
+        self.assertEqual(stdout, "")
+        # The environment override replaces the stored included directories.
+        outside = Path(self.temporary.name) / "outside"
+        outside.mkdir()
+        override = {"DEV_FLOW_SCOPE": str(outside)}
+        stdout, _ = self.invoke(
+            {"hook_event_name": "SessionStart"}, cwd=outside, env=override
+        )
+        self.assertIn("Dev Flow controller bootstrap", stdout)
+        stdout, _ = self.invoke(
+            {"hook_event_name": "SessionStart"}, cwd=nested, env=override
+        )
+        self.assertEqual(stdout, "")
+
+    def test_active_task_keeps_hooks_enabled_outside_the_scope(self) -> None:
+        self.activate(
+            "IMPLEMENTING",
+            repository={
+                "id": "repo",
+                "path": str(self.cwd),
+                "preflight": {"branch": "main"},
+            },
+        )
+        included = Path(self.temporary.name) / "included"
+        included.mkdir()
+        self.write_scope(include=[included])
+        stdout, _ = self.invoke({"hook_event_name": "SessionStart"})
+        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Active task: TASK-42", context)
+        self.assertIn("Directory scope: outside the configured scope", context)
+        self.assertIn(
+            "Direct commits on protected branch",
+            self.assert_denied("git commit -m 'out of scope'"),
+        )
+
+    def test_in_scope_checkpoint_omits_the_scope_notice(self) -> None:
+        self.activate("IMPLEMENTING")
+        self.write_scope(include=[self.cwd])
+        stdout, _ = self.invoke({"hook_event_name": "SessionStart"})
+        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Active task: TASK-42", context)
+        self.assertNotIn("Directory scope", context)
+
+    def test_unreadable_scope_configuration_keeps_the_hook_active(self) -> None:
+        (self.data_dir / "config.json").write_text("{ not json", encoding="utf-8")
+        stdout, stderr = self.invoke({"hook_event_name": "SessionStart"})
+        self.assertEqual(stderr, "")
+        self.assertIn("Dev Flow controller bootstrap", stdout)
 
 
 if __name__ == "__main__":

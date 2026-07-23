@@ -92,12 +92,38 @@ def _within(path: Path, parent: Path) -> bool:
         return False
 
 
-def load_active_task(data_dir: Path, cwd: Path) -> Optional[dict[str, Any]]:
-    """Use the controller's read-only lookup and fail open on any mismatch."""
-
+def _import_controller() -> None:
     scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
+
+
+def in_configured_scope(
+    data_dir: Path, environ: Mapping[str, str], *candidates: Path
+) -> bool:
+    """Report whether any candidate directory is inside the configured scope.
+
+    An unreadable configuration or an unavailable controller fails open, so a
+    broken scope file never hides the workflow from the directories that need
+    it.  The controller owns the matching rules; this only aggregates them.
+    """
+
+    _import_controller()
+    try:
+        from dev_flow import evaluate_scope, resolve_scope
+
+        scope = resolve_scope(data_dir, environ)
+        return any(
+            evaluate_scope(candidate, scope).get("in_scope") for candidate in candidates
+        )
+    except Exception:
+        return True
+
+
+def load_active_task(data_dir: Path, cwd: Path) -> Optional[dict[str, Any]]:
+    """Use the controller's read-only lookup and fail open on any mismatch."""
+
+    _import_controller()
     try:
         from dev_flow import find_active_task_for_cwd, load_state
 
@@ -216,30 +242,38 @@ def build_bootstrap_context(data_dir: Path) -> str:
     )
 
 
-def build_context(task: Mapping[str, Any], data_dir: Path) -> str:
+def build_context(
+    task: Mapping[str, Any], data_dir: Path, in_scope: bool = True
+) -> str:
     stage = _stage(task)
     prefix = _controller_prefix(data_dir)
     task_id = _render(task.get("task_id"), "unknown")
     index_role, index_projects = _index_selection_context(task)
-    return "\n".join(
-        (
-            "Dev Flow active-task checkpoint:",
-            f"- Active task: {task_id}",
-            f"- Stage: {stage}",
-            f"- Route: {_render(task.get('route'), 'not selected')}",
-            f"- Pending gate: {_pending_gate(task)}",
-            "- codebase-memory selection: explicit project parameter; never automatic",
-            f"- Active index role: {index_role}",
-            f"- Active index projects: {index_projects}",
-            f"- Next action: "
-            f"{_render(task.get('next_action'), NEXT_ACTIONS.get(stage, 'inspect task state'))}",
-            f"- Controller: {CONTROLLER}",
-            f"- Data directory: {data_dir}",
-            f"- Resume command: {prefix} show --task {shlex.quote(task_id)}",
-            f"Every controller call must explicitly include "
-            f"--data-dir {shlex.quote(str(data_dir))}; do not rely on environment fallback.",
+    lines = [
+        "Dev Flow active-task checkpoint:",
+        f"- Active task: {task_id}",
+        f"- Stage: {stage}",
+        f"- Route: {_render(task.get('route'), 'not selected')}",
+        f"- Pending gate: {_pending_gate(task)}",
+        "- codebase-memory selection: explicit project parameter; never automatic",
+        f"- Active index role: {index_role}",
+        f"- Active index projects: {index_projects}",
+        f"- Next action: "
+        f"{_render(task.get('next_action'), NEXT_ACTIONS.get(stage, 'inspect task state'))}",
+        f"- Controller: {CONTROLLER}",
+        f"- Data directory: {data_dir}",
+        f"- Resume command: {prefix} show --task {shlex.quote(task_id)}",
+    ]
+    if not in_scope:
+        lines.append(
+            "- Directory scope: outside the configured scope; this active task "
+            "keeps the hooks enabled here"
         )
+    lines.append(
+        f"Every controller call must explicitly include "
+        f"--data-dir {shlex.quote(str(data_dir))}; do not rely on environment fallback."
     )
+    return "\n".join(lines)
 
 
 def _stage_allows_writes(task: Mapping[str, Any]) -> bool:
@@ -683,11 +717,19 @@ def handle(payload: Mapping[str, Any], environ: Mapping[str, str]) -> Optional[d
     if task is None and workdir != cwd:
         task = load_active_task(data_dir, cwd)
 
+    candidates = [workdir] if workdir == cwd else [workdir, cwd]
+    in_scope = in_configured_scope(data_dir, environ, *candidates)
+    # Outside the configured scope the plugin must look uninstalled.  An active
+    # task still owns its own directories, so narrowing the scope mid-flight
+    # cannot silently drop that task's checkpoint or guardrails.
+    if task is None and not in_scope:
+        return None
+
     if event in {"SessionStart", "UserPromptSubmit"}:
         return {
             "hookSpecificOutput": {
                 "hookEventName": event,
-                "additionalContext": build_context(task, data_dir)
+                "additionalContext": build_context(task, data_dir, in_scope)
                 if task is not None
                 else build_bootstrap_context(data_dir),
             }

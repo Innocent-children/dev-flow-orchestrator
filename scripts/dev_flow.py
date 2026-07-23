@@ -94,6 +94,9 @@ WORKSPACE_INDEX_STATES = {
     "FINALIZING",
     "DONE",
 }
+SCOPE_MODES = ("all", "allowlist")
+SCOPE_INCLUDE_ENV = "DEV_FLOW_SCOPE"
+SCOPE_EXCLUDE_ENV = "DEV_FLOW_SCOPE_EXCLUDE"
 
 
 class FlowError(Exception):
@@ -341,6 +344,229 @@ def _workspace_registry_lock(data_root: Path) -> Iterator[None]:
         finally:
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _config_lock(data_root: Path) -> Iterator[None]:
+    _ensure_dir(data_root)
+    lock_path = data_root / "config.lock"
+    with lock_path.open("a+b") as handle:
+        try:
+            lock_path.chmod(0o600)
+        except OSError:
+            pass
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def config_path(data_dir: str | os.PathLike[str] | None = None) -> Path:
+    return resolve_data_dir(data_dir) / "config.json"
+
+
+def _default_config() -> dict[str, Any]:
+    """The absent-configuration default keeps the plugin active everywhere."""
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "scope": {"mode": "all", "include": [], "exclude": []},
+    }
+
+
+def _normalize_scope_root(
+    value: Any, option: str, *, code: str = "INVALID_ARGUMENT"
+) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise FlowError(code, f"{option} requires a non-empty directory path")
+    try:
+        return str(Path(text).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise FlowError(
+            code,
+            f"{option} is not a usable directory path",
+            details={"path": text, "error": str(exc)},
+        ) from exc
+
+
+def _normalize_scope(value: Any) -> dict[str, Any]:
+    """Coerce a stored scope object into its canonical absolute-path form."""
+
+    supplied = value if isinstance(value, dict) else {}
+    mode = str(supplied.get("mode", "all")).strip().lower() or "all"
+    if mode not in SCOPE_MODES:
+        raise FlowError(
+            "CONFIG_INVALID",
+            f"scope.mode must be one of: {', '.join(SCOPE_MODES)}",
+            details={"mode": mode},
+        )
+    scope: dict[str, Any] = {"mode": mode}
+    for key in ("include", "exclude"):
+        raw = supplied.get(key) or []
+        if not isinstance(raw, list):
+            raise FlowError(
+                "CONFIG_INVALID",
+                f"scope.{key} must be a list of directories",
+                details={"key": key},
+            )
+        roots = {
+            _normalize_scope_root(item, f"scope.{key}", code="CONFIG_INVALID")
+            for item in raw
+        }
+        scope[key] = sorted(roots)
+    return scope
+
+
+def load_config(data_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    """Return the stored plugin configuration, or the defaults when absent."""
+
+    path = config_path(data_dir)
+    if not path.exists():
+        return _default_config()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise FlowError(
+            "CONFIG_INVALID",
+            "plugin configuration is unreadable",
+            details={"path": str(path), "error": str(exc)},
+        ) from exc
+    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
+        raise FlowError(
+            "CONFIG_INVALID",
+            "plugin configuration has an unsupported structure",
+            details={
+                "path": str(path),
+                "schema_version": value.get("schema_version")
+                if isinstance(value, dict)
+                else None,
+            },
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "scope": _normalize_scope(value.get("scope")),
+    }
+
+
+def _scope_env_roots(environ: Any, name: str) -> list[str] | None:
+    """Parse one ``os.pathsep`` separated override, or None when unset."""
+
+    raw = environ.get(name)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    roots = {
+        _normalize_scope_root(item, name)
+        for item in raw.split(os.pathsep)
+        if item.strip()
+    }
+    return sorted(roots) or None
+
+
+def resolve_scope(
+    data_dir: str | os.PathLike[str] | None = None,
+    environ: Any = None,
+) -> dict[str, Any]:
+    """Return the stored scope after applying the environment overrides.
+
+    ``DEV_FLOW_SCOPE`` replaces the included directories and forces allowlist
+    mode; ``DEV_FLOW_SCOPE_EXCLUDE`` replaces the excluded directories in
+    either mode.  ``overrides`` records which list the environment supplied.
+    """
+
+    values = os.environ if environ is None else environ
+    scope = load_config(data_dir)["scope"]
+    overrides: dict[str, str] = {}
+    include = _scope_env_roots(values, SCOPE_INCLUDE_ENV)
+    if include is not None:
+        scope.update({"mode": "allowlist", "include": include})
+        overrides["include"] = SCOPE_INCLUDE_ENV
+    exclude = _scope_env_roots(values, SCOPE_EXCLUDE_ENV)
+    if exclude is not None:
+        scope["exclude"] = exclude
+        overrides["exclude"] = SCOPE_EXCLUDE_ENV
+    scope["overrides"] = overrides
+    return scope
+
+
+def evaluate_scope(path: str | os.PathLike[str], scope: dict[str, Any]) -> dict[str, Any]:
+    """Decide whether one directory is in scope; the deepest root wins.
+
+    A directory nested under both an included and an excluded root follows the
+    more specific one, so an allowlist can carve exceptions back out of an
+    exclusion.  An exactly equal pair resolves to the exclusion.
+    """
+
+    current = Path(path).expanduser().resolve(strict=False)
+    matched: str | None = None
+    rule = "default"
+    depth = -1
+    for candidate_rule in ("include", "exclude"):
+        for root in scope.get(candidate_rule) or []:
+            candidate = Path(root)
+            if not _is_within(current, candidate):
+                continue
+            candidate_depth = len(candidate.parts)
+            if candidate_depth > depth or (
+                candidate_depth == depth and candidate_rule == "exclude"
+            ):
+                matched, rule, depth = root, candidate_rule, candidate_depth
+    if rule == "default":
+        in_scope = str(scope.get("mode", "all")) != "allowlist"
+    else:
+        in_scope = rule == "include"
+    return {
+        "path": str(current),
+        "in_scope": in_scope,
+        "rule": rule,
+        "matched": matched,
+        "mode": str(scope.get("mode", "all")),
+    }
+
+
+def evaluate_scope_for_path(
+    path: str | os.PathLike[str],
+    data_dir: str | os.PathLike[str] | None = None,
+    environ: Any = None,
+) -> dict[str, Any]:
+    """Resolve the effective scope and evaluate one directory against it."""
+
+    return evaluate_scope(path, resolve_scope(data_dir, environ))
+
+
+def _scope_summary(scope: dict[str, Any]) -> str:
+    if str(scope.get("mode", "all")) == "allowlist":
+        if not scope.get("include"):
+            return "inactive in every directory"
+        if scope.get("exclude"):
+            return "active only inside the included directories, minus the excluded ones"
+        return "active only inside the included directories"
+    if scope.get("exclude"):
+        return "active in every directory except the excluded ones"
+    return "active in every directory"
+
+
+def _assert_path_in_scope(
+    path: Path, label: str, data_dir: str | os.PathLike[str] | None
+) -> None:
+    decision = evaluate_scope_for_path(path, data_dir)
+    if decision["in_scope"]:
+        return
+    raise FlowError(
+        "OUT_OF_SCOPE",
+        f"{label} is outside the configured Dev Flow scope",
+        details={
+            "path": decision["path"],
+            "matched": decision["matched"],
+            "rule": decision["rule"],
+            "mode": decision["mode"],
+            "config_path": str(config_path(data_dir)),
+            "remedy": "add the directory with the scope command, or widen the scope",
+        },
+    )
 
 
 def _load_workspace_registry(data_root: Path) -> dict[str, Any]:
@@ -1942,6 +2168,8 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
             roots.append(root)
     if not roots:
         raise FlowError("INVALID_ARGUMENT", "start requires at least one distinct Git repository")
+    for root in roots:
+        _assert_path_in_scope(root, "repository", args.data_dir)
     common_dirs: dict[Path, Path] = {}
     for root in roots:
         common_dir = _git_evidence_path(root, "--git-common-dir")
@@ -2039,6 +2267,88 @@ def command_list(args: argparse.Namespace) -> dict[str, Any]:
             )
     values.sort(key=lambda item: (str(item.get("updated_at", "")), str(item.get("task_id", ""))), reverse=True)
     return {"ok": True, "command": "list", "count": len(values), "tasks": values}
+
+
+def _apply_scope_changes(scope: dict[str, Any], args: argparse.Namespace) -> None:
+    """Apply one invocation's edits: mode, then removals, then additions."""
+
+    if args.mode:
+        scope["mode"] = args.mode
+    for option, key in (("remove", "include"), ("remove_exclude", "exclude")):
+        for supplied in getattr(args, option) or []:
+            flag = "--" + option.replace("_", "-")
+            root = _normalize_scope_root(supplied, flag)
+            if root not in scope[key]:
+                raise FlowError(
+                    "SCOPE_PATH_NOT_CONFIGURED",
+                    f"{flag} does not match a configured scope directory",
+                    details={"path": root, "configured": list(scope[key])},
+                )
+            scope[key].remove(root)
+    # Adding the first included directory is what turns the allowlist on; an
+    # include recorded while the mode stays "all" would silently do nothing.
+    activates = args.mode is None and scope["mode"] == "all" and not scope["include"]
+    for option, key in (("add", "include"), ("add_exclude", "exclude")):
+        for supplied in getattr(args, option) or []:
+            root = _normalize_scope_root(supplied, "--" + option.replace("_", "-"))
+            if root not in scope[key]:
+                scope[key].append(root)
+    if activates and scope["include"]:
+        scope["mode"] = "allowlist"
+
+
+def command_scope(args: argparse.Namespace) -> dict[str, Any]:
+    path = config_path(args.data_dir)
+    edits = (
+        args.clear
+        or args.mode
+        or args.add
+        or args.remove
+        or args.add_exclude
+        or args.remove_exclude
+    )
+    if edits:
+        with _config_lock(resolve_data_dir(args.data_dir)):
+            try:
+                config = load_config(args.data_dir)
+                # load_config already normalized; repeat it for an independent
+                # snapshot the edits below cannot mutate through shared lists.
+                before = _normalize_scope(config["scope"])
+            except FlowError:
+                # An unusable configuration must still be resettable.
+                if not args.clear:
+                    raise
+                before = None
+            if args.clear:
+                config = _default_config()
+            _apply_scope_changes(config["scope"], args)
+            config["scope"] = _normalize_scope(config["scope"])
+            _atomic_write_json(path, config)
+            stored = config["scope"]
+    else:
+        before = stored = load_config(args.data_dir)["scope"]
+    effective = resolve_scope(args.data_dir)
+    overrides = effective.pop("overrides", {})
+    response = {
+        "ok": True,
+        "command": "scope",
+        "config_path": str(path),
+        "changed": stored != before,
+        "scope": stored,
+        "effective": effective,
+        "overrides": overrides,
+        "summary": _scope_summary(effective),
+        "missing_paths": [
+            root
+            for root in (*effective["include"], *effective["exclude"])
+            if not Path(root).is_dir()
+        ],
+    }
+    if args.check is not None:
+        response["check"] = evaluate_scope(
+            _normalize_scope_root(args.check, "--check"), effective
+        )
+    return response
 
 
 def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
@@ -5300,6 +5610,51 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--status", action="append", choices=sorted(ALL_STATES), help="include only this status; repeatable")
     _add_data_dir(listing)
     listing.set_defaults(handler=command_list)
+
+    scope = subparsers.add_parser(
+        "scope",
+        help="show or change the directories where this plugin is active",
+    )
+    scope.add_argument(
+        "--mode",
+        choices=sorted(SCOPE_MODES),
+        help="allowlist activates only inside included directories; all activates everywhere except excluded ones",
+    )
+    scope.add_argument(
+        "--add",
+        action="append",
+        metavar="DIR",
+        help="include a directory and its subdirectories; the first one switches to allowlist mode; repeatable",
+    )
+    scope.add_argument(
+        "--remove", action="append", metavar="DIR", help="drop an included directory; repeatable"
+    )
+    scope.add_argument(
+        "--add-exclude",
+        action="append",
+        metavar="DIR",
+        help="exclude a directory and its subdirectories; repeatable",
+    )
+    scope.add_argument(
+        "--remove-exclude",
+        action="append",
+        metavar="DIR",
+        help="drop an excluded directory; repeatable",
+    )
+    scope.add_argument(
+        "--clear",
+        action="store_true",
+        help="reset to the default scope: active in every directory",
+    )
+    scope.add_argument(
+        "--check",
+        nargs="?",
+        const=".",
+        metavar="DIR",
+        help="report whether a directory is in scope; defaults to the current directory",
+    )
+    _add_data_dir(scope)
+    scope.set_defaults(handler=command_scope)
 
     preflight = subparsers.add_parser("preflight", help="record Git identity, remote/base and an exact worktree fingerprint")
     _add_mutation(preflight)
