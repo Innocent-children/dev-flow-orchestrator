@@ -1,5 +1,15 @@
 # OpenSpec route
 
+## Language requirements
+
+Resolve the language for new or updated human-readable OpenSpec artifacts before writing them. Honor a language the user explicitly selects for the current task and inspect the target repository's current OpenSpec instructions and existing human-readable OpenSpec artifacts to determine their dominant language. When the user has not selected a language, use the repository's unambiguous dominant language. Do not infer a preference solely from the conversation or interface language.
+
+If the user's explicit choice conflicts with repository instructions or the repository's dominant artifact language, or if the repository language is mixed or otherwise unclear, stop and ask the user which language to use. Present the evidence and conflict instead of silently choosing or translating.
+
+Keep machine-sensitive content unchanged when OpenSpec or the target repository requires exact tokens: change/capability IDs, schema names, code symbols, paths, commands, JSON keys, enum values, protocol names, and fixed template or parser keywords. A change ID may remain ASCII kebab-case. When a generated template requires a fixed structural marker, retain that marker and write only its human-readable heading detail and body in the resolved language. Do not translate or rewrite machine-sensitive markers to make them match the prose language.
+
+Before presenting or recording `openspec-plan`, inspect every human-authored file under the reported `changeRoot`. Ensure its narrative consistently uses the resolved language while preserving required syntax. If language drift, a new conflict, or ambiguity is found, stop and ask the user before modifying or recording the plan.
+
 ## Discover the installed workflow
 
 Treat the target project's generated OpenSpec skills and CLI JSON as authoritative. Do not embed a proposal/design/spec/tasks phase sequence; schemas and available actions may differ.

@@ -6,6 +6,7 @@
 - [Command templates](#command-templates)
 - [Flow selection](#flow-selection)
 - [Legal state order](#legal-state-order)
+- [Per-transition confirmation](#per-transition-confirmation)
 - [Lite flow](#lite-flow)
 - [Artifact lifecycle](#artifact-lifecycle)
 - [Intake and repository preflight](#intake-and-repository-preflight)
@@ -26,14 +27,16 @@
 Use `<plugin-root>/scripts/dev_flow.py` as the sole writer of workflow state. It keeps state outside target repositories and exposes these commands:
 
 ```text
-start  show  recover-quarantine  list  scope  preflight  baseline
-record-index  record-artifact  set-route  approve  transition
-prepare-workspace  record-test  review-snapshot  cancel
+start  show  recover-quarantine  recover-atomic-write  list  scope
+preflight  baseline  record-index  record-artifact  set-route  approve
+transition  prepare-workspace  record-test  review-snapshot  cancel
 ```
+
+`recover-atomic-write` also takes no task ID or `--expected-revision`: it resolves an interrupted atomic state write, which is exactly the failure that can block the write a revision check would need. See [recovery](recovery.md).
 
 `scope` is the only command that reads and writes plugin configuration rather than task state, so it takes no task ID or `--expected-revision`. It reports the directories where this plugin is active and, when `start` returns `OUT_OF_SCOPE`, is the supported way to widen that scope. Changing the scope is the user's decision: present the current `summary` and the rejected path, and run a `scope` mutation only after an explicit choice.
 
-Read each command's installed help for its exact arguments. Every mutation of an existing task requires its task ID and the revision currently returned by `show` as `--expected-revision`. Parse the one JSON object written to stdout and replace the in-memory revision with the returned revision. On a revision conflict, reload with `show`, reconcile completed work, and decide the next action; do not retry with a guessed revision.
+Read each command's installed help for its exact arguments. Controller command names, options, help, stable IDs, error codes, and first-party `error.message` text stay in English. User-facing hook/skill prompts and returned display fields such as `status_name`, `flow_name`, `workspace_strategy_name`, workflow names, and choice labels use Chinese. Every mutation of an existing task requires its task ID and the revision currently returned by `show` as `--expected-revision`. Parse the one JSON object written to stdout, branch on `error.code` rather than message text, and replace the in-memory revision with the returned revision. On a revision conflict, reload with `show`, reconcile completed work, and decide the next action; do not retry with a guessed revision.
 
 Never edit state JSON manually. Record artifact paths with their content hashes, exact base commits, actual codebase-memory project identifiers, test commands/results, approvals, and review snapshot evidence through the matching controller command.
 
@@ -47,9 +50,11 @@ Let `<ctl>` mean the exact ordered argument prefix injected by the plugin hook: 
 <ctl> list --active-only
 <ctl> show --task <task-id>
 <ctl> recover-quarantine --task <task-id> --expected-revision <revision>
+<ctl> recover-atomic-write [--path <destination>] [--apply] [--resolve <keep-current|restore-rollback>] [--rollback-sha256 <sha256>]
 <ctl> scope [--check <directory>] [--add <directory>] [--add-exclude <directory>] [--remove <directory>] [--remove-exclude <directory>] [--mode <all|allowlist>] [--clear]
-<ctl> start --requirement <text> --repo <path> [--repo <path> ...] [--flow <full|lite>]
-<ctl> preflight --task <task-id> --expected-revision <revision> [--repo <id> ...] [--remote <name>] [--base <branch>]
+<ctl> start --requirement <text> --repo <path> [--repo <path> ...] --workspace-strategy <in-place|branch|worktree>
+<ctl> preflight --task <task-id> --expected-revision <revision> [--repo <id> ...] [--remote <name>] [--base <branch>] --preview
+<ctl> preflight --task <task-id> --expected-revision <revision> [--repo <id> ...] [--remote <name>] [--base <branch>] --confirm-preview <token> [--accept-evidence-refresh]
 <ctl> approve --task <task-id> --expected-revision <revision> --gate <gate> --note <note> [--artifact-sha256 <sha256>]
 <ctl> approve --task <task-id> --expected-revision <revision> --gate baseline-fetch --note <note> [--allow-fetch] [--allow-dirty]
 <ctl> approve --task <task-id> --expected-revision <revision> --gate lite --note <note> [--allow-dirty]
@@ -68,20 +73,63 @@ Let `<ctl>` mean the exact ordered argument prefix injected by the plugin hook: 
 <ctl> cancel --task <task-id> --expected-revision <revision> --reason <reason>
 ```
 
+For new `start` calls, pass only `--workspace-strategy`; it uniquely derives the stored flow. The optional `--flow` argument exists only as a compatibility consistency assertion for older callers: a matching value is accepted, while a mismatch fails instead of overriding the strategy.
+
 Treat `prepare-workspace` as plan recording unless `--execute` is present. It never changes Git during planning, but it records a deterministic `workspace-plan` artifact and normally increments the revision. Treat `record-test` as a recorder only: run the stated command yourself, observe its exit code, then record exactly what ran. Never use controller metadata to claim an action occurred when it did not.
 
 ## Flow selection
 
-Every task is created as either a `full` or a `lite` task with `start --flow`; the default is `full` and the choice is immutable for the task's lifetime, like the requirement and repository set. Choose at intake, before `start`, and let the user decide:
+Every task records either `full` or `lite`, derived uniquely from its required `--workspace-strategy`: `in-place` and `branch` derive `lite`, while `worktree` derives `full`. The derived flow and selected strategy are immutable for the task's lifetime, like the requirement and repository set. Keep stable IDs in controller calls and state, but use these Chinese names in every user-facing choice and progress report:
 
-- `full` (default): the complete pipeline below — baseline, dual indexes, impact analysis, route choice, managed worktrees, approved planning, and independent review. Required for cross-repository, public-contract, migration, security, infrastructure, architecture-sensitive, or materially ambiguous work, and whenever isolation from the user's checkout matters.
-- `lite`: an in-place path for a bounded, low-risk, well-understood change — a small bug fix, a localized tweak, a docs or config edit — where creating analysis and implementation worktrees would cost more than the change itself. It keeps preflight evidence, one explicit human gate, guarded transitions, and test-currency enforcement, and skips everything else. See [Lite flow](#lite-flow).
+- **完整流程 (`full`)**: the complete pipeline below — baseline, dual indexes, impact analysis, route choice, managed worktrees, approved planning, and independent review. Required for cross-repository, public-contract, migration, security, infrastructure, architecture-sensitive, or materially ambiguous work, and whenever isolation from the user's checkout matters.
+- **精简流程 (`lite`)**: an in-place path for a bounded, low-risk, well-understood change — a small bug fix, a localized tweak, a docs or config edit — where creating analysis and implementation worktrees would cost more than the change itself. It keeps preflight evidence, one explicit human gate, guarded transitions, and test-currency enforcement, and skips everything else. See [Lite flow](#lite-flow).
 
-Recommend a flow from the request's apparent scope, present the trade-off, and call `start` only with the user's explicit choice. When a lite task turns out to need impact analysis, isolation, or planning rigor, stop and ask the user to cancel/replace it as a full task; there is no in-place upgrade, because the full flow's evidence chain starts at baseline approval.
+Before `start`, ask in Chinese and wait for one explicit work-mode choice:
+
+1. **使用当前分支（精简流程）** — use `--workspace-strategy in-place`.
+2. **新建并切换分支（精简流程）** — inspect the exact current branch, `HEAD`, and status; present a direct local branch name that is neither protected nor the resolvable remote default/base, plus the exact local `git switch -c <branch>` command; create/switch it only after approval and before `start`; then use `--workspace-strategy branch`. `start` rejects symbolic branch refs and binds the resulting branch and `HEAD`. Both stay exact until the first confirmed all-repository preflight; afterwards the branch remains immutable, while a new `HEAD` requires a fresh all-repository preflight pair and lite approval. This choice never authorizes `fetch`, `pull`, stash, reset, or cleanup.
+3. **创建独立工作树（完整流程）** — use `--workspace-strategy worktree`; the later workspace plan and approval still govern actual creation.
+
+Recommend a mode from the request's apparent scope and risks, but never call `start`, switch a branch, or create a worktree before the user chooses. `start` rejects a missing `--workspace-strategy`, so the selected mode is recorded for audit and remains immutable. Repeatable `--protected-branch` values always extend and never replace the built-in `main`/`master`/`trunk` set. Those protected names prevent branch-mode binding and direct commits, but do not prohibit local edits under the explicitly selected `in-place` mode. When a lite task turns out to need impact analysis, isolation, or planning rigor, stop and ask the user to cancel/replace it as a full task; there is no in-place upgrade, because the full flow's evidence chain starts at baseline approval.
 
 ## Legal state order
 
 A full task advances only through this order:
+
+Every solid arrow below is a separate checkpoint: before crossing it, show the Chinese source/target and all remaining main-flow states, then wait for confirmation bound to that one edge.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "需求接收 (INTAKE)" as INTAKE
+    state "预检完成 (PREFLIGHTED)" as PREFLIGHTED
+    state "基线就绪 (BASELINED)" as BASELINED
+    state "索引完成 (INDEXED)" as INDEXED
+    state "影响评审 (IMPACT_REVIEW)" as IMPACT_REVIEW
+    state "路线已批准 (ROUTE_APPROVED)" as ROUTE_APPROVED
+    state "工作区就绪 (WORKSPACE_READY)" as WORKSPACE_READY
+    state "方案规划 (PLANNING)" as PLANNING
+    state "实现中 (IMPLEMENTING)" as IMPLEMENTING
+    state "验证中 (VERIFYING)" as VERIFYING
+    state "独立审查 (REVIEWING)" as REVIEWING
+    state "交付确认 (FINALIZING)" as FINALIZING
+    state "已完成 (DONE)" as DONE
+
+    [*] --> INTAKE
+    INTAKE --> PREFLIGHTED
+    PREFLIGHTED --> BASELINED
+    BASELINED --> INDEXED
+    INDEXED --> IMPACT_REVIEW
+    IMPACT_REVIEW --> ROUTE_APPROVED
+    ROUTE_APPROVED --> WORKSPACE_READY
+    WORKSPACE_READY --> PLANNING
+    PLANNING --> IMPLEMENTING
+    IMPLEMENTING --> VERIFYING
+    VERIFYING --> REVIEWING
+    REVIEWING --> FINALIZING
+    FINALIZING --> DONE
+    DONE --> [*]
+```
 
 ```text
 INTAKE
@@ -99,17 +147,84 @@ INTAKE
   -> DONE
 ```
 
-A lite task advances only through `INTAKE -> PREFLIGHTED -> IMPLEMENTING -> VERIFYING -> DONE`; the controller rejects every full-only state, command, and gate for it with `FLOW_MISMATCH` or `INVALID_TRANSITION`.
+A lite task uses the shorter state machine below; the controller rejects every full-only state, command, and gate for it with `FLOW_MISMATCH` or `INVALID_TRANSITION`.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "需求接收 (INTAKE)" as INTAKE
+    state "预检完成 (PREFLIGHTED)" as PREFLIGHTED
+    state "实现中 (IMPLEMENTING)" as IMPLEMENTING
+    state "验证中 (VERIFYING)" as VERIFYING
+    state "已完成 (DONE)" as DONE
+
+    [*] --> INTAKE
+    INTAKE --> PREFLIGHTED
+    PREFLIGHTED --> IMPLEMENTING
+    IMPLEMENTING --> VERIFYING
+    VERIFYING --> DONE
+    IMPLEMENTING --> PREFLIGHTED: 重新预检
+    VERIFYING --> IMPLEMENTING: 返工
+    VERIFYING --> PREFLIGHTED: 重新预检
+    DONE --> [*]
+```
 
 `BLOCKED` and `CANCELLED` are exceptional states. Use `BLOCKED` only through controller-supported recovery when progress cannot safely continue; retain the last good evidence and explain the unblock condition. Use `cancel` only after explicit user instruction. Do not treat `DONE` or `CANCELLED` as resumable implementation states.
 
 Do not skip a state even if the implementation is small. The supported way to keep genuinely small work light is choosing the lite flow at `start`, not bypassing gates inside a full task; within a full task, keep low-risk work lightweight by making the evidence and direct contract concise. Use only the supported backward paths described below: return to `PLANNING` for replanning or to `INDEXED` for impact reassessment, always with a reason.
 
-Prefer the domain commands that advance automatically: successful all-repository `preflight` enters `PREFLIGHTED`; `baseline --materialize` enters `BASELINED`; the last required `record-index` enters `INDEXED`; `set-route` enters `IMPACT_REVIEW`; `approve --gate route` enters `ROUTE_APPROVED`; all-repository `prepare-workspace --execute` enters `WORKSPACE_READY`; and `review-snapshot` enters `REVIEWING`. Use `transition` for the remaining legal edges and supported rework/blocking paths, not to duplicate those automatic changes.
+Prefer the domain commands that advance automatically: applying a confirmed all-repository preflight preview enters `PREFLIGHTED`; any successful `baseline` (with optional `--fetch` and/or `--materialize`) enters `BASELINED`; the last required `record-index` enters `INDEXED`; `set-route` enters `IMPACT_REVIEW`; `approve --gate route` enters `ROUTE_APPROVED`; all-repository `prepare-workspace --execute` enters `WORKSPACE_READY`; and `review-snapshot` enters `REVIEWING`. Use `transition` for the remaining legal edges and supported rework/blocking paths, not to duplicate those automatic changes.
+
+## Per-transition confirmation
+
+Treat every explicit or automatic `status` change as a separate user decision. Immediately before the state-changing command, reload with `show`, then ask in Chinese using this compact shape:
+
+```text
+即将切换：<当前中文状态>（<ID>） → <目标中文状态>（<ID>）
+本次动作：<command/action>
+后续流程：<目标状态之后的全部中文主流程；终态写“无”>
+是否执行这一次状态切换？
+```
+
+Wait for an explicit answer. Bind the answer to the displayed task ID, current revision, source state, target state, and single action. Any revision or source-state change invalidates it. Do not reuse approval for another edge, and do not interpret a broad request such as “继续”“完成任务” or the original implementation request as approval for every later transition.
+
+The commands that can change `status` are:
+
+- `preflight --confirm-preview <token>`: first run `preflight --preview`, which commits no task state, performs no complete worktree fingerprint, and returns one `transition_preview` whose token binds the exact status decision plus a lightweight observation. If it changes status, confirm that reported edge. Confirm then captures complete evidence. Decision drift fails with `PREFLIGHT_PREVIEW_STALE`, so a changed decision requires a new preview and state-edge confirmation. Observation-only drift leaves the decision and token reusable but fails with `PREFLIGHT_EVIDENCE_REFRESH_REQUIRED`; inspect the returned current evidence, obtain explicit acceptance, and retry the same token with `--accept-evidence-refresh`. A selected-repository pair only records evidence and keeps the current status. Before any preflight status transition, run a final all-repository pair so complete evidence for every repository is captured and bound; a `PREFLIGHTED` task rejects partial refreshes.
+- `baseline` with any supported option combination (including bare `baseline`, `--fetch`, and/or `--materialize`): → `BASELINED`.
+- the final required `record-index --role baseline`: → `INDEXED`; earlier per-repository records do not change status.
+- `set-route`: → `IMPACT_REVIEW`.
+- `approve --gate route`: → `ROUTE_APPROVED`. Route-gate approval and permission to cross this state edge must both be explicit; present them together but do not imply later approval.
+- `prepare-workspace --execute`: → `WORKSPACE_READY`.
+- `review-snapshot`: → `REVIEWING`.
+- `transition`: → its requested target, including rework and `BLOCKED`. It cannot replace domain commands: in particular, `INTAKE` or a preflight-phase `BLOCKED` state may enter `PREFLIGHTED` only through a confirmed all-repository preflight pair.
+- `cancel`: → `CANCELLED`.
+
+Use these Chinese labels while retaining the stable IDs in commands and evidence:
+
+| Stable ID | Chinese name |
+|---|---|
+| `full` | 完整流程 |
+| `lite` | 精简流程 |
+| `INTAKE` | 需求接收 |
+| `PREFLIGHTED` | 预检完成 |
+| `BASELINED` | 基线就绪 |
+| `INDEXED` | 索引完成 |
+| `IMPACT_REVIEW` | 影响评审 |
+| `ROUTE_APPROVED` | 路线已批准 |
+| `WORKSPACE_READY` | 工作区就绪 |
+| `PLANNING` | 方案规划 |
+| `IMPLEMENTING` | 实现中 |
+| `VERIFYING` | 验证中 |
+| `REVIEWING` | 独立审查 |
+| `FINALIZING` | 交付确认 |
+| `DONE` | 已完成 |
+| `BLOCKED` | 已阻塞 |
+| `CANCELLED` | 已取消 |
 
 ## Lite flow
 
-A lite task works directly inside the user's source checkouts: no baseline, no analysis worktree, no controller-bound codebase-memory index, no route, no managed implementation worktree, no plan artifact, and no controller-enforced independent review. `show.index_selection.selected_role` is always `none`; use codebase-memory ad hoc for navigation if helpful, outside the evidence chain. The compensating controls are the preflight evidence chain, one explicit human gate, and the same fingerprint-bound test currency the full flow enforces.
+A lite task works directly inside the user's selected source-checkout branch. `workspace.strategy` records whether the user chose `in-place` (the current branch) or `branch` (a newly created/switched branch before `start`). It has no baseline, analysis worktree, controller-bound codebase-memory index, route, managed implementation worktree, plan artifact, or controller-enforced independent review. `show.index_selection.selected_role` is always `none`; use codebase-memory ad hoc for navigation if helpful, outside the evidence chain. The compensating controls are the preflight evidence chain, one explicit human gate, per-transition confirmation, and the same fingerprint-bound test currency the full flow enforces.
 
 Run it in this order:
 
@@ -137,7 +252,9 @@ Treat every recorded path as immutable audit evidence. Before approval and whene
 
 ## Intake and repository preflight
 
-At `INTAKE`, normalize the requested behavior and enumerate every repository that may change. Pass every path to one `start` call; the controller resolves Git roots and removes duplicates. Call `preflight` without `--repo` to cover all repositories at once, or repeat selected calls while reloading the revision after each. Use `--remote` or `--base` only for an explicit override.
+At `INTAKE`, normalize the requested behavior and enumerate every repository that may change. Pass every path and the selected `--workspace-strategy` to one `start` call; the controller resolves Git roots, removes duplicates, and derives the flow. Preview preflight without `--repo` to cover all repositories at once. Preview collects only lightweight identity, decision, blocker, and worktree-summary inputs; it deliberately does not compute the complete fingerprint. Selected preview/apply pairs are allowed for incremental evidence collection, but they never change status; reload the revision after each and finish with a new all-repository preview/apply pair that captures complete evidence for every repository. Use `--remote` or `--base` only for an explicit override, and repeat the identical selection and overrides with `--confirm-preview`.
+
+If confirm returns `PREFLIGHT_EVIDENCE_REFRESH_REQUIRED`, its `details` identifies the current observation and states that the same token is reusable. Inspect that evidence and ask the user to accept the refreshed observation; retry the same selection, overrides, revision, and token with `--accept-evidence-refresh`. This acceptance does not authorize a different status decision. If confirm instead returns `PREFLIGHT_PREVIEW_STALE`, the decision changed before or during complete capture: discard the token, rerun preview, and obtain a new state-edge confirmation whenever `changes_status` is true.
 
 Inspect the returned per-repository evidence:
 

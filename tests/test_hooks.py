@@ -60,6 +60,7 @@ class DevFlowHookTests(unittest.TestCase):
             [sys.executable, str(HOOK)],
             input=json.dumps(invocation),
             text=True,
+            encoding="utf-8",
             capture_output=True,
             check=False,
             env=environment,
@@ -165,7 +166,15 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertEqual(specific["hookEventName"], "SessionStart")
         context = specific["additionalContext"]
         self.assertIn("Active task: TASK-42", context)
-        self.assertIn("Stage: ROUTE_APPROVED", context)
+        self.assertIn("流程名称: 完整流程（full）", context)
+        self.assertIn("工作方式: 创建独立工作树（worktree）", context)
+        self.assertIn("当前状态: 路线已批准（ROUTE_APPROVED）", context)
+        self.assertNotIn("- Flow:", context)
+        self.assertNotIn("- Stage:", context)
+        self.assertIn(
+            "剩余流程: 工作区就绪（WORKSPACE_READY） → 方案规划（PLANNING）",
+            context,
+        )
         self.assertIn("Route: direct", context)
         self.assertIn("Pending gate: workspace-approval", context)
         self.assertIn("Next action: prepare the managed worktree", context)
@@ -175,6 +184,14 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertIn(f"--data-dir {self.data_dir.resolve()}", context)
         self.assertIn("show --task TASK-42", context)
         self.assertIn("Every controller call must explicitly include", context)
+        self.assertIn("状态切换确认：", context)
+        self.assertIn("preflight --preview", context)
+        self.assertIn("preflight --confirm-preview", context)
+        self.assertIn("只有决策输入或状态边漂移才必须重新 preview", context)
+        self.assertIn("轻量观察（observation）", context)
+        self.assertIn("证据摘要（evidence summary）", context)
+        self.assertIn("--accept-evidence-refresh", context)
+        self.assertNotIn("应用未变化的令牌", context)
         self.assertNotIn("$PLUGIN_ROOT", context)
 
     def test_data_dir_argument_replaces_missing_plugin_data(self) -> None:
@@ -189,6 +206,7 @@ class DevFlowHookTests(unittest.TestCase):
                 {"hook_event_name": "SessionStart", "cwd": str(self.cwd)}
             ),
             text=True,
+            encoding="utf-8",
             capture_output=True,
             check=False,
             env=environment,
@@ -196,6 +214,8 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         context = json.loads(completed.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Dev Flow controller bootstrap:", context)
+        self.assertIn("启动前确认：", context)
+        self.assertIn("新建并切换分支（精简流程）", context)
         self.assertIn(f"Controller: {PLUGIN_ROOT / 'scripts' / 'dev_flow.py'}", context)
         self.assertIn(f"Data directory: {self.data_dir.resolve()}", context)
 
@@ -208,6 +228,7 @@ class DevFlowHookTests(unittest.TestCase):
                 {"hook_event_name": "SessionStart", "cwd": str(self.cwd)}
             ),
             text=True,
+            encoding="utf-8",
             capture_output=True,
             check=False,
             env={
@@ -606,6 +627,11 @@ class DevFlowHookTests(unittest.TestCase):
         context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Active index role: baseline", context)
         self.assertIn("Active index projects: service=task-service-baseline", context)
+        self.assertIn("当前状态: 已阻塞（BLOCKED）", context)
+        self.assertIn(
+            "剩余流程: 影响评审（IMPACT_REVIEW） → 路线已批准（ROUTE_APPROVED）",
+            context,
+        )
 
     def test_context_uses_controller_gate_keys_and_stage_actions(self) -> None:
         state_file = self.activate(
@@ -654,7 +680,7 @@ class DevFlowHookTests(unittest.TestCase):
         )
         context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Active task: TASK-NEW", context)
-        self.assertIn("Stage: IMPLEMENTING", context)
+        self.assertIn("当前状态: 实现中（IMPLEMENTING）", context)
         self.assertNotIn("TASK-DONE", context)
 
     def test_current_core_layout_matches_managed_workspace_path(self) -> None:
@@ -1198,13 +1224,40 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Active task: LITE-7", context)
-        self.assertIn("Flow: lite (in place, no managed worktree)", context)
+        self.assertIn("流程名称: 精简流程（lite）", context)
+        self.assertIn("工作方式: 使用当前分支（in-place）", context)
+        self.assertIn("当前状态: 预检完成（PREFLIGHTED）", context)
+        self.assertNotIn("- Flow:", context)
+        self.assertNotIn("- Stage:", context)
+        self.assertIn(
+            "剩余流程: 实现中（IMPLEMENTING） → 验证中（VERIFYING） → 已完成（DONE）",
+            context,
+        )
         self.assertIn("Pending gate: lite in-place approval", context)
         self.assertIn("Active index role: none", context)
         self.assertIn(
             "Next action: present the in-place scope and obtain the lite approval",
             context,
         )
+
+    def test_lite_branch_checkpoint_uses_the_user_selected_chinese_name(self) -> None:
+        self.write_core_state(
+            "LITE-BRANCH",
+            "INTAKE",
+            flow="lite",
+            route=None,
+            workspace={"strategy": "branch"},
+            next_action=None,
+        )
+        stdout, stderr = self.invoke(
+            {"hook_event_name": "SessionStart", "source": "resume"}
+        )
+        self.assertEqual(stderr, "")
+        context = json.loads(stdout)["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        self.assertIn("流程名称: 精简流程（lite）", context)
+        self.assertIn("工作方式: 新建并切换分支（branch）", context)
 
     def test_lite_task_source_writes_follow_the_stage(self) -> None:
         state_file = self.write_core_state(

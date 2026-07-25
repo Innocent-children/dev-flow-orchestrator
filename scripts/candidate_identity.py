@@ -336,7 +336,9 @@ def _publish_archive_exclusive(
                 info.extra = b""
                 info.comment = b""
                 bundle.writestr(info, entry.payload)
-        with temporary.open("rb") as stream:
+        # Windows requires a write-capable descriptor for fsync even though
+        # the completed archive bytes are only being flushed here.
+        with temporary.open("rb+") as stream:
             os.fsync(stream.fileno())
         os.link(temporary, path)
     except FileExistsError as exc:

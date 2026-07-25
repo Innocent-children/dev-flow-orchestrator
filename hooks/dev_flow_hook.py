@@ -33,6 +33,39 @@ STAGES = (
     "DONE",
 )
 STAGE_INDEX = {stage: index for index, stage in enumerate(STAGES)}
+LITE_STAGES = (
+    "INTAKE",
+    "PREFLIGHTED",
+    "IMPLEMENTING",
+    "VERIFYING",
+    "DONE",
+)
+FLOW_NAMES_ZH = {
+    "full": "完整流程",
+    "lite": "精简流程",
+}
+STATE_NAMES_ZH = {
+    "INTAKE": "需求接收",
+    "PREFLIGHTED": "预检完成",
+    "BASELINED": "基线就绪",
+    "INDEXED": "索引完成",
+    "IMPACT_REVIEW": "影响评审",
+    "ROUTE_APPROVED": "路线已批准",
+    "WORKSPACE_READY": "工作区就绪",
+    "PLANNING": "方案规划",
+    "IMPLEMENTING": "实现中",
+    "VERIFYING": "验证中",
+    "REVIEWING": "独立审查",
+    "FINALIZING": "交付确认",
+    "DONE": "已完成",
+    "BLOCKED": "已阻塞",
+    "CANCELLED": "已取消",
+}
+WORKSPACE_STRATEGY_NAMES_ZH = {
+    "branch": "新建并切换分支",
+    "in-place": "使用当前分支",
+    "worktree": "创建独立工作树",
+}
 DEFAULT_PROTECTED_BRANCHES = {"main", "master", "trunk"}
 NEXT_ACTIONS = {
     "INTAKE": "run preflight",
@@ -168,6 +201,39 @@ def _flow(task: Mapping[str, Any]) -> str:
     return value if value in {"full", "lite"} else "full"
 
 
+def _workspace_strategy(task: Mapping[str, Any]) -> str:
+    workspace = task.get("workspace")
+    value = workspace.get("strategy") if isinstance(workspace, Mapping) else None
+    if value in WORKSPACE_STRATEGY_NAMES_ZH:
+        return str(value)
+    return "in-place" if _flow(task) == "lite" else "worktree"
+
+
+def _remaining_workflow(task: Mapping[str, Any]) -> str:
+    flow = _flow(task)
+    ordered = LITE_STAGES if flow == "lite" else STAGES
+    stage = _stage(task)
+    progress_stage = stage
+    if stage == "BLOCKED":
+        blocked = task.get("blocked")
+        candidate = (
+            str(blocked.get("from_status", "")).upper()
+            if isinstance(blocked, Mapping)
+            else ""
+        )
+        if candidate in ordered:
+            progress_stage = candidate
+    if progress_stage not in ordered:
+        return "无"
+    remaining = ordered[ordered.index(progress_stage) + 1 :]
+    if not remaining:
+        return "无"
+    return " → ".join(
+        f"{STATE_NAMES_ZH.get(item, item)}（{item}）"
+        for item in remaining
+    )
+
+
 def _render(value: Any, fallback: str) -> str:
     if value is None or value == "":
         return fallback
@@ -294,6 +360,9 @@ def build_bootstrap_context(data_dir: Path, controller: Path = CONTROLLER) -> st
             f"- Controller: {controller}",
             f"- Data directory: {data_dir}",
             f"- Bootstrap command: {prefix} list",
+            "- 启动前确认：必须用中文询问用户选择“使用当前分支（精简流程）”、"
+            "“新建并切换分支（精简流程）”或“创建独立工作树（完整流程）”。"
+            "未经明确选择，不得启动任务、切换分支或创建工作树。",
             f"Every controller call must explicitly include "
             f"--data-dir {_quote(str(data_dir))}; do not rely on environment fallback.",
         )
@@ -312,11 +381,14 @@ def build_context(
     task_id = _render(task.get("task_id"), "unknown")
     index_role, index_projects = _index_selection_context(task)
     next_actions = LITE_NEXT_ACTIONS if flow == "lite" else NEXT_ACTIONS
+    strategy = _workspace_strategy(task)
     lines = [
         "Dev Flow active-task checkpoint:",
         f"- Active task: {task_id}",
-        f"- Flow: {'lite (in place, no managed worktree)' if flow == 'lite' else 'full'}",
-        f"- Stage: {stage}",
+        f"- 流程名称: {FLOW_NAMES_ZH[flow]}（{flow}）",
+        f"- 工作方式: {WORKSPACE_STRATEGY_NAMES_ZH[strategy]}（{strategy}）",
+        f"- 当前状态: {STATE_NAMES_ZH.get(stage, stage)}（{stage}）",
+        f"- 剩余流程: {_remaining_workflow(task)}",
         f"- Route: {_render(task.get('route'), 'not selected')}",
         f"- Pending gate: {_pending_gate(task)}",
         "- codebase-memory selection: explicit project parameter; never automatic",
@@ -328,6 +400,17 @@ def build_context(
         f"- Controller: {controller}",
         f"- Data directory: {data_dir}",
         f"- Resume command: {prefix} show --task {_quote(task_id)}",
+        "- 状态切换确认：执行任何可能显式或隐式改变任务状态的命令前，"
+        "必须先用中文展示“当前状态 → 目标状态”和完成后的剩余流程，"
+        "并取得用户对这一条状态边的明确确认；一次确认不得授权后续状态边。",
+        "- 预检必须先执行不提交任务状态的 preflight --preview；确认其返回的"
+        "唯一 transition_preview 后，用 preflight --confirm-preview <token>"
+        " 确认这一条状态边。只有决策输入或状态边漂移才必须重新 preview。",
+        "- 若仅轻量观察（observation）或证据摘要（evidence summary）刷新，"
+        "必须停下并向用户展示当前证据；取得用户明确接受后，可用同一 token"
+        " 执行 preflight --confirm-preview <token> --accept-evidence-refresh"
+        " 继续确认。部分仓库预检只能记录证据；状态变化必须由覆盖全部仓库的"
+        "预览/确认对完成。",
     ]
     if not in_scope:
         lines.append(

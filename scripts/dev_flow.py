@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -84,7 +85,51 @@ for _reassess_source in IMPACT_REASSESS_SOURCES:
     REWORK_EDGES.setdefault(_reassess_source, set()).add("INDEXED")
 FLOW_MODES = ("full", "lite")
 DEFAULT_FLOW = "full"
+FLOW_NAMES_ZH = {
+    "full": "完整流程",
+    "lite": "精简流程",
+}
+STATE_NAMES_ZH = {
+    "INTAKE": "需求接收",
+    "PREFLIGHTED": "预检完成",
+    "BASELINED": "基线就绪",
+    "INDEXED": "索引完成",
+    "IMPACT_REVIEW": "影响评审",
+    "ROUTE_APPROVED": "路线已批准",
+    "WORKSPACE_READY": "工作区就绪",
+    "PLANNING": "方案规划",
+    "IMPLEMENTING": "实现中",
+    "VERIFYING": "验证中",
+    "REVIEWING": "独立审查",
+    "FINALIZING": "交付确认",
+    "DONE": "已完成",
+    "BLOCKED": "已阻塞",
+    "CANCELLED": "已取消",
+}
+FLOW_BY_WORKSPACE_STRATEGY = {
+    "branch": "lite",
+    "in-place": "lite",
+    "worktree": "full",
+}
+WORKSPACE_STRATEGIES = tuple(FLOW_BY_WORKSPACE_STRATEGY)
+WORKSPACE_STRATEGY_NAMES_ZH = {
+    "branch": "新建并切换分支",
+    "in-place": "使用当前分支",
+    "worktree": "创建独立工作树",
+}
 LITE_GATE = "lite"
+FULL_GATES = (
+    "baseline-fetch",
+    "impact-degraded",
+    "route",
+    "workspace",
+    "plan",
+    "review",
+)
+# One vocabulary shared by the argparse surface and the approve dispatch, so
+# an unrecognized gate can never record an approval, consume a revision, or
+# skip the status/flow assertions bound to each real gate.
+APPROVAL_GATES = (*FULL_GATES, LITE_GATE)
 # The lite flow works in place inside the user's own checkouts.  It keeps
 # preflight evidence, one explicit human gate, and test-currency enforcement,
 # and deliberately has no baseline, index, impact, route, managed workspace,
@@ -1313,10 +1358,30 @@ def _ensure_private_dir(path: Path) -> None:
     _set_private_permissions(path, 0o700)
 
 
+_ROLLBACK_MARKER = ".rollback-"
+_ROLLBACK_RECOVERY_COMMAND = "recover-atomic-write"
+
+
+def _rollback_evidence_destination(candidate: Path) -> Path | None:
+    """Map `.NAME.rollback-XXXX` back to the NAME it was captured for."""
+
+    name = candidate.name
+    if not name.startswith("."):
+        return None
+    destination, marker, _ = name[1:].rpartition(_ROLLBACK_MARKER)
+    if not marker or not destination:
+        return None
+    return candidate.parent / destination
+
+
+def _rollback_evidence_for(path: Path) -> list[Path]:
+    return sorted(path.parent.glob(f".{path.name}{_ROLLBACK_MARKER}*"))
+
+
 def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
     _ensure_private_dir(path.parent)
-    rollback_prefix = f".{path.name}.rollback-"
-    unresolved = sorted(path.parent.glob(f"{rollback_prefix}*"))
+    rollback_prefix = f".{path.name}{_ROLLBACK_MARKER}"
+    unresolved = _rollback_evidence_for(path)
     if unresolved:
         raise FlowError(
             "ATOMIC_RECOVERY_REQUIRED",
@@ -1326,6 +1391,7 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
                 "rollback_candidates": [
                     str(candidate) for candidate in unresolved
                 ],
+                "recovery_command": _ROLLBACK_RECOVERY_COMMAND,
             },
         )
 
@@ -3420,8 +3486,21 @@ def _quiesce_completed_process_group(
 
 
 def _windows_kill_on_close_job(
-    process: subprocess.Popen[bytes], command: Sequence[str]
+    process: subprocess.Popen[bytes],
+    command: Sequence[str],
+    *,
+    require_ownership: bool = True,
 ) -> Any:
+    """Place a protected child in a kill-on-close job.
+
+    ``require_ownership`` is true for a gated mutation, whose child is blocked
+    reading its gate byte and is therefore provably still alive: failing to
+    own it is a real failure and stays fail-closed, because kill-on-job-close
+    containment is what the quarantine mechanism relies on.  A read-only
+    protected child is contained on the same terms when Windows allows it, but
+    an unownable one is not an error; see the failure branch below.
+    """
+
     if os.name != "nt":  # pragma: no cover - native Windows helper
         return None
     import ctypes
@@ -3508,6 +3587,8 @@ def _windows_kill_on_close_job(
 
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
+        if not require_ownership:
+            return None
         ownership_failure(
             "could not create a Windows child-process job",
             ctypes.get_last_error(),
@@ -3521,6 +3602,17 @@ def _windows_kill_on_close_job(
     ):
         error = ctypes.get_last_error()
         kernel32.CloseHandle(job)
+        if not require_ownership:
+            # Containment of a read-only child is best effort, not a
+            # precondition.  Such a child runs under DEVNULL stdin with no
+            # gate holding it, so it regularly finishes between Popen and
+            # this assignment, and Windows answers ERROR_ACCESS_DENIED for a
+            # process that has terminated or is terminating -- sometimes
+            # before its handle is even signalled, so an exit check cannot
+            # recognize every instance.  There is no mutation to contain, so
+            # continue with an unowned child rather than failing a read-only
+            # command with a mutation-ownership error.
+            return None
         ownership_failure(
             "could not place a mutating child in an owned Windows job",
             error,
@@ -3966,7 +4058,7 @@ def _run(
     if protected_child and os.name == "nt":  # pragma: no cover - native Windows
         try:
             windows_job = _windows_kill_on_close_job(
-                process, command
+                process, command, require_ownership=gated_mutation
             )
         except FlowError as exc:
             if (
@@ -4370,7 +4462,10 @@ def _probe_worktree_capabilities(repo: Path) -> dict[str, Any]:
 
 
 def _git_capability_profile(
-    repo: Path, filesystem_path: Path | None = None
+    repo: Path,
+    filesystem_path: Path | None = None,
+    *,
+    filesystem_capabilities: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     resolved = repo.resolve(strict=True)
     profile_path = filesystem_path or resolved
@@ -4379,7 +4474,11 @@ def _git_capability_profile(
         probe_target, _ = _nearest_existing_path(filesystem_path)
         if not probe_target.is_dir():
             probe_target = probe_target.parent
-    filesystem = _probe_worktree_capabilities(probe_target)
+    filesystem = (
+        dict(filesystem_capabilities)
+        if filesystem_capabilities is not None
+        else _probe_worktree_capabilities(probe_target)
+    )
     core_file_mode = _git_bool_config(
         resolved, "core.fileMode", filesystem["file_mode"]
     )
@@ -5012,6 +5111,60 @@ def _flow(state_value: dict[str, Any]) -> str:
     return value if value in FLOW_MODES else DEFAULT_FLOW
 
 
+def _workspace_strategy(state_value: dict[str, Any]) -> str:
+    workspace = state_value.get("workspace")
+    value = workspace.get("strategy") if isinstance(workspace, dict) else None
+    if value in WORKSPACE_STRATEGIES:
+        return value
+    return "in-place" if _flow(state_value) == "lite" else "worktree"
+
+
+def _workflow_progress(state_value: dict[str, Any]) -> dict[str, Any]:
+    flow = _flow(state_value)
+    ordered = LITE_ORDERED_STATES if flow == "lite" else ORDERED_STATES
+    status = str(state_value.get("status") or "INTAKE")
+    progress_status = status
+    resume_state: dict[str, str] | None = None
+    if status == "BLOCKED":
+        blocked = state_value.get("blocked")
+        candidate = (
+            blocked.get("from_status")
+            if isinstance(blocked, dict)
+            else None
+        )
+        if candidate in ordered:
+            progress_status = candidate
+            resume_state = {
+                "id": candidate,
+                "name": STATE_NAMES_ZH[candidate],
+            }
+    if progress_status in ordered:
+        index = ordered.index(progress_status)
+        remaining_ids = ordered[index + 1 :]
+    else:
+        remaining_ids = []
+    strategy = _workspace_strategy(state_value)
+    return {
+        "flow": {
+            "id": flow,
+            "name": FLOW_NAMES_ZH[flow],
+        },
+        "workspace_strategy": {
+            "id": strategy,
+            "name": WORKSPACE_STRATEGY_NAMES_ZH[strategy],
+        },
+        "current": {
+            "id": status,
+            "name": STATE_NAMES_ZH.get(status, status),
+        },
+        "resume_state": resume_state,
+        "remaining": [
+            {"id": state, "name": STATE_NAMES_ZH[state]}
+            for state in remaining_ids
+        ],
+    }
+
+
 def _assert_flow(state_value: dict[str, Any], required: str, command: str) -> None:
     actual = _flow(state_value)
     if actual != required:
@@ -5096,9 +5249,16 @@ def _preflight_repo(
     repo_record: dict[str, Any],
     remote_override: str | None,
     base_override: str | None,
+    *,
+    capture_fingerprint: bool = True,
 ) -> dict[str, Any]:
     repo = Path(repo_record["path"])
     _assert_evidence_supported(repo)
+    repository_root = Path(
+        _git_evidence(repo, "rev-parse", "--show-toplevel")
+    ).resolve(strict=True)
+    git_dir = _git_evidence_path(repo, "--git-dir")
+    git_common_dir = _git_evidence_path(repo, "--git-common-dir")
     branch = _git_optional(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
     head_sha = _git(repo, "rev-parse", "HEAD")
     remote = remote_override or _default_remote(repo, branch)
@@ -5138,16 +5298,50 @@ def _preflight_repo(
         if base_candidate_ref
         else None
     )
-    staged = _split_lines(_git_diff(repo, "--cached", "--name-only", "--"))
-    unstaged = _split_lines(_git_diff(repo, "--name-only", "--"))
-    untracked = _split_lines(
-        _git_evidence_optional(
-            repo, "ls-files", "--others", "--exclude-standard", "--"
-        )
+    staged_raw = _git_diff(
+        repo,
+        "--cached",
+        "--name-only",
+        "-z",
+        "--",
+        text=False,
     )
-    conflicts = _split_lines(
-        _git_diff(repo, "--name-only", "--diff-filter=U", "--")
+    unstaged_raw = _git_diff(
+        repo,
+        "--name-only",
+        "-z",
+        "--",
+        text=False,
     )
+    untracked_raw = _git_evidence(
+        repo,
+        "ls-files",
+        "-z",
+        "--others",
+        "--exclude-standard",
+        "--",
+        text=False,
+    )
+    conflicts_raw = _git_diff(
+        repo,
+        "--name-only",
+        "--diff-filter=U",
+        "-z",
+        "--",
+        text=False,
+    )
+    staged = [
+        os.fsdecode(item) for item in staged_raw.split(b"\0") if item
+    ]
+    unstaged = [
+        os.fsdecode(item) for item in unstaged_raw.split(b"\0") if item
+    ]
+    untracked = [
+        os.fsdecode(item) for item in untracked_raw.split(b"\0") if item
+    ]
+    conflicts = [
+        os.fsdecode(item) for item in conflicts_raw.split(b"\0") if item
+    ]
     operations = _operation_state(repo)
     blockers: list[str] = []
     if branch is None:
@@ -5159,10 +5353,20 @@ def _preflight_repo(
         blockers.append("base_branch_unresolved")
     if remote and remote not in _split_lines(_git_optional(repo, "remote")):
         blockers.append("remote_not_found")
-    fingerprint = _fingerprint_repo(repo)
-    return {
+    evidence: dict[str, Any] = {
         "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "checked_at": utc_now(),
+        "repository_root": str(repository_root),
+        "repository_path_identity": _serializable_path_identity(repo),
+        "repository_root_identity": _serializable_path_identity(
+            repository_root
+        ),
+        "git_dir": str(git_dir),
+        "git_dir_identity": _serializable_path_identity(git_dir),
+        "git_common_dir": str(git_common_dir),
+        "git_common_dir_identity": _serializable_path_identity(
+            git_common_dir
+        ),
         "branch": branch,
         "head_sha": head_sha,
         "remote": remote,
@@ -5172,20 +5376,37 @@ def _preflight_repo(
         "base_candidate_sha": base_candidate_sha,
         "fetch_refspec": _approved_fetch_refspec(remote, base_branch),
         "staged": staged,
+        "staged_paths_sha256": _sha256_bytes(staged_raw),
         "unstaged": unstaged,
+        "unstaged_paths_sha256": _sha256_bytes(unstaged_raw),
         "untracked": untracked,
+        "untracked_paths_sha256": _sha256_bytes(untracked_raw),
         "conflicts": conflicts,
+        "conflict_paths_sha256": _sha256_bytes(conflicts_raw),
         "operations": operations,
         "dirty": bool(staged or unstaged or untracked or conflicts),
-        "worktree_fingerprint_sha256": fingerprint["sha256"],
-        "capability_profile": fingerprint["capability_profile"],
-        "capability_profile_sha256": fingerprint["capability_profile_sha256"],
-        "tracked_worktree_manifest_sha256": fingerprint[
-            "tracked_worktree_manifest_sha256"
-        ],
         "blockers": blockers,
         "ready": not blockers,
+        "evidence_complete": capture_fingerprint,
+        "capture_phase": (
+            "confirm" if capture_fingerprint else "preview"
+        ),
     }
+    if capture_fingerprint:
+        fingerprint = _fingerprint_repo(repo)
+        evidence.update(
+            {
+                "worktree_fingerprint_sha256": fingerprint["sha256"],
+                "capability_profile": fingerprint["capability_profile"],
+                "capability_profile_sha256": fingerprint[
+                    "capability_profile_sha256"
+                ],
+                "tracked_worktree_manifest_sha256": fingerprint[
+                    "tracked_worktree_manifest_sha256"
+                ],
+            }
+        )
+    return evidence
 
 
 def _baseline_ref(repo: Path, remote: str | None, base_branch: str) -> tuple[str, str]:
@@ -5594,9 +5815,16 @@ def _require_review_gate(state_value: dict[str, Any]) -> tuple[dict[str, Any], d
     return approval, report
 
 
-def _fingerprint_repo_once(repo: Path) -> dict[str, Any]:
+def _fingerprint_repo_once(
+    repo: Path,
+    *,
+    filesystem_capabilities: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     resolved_repo = repo.resolve(strict=True)
-    capability_profile = _git_capability_profile(repo)
+    capability_profile = _git_capability_profile(
+        repo,
+        filesystem_capabilities=filesystem_capabilities,
+    )
     _assert_evidence_supported(repo)
     head = _git_evidence(repo, "rev-parse", "HEAD")
     cached = _git_diff(
@@ -5688,8 +5916,20 @@ def _fingerprint_repo_once(repo: Path) -> dict[str, Any]:
 def _fingerprint_repo(repo: Path) -> dict[str, Any]:
     """Return a complete fingerprint only after two identical observations."""
 
-    first = _fingerprint_repo_once(repo)
-    second = _fingerprint_repo_once(repo)
+    # Filesystem capabilities are stable for the duration of one capture.
+    # Probe them once, while still rebuilding the effective Git profile and
+    # all repository byte evidence independently in both observations.
+    filesystem_capabilities = _probe_worktree_capabilities(
+        repo.resolve(strict=True)
+    )
+    first = _fingerprint_repo_once(
+        repo,
+        filesystem_capabilities=filesystem_capabilities,
+    )
+    second = _fingerprint_repo_once(
+        repo,
+        filesystem_capabilities=filesystem_capabilities,
+    )
     if first.get("sha256") != second.get("sha256"):
         raise FlowError(
             "WORKTREE_CHANGED",
@@ -5909,13 +6149,19 @@ def _index_selection(state_value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _result(command: str, state_value: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    workflow = _workflow_progress(state_value)
     response: dict[str, Any] = {
         "ok": True,
         "command": command,
         "task_id": state_value["task_id"],
         "revision": state_value["revision"],
         "status": state_value["status"],
+        "status_name": workflow["current"]["name"],
         "flow": _flow(state_value),
+        "flow_name": workflow["flow"]["name"],
+        "workspace_strategy": workflow["workspace_strategy"]["id"],
+        "workspace_strategy_name": workflow["workspace_strategy"]["name"],
+        "workflow": workflow,
         "index_selection": _index_selection(state_value),
     }
     response.update(extra)
@@ -5926,12 +6172,80 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
     requirement = (args.requirement_option or args.requirement or "").strip()
     if not requirement:
         raise FlowError("INVALID_ARGUMENT", "start requires a non-empty requirement")
-    flow = getattr(args, "flow", None) or DEFAULT_FLOW
-    if flow not in FLOW_MODES:
+    workspace_strategy = getattr(args, "workspace_strategy", None)
+    if workspace_strategy is None:
+        raise FlowError(
+            "WORKSPACE_STRATEGY_REQUIRED",
+            (
+                "start requires an explicit --workspace-strategy selected "
+                "before task creation"
+            ),
+            details={
+                "choices": [
+                    {
+                        "flow": "lite",
+                        "workspace_strategy": "in-place",
+                        "name": (
+                            f"{WORKSPACE_STRATEGY_NAMES_ZH['in-place']}"
+                            f"（{FLOW_NAMES_ZH['lite']}）"
+                        ),
+                    },
+                    {
+                        "flow": "lite",
+                        "workspace_strategy": "branch",
+                        "name": (
+                            f"{WORKSPACE_STRATEGY_NAMES_ZH['branch']}"
+                            f"（{FLOW_NAMES_ZH['lite']}）"
+                        ),
+                    },
+                    {
+                        "flow": "full",
+                        "workspace_strategy": "worktree",
+                        "name": (
+                            f"{WORKSPACE_STRATEGY_NAMES_ZH['worktree']}"
+                            f"（{FLOW_NAMES_ZH['full']}）"
+                        ),
+                    },
+                ]
+            },
+        )
+    if workspace_strategy not in FLOW_BY_WORKSPACE_STRATEGY:
+        raise FlowError(
+            "INVALID_ARGUMENT",
+            (
+                "workspace strategy must be one of: "
+                f"{', '.join(WORKSPACE_STRATEGIES)}"
+            ),
+            details={"workspace_strategy": workspace_strategy},
+        )
+    inferred_flow = FLOW_BY_WORKSPACE_STRATEGY[workspace_strategy]
+    requested_flow = getattr(args, "flow", None)
+    if requested_flow is not None and requested_flow not in FLOW_MODES:
         raise FlowError(
             "INVALID_ARGUMENT",
             f"flow must be one of: {', '.join(FLOW_MODES)}",
-            details={"flow": flow},
+            details={"flow": requested_flow},
+        )
+    flow = requested_flow or inferred_flow
+    if flow != inferred_flow:
+        raise FlowError(
+            "FLOW_WORKSPACE_STRATEGY_MISMATCH",
+            (
+                f"workspace strategy {workspace_strategy!r} is not valid "
+                f"for the {flow} flow"
+            ),
+            details={
+                "flow": flow,
+                "workspace_strategy": workspace_strategy,
+                "inferred_flow": inferred_flow,
+                "allowed": [
+                    strategy
+                    for strategy, strategy_flow in (
+                        FLOW_BY_WORKSPACE_STRATEGY.items()
+                    )
+                    if strategy_flow == flow
+                ],
+            },
         )
     task_id = args.task_id or f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     _validate_task_id(task_id)
@@ -5968,7 +6282,85 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 },
             )
         common_dirs.append((common_dir, root))
-    protected = list(dict.fromkeys(args.protected_branch or DEFAULT_PROTECTED_BRANCHES))
+    protected = list(
+        dict.fromkeys(
+            [*DEFAULT_PROTECTED_BRANCHES, *(args.protected_branch or [])]
+        )
+    )
+    branch_bindings: dict[str, dict[str, Any]] = {}
+    if workspace_strategy == "branch":
+        for root in roots:
+            branch = _git_optional(
+                root, "symbolic-ref", "--quiet", "--short", "HEAD"
+            )
+            if not branch:
+                raise FlowError(
+                    "BRANCH_STRATEGY_NOT_READY",
+                    (
+                        "branch workspace strategy requires a named branch "
+                        "to be checked out before start"
+                    ),
+                    details={"repository": str(root), "branch": branch},
+                )
+            head_ref = _git_optional(
+                root,
+                "symbolic-ref",
+                "--quiet",
+                "--no-recurse",
+                "HEAD",
+            )
+            branch_ref = f"refs/heads/{branch}"
+            if head_ref != branch_ref:
+                raise FlowError(
+                    "SYMBOLIC_WORKSPACE_BRANCH",
+                    (
+                        "branch workspace strategy requires HEAD to point "
+                        "directly at the selected local branch"
+                    ),
+                    details={
+                        "repository": str(root),
+                        "branch": branch,
+                        "branch_ref": branch_ref,
+                        "head_ref": head_ref,
+                    },
+                )
+            default_remote = _default_remote(root, branch)
+            resolved_base = _default_base(
+                root,
+                default_remote,
+                branch,
+                protected,
+            )
+            protected_for_repo = [
+                *protected,
+                *([resolved_base] if resolved_base else []),
+            ]
+            branch_state = _branch_ref_state(
+                root,
+                branch,
+                protected_for_repo,
+            )
+            head_sha = _git(root, "rev-parse", "HEAD")
+            if branch_state.get("planned_ref_oid") != head_sha:
+                raise FlowError(
+                    "CHECKOUT_DRIFT",
+                    "checked-out branch does not resolve to the current HEAD",
+                    details={
+                        "repository": str(root),
+                        "approved_branch": branch,
+                        "actual_branch": branch,
+                        "approved_head_sha": branch_state.get(
+                            "planned_ref_oid"
+                        ),
+                        "actual_head_sha": head_sha,
+                    },
+                )
+            branch_bindings[str(root)] = {
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+                "branch": branch,
+                "head_sha": head_sha,
+                "initial_preflight_confirmed": False,
+            }
     repositories: list[dict[str, Any]] = []
     ids: set[str] = set()
     for root in roots:
@@ -5980,6 +6372,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 "path": str(root),
                 "canonical_path": str(root),
                 "protected_branches": protected,
+                "branch_binding": branch_bindings.get(str(root)),
                 "preflight": None,
                 "baseline": None,
                 "analysis_workspace": None,
@@ -6050,7 +6443,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 "impact_generation": 0,
                 "planning_generation": 0,
                 "workspace": {
-                    "strategy": "in-place" if flow == "lite" else "worktree",
+                    "strategy": workspace_strategy,
                     "ready": False,
                     "generation": 0,
                 },
@@ -6216,6 +6609,278 @@ def command_recover_quarantine(
     )
 
 
+def _atomic_evidence_summary(path: Path) -> dict[str, Any]:
+    """Describe one side of a rollback pair well enough to decide about it."""
+
+    summary: dict[str, Any] = {"path": str(path), "present": path.is_file()}
+    if not summary["present"]:
+        return summary
+    try:
+        summary["size"] = path.stat().st_size
+        summary["sha256"] = _sha256_file(path)
+        raw = path.read_bytes()
+    except OSError as exc:
+        summary["readable"] = False
+        summary["error"] = str(exc)
+        return summary
+    summary["readable"] = True
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        summary["json"] = False
+        return summary
+    summary["json"] = True
+    if isinstance(value, dict):
+        summary["schema"] = {
+            key: value.get(key)
+            for key in (
+                "schema_version",
+                "evidence_contract_version",
+                "task_id",
+                "status",
+                "revision",
+                "updated_at",
+            )
+            if key in value
+        }
+    return summary
+
+
+def _classify_rollback_candidate(
+    destination: Path, rollback: Path
+) -> dict[str, Any]:
+    """Decide whether rollback evidence can be cleared without a choice."""
+
+    destination_summary = _atomic_evidence_summary(destination)
+    rollback_summary = _atomic_evidence_summary(rollback)
+    if destination_summary.get("present") and destination_summary.get(
+        "sha256"
+    ) == rollback_summary.get("sha256"):
+        # The interrupted writer either had not replaced the destination yet
+        # or had already restored it; the evidence is a proven duplicate.
+        resolution = "identical"
+    elif (
+        not destination_summary.get("present")
+        and rollback_summary.get("size") == 0
+    ):
+        # The interrupted write was creating a new file, so the empty
+        # placeholder preserves nothing and no destination was committed.
+        resolution = "uncommitted"
+    else:
+        resolution = "mismatch"
+    return {
+        "resolution": resolution,
+        "destination": destination_summary,
+        "rollback": rollback_summary,
+    }
+
+
+def _atomic_rollback_candidates(
+    data_root: Path,
+) -> list[tuple[Path, Path]]:
+    """Every controller-owned destination that still carries rollback evidence.
+
+    The scan covers the controller's own state files only: the data root and
+    every task directory.  Managed worktrees hold repository content, never
+    atomically written controller state.
+    """
+
+    found: list[Path] = []
+    if data_root.is_dir():
+        found.extend(sorted(data_root.glob(f".*{_ROLLBACK_MARKER}*")))
+        tasks_root = data_root / "tasks"
+        if tasks_root.is_dir():
+            found.extend(
+                sorted(tasks_root.rglob(f".*{_ROLLBACK_MARKER}*"))
+            )
+    pairs: list[tuple[Path, Path]] = []
+    for candidate in found:
+        if not candidate.is_file():
+            continue
+        destination = _rollback_evidence_destination(candidate)
+        if destination is None:
+            continue
+        pairs.append((destination, candidate))
+    return pairs
+
+
+def _atomic_recovery_lock(
+    data_root: Path, destination: Path
+) -> contextlib.AbstractContextManager[None]:
+    """Hold the same lock the interrupted writer of this file would hold."""
+
+    tasks_root = data_root / "tasks"
+    try:
+        relative = destination.relative_to(tasks_root)
+    except ValueError:
+        relative = None
+    if relative is not None and relative.parts:
+        # A quarantined task is exactly the case that needs recovering.
+        return _task_lock(
+            tasks_root / relative.parts[0], allow_quarantine=True
+        )
+    if destination.parent == data_root:
+        if destination.name == "config.json":
+            return _config_lock(data_root)
+        if destination.name == "workspace-registry.json":
+            return _workspace_registry_lock(data_root)
+    return contextlib.nullcontext()
+
+
+def _discard_rollback_evidence(rollback: Path) -> None:
+    try:
+        rollback.unlink()
+    except OSError as exc:
+        raise FlowError(
+            "ATOMIC_ROLLBACK_CLEANUP_FAILED",
+            "rollback evidence could not be removed",
+            details={"rollback": str(rollback), "error": str(exc)},
+        ) from exc
+
+
+def _restore_rollback_evidence(destination: Path, rollback: Path) -> None:
+    try:
+        os.replace(rollback, destination)
+    except OSError as exc:
+        raise FlowError(
+            "ATOMIC_ROLLBACK_RESTORE_FAILED",
+            "rollback evidence could not be restored over the destination",
+            details={
+                "path": str(destination),
+                "rollback": str(rollback),
+                "error": str(exc),
+            },
+        ) from exc
+    _set_private_permissions(destination, 0o600)
+
+
+def command_recover_atomic_write(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    data_root = resolve_data_dir(args.data_dir)
+    selected: Path | None = None
+    if args.path:
+        supplied = Path(args.path).expanduser()
+        if not supplied.is_absolute():
+            raise FlowError(
+                "INVALID_ARGUMENT",
+                "--path requires an absolute path",
+                details={"path": args.path},
+            )
+        # Both spellings are accepted: the blocked destination, or one of the
+        # rollback files named by details.rollback_candidates.
+        selected = _rollback_evidence_destination(supplied) or supplied
+    if args.resolve and selected is None:
+        raise FlowError(
+            "INVALID_ARGUMENT",
+            "--resolve requires --path naming one blocked destination",
+        )
+    if args.rollback_sha256 and not SHA256_RE.fullmatch(
+        args.rollback_sha256
+    ):
+        raise FlowError(
+            "INVALID_ARGUMENT",
+            "--rollback-sha256 must be 64 lowercase hexadecimal characters",
+        )
+    candidates = [
+        pair
+        for pair in _atomic_rollback_candidates(data_root)
+        if selected is None or _same_path(pair[0], selected)
+    ]
+    reports = [
+        _classify_rollback_candidate(destination, rollback)
+        for destination, rollback in candidates
+    ]
+    response: dict[str, Any] = {
+        "ok": True,
+        "command": "recover-atomic-write",
+        "data_dir": str(data_root),
+        "changed": False,
+        "candidates": reports,
+        "removed": [],
+        "restored": [],
+    }
+    if not (args.apply or args.resolve):
+        return response
+    if not candidates:
+        raise FlowError(
+            "ATOMIC_ROLLBACK_NOT_FOUND",
+            "no rollback evidence is present for the selected scope",
+            details={
+                "data_dir": str(data_root),
+                "path": str(selected) if selected else None,
+            },
+        )
+    if args.resolve:
+        if len(candidates) > 1:
+            raise FlowError(
+                "ATOMIC_ROLLBACK_AMBIGUOUS",
+                "--resolve needs exactly one rollback file; name it with --path",
+                details={
+                    "path": str(selected),
+                    "rollback_candidates": [
+                        str(rollback) for _, rollback in candidates
+                    ],
+                },
+            )
+        if not args.rollback_sha256:
+            raise FlowError(
+                "INVALID_ARGUMENT",
+                "--resolve requires --rollback-sha256 naming the inspected evidence",
+                details={"candidate": reports[0]},
+            )
+        destination, rollback = candidates[0]
+        with _atomic_recovery_lock(data_root, destination):
+            report = _classify_rollback_candidate(destination, rollback)
+            if report["rollback"].get("sha256") != args.rollback_sha256:
+                raise FlowError(
+                    "ATOMIC_ROLLBACK_MISMATCH",
+                    "--rollback-sha256 does not name the current rollback evidence",
+                    details={
+                        "expected_sha256": report["rollback"].get("sha256"),
+                        "provided_sha256": args.rollback_sha256,
+                        "candidate": report,
+                    },
+                )
+            if args.resolve == "restore-rollback":
+                _restore_rollback_evidence(destination, rollback)
+                response["restored"].append(str(destination))
+            else:
+                _discard_rollback_evidence(rollback)
+                response["removed"].append(str(rollback))
+        response["changed"] = True
+        response["candidates"] = [report]
+        response["resolved"] = args.resolve
+        return response
+    blocked: list[dict[str, Any]] = []
+    for destination, rollback in candidates:
+        with _atomic_recovery_lock(data_root, destination):
+            report = _classify_rollback_candidate(destination, rollback)
+            if report["resolution"] == "mismatch":
+                blocked.append(report)
+                continue
+            _discard_rollback_evidence(rollback)
+        response["removed"].append(str(rollback))
+    response["changed"] = bool(response["removed"])
+    if blocked:
+        # Fail closed: differing content is a decision about committed state,
+        # never something this command may make on the user's behalf.
+        raise FlowError(
+            "ATOMIC_ROLLBACK_MISMATCH",
+            (
+                "rollback evidence differs from the committed destination and "
+                "needs an explicit resolution"
+            ),
+            details={
+                "data_dir": str(data_root),
+                "removed": response["removed"],
+                "blocked": blocked,
+                "resolutions": ["keep-current", "restore-rollback"],
+            },
+        )
+    return response
+
+
 def command_list(args: argparse.Namespace) -> dict[str, Any]:
     tasks_dir = resolve_data_dir(args.data_dir) / "tasks"
     values: list[dict[str, Any]] = []
@@ -6231,12 +6896,19 @@ def command_list(args: argparse.Namespace) -> dict[str, Any]:
                 continue
             if args.status and state_value.get("status") not in args.status:
                 continue
+            workflow = _workflow_progress(state_value)
             values.append(
                 {
                     "task_id": state_value.get("task_id"),
                     "requirement": state_value.get("requirement"),
                     "status": state_value.get("status"),
-                    "flow": _flow(state_value),
+                    "status_name": workflow["current"]["name"],
+                    "flow": workflow["flow"]["id"],
+                    "flow_name": workflow["flow"]["name"],
+                    "workspace_strategy": workflow["workspace_strategy"]["id"],
+                    "workspace_strategy_name": workflow[
+                        "workspace_strategy"
+                    ]["name"],
                     "revision": state_value.get("revision"),
                     "updated_at": state_value.get("updated_at"),
                     "repositories": [repo.get("path") for repo in state_value.get("repositories", [])],
@@ -6340,36 +7012,699 @@ def command_scope(args: argparse.Namespace) -> dict[str, Any]:
     return response
 
 
+PREFLIGHT_PREVIEW_TOKEN_VERSION = "v2"
+PREFLIGHT_DECISION_FIELDS = (
+    "evidence_contract_version",
+    "repository_root",
+    "repository_path_identity",
+    "repository_root_identity",
+    "git_dir",
+    "git_dir_identity",
+    "git_common_dir",
+    "git_common_dir_identity",
+    "branch",
+    "head_sha",
+    "remote",
+    "remote_url",
+    "base_branch",
+    "base_candidate_ref",
+    "base_candidate_sha",
+    "fetch_refspec",
+    "conflicts",
+    "conflict_paths_sha256",
+    "operations",
+    "blockers",
+    "ready",
+)
+PREFLIGHT_OBSERVATION_FIELDS = (
+    *PREFLIGHT_DECISION_FIELDS,
+    "staged",
+    "staged_paths_sha256",
+    "unstaged",
+    "unstaged_paths_sha256",
+    "untracked",
+    "untracked_paths_sha256",
+    "dirty",
+)
+PREFLIGHT_LIST_FIELDS = {
+    "blockers",
+    "conflicts",
+    "staged",
+    "unstaged",
+    "untracked",
+}
+def _preflight_repository_projection(
+    selected: list[dict[str, Any]],
+    fields: Sequence[str],
+) -> list[dict[str, Any]]:
+    repositories: list[dict[str, Any]] = []
+    for repo in selected:
+        evidence = repo["preflight"]
+        projected: dict[str, Any] = {}
+        for field in fields:
+            value = evidence.get(field)
+            if field in PREFLIGHT_LIST_FIELDS and isinstance(value, list):
+                value = sorted(value)
+            projected[field] = value
+        repositories.append(
+            {
+                "id": repo["id"],
+                "path": repo.get("canonical_path") or repo.get("path"),
+                "preflight": projected,
+            }
+        )
+    repositories.sort(key=lambda item: str(item["id"]))
+    return repositories
+
+
+def _preflight_preview_hashes(
+    current: dict[str, Any],
+    state_value: dict[str, Any],
+    selected: list[dict[str, Any]],
+    blockers: list[dict[str, Any]],
+    selection_complete: bool,
+    args: argparse.Namespace,
+) -> tuple[str, str]:
+    common = {
+        "task_id": current["task_id"],
+        "revision": current["revision"],
+        "from_status": current["status"],
+        "to_status": state_value["status"],
+        "flow": _flow(state_value),
+        "workspace_strategy": _workspace_strategy(state_value),
+        "repository_ids": sorted(repo["id"] for repo in selected),
+        "selection_complete": selection_complete,
+        "all_checked": all(
+            repo.get("preflight") is not None
+            for repo in state_value.get("repositories", [])
+        ),
+        "remote_override": args.remote,
+        "base_override": args.base,
+        "blockers": sorted(
+            (
+                {
+                    "repository_id": item["repository_id"],
+                    "blockers": sorted(item["blockers"]),
+                }
+                for item in blockers
+            ),
+            key=lambda item: str(item["repository_id"]),
+        ),
+    }
+    decision_payload = {
+        **common,
+        "repositories": _preflight_repository_projection(
+            selected,
+            PREFLIGHT_DECISION_FIELDS,
+        ),
+    }
+    observation_payload = {
+        **common,
+        "repositories": _preflight_repository_projection(
+            selected,
+            PREFLIGHT_OBSERVATION_FIELDS,
+        ),
+    }
+    return (
+        _sha256_bytes(_json_bytes(decision_payload)),
+        _sha256_bytes(_json_bytes(observation_payload)),
+    )
+
+
+def _preflight_preview_token(
+    decision_sha256: str,
+    observation_sha256: str,
+) -> str:
+    return (
+        f"{PREFLIGHT_PREVIEW_TOKEN_VERSION}:"
+        f"{decision_sha256}:{observation_sha256}"
+    )
+
+
+def _parse_preflight_preview_token(token: str | None) -> tuple[str | None, str | None]:
+    if not isinstance(token, str):
+        return None, None
+    version, separator, remainder = token.partition(":")
+    decision_sha256, second_separator, observation_sha256 = (
+        remainder.partition(":")
+    )
+    if (
+        version != PREFLIGHT_PREVIEW_TOKEN_VERSION
+        or not separator
+        or not second_separator
+        or not SHA256_RE.fullmatch(decision_sha256)
+        or not SHA256_RE.fullmatch(observation_sha256)
+    ):
+        return None, None
+    return decision_sha256, observation_sha256
+
+
+def _assert_branch_checkout_binding(
+    state_value: dict[str, Any], repo: dict[str, Any]
+) -> None:
+    if _workspace_strategy(state_value) != "branch":
+        return
+    binding = repo.get("branch_binding")
+    if not isinstance(binding, dict):
+        raise FlowError(
+            "CHECKOUT_BINDING_MISSING",
+            "branch workspace task has no start-time checkout binding",
+            details={"repository_id": repo.get("id")},
+        )
+    _require_current_evidence(
+        binding, f"branch-binding:{repo.get('id')}"
+    )
+    path = Path(repo["path"])
+    actual_branch = _git_optional(
+        path, "symbolic-ref", "--quiet", "--short", "HEAD"
+    )
+    actual_head_ref = _git_optional(
+        path,
+        "symbolic-ref",
+        "--quiet",
+        "--no-recurse",
+        "HEAD",
+    )
+    actual_head = _git_optional(path, "rev-parse", "HEAD")
+    approved_branch = binding.get("branch")
+    approved_head_ref = (
+        f"refs/heads/{approved_branch}"
+        if isinstance(approved_branch, str)
+        else None
+    )
+    approved_head = binding.get("head_sha")
+    initial_head_required = (
+        binding.get("initial_preflight_confirmed") is not True
+    )
+    if (
+        actual_branch != approved_branch
+        or actual_head_ref != approved_head_ref
+        or (initial_head_required and actual_head != approved_head)
+    ):
+        raise FlowError(
+            "CHECKOUT_DRIFT",
+            "branch workspace checkout changed after task start",
+            details={
+                "repository_id": repo.get("id"),
+                "approved_branch": approved_branch,
+                "actual_branch": actual_branch,
+                "approved_head_ref": approved_head_ref,
+                "actual_head_ref": actual_head_ref,
+                "approved_head_sha": approved_head,
+                "actual_head_sha": actual_head,
+                "initial_head_required": initial_head_required,
+            },
+        )
+
+
+def _guard_branch_workspace_base(
+    state_value: dict[str, Any],
+    repo: dict[str, Any],
+    evidence: dict[str, Any],
+) -> None:
+    if _workspace_strategy(state_value) != "branch":
+        return
+    branch = evidence.get("branch")
+    base_branch = evidence.get("base_branch")
+    if not isinstance(branch, str) or not isinstance(base_branch, str):
+        return
+    try:
+        _branch_ref_state(
+            Path(repo["path"]),
+            branch,
+            [base_branch],
+        )
+    except FlowError as exc:
+        if exc.code != "PROTECTED_BRANCH":
+            raise
+        blockers = evidence.setdefault("blockers", [])
+        if "branch_matches_base" not in blockers:
+            blockers.append("branch_matches_base")
+        evidence["ready"] = False
+
+
+def _preflight_blockers(
+    state_value: dict[str, Any],
+    selected: list[dict[str, Any]],
+    selection_complete: bool,
+) -> list[dict[str, Any]]:
+    repositories = (
+        state_value["repositories"] if selection_complete else selected
+    )
+    return [
+        {
+            "repository_id": repo["id"],
+            "blockers": repo["preflight"]["blockers"],
+        }
+        for repo in repositories
+        if repo.get("preflight") and repo["preflight"]["blockers"]
+    ]
+
+
+def _apply_preflight_outcome(
+    current: dict[str, Any],
+    state_value: dict[str, Any],
+    *,
+    selection_complete: bool,
+    all_checked: bool,
+    blockers: list[dict[str, Any]],
+) -> None:
+    if selection_complete and blockers:
+        previous = (
+            current["status"]
+            if current["status"] != "BLOCKED"
+            else (current.get("blocked") or {}).get(
+                "from_status",
+                "INTAKE",
+            )
+        )
+        state_value["status"] = "BLOCKED"
+        state_value["blocked"] = {
+            "phase": "preflight",
+            "from_status": previous,
+            "reason": "preflight blockers detected",
+            "details": blockers,
+            "at": utc_now(),
+        }
+    elif selection_complete and all_checked:
+        state_value["status"] = "PREFLIGHTED"
+        state_value["blocked"] = None
+
+
 def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
+    if args.preview and args.confirm_preview:
+        raise FlowError(
+            "INVALID_ARGUMENT",
+            "preflight accepts either --preview or --confirm-preview, not both",
+        )
+    if getattr(args, "accept_evidence_refresh", False) and not args.confirm_preview:
+        raise FlowError(
+            "INVALID_ARGUMENT",
+            "--accept-evidence-refresh requires --confirm-preview",
+        )
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+        if not args.preview and not args.confirm_preview:
+            raise FlowError(
+                "PREFLIGHT_PREVIEW_REQUIRED",
+                (
+                    "preflight must first run with --preview, then rerun with "
+                    "--confirm-preview <token> after any required status-edge confirmation"
+                ),
+            )
         allowed = {"INTAKE", "PREFLIGHTED"}
         if current.get("status") == "BLOCKED" and (current.get("blocked") or {}).get("phase") == "preflight":
             allowed.add("BLOCKED")
         _assert_status(current, allowed, "preflight")
         state_value = _copy_state(current)
         selected = _repo_by_selector(state_value, args.repo)
+        selected_ids = {repo["id"] for repo in selected}
+        configured_ids = {
+            repo["id"] for repo in state_value["repositories"]
+        }
+        selection_complete = selected_ids == configured_ids
+        if (
+            current.get("status") == "PREFLIGHTED"
+            and not selection_complete
+        ):
+            raise FlowError(
+                "PREFLIGHT_FULL_SELECTION_REQUIRED",
+                (
+                    "refreshing a preflighted task requires selecting every "
+                    "configured repository"
+                ),
+                details={
+                    "selected_repository_ids": sorted(selected_ids),
+                    "required_repository_ids": sorted(configured_ids),
+                },
+            )
         for repo in selected:
-            repo["preflight"] = _preflight_repo(repo, args.remote, args.base)
+            try:
+                _assert_branch_checkout_binding(state_value, repo)
+            except FlowError as exc:
+                if (
+                    args.confirm_preview
+                    and exc.code == "CHECKOUT_DRIFT"
+                ):
+                    raise FlowError(
+                        "PREFLIGHT_PREVIEW_STALE",
+                        (
+                            "branch checkout changed after preview; rerun "
+                            "--preview after restoring the approved checkout"
+                        ),
+                        details=exc.details,
+                    ) from exc
+                raise
+            repo["preflight"] = _preflight_repo(
+                repo,
+                args.remote,
+                args.base,
+                capture_fingerprint=False,
+            )
+            _guard_branch_workspace_base(
+                state_value, repo, repo["preflight"]
+            )
         all_checked = all(repo.get("preflight") is not None for repo in state_value["repositories"])
-        blockers = [
-            {"repository_id": repo["id"], "blockers": repo["preflight"]["blockers"]}
-            for repo in state_value["repositories"]
-            if repo.get("preflight") and repo["preflight"]["blockers"]
+        blockers = _preflight_blockers(
+            state_value,
+            selected,
+            selection_complete,
+        )
+        _apply_preflight_outcome(
+            current,
+            state_value,
+            selection_complete=selection_complete,
+            all_checked=all_checked,
+            blockers=blockers,
+        )
+        decision_sha256, observation_sha256 = _preflight_preview_hashes(
+            current,
+            state_value,
+            selected,
+            blockers,
+            selection_complete,
+            args,
+        )
+        preview_token = _preflight_preview_token(
+            decision_sha256,
+            observation_sha256,
+        )
+        prospective_workflow = _workflow_progress(state_value)
+        transition_preview = {
+            "token": preview_token,
+            "decision_sha256": decision_sha256,
+            "observation_sha256": observation_sha256,
+            "changes_status": state_value["status"] != current["status"],
+            "from": {
+                "id": current["status"],
+                "name": STATE_NAMES_ZH.get(current["status"], current["status"]),
+            },
+            "target": prospective_workflow["current"],
+            "remaining": prospective_workflow["remaining"],
+        }
+        repositories = [
+            {"id": repo["id"], "preflight": repo["preflight"]}
+            for repo in selected
         ]
-        if blockers:
-            previous = current["status"] if current["status"] != "BLOCKED" else (current.get("blocked") or {}).get("from_status", "INTAKE")
-            state_value["status"] = "BLOCKED"
-            state_value["blocked"] = {
-                "phase": "preflight",
-                "from_status": previous,
-                "reason": "preflight blockers detected",
-                "details": blockers,
-                "at": utc_now(),
-            }
-        elif all_checked:
-            state_value["status"] = "PREFLIGHTED"
-            state_value["blocked"] = None
+        if args.preview:
+            return _result(
+                "preflight-preview",
+                current,
+                ready=selection_complete and all_checked and not blockers,
+                selection_complete=selection_complete,
+                confirmation_scope={
+                    "decision": "must_remain_unchanged",
+                    "observation": (
+                        "refresh_requires_explicit_acceptance"
+                    ),
+                    "evidence": "captured_on_confirm",
+                },
+                transition_preview=transition_preview,
+                repositories=repositories,
+            )
+        (
+            approved_decision_sha256,
+            approved_observation_sha256,
+        ) = _parse_preflight_preview_token(args.confirm_preview)
+        token_contract_current = (
+            isinstance(args.confirm_preview, str)
+            and args.confirm_preview.startswith(
+                f"{PREFLIGHT_PREVIEW_TOKEN_VERSION}:"
+            )
+        )
+        if (
+            approved_decision_sha256 is None
+            or not secrets.compare_digest(
+                approved_decision_sha256,
+                decision_sha256,
+            )
+        ):
+            raise FlowError(
+                "PREFLIGHT_PREVIEW_STALE",
+                (
+                    "the preflight status decision changed after preview; rerun "
+                    "--preview and confirm the newly reported status edge"
+                ),
+                details={
+                    "reason": (
+                        "status_decision_changed"
+                        if approved_decision_sha256 is not None
+                        else (
+                            "invalid_token"
+                            if token_contract_current
+                            else "token_contract_changed"
+                        )
+                    ),
+                    "from_status": current["status"],
+                    "prospective_status": state_value["status"],
+                    "revision": current["revision"],
+                    "approved_decision_sha256": approved_decision_sha256,
+                    "current_decision_sha256": decision_sha256,
+                },
+            )
+        observation_changed_before_capture = (
+            approved_observation_sha256 is None
+            or not secrets.compare_digest(
+                approved_observation_sha256,
+                observation_sha256,
+            )
+        )
+        if (
+            observation_changed_before_capture
+            and not args.accept_evidence_refresh
+        ):
+            raise FlowError(
+                "PREFLIGHT_EVIDENCE_REFRESH_REQUIRED",
+                (
+                    "the preflight worktree summary changed after preview; "
+                    "inspect the current evidence and rerun the same token with "
+                    "--accept-evidence-refresh"
+                ),
+                details={
+                    "token_reusable": True,
+                    "required_flag": "--accept-evidence-refresh",
+                    "acceptance_scope": (
+                        "current_observation_at_successful_confirm"
+                    ),
+                    "preview_observation_sha256": (
+                        approved_observation_sha256
+                    ),
+                    "current_observation_sha256": observation_sha256,
+                    "repositories": repositories,
+                },
+            )
+
+        captured_fingerprints: dict[str, dict[str, Any]] = {}
+        for repo in selected:
+            captured_fingerprints[repo["id"]] = _fingerprint_repo(
+                Path(repo["path"])
+            )
+
+        # Re-sample every selected repository only after all complete
+        # fingerprints have finished. This detects decision-level drift
+        # observed after capture across every repository without repeating the
+        # byte-complete scan; external repositories cannot form one atomic
+        # cross-repository snapshot.
+        for repo in selected:
+            try:
+                _assert_branch_checkout_binding(state_value, repo)
+            except FlowError as exc:
+                if exc.code == "CHECKOUT_DRIFT":
+                    raise FlowError(
+                        "PREFLIGHT_PREVIEW_STALE",
+                        (
+                            "branch checkout changed while preflight evidence "
+                            "was captured; rerun --preview"
+                        ),
+                        details={
+                            **exc.details,
+                            "reason": "decision_changed_during_capture",
+                        },
+                    ) from exc
+                raise
+            post_capture = _preflight_repo(
+                repo,
+                args.remote,
+                args.base,
+                capture_fingerprint=False,
+            )
+            _guard_branch_workspace_base(
+                state_value,
+                repo,
+                post_capture,
+            )
+            fingerprint = captured_fingerprints[repo["id"]]
+            identity_matches = (
+                isinstance(fingerprint.get("path"), str)
+                and _same_path(
+                    Path(fingerprint["path"]),
+                    Path(repo["path"]),
+                )
+                and isinstance(fingerprint.get("root"), str)
+                and _same_path(
+                    Path(fingerprint["root"]),
+                    Path(post_capture["repository_root"]),
+                )
+                and isinstance(fingerprint.get("git_dir"), str)
+                and _same_path(
+                    Path(fingerprint["git_dir"]),
+                    Path(post_capture["git_dir"]),
+                )
+                and isinstance(fingerprint.get("git_common_dir"), str)
+                and _same_path(
+                    Path(fingerprint["git_common_dir"]),
+                    Path(post_capture["git_common_dir"]),
+                )
+                and fingerprint.get("branch")
+                == post_capture.get("branch")
+                and fingerprint.get("head_sha")
+                == post_capture.get("head_sha")
+            )
+            if not identity_matches:
+                raise FlowError(
+                    "PREFLIGHT_PREVIEW_STALE",
+                    (
+                        "repository identity changed while complete preflight "
+                        "evidence was captured; rerun --preview"
+                    ),
+                    details={
+                        "repository_id": repo["id"],
+                        "reason": "decision_changed_during_capture",
+                        "fingerprint_branch": fingerprint.get("branch"),
+                        "observed_branch": post_capture.get("branch"),
+                        "fingerprint_head_sha": fingerprint.get("head_sha"),
+                        "observed_head_sha": post_capture.get("head_sha"),
+                    },
+                )
+            post_capture.update(
+                {
+                    "evidence_complete": True,
+                    "capture_phase": "confirm",
+                    "worktree_fingerprint_sha256": fingerprint["sha256"],
+                    "capability_profile": fingerprint[
+                        "capability_profile"
+                    ],
+                    "capability_profile_sha256": fingerprint[
+                        "capability_profile_sha256"
+                    ],
+                    "tracked_worktree_manifest_sha256": fingerprint[
+                        "tracked_worktree_manifest_sha256"
+                    ],
+                }
+            )
+            repo["preflight"] = post_capture
+
+        all_checked = all(
+            repo.get("preflight") is not None
+            for repo in state_value["repositories"]
+        )
+        blockers = _preflight_blockers(
+            state_value,
+            selected,
+            selection_complete,
+        )
+        state_value["status"] = current["status"]
+        state_value["blocked"] = _copy_state(current).get("blocked")
+        _apply_preflight_outcome(
+            current,
+            state_value,
+            selection_complete=selection_complete,
+            all_checked=all_checked,
+            blockers=blockers,
+        )
+        post_decision_sha256, captured_observation_sha256 = (
+            _preflight_preview_hashes(
+                current,
+                state_value,
+                selected,
+                blockers,
+                selection_complete,
+                args,
+            )
+        )
+        if not secrets.compare_digest(
+            decision_sha256,
+            post_decision_sha256,
+        ):
+            raise FlowError(
+                "PREFLIGHT_PREVIEW_STALE",
+                (
+                    "the preflight status decision changed while complete "
+                    "evidence was captured; rerun --preview"
+                ),
+                details={
+                    "reason": "decision_changed_during_capture",
+                    "before_capture_decision_sha256": decision_sha256,
+                    "after_capture_decision_sha256": (
+                        post_decision_sha256
+                    ),
+                    "from_status": current["status"],
+                    "prospective_status": state_value["status"],
+                    "revision": current["revision"],
+                },
+            )
+        observation_changed_since_preview = (
+            approved_observation_sha256 is None
+            or not secrets.compare_digest(
+                approved_observation_sha256,
+                captured_observation_sha256,
+            )
+        )
+        evidence_refresh_observed = (
+            observation_changed_before_capture
+            or observation_changed_since_preview
+        )
+        evidence_refresh_accepted = bool(
+            args.accept_evidence_refresh
+            and evidence_refresh_observed
+        )
+        repositories = [
+            {"id": repo["id"], "preflight": repo["preflight"]}
+            for repo in selected
+        ]
+        if (
+            observation_changed_since_preview
+            and not args.accept_evidence_refresh
+        ):
+            raise FlowError(
+                "PREFLIGHT_EVIDENCE_REFRESH_REQUIRED",
+                (
+                    "the preflight worktree summary changed while complete "
+                    "evidence was captured; inspect the current evidence and "
+                    "rerun the same token with --accept-evidence-refresh"
+                ),
+                details={
+                    "token_reusable": True,
+                    "required_flag": "--accept-evidence-refresh",
+                    "acceptance_scope": (
+                        "current_observation_at_successful_confirm"
+                    ),
+                    "preview_observation_sha256": (
+                        approved_observation_sha256
+                    ),
+                    "current_observation_sha256": (
+                        captured_observation_sha256
+                    ),
+                    "repositories": repositories,
+                },
+            )
+        if (
+            selection_complete
+            and state_value["status"] == "PREFLIGHTED"
+            and _workspace_strategy(state_value) == "branch"
+        ):
+            for repo in state_value["repositories"]:
+                binding = repo.get("branch_binding")
+                if not isinstance(binding, dict):
+                    raise FlowError(
+                        "CHECKOUT_BINDING_MISSING",
+                        (
+                            "branch workspace task has no start-time "
+                            "checkout binding"
+                        ),
+                        details={"repository_id": repo.get("id")},
+                    )
+                binding["initial_preflight_confirmed"] = True
         # Remote/base selection and HEAD evidence were just refreshed.  A
         # previous baseline or lite approval must never authorize this new
         # preflight.
@@ -6380,13 +7715,53 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
             state_value,
             task_dir,
             "preflight_recorded",
-            {"repository_ids": [repo["id"] for repo in selected], "blockers": blockers},
+            {
+                "repository_ids": [repo["id"] for repo in selected],
+                "blockers": blockers,
+                "decision_sha256": post_decision_sha256,
+                "preview_observation_sha256": (
+                    approved_observation_sha256
+                ),
+                "captured_observation_sha256": (
+                    captured_observation_sha256
+                ),
+                "evidence_refreshed_since_preview": (
+                    evidence_refresh_observed
+                ),
+                "evidence_refresh_accepted": evidence_refresh_accepted,
+                "accepted_observation_sha256": (
+                    captured_observation_sha256
+                    if evidence_refresh_accepted
+                    else None
+                ),
+            },
         )
     return _result(
         "preflight",
         state_value,
-        ready=all_checked and not blockers,
-        repositories=[{"id": repo["id"], "preflight": repo["preflight"]} for repo in selected],
+        ready=selection_complete and all_checked and not blockers,
+        selection_complete=selection_complete,
+        transition_preview=transition_preview,
+        evidence_refreshed_since_preview=(
+            evidence_refresh_observed
+        ),
+        evidence_refresh_accepted=evidence_refresh_accepted,
+        preview_observation_sha256=approved_observation_sha256,
+        captured_observation_sha256=captured_observation_sha256,
+        confirmed_preview={
+            "token": args.confirm_preview,
+            "decision_sha256": post_decision_sha256,
+            "preview_observation_sha256": (
+                approved_observation_sha256
+            ),
+            "captured_observation_sha256": (
+                captured_observation_sha256
+            ),
+            "evidence_refresh_accepted": (
+                evidence_refresh_accepted
+            ),
+        },
+        repositories=repositories,
     )
 
 
@@ -6610,6 +7985,7 @@ def _require_lite_gate(
         )
     for repo in state_value.get("repositories", []):
         preflight = repo.get("preflight") or {}
+        _assert_branch_checkout_binding(state_value, repo)
         path = Path(repo["path"])
         actual_branch = _git_optional(
             path, "symbolic-ref", "--quiet", "--short", "HEAD"
@@ -8013,6 +9389,15 @@ def command_set_route(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_approve(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
+    if args.gate not in APPROVAL_GATES:
+        # Rejected before the lock so an unknown gate cannot consume a
+        # revision or leave a permanent approval behind.
+        raise FlowError(
+            "INVALID_ARGUMENT",
+            "--gate must name a defined approval gate: "
+            + ", ".join(APPROVAL_GATES),
+            details={"gate": args.gate, "gates": list(APPROVAL_GATES)},
+        )
     artifact_sha = args.artifact_sha256
     if artifact_sha and not SHA256_RE.fullmatch(artifact_sha):
         raise FlowError("INVALID_ARGUMENT", "--artifact-sha256 must be 64 lowercase hexadecimal characters")
@@ -8042,14 +9427,7 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
         plan_artifact: dict[str, Any] | None = None
         plan_context: dict[str, Any] | None = None
         lite_evidence: dict[str, Any] | None = None
-        if args.gate in {
-            "baseline-fetch",
-            "impact-degraded",
-            "route",
-            "workspace",
-            "plan",
-            "review",
-        }:
+        if args.gate in FULL_GATES:
             _assert_flow(current, "full", f"approve --gate {args.gate}")
         if args.gate == "route":
             _assert_status(current, {"IMPACT_REVIEW"}, "approve --gate route")
@@ -10291,7 +11669,8 @@ def _write_review_repo(snapshot_root: Path, repo: dict[str, Any]) -> dict[str, A
             relative = _untracked_filesystem_path(item)
             archive.add(working / relative, arcname=relative, recursive=False)
     _set_private_permissions(tar_path, 0o600)
-    with tar_path.open("rb") as archive_handle:
+    # Windows requires a writable descriptor for fsync; no bytes are changed.
+    with tar_path.open("rb+") as archive_handle:
         os.fsync(archive_handle.fileno())
     _validate_untracked_archive(tar_path, fingerprint["untracked"])
     middle_fingerprint = _fingerprint_repo(working)
@@ -10798,6 +12177,26 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
             return _result("transition", current, unchanged=True, transition={"from": source, "to": target})
         if source in TERMINAL_STATES:
             raise FlowError("INVALID_TRANSITION", f"terminal task cannot transition from {source}")
+        if (
+            target == "PREFLIGHTED"
+            and (
+                source == "INTAKE"
+                or (
+                    source == "BLOCKED"
+                    and (current.get("blocked") or {}).get("phase")
+                    == "preflight"
+                )
+            )
+        ):
+            raise FlowError(
+                "PREFLIGHT_CONFIRMATION_REQUIRED",
+                (
+                    "initial and preflight-blocked transitions to "
+                    "PREFLIGHTED require an all-repository "
+                    "preflight --preview/--confirm-preview pair"
+                ),
+                details={"from": source, "to": target},
+            )
         if target == "CANCELLED":
             if not args.note:
                 raise FlowError("INVALID_ARGUMENT", "transition to CANCELLED requires --note; cancel is preferred")
@@ -10991,7 +12390,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", help="state directory (may also follow a subcommand)")
     subparsers = parser.add_subparsers(dest="command", required=True, parser_class=JsonArgumentParser)
 
-    start = subparsers.add_parser("start", help="create an INTAKE task for one or more repositories")
+    start = subparsers.add_parser(
+        "start",
+        help="create an INTAKE task for one or more repositories",
+    )
     start.add_argument("requirement", nargs="?", help="requirement text")
     start.add_argument("--requirement", dest="requirement_option", help="requirement text (alternative to positional form)")
     start.add_argument("--repo", action="append", required=True, help="Git repository path; repeat for multiple repositories")
@@ -10999,13 +12401,27 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--flow",
         choices=sorted(FLOW_MODES),
-        default=DEFAULT_FLOW,
         help=(
-            "full runs baseline, impact, managed worktrees and independent review; "
-            "lite works in place through preflight, one lite approval, implementation and verification"
+            "optional compatibility assertion; the flow is inferred from "
+            "--workspace-strategy"
         ),
     )
-    start.add_argument("--protected-branch", action="append", help="protected branch name; repeat as needed")
+    start.add_argument(
+        "--workspace-strategy",
+        choices=sorted(WORKSPACE_STRATEGIES),
+        help=(
+            "required work mode: in-place and branch infer the lite flow; "
+            "worktree infers the full flow"
+        ),
+    )
+    start.add_argument(
+        "--protected-branch",
+        action="append",
+        help=(
+            "additional protected branch name; repeat to extend, never "
+            "replace, the default main/master/trunk set"
+        ),
+    )
     _add_data_dir(start)
     start.set_defaults(handler=command_start)
 
@@ -11024,9 +12440,56 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mutation(recover_quarantine)
     recover_quarantine.set_defaults(handler=command_recover_quarantine)
 
+    recover_atomic_write = subparsers.add_parser(
+        "recover-atomic-write",
+        help=(
+            "inspect and clear rollback evidence left behind by an "
+            "interrupted atomic state write"
+        ),
+    )
+    recover_atomic_write.add_argument(
+        "--path",
+        help=(
+            "absolute blocked destination, or one of its rollback files as "
+            "reported in details.rollback_candidates"
+        ),
+    )
+    recover_atomic_write.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "remove rollback evidence that provably matches the committed "
+            "destination; mismatches remain blocked"
+        ),
+    )
+    recover_atomic_write.add_argument(
+        "--resolve",
+        choices=("keep-current", "restore-rollback"),
+        help=(
+            "resolve one mismatching candidate; requires --path and "
+            "--rollback-sha256"
+        ),
+    )
+    recover_atomic_write.add_argument(
+        "--rollback-sha256",
+        help="digest of the exact inspected rollback file",
+    )
+    _add_data_dir(recover_atomic_write)
+    recover_atomic_write.set_defaults(
+        handler=command_recover_atomic_write
+    )
+
     listing = subparsers.add_parser("list", help="list task summaries")
     listing.add_argument("--active-only", action="store_true", help="exclude DONE and CANCELLED tasks")
-    listing.add_argument("--status", action="append", choices=sorted(ALL_STATES), help="include only this status; repeatable")
+    listing.add_argument(
+        "--status",
+        action="append",
+        choices=sorted(ALL_STATES),
+        help=(
+            "filter by stable status ID; repeat as needed; results also "
+            "include display names"
+        ),
+    )
     _add_data_dir(listing)
     listing.set_defaults(handler=command_list)
 
@@ -11075,11 +12538,48 @@ def build_parser() -> argparse.ArgumentParser:
     _add_data_dir(scope)
     scope.set_defaults(handler=command_scope)
 
-    preflight = subparsers.add_parser("preflight", help="record Git identity, remote/base and an exact worktree fingerprint")
+    preflight = subparsers.add_parser(
+        "preflight",
+        help=(
+            "preview one exact status decision, then capture and record "
+            "complete Git/worktree evidence with the confirmed token"
+        ),
+    )
     _add_mutation(preflight)
-    preflight.add_argument("--repo", action="append", help="repository id or path; defaults to all")
+    preflight.add_argument(
+        "--repo",
+        action="append",
+        help=(
+            "repository id or path; partial selections only record evidence, "
+            "while status transitions require the default all-repository selection"
+        ),
+    )
     preflight.add_argument("--remote", help="override the parsed default remote")
     preflight.add_argument("--base", help="override the parsed default base branch")
+    preflight.add_argument(
+        "--preview",
+        action="store_true",
+        help=(
+            "inspect lightweight preflight identity and status inputs without "
+            "committing task state, then return the exact prospective edge and token"
+        ),
+    )
+    preflight.add_argument(
+        "--confirm-preview",
+        metavar="TOKEN",
+        help=(
+            "apply an unchanged preflight status decision after the reported "
+            "edge is confirmed, capturing complete evidence at confirmation time"
+        ),
+    )
+    preflight.add_argument(
+        "--accept-evidence-refresh",
+        action="store_true",
+        help=(
+            "with --confirm-preview, explicitly accept the current lightweight "
+            "worktree summary when it changed after preview"
+        ),
+    )
     preflight.set_defaults(handler=command_preflight)
 
     baseline = subparsers.add_parser(
@@ -11149,7 +12649,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     approve = subparsers.add_parser("approve", help="approve a named gate with an auditable note")
     _add_mutation(approve)
-    approve.add_argument("--gate", required=True, help="gate name; route approval advances to ROUTE_APPROVED")
+    approve.add_argument(
+        "--gate",
+        required=True,
+        choices=APPROVAL_GATES,
+        help="gate name; route approval advances to ROUTE_APPROVED",
+    )
     approve.add_argument("--note", required=True, help="approval note")
     approve.add_argument("--artifact-sha256", help="artifact hash; required by evidence-bound gates")
     approve.add_argument(
@@ -11169,10 +12674,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     approve.set_defaults(handler=command_approve)
 
-    transition = subparsers.add_parser("transition", help="make one guarded state-machine transition")
+    transition = subparsers.add_parser(
+        "transition",
+        help="perform one guarded, separately confirmed state transition",
+    )
     _add_mutation(transition)
-    transition.add_argument("to", nargs="?", choices=sorted(ALL_STATES), help="target state")
-    transition.add_argument("--to", dest="to_option", choices=sorted(ALL_STATES), help="target state")
+    transition.add_argument(
+        "to",
+        nargs="?",
+        choices=sorted(ALL_STATES),
+        help="target state as a stable ID; responses also include a display name",
+    )
+    transition.add_argument(
+        "--to",
+        dest="to_option",
+        choices=sorted(ALL_STATES),
+        help="target state as a stable ID; responses also include a display name",
+    )
     transition.add_argument("--note", help="transition note; required for BLOCKED or CANCELLED")
     transition.set_defaults(handler=command_transition)
 

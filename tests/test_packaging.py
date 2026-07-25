@@ -41,6 +41,99 @@ class PackageValidationTests(unittest.TestCase):
     def test_current_package_manifest_hooks_skills_and_references_validate(self) -> None:
         self.assertEqual(validate_package.validate_package(PLUGIN_ROOT), [])
 
+    def test_main_workflow_requires_chinese_choices_and_per_transition_confirmation(self) -> None:
+        skill = (
+            PLUGIN_ROOT / "skills" / "follow-dev-flow" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        state_machine = (
+            PLUGIN_ROOT
+            / "skills"
+            / "follow-dev-flow"
+            / "references"
+            / "state-machine.md"
+        ).read_text(encoding="utf-8")
+        openspec_route = (
+            PLUGIN_ROOT
+            / "skills"
+            / "follow-dev-flow"
+            / "references"
+            / "openspec-route.md"
+        ).read_text(encoding="utf-8")
+        interface = (
+            PLUGIN_ROOT
+            / "skills"
+            / "follow-dev-flow"
+            / "agents"
+            / "openai.yaml"
+        ).read_text(encoding="utf-8")
+
+        for label in (
+            "使用当前分支（精简流程）",
+            "新建并切换分支（精简流程）",
+            "创建独立工作树（完整流程）",
+        ):
+            self.assertIn(label, skill)
+            self.assertIn(label, state_machine)
+        for status_changing_command in (
+            "preflight --confirm-preview",
+            "baseline",
+            "record-index --role baseline",
+            "set-route",
+            "approve --gate route",
+            "prepare-workspace --execute",
+            "review-snapshot",
+            "transition",
+            "cancel",
+        ):
+            self.assertIn(status_changing_command, state_machine)
+        self.assertIn("一次确认不得授权后续状态边", skill)
+        self.assertIn("git switch -c <branch>", skill)
+        self.assertIn("git switch -c <branch>", state_machine)
+        self.assertIn("preflight --preview", skill)
+        self.assertIn("PREFLIGHT_PREVIEW_STALE", state_machine)
+        self.assertIn("start` rejects a missing `--workspace-strategy", state_machine)
+        self.assertIn("language the user explicitly selects", openspec_route)
+        self.assertIn("repository's unambiguous dominant language", openspec_route)
+        self.assertIn("stop and ask the user", openspec_route)
+        self.assertIn("执行开发流程", interface)
+
+    def test_controller_hook_and_document_workflow_names_stay_in_sync(self) -> None:
+        controller = load_script(
+            "dev_flow_name_sync",
+            PLUGIN_ROOT / "scripts" / "dev_flow.py",
+        )
+        hook = load_script(
+            "dev_flow_hook_name_sync",
+            PLUGIN_ROOT / "hooks" / "dev_flow_hook.py",
+        )
+        state_machine = (
+            PLUGIN_ROOT
+            / "skills"
+            / "follow-dev-flow"
+            / "references"
+            / "state-machine.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(controller.FLOW_NAMES_ZH, hook.FLOW_NAMES_ZH)
+        self.assertEqual(controller.STATE_NAMES_ZH, hook.STATE_NAMES_ZH)
+        self.assertEqual(
+            controller.WORKSPACE_STRATEGY_NAMES_ZH,
+            hook.WORKSPACE_STRATEGY_NAMES_ZH,
+        )
+        self.assertEqual(tuple(controller.ORDERED_STATES), hook.STAGES)
+        self.assertEqual(
+            tuple(controller.LITE_ORDERED_STATES),
+            hook.LITE_STAGES,
+        )
+        for stable_id, display_name in {
+            **controller.FLOW_NAMES_ZH,
+            **controller.STATE_NAMES_ZH,
+        }.items():
+            self.assertIn(
+                f"| `{stable_id}` | {display_name} |",
+                state_machine,
+            )
+
     def test_portable_inventory_rejects_case_and_unicode_aliases(self) -> None:
         errors = validate_package.case_collision_errors(
             {

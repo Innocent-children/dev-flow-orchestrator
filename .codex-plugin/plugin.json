@@ -1,6 +1,6 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "0.2.0+codex.20260724090918",
+  "version": "0.3.0",
   "description": "A guarded, resumable Windows, macOS, and Linux workflow for Codex, OpenSpec, Git, and codebase-memory.",
   "author": {
     "name": "Local developer"

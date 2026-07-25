@@ -242,7 +242,7 @@ PowerShell（Windows）：
 最后让 Codex 起一个任务。精简流程是成本最低的端到端检验。以下同样是一行、跨 shell 的参数序列：
 
 ```text
-<python> <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --flow lite --requirement "修正登录横幅的错别字" --repo <repo-path>
+<python> <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --workspace-strategy in-place --requirement "修正登录横幅的错别字" --repo <repo-path>
 ```
 
 ## 配置项速查
@@ -259,28 +259,39 @@ PowerShell（Windows）：
 | `scope.mode` | `<PLUGIN_DATA>/config.json` | `all` | 整机 | [第 5 步](#5-限定插件生效范围) |
 | `scope.include` / `scope.exclude` | `<PLUGIN_DATA>/config.json` | `[]` | 整机 | [第 5 步](#5-限定插件生效范围) |
 | `DEV_FLOW_SCOPE` / `DEV_FLOW_SCOPE_EXCLUDE` | 环境变量 | 未设置 | 单个进程 | [第 5 步](#5-限定插件生效范围) |
-| `--flow full\|lite` | `start` | `full` | 单个任务，不可更改 | [精简流程](#精简流程) |
-| `--protected-branch` | `start` | `main`、`master`、`trunk` | 单个任务，不可更改 | [控制器命令](#控制器命令) |
+| `--flow full\|lite` | `start` | 由 `--workspace-strategy` 推导；仅作可选兼容一致性断言 | 单次 `start` 调用 | [精简流程](#精简流程) |
+| `--workspace-strategy in-place\|branch\|worktree` | `start` | 无（必填） | 单个任务，不可更改 | [工作原理](#工作原理) |
+| `--protected-branch` | `start` | 始终包含 `main`、`master`、`trunk`；重复参数只会追加 | 单个任务，不可更改 | [控制器命令](#控制器命令) |
 | `--repo` | `start` | 无（必填） | 单个任务，不可更改 | [控制器命令](#控制器命令) |
 | `--task-id` | `start` | 自动生成 | 单个任务 | [控制器命令](#控制器命令) |
 
-流程、受保护分支和仓库集合都没有全局设置：它们在 `start` 时逐任务决定，此后不可更改，以保证记录下来的证据始终指明自己是在哪套规则下产生的。
+工作方式、受保护分支和仓库集合都没有全局设置：它们在 `start` 时逐任务决定，此后不可更改。流程由工作方式推导并以不可更改的形式记录，以保证证据始终指明自己是在哪套规则下产生的。
 
 ---
 
 ## 工作原理
 
-每个任务在 `start` 时选择两种流程之一。默认的完整流程运行全套流水线。精简流程（`start --flow lite`）适用于作用域内的常规小范围工作——修一个小缺陷、做一处局部调整——而无须承担完整流水线的成本：它直接在用户的检出目录中运行 `preflight -> lite approval -> implement -> verify -> done`，不创建基线工作树，不做影响分析，不使用 OpenSpec，也不使用托管实现工作树或独立审查机制。同时它保留了让工作流可信的关键环节：故障时关闭的预检证据；一个绑定到确切分支、`HEAD` 和工作树快照的显式人工关卡（脏工作树需明确指定 `--allow-dirty`）；每次状态转换时的漂移检测；以及进入 `DONE` 前必须通过且与最终工作树指纹一致的测试记录。详见[精简流程](#精简流程)。
+每个新任务都必须先用中文让用户选择工作方式，再执行 `start` 或任何分支/工作树操作：
+
+- **使用当前分支（精简流程）**：传入 `--workspace-strategy in-place`，由控制器推导 `lite`；
+- **新建并切换分支（精简流程）**：先展示当前分支、`HEAD`、状态、目标分支和确切的本地 `git switch -c <branch>` 操作，获得批准并完成新建/切换后，再用 `--workspace-strategy branch` 启动，由控制器推导 `lite`；该选择不授权 `fetch` 或 `pull`；
+- **创建独立工作树（完整流程）**：传入 `--workspace-strategy worktree`，由控制器推导 `full`，仍须在后续批准确定性的工作区计划。
+
+新调用只需传 `--workspace-strategy`。`--flow` 仅为旧调用方保留为可选兼容一致性断言：匹配值可接受，不匹配值会失败，不能覆盖由工作方式推导出的流程。内部流程 ID 保持 `full`/`lite` 兼容，对用户显示为**完整流程**和**精简流程**。精简流程适用于常规小范围工作，直接在用户选定的检出分支中运行 `preflight -> lite approval -> implement -> verify -> done`，不创建基线工作树，不做影响分析，不使用 OpenSpec，也不使用托管实现工作树或独立审查机制。同时它保留故障时关闭的预检证据、绑定确切分支/`HEAD`/工作树快照的人工关卡、迁移守卫和测试时效性。
+
+每一次显式或隐式状态变化都必须单独确认。预检采用两阶段协议：`preflight --preview` 不做完整指纹，只绑定确切状态决策和轻量 observation；`preflight --confirm-preview` 才捕获完整证据。决策漂移返回 `PREFLIGHT_PREVIEW_STALE`，必须重新预览并确认状态边。仅 observation 漂移返回 `PREFLIGHT_EVIDENCE_REFRESH_REQUIRED`；检查并明确接受刷新后的证据后，可用同一 token 加 `--accept-evidence-refresh` 重试。任何成功的 `baseline`（无参数、`--fetch` 和/或 `--materialize`）、最后一个基线 `record-index`、`set-route`、路线审批、`prepare-workspace --execute`、`review-snapshot`、`transition` 或 `cancel` 同样需要在执行前用中文展示“当前状态 → 目标状态”、本次动作和目标状态之后的全部剩余主流程；一次确认只授权当前 revision 上的一条状态边。
 
 本插件对每个仓库采用双索引模型。基线项目为不可变的分离式分析工作树建立索引，用于影响分析和路线决策；工作区项目为当前代实现工作树建立索引，用于规划、实现、验证和审查发现。Codebase Memory 不会自动在两者之间选择：每次查询都必须传入当前阶段所选项目返回的精确 ID。控制器通过 `show.index_selection` 显示这一选择，归档每一条已被取代的索引记录以便审计并实现 ID 隔离；当必需的工作区索引缺失或过期时，它会阻止后续关卡继续执行。
 
-本插件不会切换或拉取开发者当前的检出目录。预检和显式授权完成后，它会解析已配置远程仓库的默认分支，按需执行获取操作，固定一个不可变的基准提交，并创建分离式分析工作树。受控获取只使用已批准的有效 URL 和确切 refspec，并禁用仓库 hook、自定义 upload-pack/传输命令、credential/askpass helper、prune 及自动维护。如果远程仓库必须依赖外部认证或 SSH helper，请先按用户自己的 Git 安全策略单独获取，重新运行 `preflight`，再批准不带 fetch 的基线。随后，直接路线和 OpenSpec 路线都会在隔离的链接工作树中使用独立的任务分支进行实现。现有源分支及其脏状态证据保持可见且不受影响；若要在确切的脏快照上继续操作，必须获得结构化审批。
+控制器本身不会切换或拉取开发者当前的检出目录。只有当用户在任务启动前明确选择“新建并切换分支”时，主技能才会在展示确切本地操作后单独征求批准；切换完成后，精简任务把该分支作为不可漂移的预检证据。完整流程仍通过批准后的隔离链接工作树实现，不触碰源分支。受控获取只使用已批准的有效 URL 和确切 refspec，并禁用仓库 hook、自定义 upload-pack/传输命令、credential/askpass helper、prune 及自动维护。
+
+选择 OpenSpec 路线时，用户对人类可读制品语言的明确选择优先。用户未明确指定时，先跟随目标仓库现有 OpenSpec 制品的主导语言，再参考其他人类可读制品；信号冲突或无法判断时，必须先停下来询问。工具要求的标识符和固定语法保持不变。
 
 生命周期钩子会在会话开始和提交提示词时注入插件控制器的绝对路径及私有数据目录路径。主技能每次调用控制器时都会显式传入该数据目录，因为 `PLUGIN_DATA` 属于钩子进程，不会假定其可被后续的 shell 工具继承。
 
 当前证据契约版本是 `evidence_contract_version: 1`。仓库指纹不会强行伪造 `core.fileMode`、`core.symlinks` 或 `core.ignoreCase`，而是把实际 Git/文件系统能力配置和逐个已跟踪条目的原始路径、index mode/object/stage、工作树类型及磁盘字节摘要绑定进证据。不同平台可以有不同能力表达，但不能省略字节清单或把不完整观察当成完整快照。
 
-旧的 schema-v1 任务状态只要任务 ID 可移植就仍可读取；但旧记录若缺少当前 v1 能力配置，就不能通过任何下游证据关卡。必须在兼容的当前版本中重跑相应的 `preflight`，并按任务当前阶段重建基线/工作区索引、计划绑定、测试记录和审查快照后才能继续。反过来，使用不理解该能力配置的旧版插件指向已经由本版本处理过的数据目录也不安全：恢复时应重装支持同一证据契约的版本，再重新生成失效证据，不能靠“旧状态文件还能读”推断语义兼容。
+旧的 schema-v1 任务状态只要任务 ID 可移植就仍可读取；但旧记录若缺少当前 v1 能力配置，就不能通过任何下游证据关卡。必须在兼容的当前版本中重跑相应的 `preflight`，并按任务当前阶段重建基线/工作区索引、计划绑定、测试记录和审查快照后才能继续。缺少启动时 `branch_binding` 的旧 `branch` 工作方式任务仍可查看，但会在预检和精简关卡故障关闭；应取消并新建任务，不能人工伪造批准证据。反过来，使用不理解该能力配置的旧版插件指向已经由本版本处理过的数据目录也不安全：恢复时应重装支持同一证据契约的版本，再重新生成失效证据，不能靠“旧状态文件还能读”推断语义兼容。
 
 ### 边界与限制
 
@@ -291,6 +302,8 @@ PowerShell（Windows）：
 路径与工作区所有权检查会处理 `/`/`\`、盘符、UNC、大小写行为、Unicode 规范化及 symlink/junction 别名；尚不存在的目标会绑定到最近的现有祖先并探测文件系统行为。无法安全探测或存在大小写/身份歧义时会故障关闭，因此仍应避免仅大小写不同的工作区路径和分支覆盖值，不要依赖某个平台恰好接受的别名。
 
 控制器在受保护变更期间拥有其启动的子进程：中断时先请求平台对应的终止，再按需升级并等待回收，确认静止后才释放锁。若无法证明子进程已经静止，控制器会在仍持锁时写入持久化 `mutation-quarantine.json`；此后所有状态变更都会被阻止。不要删除或编辑该文件，也不要直接重试原操作。先只读检查报告的进程和仓库状态，再执行 `recover-quarantine --task <task-id> --expected-revision <revision>`；该命令会证明子进程已消失、校验部分 Git/文件系统后置条件及当前证据契约，然后归档隔离记录。子进程仍存活、revision 漂移、后置条件漂移或进程状态不可验证时，恢复仍会故障关闭。
+
+控制器的每个状态文件都通过带回滚证据的原子替换写入。如果这次写入在清理之前被打断——`SIGKILL`、断电，或钩子在超时点被杀死——目标文件旁会残留一个 `.<name>.rollback-<suffix>` 文件，此后针对该文件的所有写入都会以 `ATOMIC_RECOVERY_REQUIRED` 故障关闭，并在 `details.rollback_candidates` 中列出残留路径。这是有意为之：控制器不会覆盖一个上次替换结果无法说明的目标文件。但它并非死路，手工删除也依然不是出路。执行 `recover-atomic-write` 可只读列出全部候选；加 `--apply` 只清除可证明安全的证据，即与已提交目标逐字节相同的副本，或从未提交过新文件时留下的空占位文件。内容与目标不一致意味着这是一个关于已提交状态的决定，因此会继续阻塞，并同时给出两侧的摘要（大小、SHA-256 与 schema 字段），直到你对某个 `--path` 明确选择 `--resolve keep-current` 或 `--resolve restore-rollback`，并用 `--rollback-sha256` 证明确实查看过该文件。该命令绝不替你做选择。
 
 ## 控制器命令
 
@@ -303,7 +316,8 @@ PowerShell（Windows）：
 ```
 
 - `--data-dir` 可以放在子命令之前或之后；完整解析顺序见[第 4 步](#4-指定数据目录)。
-- 每条命令只向 stdout 输出一个 JSON 对象。任务类命令返回 `ok`、`command`、`task_id`、`revision`、`status`、`flow`、`index_selection` 以及各命令特有的字段；`list` 和 `scope` 返回各自的结构。失败时返回 `{"ok": false, "error": {"code", "message", "details"}}`。
+- 每条命令只向 stdout 输出一个 JSON 对象。任务类命令返回稳定的 `status`/`flow` ID，同时返回 `status_name`、`flow_name`、`workspace_strategy_name` 和含中文当前/剩余状态的 `workflow`，并保留 `index_selection` 及命令特有字段；`list` 和 `scope` 返回各自的结构。失败时返回 `{"ok": false, "error": {"code", "message", "details"}}`。
+- 控制器的命令、参数、help、稳定 ID、JSON 字段、错误码和首方 `error.message` 保持英文；hook/skill 提示以及 `*_name`、工作流名称和选择标签等展示字段使用中文。自动化应根据 `error.code` 分支，不应解析 message 文本。
 - 退出码：`0` 成功，`2` 可预期的 `FlowError`，`1` 未预期的内部错误，`130` 中断。
 - 任务类命令通过位置参数或 `--task` 指定任务 ID。所有会改写状态的命令还必须提供 `--expected-revision N`；版本号过期时以 `REVISION_CONFLICT` 失败，而不会覆盖并发写入者的结果。
 - 控制器只负责记录与校验，绝不代为执行你的构建或测试命令。
@@ -313,9 +327,10 @@ PowerShell（Windows）：
 | `start` | 两者 | 创建任务 | 为一个或多个仓库创建 `INTAKE` 任务 |
 | `show` | 两者 | 任意 | 输出单个任务的完整快照 |
 | `recover-quarantine` | 两者 | 存在活动隔离记录 | 证明受中断子进程已消失、校验部分后置条件并归档持久化隔离记录 |
+| `recover-atomic-write` | 两者 | 无需任务 | 列出并清理原子状态写入被中断后残留的回滚证据 |
 | `list` | 两者 | 无需任务 | 列出任务摘要 |
 | `scope` | 两者 | 无需任务 | 查看或修改插件生效的目录范围 |
-| `preflight` | 两者 | `INTAKE`、`PREFLIGHTED` | 记录 Git 身份、远程/基准分支以及精确的工作树指纹 |
+| `preflight` | 两者 | `INTAKE`、`PREFLIGHTED` | 先预览唯一状态边，再用确认令牌记录 Git 身份、远程/基准分支和工作树指纹 |
 | `baseline` | 完整 | `PREFLIGHTED`、`BASELINED` | 固定各仓库的远程基准提交；可选地实体化分析工作树 |
 | `record-index` | 完整 | `BASELINED`、`INDEXED` | 记录基线或工作区角色的 codebase-memory 索引来源 |
 | `record-artifact` | 两者 | 任意活动状态 | 对不可变文件或确定性目录制品计算哈希并记录 |
@@ -329,19 +344,20 @@ PowerShell（Windows）：
 
 "任意活动状态"指既非终态（`DONE`、`CANCELLED`）也非 `BLOCKED` 的状态；具体的制品类型和关卡还会进一步收窄，详见下文。仅限完整流程的命令在精简任务上会以 `FLOW_MISMATCH` 失败，`approve --gate lite` 在完整任务上同样如此。此外，当任务是在预检阶段被阻塞时，`preflight` 也可从 `BLOCKED` 状态执行。
 
-这十六条中，只有 `scope` 会改变插件自身的行为——它是 `config.json` 的唯一写入者。其余十五条都只操作单个任务的状态。
+这十七条中，只有 `scope` 会改变插件自身的行为——它是 `config.json` 的唯一写入者。`recover-atomic-write` 同样不拥有任务状态，它只处理控制器已拥有文件上那次被中断的写入。其余十五条都只操作单个任务的状态。
 
 ### 任务创建与查看
 
-- `start --repo <path> [--repo <path> ...] "<requirement>"` —— 需求也可用 `--requirement` 传入。`--repo` 必填且可重复；仓库集合、需求和流程在创建后不可更改。`--flow full|lite` 选择流水线（默认 `full`）。`--task-id` 可指定稳定的任务 ID 而不使用自动生成值：新 ID 必须是 1–64 字节 ASCII，匹配 `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`，不能以点结尾，不能使用不区分大小写的 Windows 设备名 stem；ASCII 小写身份相同的并发或既有 ID 会被拒绝。`--protected-branch` 可重复，用于在默认的 `main`/`master`/`trunk` 之外追加受保护分支。作用域之外的仓库会被 `OUT_OF_SCOPE` 拒绝。
+- `start --repo <path> [--repo <path> ...] --workspace-strategy MODE "<requirement>"` —— 需求也可用 `--requirement` 传入。`--repo` 必填且可重复；`--workspace-strategy` 同样必填，以证明启动前已经明确选择工作方式：`in-place` 和 `branch` 推导 `lite`，`worktree` 推导 `full`。可选的 `--flow` 仅作兼容一致性断言；匹配值可接受，不匹配值会失败而不能覆盖工作方式。仓库集合、需求、推导出的流程和工作方式在创建后不可更改。`branch` 会记录用户批准并在 `start` 前完成切换后得到的确切分支和 `HEAD`，并拒绝符号本地分支、受保护分支以及可解析出的远端默认/基准分支。首次全仓库预检确认前，分支和 `HEAD` 都必须保持不变；此后分支永久锁定，而新的 `HEAD` 只能通过新的全仓库预览/确认对和精简审批采纳。控制器的 `start` 本身不执行 Git 切换。`--task-id` 可指定稳定任务 ID；`--protected-branch` 可重复追加，始终只会扩展而永不替换默认的 `main`、`master`、`trunk` 保护集合。受保护名称禁止 branch 模式绑定和直接提交，但显式选择 `in-place` 时仍可在本地编辑。作用域之外的仓库会被 `OUT_OF_SCOPE` 拒绝。
 - `show <task>` —— 输出完整任务状态，其中 `index_selection` 指明当前阶段所有查询都必须使用的 codebase-memory 项目。
 - `recover-quarantine --task <task> --expected-revision N` —— 仅用于控制器留下的活动 `mutation-quarantine.json`，恢复前必须保持只读；详情见[边界与限制](#边界与限制)。
+- `recover-atomic-write [--path FILE] [--apply] [--resolve keep-current|restore-rollback] [--rollback-sha256 SHA]` —— `ATOMIC_RECOVERY_REQUIRED` 的唯一受支持出路。不带参数时只读列出数据目录下的全部回滚候选，并给出两侧的大小、SHA-256 和 schema 摘要；`--apply` 只清除可证明安全的证据；`--path` 接受被阻塞的目标文件或它的某个回滚文件，与 `--resolve` 搭配时必填。该命令不接受任务 ID，也不需要 `--expected-revision`——残留的回滚文件恰好会阻塞版本检查所需的那次状态写入；它改为持有被中断写入者本应持有的锁。它有意独立于 `recover-quarantine`：后者同样通过原子写入提交任务状态，残留会一并阻塞它，而残留也可能落在不属于任何任务的 `config.json` 或 `workspace-registry.json` 上。详情见[边界与限制](#边界与限制)。
 - `list [--active-only] [--status STATE ...]` —— 按更新时间倒序返回摘要。`--status` 可重复，接受任意状态名。
 - `scope [...]` —— 全部开关见[第 5 步](#5-限定插件生效范围)，判定规则见[目录作用域](#目录作用域)。
 
 ### 证据记录
 
-- `preflight [--repo ...] [--remote R] [--base B]` —— `--repo` 默认覆盖全部仓库，接受仓库 ID 或路径。当仓库配置无法解析时，可用 `--remote`/`--base` 覆盖解析出的默认值。
+- `preflight [--repo ...] [--remote R] [--base B] --preview`，随后以相同参数执行 `--confirm-preview TOKEN [--accept-evidence-refresh]` —— 预览不提交任务状态，也不计算完整工作树指纹，只返回确切来源/目标决策、中文剩余流程、轻量 observation 和 token；`changes_status` 为真时先确认这一条边。confirm 阶段才捕获完整指纹并记录证据。决策漂移返回 `PREFLIGHT_PREVIEW_STALE`，必须重新预览并确认状态边。仅 observation 漂移返回 `PREFLIGHT_EVIDENCE_REFRESH_REQUIRED`，其中带有当前证据和可复用 token；检查并明确接受后，用同一 token 加 `--accept-evidence-refresh` 重试。`--repo` 默认覆盖全部仓库，接受仓库 ID 或路径。只选择部分仓库的一对预览/应用可以记录证据，但绝不改变状态；任何预检状态转换都必须最后执行一次覆盖全部仓库的预览/确认并捕获每个仓库的完整证据。任务进入 `PREFLIGHTED` 后，重新预检也必须覆盖全部仓库。
 - `baseline [--fetch] [--materialize]` —— `--fetch` 执行受约束且不调用外部 helper 的网络获取，要求 `baseline-fetch` 审批带有 `--allow-fetch`；`--materialize` 在固定的 `base_sha` 上创建或复用分离式分析工作树。
 - `record-index [--role baseline|workspace] [--repo ...] [--commit SHA] [--index-id ID] [--receipt FILE] [--metadata-json JSON]` —— `--role` 默认为 `baseline`。`--commit` 对基线索引默认取固定的基准提交，对工作区索引默认取当前 `HEAD`。省略 `--index-id` 需要 `impact-degraded` 审批以及元数据中的失败来源信息；工作区索引要求元数据含 `persistence:false`。
 - `record-artifact --path FILE_OR_DIR --kind KIND [--verdict PASS|CONDITIONAL|FAIL] [--metadata-json JSON]` —— `--artifact` 是 `--path` 的等价别名。已识别的制品类型与阶段绑定：`impact`（位于 `INDEXED`/`IMPACT_REVIEW`，记录后会清除已有的路线审批）、`direct-contract`/`openspec-plan`（位于 `PLANNING`）、`review-report`（位于 `REVIEWING`，此时 `--verdict` 必填且必须与报告正文的 `Verdict:` 行一致）。`workspace-plan` 与 `review-snapshot` 由控制器生成，在此处会被 `RESERVED_ARTIFACT_KIND` 拒绝；其他类型作为自由形式的证据记录。
@@ -363,10 +379,10 @@ PowerShell（Windows）：
 下面是 Bash、PowerShell 和命令提示符通用的单行参数序列：
 
 ```text
-<python> <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --flow lite --requirement "fix ..." --repo <path>
+<python> <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --workspace-strategy in-place --requirement "fix ..." --repo <path>
 ```
 
-- 流程与需求和仓库集合一样，在 `start` 时选定且不可更改。当精简变更超出其作用范围时，应取消该任务并以完整任务替代；不支持原地升级。
+- 工作方式在 `start` 时选定并唯一推导不可更改的流程；它本身也与需求、仓库集合一样不可更改。精简流程可记录“使用当前分支” (`in-place`) 或“启动前新建并切换分支” (`branch`)；任务开始后两者都禁止再次切换分支。当精简变更超出其作用范围时，应取消该任务并以完整任务替代；不支持原地升级。
 - 精简关卡（`approve --gate lite`）用一次显式决策取代基线、路线、工作区、计划和审查关卡：在已记录的确切检出目录中就地工作。它会绑定每个仓库的分支、`HEAD` 和工作树指纹；每次重新执行 `preflight` 都会清除该审批，进入实现阶段时还会重新验证这三项实时状态。
 - 仅限完整流程的命令和关卡（`baseline`、`record-index`、`set-route`、`prepare-workspace`、`review-snapshot`，以及计划/路线/审查审批）在精简任务中会以 `FLOW_MISMATCH` 失败；反之，精简关卡在完整任务中也会如此。
 - 测试记录绑定当前精简审批，而非计划哈希。进入 `DONE` 前，每个仓库仍须具备一条当前有效且通过的测试结果，其指纹必须与最终工作树一致。

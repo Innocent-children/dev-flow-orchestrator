@@ -1,7 +1,7 @@
 interface:
-  display_name: "Follow Dev Flow"
-  short_description: "Run the guarded resumable development workflow"
-  default_prompt: "Use $follow-dev-flow to start or safely resume this development request."
+  display_name: "执行开发流程"
+  short_description: "运行可恢复、逐状态确认的受控开发流程"
+  default_prompt: "使用 $follow-dev-flow 启动或安全恢复这项开发请求，并在每次状态切换前用中文征求确认。"
 dependencies:
   tools:
     - type: "mcp"

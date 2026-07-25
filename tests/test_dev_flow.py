@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import contextlib
 import errno
 import importlib.util
@@ -255,6 +256,8 @@ class DevFlowTest(unittest.TestCase):
             "start",
             "--task-id",
             task_id,
+            "--workspace-strategy",
+            "worktree",
             "--requirement",
             "Implement deterministic flow",
         ]
@@ -265,6 +268,27 @@ class DevFlowTest(unittest.TestCase):
     def mutate(
         self, command: str, task: dict, *arguments: str, expected_code: int = 0
     ) -> dict:
+        if command == "preflight":
+            preview = self.cli(
+                command,
+                task["task_id"],
+                "--expected-revision",
+                str(task["revision"]),
+                *arguments,
+                "--preview",
+                expected_code=expected_code,
+            )
+            if expected_code != 0:
+                return preview
+            return self.cli(
+                command,
+                task["task_id"],
+                "--expected-revision",
+                str(task["revision"]),
+                *arguments,
+                "--confirm-preview",
+                preview["transition_preview"]["token"],
+            )
         return self.cli(
             command,
             task["task_id"],
@@ -640,6 +664,8 @@ class DevFlowTest(unittest.TestCase):
                     "start",
                     "--task-id",
                     task_id,
+                    "--workspace-strategy",
+                    "worktree",
                     "--requirement",
                     "reject non-portable identifier",
                     "--repo",
@@ -663,6 +689,8 @@ class DevFlowTest(unittest.TestCase):
             "start",
             "--task-id",
             "portablecase",
+            "--workspace-strategy",
+            "worktree",
             "--requirement",
             "portable namespace collision",
             "--repo",
@@ -685,6 +713,8 @@ class DevFlowTest(unittest.TestCase):
     def test_task_namespace_lock_serializes_concurrent_case_collisions(self) -> None:
         repo, _ = self.make_repo("parallel namespace repository")
         common = [
+            "--workspace-strategy",
+            "worktree",
             "--requirement",
             "parallel portable task namespace",
             "--repo",
@@ -791,8 +821,14 @@ class DevFlowTest(unittest.TestCase):
                     dev_flow.FlowError
                 ) as captured:
                     dev_flow._repo_by_selector(state, [selector])
-                self.assertEqual(
-                    captured.exception.code, "REPOSITORY_NOT_FOUND"
+                expected_codes = {"REPOSITORY_NOT_FOUND"}
+                if os.name == "nt" and selector.startswith("\\\\"):
+                    # Managed Windows hosts may deny identity probes for an
+                    # unavailable UNC root.  That stronger fail-closed result
+                    # is valid and must not be downgraded to a false match.
+                    expected_codes.add("PATH_IDENTITY_UNAVAILABLE")
+                self.assertIn(
+                    captured.exception.code, expected_codes
                 )
 
     def test_start_multi_repo_atomic_state_events_and_revision_conflict(self) -> None:
@@ -841,6 +877,8 @@ class DevFlowTest(unittest.TestCase):
             "start",
             "--task-id",
             "duplicate-common-dir",
+            "--workspace-strategy",
+            "worktree",
             "--requirement",
             "must not double-count one Git repository",
             "--repo",
@@ -1614,6 +1652,432 @@ class DevFlowTest(unittest.TestCase):
                     "mutation-quarantine.recovered-*.json"
                 )
             )
+        )
+
+    def test_preflight_preview_binds_status_decision_and_refreshes_evidence(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("preflight-preview")
+        task = self.start(repo, task_id="preflight-preview")["task"]
+
+        missing = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            expected_code=2,
+        )
+        self.assertEqual(
+            missing["error"]["code"], "PREFLIGHT_PREVIEW_REQUIRED"
+        )
+        self.assertEqual(
+            dev_flow.load_state(task["task_id"], self.data)["revision"],
+            task["revision"],
+        )
+
+        preview = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--preview",
+        )
+        self.assertEqual(preview["command"], "preflight-preview")
+        self.assertTrue(preview["transition_preview"]["changes_status"])
+        self.assertEqual(
+            preview["transition_preview"]["from"],
+            {"id": "INTAKE", "name": "需求接收"},
+        )
+        self.assertEqual(
+            preview["transition_preview"]["target"],
+            {"id": "PREFLIGHTED", "name": "预检完成"},
+        )
+        persisted = dev_flow.load_state(task["task_id"], self.data)
+        self.assertEqual(persisted["status"], "INTAKE")
+        self.assertIsNone(persisted["repositories"][0]["preflight"])
+        state_before_refresh = dev_flow.load_state(
+            task["task_id"], self.data
+        )
+        events_path = (
+            self.data / "tasks" / task["task_id"] / "events.jsonl"
+        )
+        events_before_refresh = events_path.read_bytes()
+
+        (repo / "tracked.txt").write_text(
+            "changed after preview\n", encoding="utf-8"
+        )
+        refresh_required = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--confirm-preview",
+            preview["transition_preview"]["token"],
+            expected_code=2,
+        )
+        self.assertEqual(
+            refresh_required["error"]["code"],
+            "PREFLIGHT_EVIDENCE_REFRESH_REQUIRED",
+        )
+        refresh_details = refresh_required["error"]["details"]
+        self.assertTrue(refresh_details["token_reusable"])
+        self.assertEqual(
+            refresh_details["required_flag"],
+            "--accept-evidence-refresh",
+        )
+        self.assertNotEqual(
+            refresh_details["preview_observation_sha256"],
+            refresh_details["current_observation_sha256"],
+        )
+        self.assertIn(
+            "tracked.txt",
+            refresh_details["repositories"][0]["preflight"]["unstaged"],
+        )
+        self.assertEqual(
+            dev_flow.load_state(task["task_id"], self.data),
+            state_before_refresh,
+        )
+        self.assertEqual(events_path.read_bytes(), events_before_refresh)
+
+        applied = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--confirm-preview",
+            preview["transition_preview"]["token"],
+            "--accept-evidence-refresh",
+        )
+        self.assertEqual(applied["status"], "PREFLIGHTED")
+        self.assertTrue(applied["evidence_refreshed_since_preview"])
+        self.assertEqual(
+            applied["preview_observation_sha256"],
+            preview["transition_preview"]["observation_sha256"],
+        )
+        self.assertNotEqual(
+            applied["preview_observation_sha256"],
+            applied["captured_observation_sha256"],
+        )
+        persisted = dev_flow.load_state(task["task_id"], self.data)
+        preflight = persisted["repositories"][0]["preflight"]
+        self.assertTrue(preflight["evidence_complete"])
+        self.assertEqual(preflight["capture_phase"], "confirm")
+        self.assertIn("tracked.txt", preflight["unstaged"])
+        self.assertEqual(
+            preflight["worktree_fingerprint_sha256"],
+            dev_flow._fingerprint_repo(repo)["sha256"],
+        )
+        event = json.loads(
+            events_path.read_text(encoding="utf-8").splitlines()[-1]
+        )
+        self.assertEqual(event["type"], "preflight_recorded")
+        self.assertTrue(
+            event["payload"]["evidence_refreshed_since_preview"]
+        )
+        self.assertTrue(event["payload"]["evidence_refresh_accepted"])
+        self.assertEqual(
+            event["payload"]["accepted_observation_sha256"],
+            applied["captured_observation_sha256"],
+        )
+        self.assertTrue(applied["evidence_refresh_accepted"])
+        self.assertTrue(
+            applied["confirmed_preview"][
+                "evidence_refresh_accepted"
+            ]
+        )
+        self.assertEqual(
+            event["payload"]["preview_observation_sha256"],
+            applied["preview_observation_sha256"],
+        )
+        self.assertEqual(
+            event["payload"]["captured_observation_sha256"],
+            applied["captured_observation_sha256"],
+        )
+
+    def test_preflight_preview_skips_full_capture_and_confirm_scans_each_repo_once(
+        self,
+    ) -> None:
+        first, _ = self.make_repo("preflight-scan-first")
+        second, _ = self.make_repo("preflight-scan-second")
+        task = self.start(
+            first, second, task_id="preflight-scan-count"
+        )["task"]
+
+        with mock.patch.object(
+            dev_flow,
+            "_fingerprint_repo",
+            wraps=dev_flow._fingerprint_repo,
+        ) as fingerprint_repo:
+            preview = self.cli(
+                "preflight",
+                task["task_id"],
+                "--expected-revision",
+                str(task["revision"]),
+                "--preview",
+            )
+            self.assertEqual(fingerprint_repo.call_count, 0)
+            self.assertTrue(
+                all(
+                    not repository["preflight"]["evidence_complete"]
+                    for repository in preview["repositories"]
+                )
+            )
+
+            confirmed = self.cli(
+                "preflight",
+                task["task_id"],
+                "--expected-revision",
+                str(task["revision"]),
+                "--confirm-preview",
+                preview["transition_preview"]["token"],
+            )
+
+        self.assertEqual(confirmed["status"], "PREFLIGHTED")
+        self.assertFalse(confirmed["evidence_refreshed_since_preview"])
+        self.assertFalse(confirmed["evidence_refresh_accepted"])
+        self.assertEqual(
+            confirmed["confirmed_preview"]["token"],
+            preview["transition_preview"]["token"],
+        )
+        self.assertEqual(
+            confirmed["confirmed_preview"][
+                "captured_observation_sha256"
+            ],
+            confirmed["captured_observation_sha256"],
+        )
+        self.assertEqual(fingerprint_repo.call_count, 2)
+        self.assertCountEqual(
+            [
+                call.args[0].resolve()
+                for call in fingerprint_repo.call_args_list
+            ],
+            [first.resolve(), second.resolve()],
+        )
+        event = json.loads(
+            (
+                self.data
+                / "tasks"
+                / task["task_id"]
+                / "events.jsonl"
+            ).read_text(encoding="utf-8").splitlines()[-1]
+        )
+        self.assertFalse(
+            event["payload"]["evidence_refresh_accepted"]
+        )
+        self.assertIsNone(
+            event["payload"]["accepted_observation_sha256"]
+        )
+
+    def test_preflight_rejects_legacy_preview_token_contract_without_mutation(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("preflight-legacy-token")
+        task = self.start(
+            repo, task_id="preflight-legacy-token"
+        )["task"]
+        preview = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--preview",
+        )
+        state_before = dev_flow.load_state(task["task_id"], self.data)
+        events_path = (
+            self.data / "tasks" / task["task_id"] / "events.jsonl"
+        )
+        events_before = events_path.read_bytes()
+
+        rejected = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--confirm-preview",
+            "0" * 64,
+            expected_code=2,
+        )
+
+        self.assertEqual(
+            rejected["error"]["code"], "PREFLIGHT_PREVIEW_STALE"
+        )
+        self.assertEqual(
+            rejected["error"]["details"]["reason"],
+            "token_contract_changed",
+        )
+        self.assertIsNone(
+            rejected["error"]["details"]["approved_decision_sha256"]
+        )
+        self.assertEqual(
+            rejected["error"]["details"]["current_decision_sha256"],
+            preview["transition_preview"]["decision_sha256"],
+        )
+        self.assertEqual(
+            dev_flow.load_state(task["task_id"], self.data),
+            state_before,
+        )
+        self.assertEqual(events_path.read_bytes(), events_before)
+
+    def test_partial_multi_repo_preflight_requires_full_selection(self) -> None:
+        first, _ = self.make_repo("partial-preflight-first")
+        second, _ = self.make_repo("partial-preflight-second")
+        task = self.start(
+            first, second, task_id="partial-preflight"
+        )["task"]
+
+        for selected in (first, second):
+            preview = self.cli(
+                "preflight",
+                task["task_id"],
+                "--expected-revision",
+                str(task["revision"]),
+                "--repo",
+                str(selected),
+                "--preview",
+            )
+            self.assertFalse(preview["ready"])
+            self.assertFalse(
+                preview["transition_preview"]["changes_status"]
+            )
+            self.assertEqual(
+                preview["transition_preview"]["target"]["id"], "INTAKE"
+            )
+            applied = self.cli(
+                "preflight",
+                task["task_id"],
+                "--expected-revision",
+                str(task["revision"]),
+                "--repo",
+                str(selected),
+                "--confirm-preview",
+                preview["transition_preview"]["token"],
+            )
+            self.assertEqual(applied["status"], "INTAKE")
+            task = dev_flow.load_state(task["task_id"], self.data)
+            self.assertEqual(task["status"], "INTAKE")
+
+        self.assertTrue(
+            all(
+                repository["preflight"] is not None
+                for repository in task["repositories"]
+            )
+        )
+        bypass = self.mutate(
+            "transition",
+            task,
+            "--to",
+            "PREFLIGHTED",
+            expected_code=2,
+        )
+        self.assertEqual(
+            bypass["error"]["code"],
+            "PREFLIGHT_CONFIRMATION_REQUIRED",
+        )
+        self.assertEqual(
+            dev_flow.load_state(task["task_id"], self.data)["status"],
+            "INTAKE",
+        )
+        full_preview = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--preview",
+        )
+        self.assertTrue(full_preview["ready"])
+        self.assertTrue(
+            full_preview["transition_preview"]["changes_status"]
+        )
+        self.assertEqual(
+            full_preview["transition_preview"]["target"]["id"],
+            "PREFLIGHTED",
+        )
+
+        (first / "build.log").write_text(
+            "generated after full preview\n", encoding="utf-8"
+        )
+        state_before_refresh = dev_flow.load_state(
+            task["task_id"], self.data
+        )
+        events_path = (
+            self.data / "tasks" / task["task_id"] / "events.jsonl"
+        )
+        events_before_refresh = events_path.read_bytes()
+        refresh_required = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--confirm-preview",
+            full_preview["transition_preview"]["token"],
+            expected_code=2,
+        )
+        self.assertEqual(
+            refresh_required["error"]["code"],
+            "PREFLIGHT_EVIDENCE_REFRESH_REQUIRED",
+        )
+        self.assertTrue(
+            refresh_required["error"]["details"]["token_reusable"]
+        )
+        first_refresh = next(
+            repository
+            for repository in refresh_required["error"]["details"][
+                "repositories"
+            ]
+            if repository["id"] == task["repositories"][0]["id"]
+        )
+        self.assertIn(
+            "build.log",
+            first_refresh["preflight"]["untracked"],
+        )
+        self.assertEqual(
+            dev_flow.load_state(task["task_id"], self.data),
+            state_before_refresh,
+        )
+        self.assertEqual(events_path.read_bytes(), events_before_refresh)
+
+        applied = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--confirm-preview",
+            full_preview["transition_preview"]["token"],
+            "--accept-evidence-refresh",
+        )
+        self.assertEqual(applied["status"], "PREFLIGHTED")
+        self.assertTrue(applied["evidence_refreshed_since_preview"])
+        persisted = dev_flow.load_state(task["task_id"], self.data)
+        first_preflight = next(
+            repository["preflight"]
+            for repository in persisted["repositories"]
+            if repository["id"] == task["repositories"][0]["id"]
+        )
+        self.assertIn("build.log", first_preflight["untracked"])
+        refresh_event = json.loads(
+            events_path.read_text(encoding="utf-8").splitlines()[-1]
+        )
+        self.assertTrue(
+            refresh_event["payload"][
+                "evidence_refreshed_since_preview"
+            ]
+        )
+        self.assertTrue(
+            refresh_event["payload"]["evidence_refresh_accepted"]
+        )
+        partial_refresh = self.cli(
+            "preflight",
+            task["task_id"],
+            "--expected-revision",
+            str(applied["revision"]),
+            "--repo",
+            str(first),
+            "--preview",
+            expected_code=2,
+        )
+        self.assertEqual(
+            partial_refresh["error"]["code"],
+            "PREFLIGHT_FULL_SELECTION_REQUIRED",
         )
 
     def test_preflight_records_dirty_state_and_blocks_git_operation(self) -> None:
@@ -3140,6 +3604,261 @@ class DevFlowTest(unittest.TestCase):
         self.assertEqual(done["status"], "DONE")
         self.assertIsNone(dev_flow.find_active_task_for_cwd(workspace, self.data))
 
+    def test_atomic_rollback_evidence_is_recoverable_and_unblocks_cancel(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("rollback-residue")
+        task = self.start(repo)["task"]
+        task_dir = self.data / "tasks" / task["task_id"]
+        state_path = task_dir / "state.json"
+        residue = task_dir / ".state.json.rollback-deadbeef"
+        # A SIGKILL, power loss, or hook timeout leaves the rollback file the
+        # interrupted writer would have removed in its finally block.
+        residue.write_bytes(state_path.read_bytes())
+        # The same interruption can strand the shared configuration file
+        # before it was ever committed.
+        config_residue = self.data / ".config.json.rollback-cafe"
+        config_residue.write_bytes(b"")
+
+        blocked = self.mutate(
+            "cancel", task, "--reason", "blocked by residue", expected_code=2
+        )
+        self.assertEqual(
+            blocked["error"]["code"], "ATOMIC_RECOVERY_REQUIRED"
+        )
+        self.assertEqual(
+            blocked["error"]["details"]["rollback_candidates"],
+            [str(residue)],
+        )
+        self.assertEqual(
+            blocked["error"]["details"]["recovery_command"],
+            "recover-atomic-write",
+        )
+        blocked_scope = self.cli(
+            "scope", "--add", str(repo), expected_code=2
+        )
+        self.assertEqual(
+            blocked_scope["error"]["code"], "ATOMIC_RECOVERY_REQUIRED"
+        )
+
+        report = self.cli("recover-atomic-write")
+        self.assertFalse(report["changed"])
+        self.assertEqual(
+            {
+                candidate["destination"]["path"]: candidate["resolution"]
+                for candidate in report["candidates"]
+            },
+            {
+                str(self.data / "config.json"): "uncommitted",
+                str(state_path): "identical",
+            },
+        )
+        recorded = next(
+            candidate
+            for candidate in report["candidates"]
+            if candidate["destination"]["path"] == str(state_path)
+        )
+        self.assertEqual(
+            recorded["destination"]["sha256"],
+            recorded["rollback"]["sha256"],
+        )
+        self.assertEqual(
+            recorded["destination"]["schema"]["revision"],
+            task["revision"],
+        )
+        # A report alone never touches the evidence.
+        self.assertTrue(residue.exists())
+
+        recovery = self.cli("recover-atomic-write", "--apply")
+        self.assertTrue(recovery["changed"])
+        self.assertEqual(
+            sorted(recovery["removed"]),
+            sorted([str(config_residue), str(residue)]),
+        )
+        self.assertFalse(residue.exists())
+        self.assertFalse(config_residue.exists())
+        self.assertEqual(
+            state_path.read_bytes(),
+            (self.data / "tasks" / task["task_id"] / "state.json").read_bytes(),
+        )
+
+        cancelled = self.mutate("cancel", task, "--reason", "recovered")
+        self.assertEqual(cancelled["status"], "CANCELLED")
+        self.assertEqual(cancelled["revision"], task["revision"] + 1)
+
+    def test_atomic_rollback_mismatch_needs_an_explicit_resolution(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("rollback-mismatch")
+        task = self.start(repo)["task"]
+        task_dir = self.data / "tasks" / task["task_id"]
+        state_path = task_dir / "state.json"
+        superseded = json.loads(state_path.read_text(encoding="utf-8"))
+        superseded["revision"] = 0
+        residue = task_dir / ".state.json.rollback-cafe"
+        residue.write_text(
+            json.dumps(superseded, sort_keys=True), encoding="utf-8"
+        )
+
+        denied = self.cli(
+            "recover-atomic-write", "--apply", expected_code=2
+        )
+        self.assertEqual(
+            denied["error"]["code"], "ATOMIC_ROLLBACK_MISMATCH"
+        )
+        self.assertEqual(denied["error"]["details"]["removed"], [])
+        blocked = denied["error"]["details"]["blocked"]
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(blocked[0]["resolution"], "mismatch")
+        self.assertEqual(
+            blocked[0]["destination"]["schema"]["revision"],
+            task["revision"],
+        )
+        self.assertEqual(blocked[0]["rollback"]["schema"]["revision"], 0)
+        self.assertNotEqual(
+            blocked[0]["destination"]["sha256"],
+            blocked[0]["rollback"]["sha256"],
+        )
+        self.assertEqual(
+            denied["error"]["details"]["resolutions"],
+            ["keep-current", "restore-rollback"],
+        )
+        # Nothing was chosen on the user's behalf.
+        self.assertTrue(residue.exists())
+
+        rollback_sha = blocked[0]["rollback"]["sha256"]
+        stale = self.cli(
+            "recover-atomic-write",
+            "--path",
+            str(state_path),
+            "--resolve",
+            "keep-current",
+            "--rollback-sha256",
+            "0" * 64,
+            expected_code=2,
+        )
+        self.assertEqual(
+            stale["error"]["code"], "ATOMIC_ROLLBACK_MISMATCH"
+        )
+        self.assertEqual(
+            stale["error"]["details"]["expected_sha256"], rollback_sha
+        )
+        unproven = self.cli(
+            "recover-atomic-write",
+            "--path",
+            str(state_path),
+            "--resolve",
+            "keep-current",
+            expected_code=2,
+        )
+        self.assertEqual(unproven["error"]["code"], "INVALID_ARGUMENT")
+        self.assertTrue(residue.exists())
+
+        # The rollback file itself is an accepted spelling of the target.
+        resolved = self.cli(
+            "recover-atomic-write",
+            "--path",
+            str(residue),
+            "--resolve",
+            "keep-current",
+            "--rollback-sha256",
+            rollback_sha,
+        )
+        self.assertEqual(resolved["resolved"], "keep-current")
+        self.assertEqual(resolved["removed"], [str(residue)])
+        self.assertFalse(residue.exists())
+        self.assertEqual(
+            json.loads(state_path.read_text(encoding="utf-8"))["revision"],
+            task["revision"],
+        )
+        self.assertEqual(
+            self.cli("recover-atomic-write", "--apply", expected_code=2)[
+                "error"
+            ]["code"],
+            "ATOMIC_ROLLBACK_NOT_FOUND",
+        )
+        self.mutate("cancel", task, "--reason", "resolved")
+
+        # The opposite decision restores the preserved bytes verbatim.
+        committed = state_path.read_bytes()
+        restore = task_dir / ".state.json.rollback-beef"
+        restore.write_bytes(
+            json.dumps(superseded, sort_keys=True).encode("utf-8")
+        )
+        restore_sha = dev_flow._sha256_file(restore)
+        restored = self.cli(
+            "recover-atomic-write",
+            "--path",
+            str(state_path),
+            "--resolve",
+            "restore-rollback",
+            "--rollback-sha256",
+            restore_sha,
+        )
+        self.assertEqual(restored["restored"], [str(state_path)])
+        self.assertFalse(restore.exists())
+        self.assertNotEqual(state_path.read_bytes(), committed)
+        self.assertEqual(dev_flow._sha256_file(state_path), restore_sha)
+
+    def test_unknown_gate_is_rejected_without_consuming_a_revision(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("unknown-gate")
+        task = self.start(repo)["task"]
+        self.assertEqual(task["status"], "INTAKE")
+        denied = self.mutate(
+            "approve",
+            task,
+            "--gate",
+            "reviewwww",
+            "--note",
+            "typo",
+            expected_code=2,
+        )
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["error"]["code"], "INVALID_ARGUMENT")
+
+        state = dev_flow.load_state(task["task_id"], self.data)
+        self.assertEqual(state["revision"], task["revision"])
+        self.assertEqual(state["status"], "INTAKE")
+        self.assertEqual(state["approvals"], {})
+
+        # The dispatch and the argparse surface share one vocabulary, so the
+        # handler refuses the same value when it is called directly.
+        with self.assertRaises(dev_flow.FlowError) as captured:
+            dev_flow.command_approve(
+                argparse.Namespace(
+                    task_id=task["task_id"],
+                    task_option=None,
+                    data_dir=str(self.data),
+                    expected_revision=task["revision"],
+                    gate="reviewwww",
+                    note="typo",
+                    artifact_sha256=None,
+                    accept_conditional=False,
+                    allow_fetch=False,
+                    allow_dirty=False,
+                )
+            )
+        self.assertEqual(captured.exception.code, "INVALID_ARGUMENT")
+        self.assertEqual(captured.exception.details["gate"], "reviewwww")
+        self.assertEqual(
+            dev_flow.APPROVAL_GATES,
+            (
+                "baseline-fetch",
+                "impact-degraded",
+                "route",
+                "workspace",
+                "plan",
+                "review",
+                dev_flow.LITE_GATE,
+            ),
+        )
+        self.assertEqual(
+            dev_flow.load_state(task["task_id"], self.data)["revision"],
+            task["revision"],
+        )
+
     def test_cancel_is_terminal_and_audited(self) -> None:
         repo, _ = self.make_repo("cancel")
         task = self.start(repo)["task"]
@@ -3597,6 +4316,7 @@ class DevFlowTest(unittest.TestCase):
             task["task_id"],
             "--expected-revision",
             str(task["revision"]),
+            "--preview",
             expected_code=2,
         )
         self.assertEqual(denied["error"]["code"], "INVALID_REMOTE")
@@ -5735,6 +6455,8 @@ class DevFlowTest(unittest.TestCase):
             "start",
             "--task-id",
             "out-of-scope",
+            "--workspace-strategy",
+            "worktree",
             "--requirement",
             "Implement deterministic flow",
             "--repo",
@@ -5752,13 +6474,47 @@ class DevFlowTest(unittest.TestCase):
         accepted = self.start(repo, task_id="in-scope")
         self.assertEqual(accepted["task"]["status"], "INTAKE")
 
+    def test_cli_help_is_english_and_protected_branch_extends_defaults(
+        self,
+    ) -> None:
+        parser = dev_flow.build_parser()
+        command_action = next(
+            action
+            for action in parser._actions
+            if action.dest == "command"
+        )
+        parser_help = {"root": parser.format_help()}
+        parser_help.update(
+            {
+                command: command_parser.format_help()
+                for command, command_parser in command_action.choices.items()
+            }
+        )
+        for command, help_text in parser_help.items():
+            with self.subTest(command=command):
+                self.assertFalse(
+                    any(
+                        "\u3400" <= character <= "\u9fff"
+                        or "\uf900" <= character <= "\ufaff"
+                        for character in help_text
+                    ),
+                    help_text,
+                )
+
+        start_help = " ".join(parser_help["start"].split())
+        self.assertIn(
+            "additional protected branch name; repeat to extend, never "
+            "replace, the default main/master/trunk set",
+            start_help,
+        )
+
     def start_lite(self, *repos: Path, task_id: str = "lite-1") -> dict:
         arguments = [
             "start",
             "--task-id",
             task_id,
-            "--flow",
-            "lite",
+            "--workspace-strategy",
+            "in-place",
             "--requirement",
             "Fix a bounded bug in place",
         ]
@@ -5783,6 +6539,13 @@ class DevFlowTest(unittest.TestCase):
         repo, _ = self.make_repo("lite-repo")
         response = self.start_lite(repo)
         self.assertEqual(response["flow"], "lite")
+        self.assertEqual(response["flow_name"], "精简流程")
+        self.assertEqual(response["status_name"], "需求接收")
+        self.assertEqual(response["workspace_strategy_name"], "使用当前分支")
+        self.assertEqual(
+            [item["id"] for item in response["workflow"]["remaining"]],
+            ["PREFLIGHTED", "IMPLEMENTING", "VERIFYING", "DONE"],
+        )
         task = response["task"]
         self.assertEqual(task["flow"], "lite")
         self.assertEqual(task["workspace"]["strategy"], "in-place")
@@ -5830,6 +6593,370 @@ class DevFlowTest(unittest.TestCase):
         task = dev_flow.load_state("lite-1", self.data)
         self.mutate("transition", task, "--to", "DONE")
         self.assertEqual(dev_flow.load_state("lite-1", self.data)["status"], "DONE")
+
+    def test_start_records_an_explicit_branch_strategy_and_chinese_progress(self) -> None:
+        repo, _ = self.make_repo("lite-branch")
+
+        missing_strategy = self.cli(
+            "start",
+            "--task-id",
+            "missing-workspace-strategy",
+            "--flow",
+            "lite",
+            "--requirement",
+            "A work mode must be selected before start",
+            "--repo",
+            str(repo),
+            expected_code=2,
+        )
+        self.assertEqual(
+            missing_strategy["error"]["code"], "WORKSPACE_STRATEGY_REQUIRED"
+        )
+
+        protected = self.cli(
+            "start",
+            "--task-id",
+            "lite-protected-branch",
+            "--workspace-strategy",
+            "branch",
+            "--requirement",
+            "Fix a bounded bug on a new branch",
+            "--repo",
+            str(repo),
+            expected_code=2,
+        )
+        self.assertEqual(protected["error"]["code"], "PROTECTED_BRANCH")
+
+        git(repo, "checkout", "-q", "-b", "codex/lite-branch")
+        # --flow remains a compatibility assertion when it explicitly agrees
+        # with the flow inferred from --workspace-strategy.
+        response = self.cli(
+            "start",
+            "--task-id",
+            "lite-new-branch",
+            "--flow",
+            "lite",
+            "--workspace-strategy",
+            "branch",
+            "--requirement",
+            "Fix a bounded bug on a new branch",
+            "--repo",
+            str(repo),
+        )
+        self.assertEqual(response["flow"], "lite")
+        self.assertEqual(response["flow_name"], "精简流程")
+        self.assertEqual(response["workspace_strategy"], "branch")
+        self.assertEqual(
+            response["workspace_strategy_name"], "新建并切换分支"
+        )
+        self.assertEqual(
+            response["workflow"]["current"],
+            {"id": "INTAKE", "name": "需求接收"},
+        )
+
+        shown = self.cli("show", "lite-new-branch")
+        self.assertEqual(shown["workspace_strategy"], "branch")
+        self.assertEqual(
+            [item["name"] for item in shown["workflow"]["remaining"]],
+            ["预检完成", "实现中", "验证中", "已完成"],
+        )
+        listed = self.cli("list")["tasks"][0]
+        self.assertEqual(listed["flow_name"], "精简流程")
+        self.assertEqual(listed["status_name"], "需求接收")
+        self.assertEqual(
+            listed["workspace_strategy_name"], "新建并切换分支"
+        )
+
+        full_rejected = self.cli(
+            "start",
+            "--task-id",
+            "full-branch-mismatch",
+            "--flow",
+            "full",
+            "--workspace-strategy",
+            "branch",
+            "--requirement",
+            "Full task cannot use source branch mode",
+            "--repo",
+            str(repo),
+            expected_code=2,
+        )
+        self.assertEqual(
+            full_rejected["error"]["code"],
+            "FLOW_WORKSPACE_STRATEGY_MISMATCH",
+        )
+
+        lite_rejected = self.cli(
+            "start",
+            "--task-id",
+            "lite-worktree-mismatch",
+            "--flow",
+            "lite",
+            "--workspace-strategy",
+            "worktree",
+            "--requirement",
+            "Lite task cannot use worktree mode",
+            "--repo",
+            str(repo),
+            expected_code=2,
+        )
+        self.assertEqual(
+            lite_rejected["error"]["code"],
+            "FLOW_WORKSPACE_STRATEGY_MISMATCH",
+        )
+
+    def test_branch_strategy_preflight_rejects_checkout_identity_drift(
+        self,
+    ) -> None:
+        for drift in ("branch", "head"):
+            with self.subTest(drift=drift):
+                repo, _ = self.make_repo(f"branch-{drift}-drift")
+                approved_branch = f"codex/{drift}-drift"
+                git(repo, "checkout", "-q", "-b", approved_branch)
+                response = self.cli(
+                    "start",
+                    "--task-id",
+                    f"branch-{drift}-drift",
+                    "--workspace-strategy",
+                    "branch",
+                    "--requirement",
+                    "Reject checkout identity drift before preflight",
+                    "--repo",
+                    str(repo),
+                )
+                task = response["task"]
+                approved_head = git(repo, "rev-parse", "HEAD")
+
+                if drift == "branch":
+                    git(
+                        repo,
+                        "checkout",
+                        "-q",
+                        "-b",
+                        "codex/switched-after-start",
+                    )
+                else:
+                    (repo / "tracked.txt").write_text(
+                        "committed after start\n", encoding="utf-8"
+                    )
+                    git(repo, "add", "tracked.txt")
+                    git(repo, "commit", "-q", "-m", "drift HEAD")
+
+                actual_branch = git(repo, "branch", "--show-current")
+                actual_head = git(repo, "rev-parse", "HEAD")
+                state_before = dev_flow.load_state(
+                    task["task_id"], self.data
+                )
+                events_path = (
+                    self.data
+                    / "tasks"
+                    / task["task_id"]
+                    / "events.jsonl"
+                )
+                events_before = events_path.read_bytes()
+                rejected = self.cli(
+                    "preflight",
+                    task["task_id"],
+                    "--expected-revision",
+                    str(task["revision"]),
+                    "--preview",
+                    expected_code=2,
+                )
+                self.assertEqual(
+                    rejected["error"]["code"], "CHECKOUT_DRIFT"
+                )
+                self.assertEqual(
+                    rejected["error"]["details"]["approved_branch"],
+                    approved_branch,
+                )
+                self.assertEqual(
+                    rejected["error"]["details"]["actual_branch"],
+                    actual_branch,
+                )
+                self.assertEqual(
+                    rejected["error"]["details"]["approved_head_sha"],
+                    approved_head,
+                )
+                self.assertEqual(
+                    rejected["error"]["details"]["actual_head_sha"],
+                    actual_head,
+                )
+                self.assertEqual(
+                    dev_flow.load_state(task["task_id"], self.data),
+                    state_before,
+                )
+                self.assertEqual(events_path.read_bytes(), events_before)
+
+    def test_branch_strategy_binding_allows_confirmed_head_reassessment(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("branch-binding-lifecycle")
+        branch = "codex/branch-binding-lifecycle"
+        git(repo, "checkout", "-q", "-b", branch)
+        started = self.cli(
+            "start",
+            "--task-id",
+            "branch-binding-lifecycle",
+            "--workspace-strategy",
+            "branch",
+            "--requirement",
+            "Allow a new HEAD only after the initial checkout is confirmed",
+            "--repo",
+            str(repo),
+        )
+        binding = started["task"]["repositories"][0]["branch_binding"]
+        self.assertEqual(binding["branch"], branch)
+        self.assertEqual(binding["head_sha"], git(repo, "rev-parse", "HEAD"))
+        self.assertFalse(binding["initial_preflight_confirmed"])
+
+        task = started["task"]
+        self.mutate("preflight", task)
+        task = dev_flow.load_state(task["task_id"], self.data)
+        self.assertTrue(
+            task["repositories"][0]["branch_binding"][
+                "initial_preflight_confirmed"
+            ]
+        )
+        self.mutate(
+            "approve",
+            task,
+            "--gate",
+            "lite",
+            "--note",
+            "approved branch checkout",
+        )
+        task = dev_flow.load_state(task["task_id"], self.data)
+        self.mutate("transition", task, "--to", "IMPLEMENTING")
+
+        (repo / "tracked.txt").write_text(
+            "committed implementation\n", encoding="utf-8"
+        )
+        git(repo, "add", "tracked.txt")
+        git(repo, "commit", "-q", "-m", "implementation")
+        new_head = git(repo, "rev-parse", "HEAD")
+        task = dev_flow.load_state(task["task_id"], self.data)
+        self.mutate(
+            "transition",
+            task,
+            "--to",
+            "PREFLIGHTED",
+            "--note",
+            "reassess the committed implementation",
+        )
+        task = dev_flow.load_state(task["task_id"], self.data)
+        reassessed = self.mutate("preflight", task)
+        self.assertEqual(reassessed["status"], "PREFLIGHTED")
+        state_value = dev_flow.load_state(task["task_id"], self.data)
+        self.assertEqual(
+            state_value["repositories"][0]["preflight"]["head_sha"],
+            new_head,
+        )
+        self.assertEqual(
+            state_value["repositories"][0]["branch_binding"]["branch"],
+            branch,
+        )
+
+        self.mutate(
+            "approve",
+            state_value,
+            "--gate",
+            "lite",
+            "--note",
+            "approved reassessed branch checkout",
+        )
+        state_value = dev_flow.load_state(task["task_id"], self.data)
+        legacy = dev_flow._copy_state(state_value)
+        legacy["repositories"][0].pop("branch_binding")
+        with self.assertRaises(dev_flow.FlowError) as captured:
+            dev_flow._require_lite_gate(legacy)
+        self.assertEqual(
+            captured.exception.code, "CHECKOUT_BINDING_MISSING"
+        )
+
+    def test_custom_protected_branch_extends_default_protection(self) -> None:
+        repo, _ = self.make_repo("extended-protected-branches")
+        for branch in ("main", "release"):
+            with self.subTest(branch=branch):
+                if branch != git(repo, "branch", "--show-current"):
+                    git(repo, "checkout", "-q", "-b", branch)
+                rejected = self.cli(
+                    "start",
+                    "--task-id",
+                    f"protected-{branch}",
+                    "--workspace-strategy",
+                    "branch",
+                    "--protected-branch",
+                    "release",
+                    "--requirement",
+                    "Custom protection must preserve default branches",
+                    "--repo",
+                    str(repo),
+                    expected_code=2,
+                )
+                self.assertEqual(
+                    rejected["error"]["code"], "PROTECTED_BRANCH"
+                )
+                self.assertEqual(
+                    rejected["error"]["details"]["branch"], branch
+                )
+
+    def test_branch_strategy_rejects_remote_default_and_symbolic_head(
+        self,
+    ) -> None:
+        repo, remote = self.make_repo("nonstandard-default-branch")
+        git(repo, "checkout", "-q", "-b", "develop")
+        git(repo, "push", "-q", "-u", "origin", "develop")
+        git(remote, "symbolic-ref", "HEAD", "refs/heads/develop")
+        git(repo, "remote", "set-head", "origin", "develop")
+        default_rejected = self.cli(
+            "start",
+            "--task-id",
+            "nonstandard-default-branch",
+            "--workspace-strategy",
+            "branch",
+            "--requirement",
+            "Do not treat a remote default branch as a feature branch",
+            "--repo",
+            str(repo),
+            expected_code=2,
+        )
+        self.assertEqual(
+            default_rejected["error"]["code"], "PROTECTED_BRANCH"
+        )
+        self.assertEqual(
+            default_rejected["error"]["details"]["branch"], "develop"
+        )
+
+        symbolic_repo, _ = self.make_repo("symbolic-branch-head")
+        git(symbolic_repo, "branch", "codex/direct-target")
+        git(
+            symbolic_repo,
+            "symbolic-ref",
+            "refs/heads/codex/alias",
+            "refs/heads/codex/direct-target",
+        )
+        git(
+            symbolic_repo,
+            "symbolic-ref",
+            "HEAD",
+            "refs/heads/codex/alias",
+        )
+        symbolic_rejected = self.cli(
+            "start",
+            "--task-id",
+            "symbolic-branch-head",
+            "--workspace-strategy",
+            "branch",
+            "--requirement",
+            "Branch mode requires a direct local branch",
+            "--repo",
+            str(symbolic_repo),
+            expected_code=2,
+        )
+        self.assertEqual(
+            symbolic_rejected["error"]["code"],
+            "SYMBOLIC_WORKSPACE_BRANCH",
+        )
 
     def test_lite_flow_rejects_full_flow_commands_and_gates(self) -> None:
         repo, _ = self.make_repo("lite-guard")

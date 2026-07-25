@@ -315,6 +315,8 @@ def _check_code_page(
         "start",
         "--task-id",
         "native-codepage",
+        "--workspace-strategy",
+        "worktree",
         "--repo",
         str(repo),
         "--requirement",
@@ -465,6 +467,32 @@ def _controller_mutation(
     *arguments: str,
     expected_error: Optional[str] = None,
 ) -> dict[str, Any]:
+    if command == "preflight" and expected_error is None:
+        preview = _controller_call(
+            candidate_root,
+            data_dir,
+            [
+                command,
+                task_id,
+                "--expected-revision",
+                str(revision),
+                *arguments,
+                "--preview",
+            ],
+        )
+        return _controller_call(
+            candidate_root,
+            data_dir,
+            [
+                command,
+                task_id,
+                "--expected-revision",
+                str(revision),
+                *arguments,
+                "--confirm-preview",
+                str(preview["transition_preview"]["token"]),
+            ],
+        )
     return _controller_call(
         candidate_root,
         data_dir,
@@ -506,6 +534,8 @@ def _route_approved_controller_task(
             "start",
             "--task-id",
             task_id,
+            "--workspace-strategy",
+            "worktree",
             "--repo",
             str(start_selector),
             "--requirement",

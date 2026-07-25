@@ -118,6 +118,7 @@ class CrossPlatformSafetyTest(unittest.TestCase):
             stderr=subprocess.PIPE,
             check=False,
             text=True,
+            encoding="utf-8",
             timeout=60,
             env={
                 **os.environ,
@@ -156,16 +157,27 @@ class CrossPlatformSafetyTest(unittest.TestCase):
             "start",
             "--task-id",
             "baseline-hook-fetch",
+            "--workspace-strategy",
+            "worktree",
             "--requirement",
             "pin an explicitly fetched baseline without executing hooks",
             "--repo",
             str(repository),
         )["task"]
+        preview = self.run_controller(
+            "preflight",
+            started["task_id"],
+            "--expected-revision",
+            str(started["revision"]),
+            "--preview",
+        )
         self.run_controller(
             "preflight",
             started["task_id"],
             "--expected-revision",
             str(started["revision"]),
+            "--confirm-preview",
+            preview["transition_preview"]["token"],
         )
         current = dev_flow.load_state(
             started["task_id"], self.root / "state"
@@ -337,6 +349,108 @@ class CrossPlatformSafetyTest(unittest.TestCase):
                 dev_flow._ACTIVE_MUTATION_INTENTS.get(),
             )
 
+    def test_read_only_protected_child_does_not_require_job_ownership(
+        self,
+    ) -> None:
+        events: list[dict[str, object]] = []
+
+        class Process:
+            pid = 8181
+            returncode = 0
+            _handle = 0x1_0000_8181
+
+            def communicate(self, input=None):
+                return (b"out", b"")
+
+        held_token = dev_flow._HELD_LOCK_DIRECTORIES.set(
+            (str(self.task_dir),)
+        )
+        try:
+            with mock.patch.object(
+                dev_flow.os, "name", "nt"
+            ), mock.patch.object(
+                dev_flow.subprocess, "Popen", return_value=Process()
+            ), mock.patch.object(
+                dev_flow,
+                "_windows_kill_on_close_job",
+                side_effect=lambda *_, **kwargs: events.append(kwargs)
+                or None,
+            ), mock.patch.object(
+                dev_flow, "_quiesce_windows_job"
+            ) as quiesce, mock.patch.object(
+                dev_flow, "_close_windows_job"
+            ):
+                result = dev_flow._run(["git.exe", "ls-files"])
+        finally:
+            dev_flow._HELD_LOCK_DIRECTORIES.reset(held_token)
+
+        self.assertEqual(result.stdout, "out")
+        self.assertEqual(events, [{"require_ownership": False}])
+        # No job exists, so there is nothing to prove quiescent.
+        quiesce.assert_not_called()
+
+    @unittest.skipUnless(
+        os.name == "nt", "requires native Windows job objects"
+    )
+    def test_exited_read_only_child_survives_job_assignment_race(
+        self,
+    ) -> None:
+        def exited_child() -> subprocess.Popen[bytes]:
+            process = subprocess.Popen(
+                [sys.executable, "-c", "pass"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                ),
+            )
+            process.communicate(timeout=20)
+            return process
+
+        # A read-only child may exit before AssignProcessToJobObject runs;
+        # Windows then refuses the assignment with ERROR_ACCESS_DENIED, which
+        # must not turn a read-only command into an ownership failure.
+        self.assertIsNone(
+            dev_flow._windows_kill_on_close_job(
+                exited_child(),
+                ["git", "ls-files"],
+                require_ownership=False,
+            )
+        )
+
+        # A gated mutation is blocked on its gate byte and must stay
+        # fail-closed, so the same refusal remains an ownership failure.
+        with self.assertRaises(dev_flow.FlowError) as captured:
+            dev_flow._windows_kill_on_close_job(
+                exited_child(), ["git", "commit"]
+            )
+        self.assertEqual(
+            captured.exception.code, "PROCESS_OWNERSHIP_FAILED"
+        )
+        self.assertEqual(captured.exception.details["winerror"], 5)
+
+        live = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read(1)"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            ),
+        )
+        try:
+            job = dev_flow._windows_kill_on_close_job(
+                live, ["git", "ls-files"], require_ownership=False
+            )
+            self.assertTrue(job)
+            self.assertEqual(
+                dev_flow._windows_job_active_processes(job), 1
+            )
+        finally:
+            live.communicate(input=b"G", timeout=20)
+            dev_flow._close_windows_job(job)
+
     def test_mutation_gate_orders_durable_intent_before_release(self) -> None:
         code = dev_flow._MUTATION_GATE_CODE
         self.assertLess(
@@ -408,7 +522,9 @@ class CrossPlatformSafetyTest(unittest.TestCase):
             ), mock.patch.object(
                 dev_flow,
                 "_windows_kill_on_close_job",
-                side_effect=lambda *_: events.append("job:assigned")
+                side_effect=lambda *_, **kwargs: events.append(
+                    f"job:assigned:{kwargs['require_ownership']}"
+                )
                 or 999,
             ), mock.patch.object(
                 dev_flow,
@@ -429,7 +545,7 @@ class CrossPlatformSafetyTest(unittest.TestCase):
             events[:5],
             [
                 "intent:spawn_pending",
-                "job:assigned",
+                "job:assigned:True",
                 "intent:child_owned:None",
                 "intent:target_release_authorized:True",
                 "gate:b'G'",
@@ -799,12 +915,23 @@ class CrossPlatformSafetyTest(unittest.TestCase):
         parent = self.root / "identity-parent"
         child = parent / "case-sensitive-child"
         child.mkdir(parents=True)
-        parent_stat = parent.stat()
-        child_stat = child.stat()
+        parent_stable = {
+            key: value
+            for key, value in dev_flow._stable_existing_identity(
+                parent
+            ).items()
+            if key != "final_path"
+        }
+        child_stable = {
+            key: value
+            for key, value in dev_flow._stable_existing_identity(
+                child
+            ).items()
+            if key != "final_path"
+        }
 
         def identity(path: Path):
             resolved = Path(path).resolve()
-            metadata = resolved.stat()
             is_child = resolved == child
             return {
                 "normalized": (
@@ -819,11 +946,9 @@ class CrossPlatformSafetyTest(unittest.TestCase):
                 "case_sensitive": is_child,
                 "unicode_normalization_distinct": True,
                 "ancestor": str(resolved),
-                "ancestor_identity": {
-                    "kind": "posix-file-id",
-                    "device": int(metadata.st_dev),
-                    "inode": int(metadata.st_ino),
-                },
+                "ancestor_identity": (
+                    child_stable if is_child else parent_stable
+                ),
                 "suffix_parts": (),
             }
 
@@ -833,10 +958,7 @@ class CrossPlatformSafetyTest(unittest.TestCase):
             side_effect=identity,
         ):
             self.assertTrue(dev_flow._is_within(child, parent))
-        self.assertNotEqual(
-            (parent_stat.st_dev, parent_stat.st_ino),
-            (child_stat.st_dev, child_stat.st_ino),
-        )
+        self.assertNotEqual(parent_stable, child_stable)
 
     def test_normalization_only_manifest_collision_is_rejected(self) -> None:
         repository = self.root / "manifest"

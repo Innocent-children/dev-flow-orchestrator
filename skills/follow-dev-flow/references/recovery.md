@@ -72,7 +72,7 @@ After any new `review-snapshot`, treat every older `review-report` and review ap
 
 ### Lite task drifted or outgrew its approval
 
-A lite task has no baseline or managed worktree to restore; its recoverable evidence is the preflight snapshot, the lite approval, and the test records. On `CHECKOUT_DRIFT` or `PREFLIGHT_WORKTREE_CHANGED`, show the recorded and observed branch/`HEAD`/fingerprint values and ask how to proceed; returning the checkout to the approved snapshot is the user's action, never an automatic reset. To continue with the changed reality, transition back to `PREFLIGHTED` with a note when needed, rerun `preflight`, and obtain a new `approve --gate lite` decision (`--allow-dirty` for the now-dirty tree); older test records become historical because they bind the superseded approval ID. If the change no longer fits a bounded in-place fix, stop and ask the user to cancel/replace the task as a full task — the flow is immutable.
+A lite task has no baseline or managed worktree to restore; its recoverable evidence is the preflight snapshot, the lite approval, and the test records. On `CHECKOUT_DRIFT` or `PREFLIGHT_WORKTREE_CHANGED`, show the recorded and observed branch/`HEAD`/fingerprint values and ask how to proceed; returning the checkout to the approved snapshot is the user's action, never an automatic reset. To continue with the changed reality, transition back to `PREFLIGHTED` with a note only when the current state is `IMPLEMENTING` or `VERIFYING`, then run a new all-repository `preflight --preview` / `preflight --confirm-preview <token>` pair and obtain a new `approve --gate lite` decision (`--allow-dirty` for the now-dirty tree); older test records become historical because they bind the superseded approval ID. From any other state, including `INTAKE` or `BLOCKED`, do not attempt this transition; reload the task and use only a controller-supported recovery path, or stop and ask the user. Before the first successful all-repository preflight, a `branch` strategy task must restore its start-time approved branch and `HEAD`. After that checkpoint, the approved branch remains immutable, while a new `HEAD` may be adopted only through a fresh all-repository preview/confirm pair and lite approval; adopting another branch requires cancelling and replacing the task. If the change no longer fits a bounded in-place fix, stop and ask the user to cancel/replace the task as a full task — the flow is immutable.
 
 ### Revision conflict
 
@@ -82,12 +82,23 @@ Treat optimistic-lock failure as evidence another invocation advanced the task. 
 
 When a Git-changing child cannot be proven quiescent, the controller leaves durable `mutation-quarantine.json` evidence and blocks later mutations. Do not delete or edit that file and do not infer safety from a timeout. Reload the task, inspect the reported child/process-group evidence and external repository state read-only, then call `<ctl> recover-quarantine --task <task-id> --expected-revision <revision>`. The recovery command itself proves that the child is gone, verifies the recorded postconditions and current evidence contract, and archives the quarantine. Treat `QUARANTINE_CHILD_ACTIVE`, revision drift, postcondition drift, or unverifiable process state as a blocker requiring diagnosis; never retry the original mutation until recovery succeeds.
 
+### Atomic write left rollback evidence
+
+Every controller state write is a rollback-protected atomic replacement. When one is interrupted before its cleanup — a killed process, a lost machine, or a hook terminated at its timeout — a `.<name>.rollback-<suffix>` file survives beside the destination and every later write to that exact file fails closed with `ATOMIC_RECOVERY_REQUIRED` and `details.rollback_candidates`. Expect it to block ordinary commands, including `cancel` and `recover-quarantine`, and expect the same residue on `<state-dir>/config.json` or `<state-dir>/workspace-registry.json`, which belong to no task.
+
+Do not delete, move, or edit the file, and do not treat this as an exception to the rule against hand-editing controller state. Run `<ctl> recover-atomic-write` first: it is read-only and reports every candidate with each side's path, size, SHA-256, and schema summary (`schema_version`, `evidence_contract_version`, `task_id`, `status`, `revision`). Then:
+
+- `resolution: identical` or `uncommitted` — the evidence duplicates the committed destination, or preserves nothing because the file was never committed. `<ctl> recover-atomic-write --apply` removes exactly those and leaves the destination untouched. Reload the task and continue from the recorded state.
+- `resolution: mismatch` — the preserved bytes differ from the committed destination, so the interruption landed between the replacement and its cleanup. `--apply` refuses with `ATOMIC_ROLLBACK_MISMATCH` and returns both summaries. Show the user both revisions/statuses and ask which reality to keep. Only then run `<ctl> recover-atomic-write --path <destination> --resolve keep-current|restore-rollback --rollback-sha256 <inspected digest>`. `restore-rollback` reinstates the earlier bytes and discards the newer committed state, so treat it as a state rollback with the user's explicit decision, never as a cleanup step.
+
+After recovery, reload the task before any mutation: the revision may be the one recorded before the interruption. Never invent an `--expected-revision` to get past a write that this residue blocked.
+
 ## Handle controller or tool failure
 
 - Retry once only for an obviously transient read operation.
 - Do not retry Git-changing or artifact-writing commands until external state is inspected.
 - Preserve stdout, stderr, exit status, task ID, revision, and observed side effects.
-- Do not edit controller state files to unblock progress.
+- Do not edit controller state files to unblock progress. Interrupted atomic writes have a controller command of their own; see [Atomic write left rollback evidence](#atomic-write-left-rollback-evidence).
 - Use a controller-supported `BLOCKED` transition when available and name one concrete unblock condition.
 - If state cannot be read safely, stop before further mutations and ask for direction with the diagnostic evidence.
 

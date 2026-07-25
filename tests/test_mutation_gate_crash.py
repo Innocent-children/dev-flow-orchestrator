@@ -358,6 +358,10 @@ class MutationGateCrashTest(unittest.TestCase):
             dev_flow.subprocess, "Popen", return_value=process
         ), mock.patch.object(
             dev_flow,
+            "_windows_kill_on_close_job",
+            return_value=None,
+        ), mock.patch.object(
+            dev_flow,
             "_terminate_and_quiesce_owned_child",
             return_value=True,
         ) as quiesce:
@@ -457,7 +461,7 @@ class MutationGateCrashTest(unittest.TestCase):
         with mock.patch.object(
             dev_flow.os, "name", "posix"
         ), mock.patch.object(
-            dev_flow.os, "killpg"
+            dev_flow.os, "killpg", create=True
         ) as kill_group, mock.patch.object(
             dev_flow,
             "_posix_process_group_alive",
