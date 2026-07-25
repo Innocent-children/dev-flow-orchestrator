@@ -48,8 +48,7 @@ index_repository(
   mode=<fast|moderate|full>,
   persistence=false
 )
-<ctl> record-index ... --role baseline --repo <id> --commit <base-sha> \
-  --index-id <returned-project-id> --metadata-json <json-object>
+<ctl> record-index ... --role baseline --repo <id> --commit <base-sha> --index-id <returned-project-id> --metadata-json <json-object>
 ```
 
 Workspace example:
@@ -61,8 +60,7 @@ index_repository(
   mode=<fast|moderate|full>,
   persistence=false
 )
-<ctl> record-index ... --role workspace --repo <id> \
-  --index-id <returned-project-id> --metadata-json <json-object>
+<ctl> record-index ... --role workspace --repo <id> --index-id <returned-project-id> --metadata-json <json-object>
 ```
 
 `persistence=false` prevents codebase-memory from writing its optional portable database artifact into the indexed business worktree. Codebase-memory still owns and manages the external graph identified by the returned project ID.

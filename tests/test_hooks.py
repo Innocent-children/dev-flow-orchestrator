@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 HOOK = PLUGIN_ROOT / "hooks" / "dev_flow_hook.py"
+WINDOWS_HOOK = PLUGIN_ROOT / "hooks" / "dev_flow_hook.cmd"
 HOOKS_JSON = PLUGIN_ROOT / "hooks" / "hooks.json"
 
 
@@ -39,6 +41,7 @@ class DevFlowHookTests(unittest.TestCase):
         *,
         cwd: Path | None = None,
         include_plugin_root: bool = True,
+        include_plugin_data: bool = True,
         env: dict[str, str] | None = None,
     ) -> tuple[str, str]:
         invocation = dict(payload)
@@ -48,7 +51,10 @@ class DevFlowHookTests(unittest.TestCase):
             environment["PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         else:
             environment.pop("PLUGIN_ROOT", None)
-        environment["PLUGIN_DATA"] = str(self.data_dir)
+        if include_plugin_data:
+            environment["PLUGIN_DATA"] = str(self.data_dir)
+        else:
+            environment.pop("PLUGIN_DATA", None)
         environment.update(env or {})
         completed = subprocess.run(
             [sys.executable, str(HOOK)],
@@ -124,11 +130,29 @@ class DevFlowHookTests(unittest.TestCase):
             set(hooks), {"SessionStart", "UserPromptSubmit", "PreToolUse"}
         )
         self.assertNotIn("Stop", hooks)
+        self.assertIn("Bash", hooks["PreToolUse"][0]["matcher"])
         for groups in hooks.values():
             for group in groups:
                 for handler in group["hooks"]:
                     self.assertIn("$PLUGIN_ROOT/hooks/dev_flow_hook.py", handler["command"])
+                    self.assertIn("commandWindows", handler)
+                    self.assertIn(
+                        "%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd",
+                        handler["commandWindows"],
+                    )
+                    self.assertNotIn("python3", handler["commandWindows"].lower())
                     self.assertNotIn("~", handler["command"])
+                    self.assertNotIn("~", handler["commandWindows"])
+        shim = WINDOWS_HOOK.read_text(encoding="utf-8")
+        self.assertIn("setlocal DisableDelayedExpansion", shim)
+        self.assertIn("py -3", shim)
+        for version in ("3.14", "3.13", "3.12", "3.11", "3.10", "3.9"):
+            self.assertIn(version, shim)
+        self.assertIn("python", shim)
+        self.assertIn("(3, 9) <= sys.version_info[:2] < (3, 15)", shim)
+        self.assertIn('"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.py"', shim)
+        self.assertIn("%*", shim)
+        self.assertIn("exit /b %errorlevel%", shim)
 
     def test_session_start_injects_active_task_checkpoint(self) -> None:
         self.activate("ROUTE_APPROVED")
@@ -147,16 +171,18 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertIn("Next action: prepare the managed worktree", context)
         self.assertIn(f"Data directory: {self.data_dir.resolve()}", context)
         self.assertIn(f"Controller: {PLUGIN_ROOT / 'scripts' / 'dev_flow.py'}", context)
+        self.assertIn(f"Interpreter: {sys.executable}", context)
         self.assertIn(f"--data-dir {self.data_dir.resolve()}", context)
         self.assertIn("show --task TASK-42", context)
         self.assertIn("Every controller call must explicitly include", context)
         self.assertNotIn("$PLUGIN_ROOT", context)
 
     def test_data_dir_argument_replaces_missing_plugin_data(self) -> None:
-        # Global registrations run without PLUGIN_DATA and pass --data-dir.
+        # Global registrations run without either plugin variable and pass an
+        # absolute hook path plus --data-dir.
         environment = os.environ.copy()
         environment.pop("PLUGIN_DATA", None)
-        environment["PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+        environment.pop("PLUGIN_ROOT", None)
         completed = subprocess.run(
             [sys.executable, str(HOOK), "--data-dir", str(self.data_dir)],
             input=json.dumps(
@@ -170,6 +196,7 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         context = json.loads(completed.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Dev Flow controller bootstrap:", context)
+        self.assertIn(f"Controller: {PLUGIN_ROOT / 'scripts' / 'dev_flow.py'}", context)
         self.assertIn(f"Data directory: {self.data_dir.resolve()}", context)
 
     def test_data_dir_argument_outranks_inherited_plugin_data(self) -> None:
@@ -183,11 +210,323 @@ class DevFlowHookTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
-            env={**os.environ, "PLUGIN_DATA": str(other)},
+            env={
+                **os.environ,
+                "PLUGIN_ROOT": str(PLUGIN_ROOT),
+                "PLUGIN_DATA": str(other),
+            },
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         context = json.loads(completed.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn(f"Data directory: {self.data_dir.resolve()}", context)
+
+    def test_hook_protocol_is_utf8_bytes_with_one_lf_and_accepts_crlf(self) -> None:
+        unicode_data = Path(self.temporary.name) / "插件 data ü"
+        unicode_data.mkdir()
+        unicode_cwd = Path(self.temporary.name) / "仓库 ü"
+        unicode_cwd.mkdir()
+        payload = {
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+            "cwd": str(unicode_cwd),
+        }
+        completed = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\r\n",
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "PLUGIN_ROOT": str(PLUGIN_ROOT),
+                "PLUGIN_DATA": str(unicode_data),
+            },
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, b"")
+        self.assertTrue(completed.stdout.endswith(b"\n"))
+        self.assertFalse(completed.stdout.endswith(b"\r\n"))
+        self.assertEqual(completed.stdout.count(b"\n"), 1)
+        output = json.loads(completed.stdout.decode("utf-8"))
+        context = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(str(unicode_data.resolve()), context)
+        self.assertIn("插件", context)
+
+    def test_malformed_utf8_protocol_input_fails_open_silently(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=b"\xff\xfe\r\n",
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "PLUGIN_ROOT": str(PLUGIN_ROOT),
+                "PLUGIN_DATA": str(self.data_dir),
+            },
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, b"")
+        self.assertEqual(completed.stderr, b"")
+
+    def test_actual_packaged_hook_command_for_native_platform(self) -> None:
+        special_root = (
+            Path(self.temporary.name) / "插件 root ! & (hooks) $literal"
+        )
+        special_data = (
+            Path(self.temporary.name) / "数据 state ! & (flow) $literal"
+        )
+        special_cwd = Path(self.temporary.name) / "仓库 work & (tree)"
+        (special_root / "hooks").mkdir(parents=True)
+        (special_root / "scripts").mkdir()
+        special_data.mkdir()
+        special_cwd.mkdir()
+        shutil.copy2(HOOK, special_root / "hooks" / HOOK.name)
+        shutil.copy2(WINDOWS_HOOK, special_root / "hooks" / WINDOWS_HOOK.name)
+        shutil.copy2(
+            PLUGIN_ROOT / "scripts" / "dev_flow.py",
+            special_root / "scripts" / "dev_flow.py",
+        )
+
+        task_dir = special_data / "tasks" / "PACKAGED-1"
+        task_dir.mkdir(parents=True)
+        (task_dir / "state.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "task_id": "PACKAGED-1",
+                    "status": "INTAKE",
+                    "updated_at": "2026-07-24T01:00:00Z",
+                    "route": None,
+                    "repositories": [
+                        {"id": "repo", "path": str(special_cwd)}
+                    ],
+                    "approvals": {},
+                    "workspace": {},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        payloads = {
+            "SessionStart": {
+                "hook_event_name": "SessionStart",
+                "source": "startup",
+                "cwd": str(special_cwd),
+            },
+            "UserPromptSubmit": {
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "继续",
+                "cwd": str(special_cwd),
+            },
+            "PreToolUse": {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git pull --ff-only"},
+                "cwd": str(special_cwd),
+            },
+        }
+        command_key = "commandWindows" if os.name == "nt" else "command"
+        environment = {
+            **os.environ,
+            "PLUGIN_ROOT": str(special_root),
+            "PLUGIN_DATA": str(special_data),
+        }
+        document = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+        for event, groups in document["hooks"].items():
+            for group in groups:
+                for handler in group["hooks"]:
+                    command = handler[command_key]
+                    with self.subTest(event=event, command=command_key):
+                        completed = subprocess.run(
+                            command,
+                            shell=True,
+                            input=(
+                                json.dumps(
+                                    payloads[event], ensure_ascii=False
+                                ).encode("utf-8")
+                                + b"\r\n"
+                            ),
+                            capture_output=True,
+                            check=False,
+                            env=environment,
+                            timeout=20,
+                        )
+                        self.assertEqual(
+                            completed.returncode, 0, completed.stderr
+                        )
+                        self.assertEqual(completed.stderr, b"")
+                        self.assertTrue(completed.stdout.endswith(b"\n"))
+                        self.assertFalse(completed.stdout.endswith(b"\r\n"))
+                        output = json.loads(completed.stdout.decode("utf-8"))
+                        specific = output["hookSpecificOutput"]
+                        self.assertEqual(specific["hookEventName"], event)
+                        if event == "PreToolUse":
+                            self.assertEqual(
+                                specific["permissionDecision"], "deny"
+                            )
+                            reason = specific["permissionDecisionReason"]
+                            self.assertIn(str(special_root), reason)
+                            self.assertIn(str(special_data), reason)
+                        else:
+                            context = specific["additionalContext"]
+                            self.assertIn(str(special_root), context)
+                            self.assertIn(str(special_data), context)
+                            interpreter = next(
+                                line.removeprefix("- Interpreter: ")
+                                for line in context.splitlines()
+                                if line.startswith("- Interpreter: ")
+                            )
+                            command_line = next(
+                                line
+                                for line in context.splitlines()
+                                if line.startswith(("- Bootstrap command: ", "- Resume command: "))
+                            )
+                            self.assertIn(interpreter, command_line)
+
+    @unittest.skipUnless(
+        os.name == "nt", "requires native cmd.exe launcher resolution"
+    )
+    def test_windows_launcher_falls_back_when_py_is_unsupported(self) -> None:
+        launcher_dir = Path(self.temporary.name) / "fake launchers"
+        launcher_dir.mkdir()
+        launch_log = Path(self.temporary.name) / "launcher.log"
+        (launcher_dir / "py.cmd").write_text(
+            "\n".join(
+                (
+                    "@echo off",
+                    "setlocal DisableDelayedExpansion",
+                    '>>"%DEV_FLOW_LAUNCH_LOG%" echo py-unsupported',
+                    "exit /b 1",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+        (launcher_dir / "python.cmd").write_text(
+            "\n".join(
+                (
+                    "@echo off",
+                    "setlocal DisableDelayedExpansion",
+                    '>>"%DEV_FLOW_LAUNCH_LOG%" echo python-supported',
+                    f'"{sys.executable}" %*',
+                    "exit /b %errorlevel%",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+        document = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+        command = document["hooks"]["SessionStart"][0]["hooks"][0][
+            "commandWindows"
+        ]
+        completed = subprocess.run(
+            command,
+            shell=True,
+            input=json.dumps(
+                {
+                    "hook_event_name": "SessionStart",
+                    "source": "startup",
+                    "cwd": str(self.cwd),
+                }
+            ).encode("utf-8"),
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": str(launcher_dir)
+                + os.pathsep
+                + os.environ.get("PATH", ""),
+                "DEV_FLOW_LAUNCH_LOG": str(launch_log),
+                "PLUGIN_ROOT": str(PLUGIN_ROOT),
+                "PLUGIN_DATA": str(self.data_dir),
+            },
+            timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, b"")
+        self.assertIn("Dev Flow controller bootstrap", completed.stdout.decode("utf-8"))
+        self.assertEqual(
+            launch_log.read_text(encoding="utf-8").splitlines(),
+            [
+                *(["py-unsupported"] * 7),
+                "python-supported",
+                "python-supported",
+            ],
+        )
+
+    @unittest.skipUnless(
+        os.name == "nt", "requires native cmd.exe launcher resolution"
+    )
+    def test_windows_launcher_finds_supported_explicit_py_version(self) -> None:
+        launcher_dir = Path(self.temporary.name) / "versioned launchers"
+        launcher_dir.mkdir()
+        launch_log = Path(self.temporary.name) / "versioned-launcher.log"
+        supported_version = (
+            f"{sys.version_info.major}.{sys.version_info.minor}"
+        )
+        (launcher_dir / "py.cmd").write_text(
+            "\n".join(
+                (
+                    "@echo off",
+                    "setlocal DisableDelayedExpansion",
+                    '>>"%DEV_FLOW_LAUNCH_LOG%" echo py-%~1',
+                    f'if not "%~1"=="-{supported_version}" exit /b 1',
+                    'if "%~2"=="-c" "%DEV_FLOW_REAL_PYTHON%" -c "%~3"',
+                    'if not "%~2"=="-c" "%DEV_FLOW_REAL_PYTHON%" "%~2"',
+                    "exit /b %errorlevel%",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+        (launcher_dir / "python.cmd").write_text(
+            "@echo off\nexit /b 1\n",
+            encoding="utf-8",
+        )
+        document = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+        command = document["hooks"]["SessionStart"][0]["hooks"][0][
+            "commandWindows"
+        ]
+        completed = subprocess.run(
+            command,
+            shell=True,
+            input=json.dumps(
+                {
+                    "hook_event_name": "SessionStart",
+                    "source": "startup",
+                    "cwd": str(self.cwd),
+                }
+            ).encode("utf-8"),
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": str(launcher_dir)
+                + os.pathsep
+                + os.environ.get("PATH", ""),
+                "DEV_FLOW_LAUNCH_LOG": str(launch_log),
+                "DEV_FLOW_REAL_PYTHON": sys.executable,
+                "PLUGIN_ROOT": str(PLUGIN_ROOT),
+                "PLUGIN_DATA": str(self.data_dir),
+            },
+            timeout=20,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, b"")
+        self.assertIn(
+            "Dev Flow controller bootstrap",
+            completed.stdout.decode("utf-8"),
+        )
+        self.assertEqual(
+            launch_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "py--3",
+                *[
+                    f"py--3.{minor}"
+                    for minor in range(14, sys.version_info.minor - 1, -1)
+                ],
+                f"py--{supported_version}",
+            ],
+        )
 
     def test_user_prompt_submit_uses_its_own_output_event_name(self) -> None:
         self.activate("PLANNING", pending_gate=None, next_action="write the plan")
@@ -374,29 +713,75 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertEqual(specific["permissionDecision"], "deny")
         self.assertIn("analysis workspaces", specific["permissionDecisionReason"])
 
-    def test_context_events_bootstrap_without_an_active_task_or_plugin_root(self) -> None:
+    def test_context_events_diagnose_missing_plugin_environment(self) -> None:
         for event, extra in (
             ("SessionStart", {"source": "startup"}),
             ("UserPromptSubmit", {"prompt": "hello"}),
         ):
-            with self.subTest(event=event):
+            for missing in ("PLUGIN_ROOT", "PLUGIN_DATA"):
+                with self.subTest(event=event, missing=missing):
+                    stdout, stderr = self.invoke(
+                        {"hook_event_name": event, **extra},
+                        include_plugin_root=missing != "PLUGIN_ROOT",
+                        include_plugin_data=missing != "PLUGIN_DATA",
+                    )
+                    self.assertEqual(stderr, "")
+                    specific = json.loads(stdout)["hookSpecificOutput"]
+                    self.assertEqual(specific["hookEventName"], event)
+                    context = specific["additionalContext"]
+                    self.assertIn("Dev Flow hook diagnostic", context)
+                    self.assertIn(f"{missing} is missing or empty", context)
+                    self.assertIn("No controller command was constructed", context)
+                    self.assertNotIn("Bootstrap command:", context)
+                    self.assertNotIn("Resume command:", context)
+
+    def test_bundled_environment_rejects_relative_blank_and_invalid_roots(
+        self,
+    ) -> None:
+        missing_root = Path(self.temporary.name) / "missing-plugin"
+        cases = (
+            ({"PLUGIN_ROOT": "."}, "PLUGIN_ROOT must be an absolute path"),
+            ({"PLUGIN_DATA": "."}, "PLUGIN_DATA must be an absolute path"),
+            ({"PLUGIN_ROOT": "   "}, "PLUGIN_ROOT is missing or empty"),
+            ({"PLUGIN_DATA": "\t"}, "PLUGIN_DATA is missing or empty"),
+            (
+                {"PLUGIN_ROOT": str(missing_root)},
+                "PLUGIN_ROOT does not contain scripts/dev_flow.py",
+            ),
+        )
+        for environment, expected in cases:
+            with self.subTest(environment=environment):
                 stdout, stderr = self.invoke(
-                    {"hook_event_name": event, **extra},
-                    include_plugin_root=False,
+                    {"hook_event_name": "SessionStart", "source": "startup"},
+                    env=environment,
+                )
+                self.assertEqual(stderr, "")
+                context = json.loads(stdout)["hookSpecificOutput"][
+                    "additionalContext"
+                ]
+                self.assertIn(expected, context)
+                self.assertIn("No controller command was constructed", context)
+                self.assertNotIn("Bootstrap command:", context)
+
+    def test_pre_tool_use_missing_environment_is_diagnostic_not_denial(self) -> None:
+        for missing in ("PLUGIN_ROOT", "PLUGIN_DATA"):
+            with self.subTest(missing=missing):
+                stdout, stderr = self.invoke(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "git reset --hard HEAD"},
+                    },
+                    include_plugin_root=missing != "PLUGIN_ROOT",
+                    include_plugin_data=missing != "PLUGIN_DATA",
                 )
                 self.assertEqual(stderr, "")
                 specific = json.loads(stdout)["hookSpecificOutput"]
-                self.assertEqual(specific["hookEventName"], event)
+                self.assertEqual(specific["hookEventName"], "PreToolUse")
+                self.assertNotIn("permissionDecision", specific)
                 context = specific["additionalContext"]
-                self.assertIn("Dev Flow controller bootstrap", context)
-                self.assertIn(
-                    f"Controller: {PLUGIN_ROOT / 'scripts' / 'dev_flow.py'}",
-                    context,
-                )
-                self.assertIn(f"Data directory: {self.data_dir.resolve()}", context)
-                self.assertIn(f"--data-dir {self.data_dir.resolve()}", context)
-                self.assertIn("Every controller call must explicitly include", context)
-                self.assertNotIn("$PLUGIN_ROOT", context)
+                self.assertIn(f"{missing} is missing or empty", context)
+                self.assertIn("no workflow state was mutated", context)
 
     def test_destructive_and_workflow_bypass_commands_are_denied(self) -> None:
         self.activate("INTAKE")
@@ -419,6 +804,116 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertIn(str(PLUGIN_ROOT / "scripts" / "dev_flow.py"), reason)
         self.assertIn(f"--data-dir {self.data_dir.resolve()}", reason)
         self.assertNotIn("$PLUGIN_ROOT", reason)
+
+    def test_protected_git_decision_is_equivalent_across_executables_and_wrappers(
+        self,
+    ) -> None:
+        self.activate("INTAKE")
+        commands = (
+            "git reset --hard HEAD",
+            "git.exe reset --hard HEAD",
+            "/usr/bin/git reset --hard HEAD",
+            '"C:/Program Files/Git/cmd/git.exe" reset --hard HEAD',
+            r'"C:\Program Files\Git\cmd\git.exe" reset --hard HEAD',
+            r"C:\Git\cmd\git.exe reset --hard HEAD",
+            r'"\\server\share\Git\cmd\git.exe" reset --hard HEAD',
+            r"/opt/Git\ Tools/bin/git reset --hard HEAD",
+            "sh -c 'git reset --hard HEAD'",
+            "bash -lc 'echo safe && git reset --hard HEAD'",
+            'cmd.exe /d /s /c "echo safe && git.exe reset --hard HEAD"',
+            r"cmd.exe /c C:\Program^ Files\Git\cmd\git.exe reset --hard HEAD",
+            (
+                'cmd.exe /d /s /c ""C:\\Program Files\\Git\\cmd\\git.exe" '
+                'reset --hard HEAD"'
+            ),
+            (
+                'powershell.exe -NoProfile -Command '
+                '"Write-Output safe; git.exe reset --hard HEAD"'
+            ),
+            (
+                "pwsh -Command "
+                "'& \"C:\\Program Files\\Git\\cmd\\git.exe\" reset --hard HEAD'"
+            ),
+            (
+                "pwsh -Command "
+                r"'& C:\Program` Files\Git\cmd\git.exe reset --hard HEAD'"
+            ),
+        )
+        expected: str | None = None
+        for command in commands:
+            with self.subTest(command=command):
+                reason = self.assert_denied(command)
+                self.assertIn("git reset --hard", reason)
+                if expected is None:
+                    expected = reason
+                self.assertEqual(reason, expected)
+
+    def test_benign_git_decision_is_equivalent_across_wrappers(self) -> None:
+        self.activate("IMPLEMENTING")
+        commands = (
+            "git status --short",
+            "git.exe status --short",
+            '"C:/Program Files/Git/cmd/git.exe" status --short',
+            r'"C:\Program Files\Git\cmd\git.exe" status --short',
+            r'"\\server\share\Git\cmd\git.exe" status --short',
+            r"/opt/Git\ Tools/bin/git status --short",
+            "sh -c 'git status --short'",
+            "bash -lc 'echo safe && git status --short'",
+            "bash -lc 'git status -- \\$literal'",
+            "bash -lc \"git status -- '\\$literal'\"",
+            'cmd.exe /d /s /c "echo safe && git.exe status --short"',
+            r"cmd.exe /c C:\Program^ Files\Git\cmd\git.exe status --short",
+            (
+                'cmd.exe /d /s /c ""C:\\Program Files\\Git\\cmd\\git.exe" '
+                'status --short"'
+            ),
+            (
+                'powershell.exe -NoProfile -Command '
+                '"Write-Output safe; git.exe status --short"'
+            ),
+            (
+                "pwsh -Command "
+                "'& \"C:\\Program Files\\Git\\cmd\\git.exe\" status --short'"
+            ),
+            'pwsh -Command "git status -- \'$literal\'"',
+            "pwsh -Command 'git status -- `$literal'",
+            (
+                "pwsh -Command "
+                r"'& C:\Program` Files\Git\cmd\git.exe status --short'"
+            ),
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                stdout, stderr = self.invoke(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": command},
+                    }
+                )
+                self.assertEqual(stdout, "")
+                self.assertEqual(stderr, "")
+
+    def test_ambiguous_recognized_wrappers_are_denied_with_diagnostics(self) -> None:
+        self.activate("INTAKE")
+        commands = (
+            "bash -lc '$GIT reset --hard HEAD'",
+            'cmd.exe /c "%GIT% reset --hard HEAD"',
+            "powershell.exe -Command '& $git reset --hard HEAD'",
+            "pwsh -EncodedCommand Z2l0IHJlc2V0IC0taGFyZA==",
+            "bash -lc 'echo $DYNAMIC_COMMAND'",
+            "bash workflow-script.sh",
+            'cmd.exe /c "echo %DYNAMIC_COMMAND%"',
+            "cmd.exe /k git reset --hard HEAD",
+            "pwsh -Command 'Write-Output $dynamicCommand'",
+            'powershell.exe -Command "& (Get-Command git) reset --hard HEAD"',
+            'cmd.exe /c "git reset --hard',
+            'powershell.exe -Command "git reset --hard',
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                reason = self.assert_denied(command)
+                self.assertIn("could not be inspected safely", reason)
 
     def test_direct_push_and_commit_on_protected_branch_are_denied(self) -> None:
         subprocess.run(

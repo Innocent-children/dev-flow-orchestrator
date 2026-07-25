@@ -11,7 +11,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, NamedTuple, Optional, Sequence
 
 
 CONTROLLER = Path(__file__).resolve().parents[1] / "scripts" / "dev_flow.py"
@@ -75,8 +75,10 @@ _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SEPARATOR_CHARS = set(";&|()<>\n{}")
 _LEADING_WORDS = {"!", "if", "then", "elif", "while", "until", "do"}
-_WRAPPERS = {"command", "env", "exec", "nice", "nohup", "sudo", "time"}
+_WRAPPERS = {"call", "command", "env", "exec", "nice", "nohup", "sudo", "time"}
 _SHELLS = {"bash", "dash", "ksh", "sh", "zsh"}
+_CMD_SHELLS = {"cmd"}
+_POWERSHELLS = {"powershell", "pwsh"}
 _WRAPPER_VALUE_OPTIONS = {
     "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
     "nice": {"-n", "--adjustment"},
@@ -104,14 +106,17 @@ def _within(path: Path, parent: Path) -> bool:
         return False
 
 
-def _import_controller() -> None:
-    scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
+def _import_controller(plugin_root: Optional[Path] = None) -> None:
+    scripts_dir = (plugin_root or Path(__file__).resolve().parents[1]) / "scripts"
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
 
 
 def in_configured_scope(
-    data_dir: Path, environ: Mapping[str, str], *candidates: Path
+    data_dir: Path,
+    environ: Mapping[str, str],
+    *candidates: Path,
+    plugin_root: Optional[Path] = None,
 ) -> bool:
     """Report whether any candidate directory is inside the configured scope.
 
@@ -120,7 +125,7 @@ def in_configured_scope(
     it.  The controller owns the matching rules; this only aggregates them.
     """
 
-    _import_controller()
+    _import_controller(plugin_root)
     try:
         from dev_flow import evaluate_scope, resolve_scope
 
@@ -132,10 +137,12 @@ def in_configured_scope(
         return True
 
 
-def load_active_task(data_dir: Path, cwd: Path) -> Optional[dict[str, Any]]:
+def load_active_task(
+    data_dir: Path, cwd: Path, plugin_root: Optional[Path] = None
+) -> Optional[dict[str, Any]]:
     """Use the controller's read-only lookup and fail open on any mismatch."""
 
-    _import_controller()
+    _import_controller(plugin_root)
     try:
         from dev_flow import find_active_task_for_cwd, load_state
 
@@ -244,25 +251,47 @@ def _index_selection_context(task: Mapping[str, Any]) -> tuple[str, str]:
 def _quote(value: str) -> str:
     """Quote one argument for the shell family native to this platform."""
     if os.name == "nt":
-        return subprocess.list2cmdline([value])
+        needs_quotes = (
+            not value
+            or any(char in value for char in " \t&|<>()^")
+        )
+        if not needs_quotes:
+            return value
+        rendered = ['"']
+        backslashes = 0
+        for char in value:
+            if char == "\\":
+                backslashes += 1
+                continue
+            if char == '"':
+                rendered.append("\\" * (backslashes * 2 + 1))
+                rendered.append('"')
+            else:
+                rendered.append("\\" * backslashes)
+                rendered.append(char)
+            backslashes = 0
+        rendered.append("\\" * (backslashes * 2))
+        rendered.append('"')
+        return "".join(rendered)
     return shlex.quote(value)
 
 
-def _controller_prefix(data_dir: Path) -> str:
+def _controller_prefix(data_dir: Path, controller: Path = CONTROLLER) -> str:
     # sys.executable, not "python3": the interpreter running this hook is the
     # one the registration chose, and "python3" does not exist on stock Windows.
     return (
-        f"{_quote(sys.executable)} {_quote(str(CONTROLLER))} "
+        f"{_quote(sys.executable)} {_quote(str(controller))} "
         f"--data-dir {_quote(str(data_dir))}"
     )
 
 
-def build_bootstrap_context(data_dir: Path) -> str:
-    prefix = _controller_prefix(data_dir)
+def build_bootstrap_context(data_dir: Path, controller: Path = CONTROLLER) -> str:
+    prefix = _controller_prefix(data_dir, controller)
     return "\n".join(
         (
             "Dev Flow controller bootstrap:",
-            f"- Controller: {CONTROLLER}",
+            f"- Interpreter: {sys.executable}",
+            f"- Controller: {controller}",
             f"- Data directory: {data_dir}",
             f"- Bootstrap command: {prefix} list",
             f"Every controller call must explicitly include "
@@ -272,11 +301,14 @@ def build_bootstrap_context(data_dir: Path) -> str:
 
 
 def build_context(
-    task: Mapping[str, Any], data_dir: Path, in_scope: bool = True
+    task: Mapping[str, Any],
+    data_dir: Path,
+    in_scope: bool = True,
+    controller: Path = CONTROLLER,
 ) -> str:
     stage = _stage(task)
     flow = _flow(task)
-    prefix = _controller_prefix(data_dir)
+    prefix = _controller_prefix(data_dir, controller)
     task_id = _render(task.get("task_id"), "unknown")
     index_role, index_projects = _index_selection_context(task)
     next_actions = LITE_NEXT_ACTIONS if flow == "lite" else NEXT_ACTIONS
@@ -292,7 +324,8 @@ def build_context(
         f"- Active index projects: {index_projects}",
         f"- Next action: "
         f"{_render(task.get('next_action'), next_actions.get(stage, 'inspect task state'))}",
-        f"- Controller: {CONTROLLER}",
+        f"- Interpreter: {sys.executable}",
+        f"- Controller: {controller}",
         f"- Data directory: {data_dir}",
         f"- Resume command: {prefix} show --task {_quote(task_id)}",
     ]
@@ -436,15 +469,22 @@ def _write_denial_reason(
     return None
 
 
-def _segments(command: str) -> list[list[str]]:
+class _Inspection(NamedTuple):
+    invocations: list[tuple[str, list[str], Path]]
+    diagnostic: Optional[str]
+    recognized_wrapper: bool
+    parse_failed: bool
+
+
+def _posix_segments(command: str) -> tuple[list[list[str]], Optional[str]]:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n{}")
         lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
         lexer.commenters = "#"
         tokens = list(lexer)
-    except ValueError:
-        return []
+    except ValueError as exc:
+        return [], f"POSIX shell payload has invalid quoting: {exc}"
     result: list[list[str]] = []
     current: list[str] = []
     for token in tokens:
@@ -456,19 +496,163 @@ def _segments(command: str) -> list[list[str]]:
             current.append(token)
     if current:
         result.append(current)
-    return result
+    return result, None
+
+
+def _cmd_segments(command: str) -> tuple[list[list[str]], Optional[str]]:
+    """Tokenize the conservative cmd.exe subset used by command hooks."""
+
+    result: list[list[str]] = []
+    current: list[str] = []
+    token: list[str] = []
+    quoted = False
+    index = 0
+
+    def finish_token() -> None:
+        if token:
+            current.append("".join(token))
+            token.clear()
+
+    def finish_segment() -> None:
+        finish_token()
+        if current:
+            result.append(list(current))
+            current.clear()
+
+    while index < len(command):
+        char = command[index]
+        if char == "^":
+            index += 1
+            if index >= len(command):
+                return [], "cmd.exe payload ends with an incomplete caret escape"
+            token.append(command[index])
+            index += 1
+            continue
+        if char == '"':
+            quoted = not quoted
+            index += 1
+            continue
+        if not quoted and char in " \t\r":
+            finish_token()
+            index += 1
+            continue
+        if not quoted and char in "&|()\n":
+            finish_segment()
+            index += 1
+            while index < len(command) and command[index] == char:
+                index += 1
+            continue
+        token.append(char)
+        index += 1
+    if quoted:
+        return [], "cmd.exe payload has an unmatched double quote"
+    finish_segment()
+    return result, None
+
+
+def _powershell_segments(command: str) -> tuple[list[list[str]], Optional[str]]:
+    """Tokenize a static PowerShell command payload without evaluating it."""
+
+    result: list[list[str]] = []
+    current: list[str] = []
+    token: list[str] = []
+    quote: Optional[str] = None
+    index = 0
+
+    def finish_token() -> None:
+        if token:
+            current.append("".join(token))
+            token.clear()
+
+    def finish_segment() -> None:
+        finish_token()
+        if current:
+            result.append(list(current))
+            current.clear()
+
+    while index < len(command):
+        char = command[index]
+        if quote == "'" and char == "'" and index + 1 < len(command) and command[index + 1] == "'":
+            token.append("'")
+            index += 2
+            continue
+        if char == "`" and quote != "'":
+            index += 1
+            if index >= len(command):
+                return [], "PowerShell payload ends with an incomplete backtick escape"
+            token.append(command[index])
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            if quote is None:
+                quote = char
+                index += 1
+                continue
+            if quote == char:
+                quote = None
+                index += 1
+                continue
+        if quote is None and char in " \t\r":
+            finish_token()
+            index += 1
+            continue
+        if quote is None and char == "#":
+            finish_segment()
+            newline = command.find("\n", index)
+            if newline < 0:
+                index = len(command)
+            else:
+                index = newline
+            continue
+        if quote is None and char in ";|(){}\n":
+            if char in "({" and current == ["&"] and not token:
+                return [], (
+                    "PowerShell call operator targets a computed expression "
+                    "or script block"
+                )
+            finish_segment()
+            index += 1
+            while index < len(command) and command[index] == char:
+                index += 1
+            continue
+        if quote is None and char == "&":
+            if not current and not token:
+                current.append("&")
+            else:
+                finish_segment()
+            index += 1
+            if index < len(command) and command[index] == "&":
+                index += 1
+            continue
+        token.append(char)
+        index += 1
+    if quote is not None:
+        return [], f"PowerShell payload has an unmatched {quote} quote"
+    finish_segment()
+    return result, None
 
 
 def _basename(token: str) -> str:
-    return token.rsplit("/", 1)[-1].lower()
+    basename = re.split(r"[\\/]", token)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat", ".com"):
+        if basename.endswith(suffix):
+            return basename[: -len(suffix)]
+    return basename
 
 
 def _simple_command(tokens: Sequence[str]) -> tuple[Optional[str], list[str]]:
     index = 0
-    while index < len(tokens) and (tokens[index] in _LEADING_WORDS or _ASSIGNMENT.match(tokens[index])):
+    while index < len(tokens) and (
+        tokens[index] in _LEADING_WORDS
+        or tokens[index] == "&"
+        or _ASSIGNMENT.match(tokens[index])
+    ):
         index += 1
     while index < len(tokens):
-        name = _basename(tokens[index])
+        executable = tokens[index]
+        if executable.startswith("@"):
+            executable = executable[1:]
+        name = _basename(executable)
         index += 1
         if name not in _WRAPPERS:
             return name, list(tokens[index:])
@@ -488,6 +672,250 @@ def _simple_command(tokens: Sequence[str]) -> tuple[Optional[str], list[str]]:
             if option in value_options and "=" not in token and index < len(tokens):
                 index += 1
     return None, []
+
+
+def _payload_has_dynamic_expansion(command: str, dialect: str) -> bool:
+    """Recognize expansion syntax while preserving quote/escape provenance."""
+
+    quote: Optional[str] = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if dialect == "cmd":
+            if char == "^":
+                index += 2
+                continue
+            if char in {"%", "!"}:
+                return True
+            index += 1
+            continue
+
+        if dialect == "powershell":
+            if (
+                quote == "'"
+                and char == "'"
+                and index + 1 < len(command)
+                and command[index + 1] == "'"
+            ):
+                index += 2
+                continue
+            if char == "`" and quote != "'":
+                index += 2
+                continue
+        elif char == "\\" and quote != "'":
+            index += 2
+            continue
+
+        if char in {"'", '"'}:
+            if quote is None:
+                quote = char
+                index += 1
+                continue
+            if quote == char:
+                quote = None
+                index += 1
+                continue
+        if quote != "'" and (
+            char == "$" or (dialect == "posix" and char == "`")
+        ):
+            return True
+        index += 1
+    return False
+
+
+def _posix_shell_payload(args: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
+    for index, argument in enumerate(args):
+        if argument in {"-c", "--command"} or (
+            argument.startswith("-")
+            and not argument.startswith("--")
+            and "c" in argument[1:]
+        ):
+            if index + 1 >= len(args):
+                return None, "POSIX shell command option has no payload"
+            return args[index + 1], None
+    return None, "POSIX shell invocation has no inspectable command payload"
+
+
+def _cmd_shell_payload(args: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
+    matches: list[tuple[int, str]] = []
+    for index, argument in enumerate(args):
+        lowered = argument.lower()
+        if lowered == "/c":
+            matches.append((index, ""))
+        elif lowered.startswith("/c") and len(argument) > 2:
+            matches.append((index, argument[2:]))
+    if len(matches) > 1:
+        return None, "cmd.exe payload has more than one /c option"
+    if not matches:
+        return None, "cmd.exe invocation has no supported static /c payload"
+    index, attached = matches[0]
+    parts = ([attached] if attached else []) + list(args[index + 1 :])
+    if not parts or not any(part.strip() for part in parts):
+        return None, "cmd.exe /c option has no payload"
+    return " ".join(parts), None
+
+
+def _powershell_payload(args: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
+    matches: list[tuple[int, str]] = []
+    for index, argument in enumerate(args):
+        lowered = argument.lower()
+        if lowered in {"-encodedcommand", "-enc", "-e"}:
+            return None, "encoded PowerShell commands cannot be inspected safely"
+        if lowered in {"-file", "-f"}:
+            return None, "PowerShell -File commands cannot be inspected safely"
+        if lowered in {"-command", "-c", "/command", "/c"}:
+            matches.append((index, ""))
+        elif lowered.startswith(("-command:", "/command:")):
+            matches.append((index, argument.split(":", 1)[1]))
+    if len(matches) > 1:
+        return None, "PowerShell payload has more than one command option"
+    if not matches:
+        return None, "PowerShell invocation has no supported static -Command payload"
+    index, attached = matches[0]
+    parts = ([attached] if attached else []) + list(args[index + 1 :])
+    if not parts or not any(part.strip() for part in parts) or parts[0] == "-":
+        return None, "PowerShell command option has no static payload"
+    return " ".join(parts), None
+
+
+def _inspection_error(wrapper: str, detail: str) -> str:
+    return (
+        f"Dev Flow blocked a recognized {wrapper} wrapper because its payload "
+        f"could not be inspected safely: {detail}."
+    )
+
+
+def _inspect_tokens(
+    segments: Sequence[Sequence[str]],
+    cwd: Path,
+    dialect: str,
+    depth: int,
+    strict: bool,
+) -> _Inspection:
+    invocations: list[tuple[str, list[str], Path]] = []
+    recognized = False
+    ambiguous_commands = {
+        "posix": {"eval", "source", "."},
+        "cmd": {"for", "if"},
+        "powershell": {"iex", "invoke-expression"},
+    }
+    for segment in segments:
+        name, args = _simple_command(segment)
+        if name is None:
+            continue
+        if strict and (
+            name in ambiguous_commands.get(dialect, set())
+        ):
+            return _Inspection(
+                invocations,
+                _inspection_error(dialect, f"dynamic command {name!r}"),
+                recognized,
+                False,
+            )
+        if name == "git":
+            parsed = _parse_git(args, cwd)
+            if parsed is not None:
+                invocations.append(parsed)
+            continue
+        if name in _SHELLS:
+            recognized = True
+            payload, error = _posix_shell_payload(args)
+            wrapper = f"{name} POSIX shell"
+            child_dialect = "posix"
+        elif name in _CMD_SHELLS:
+            recognized = True
+            payload, error = _cmd_shell_payload(args)
+            wrapper = "cmd.exe"
+            child_dialect = "cmd"
+        elif name in _POWERSHELLS:
+            recognized = True
+            payload, error = _powershell_payload(args)
+            wrapper = f"{name} PowerShell"
+            child_dialect = "powershell"
+        else:
+            continue
+        if error is not None:
+            return _Inspection(
+                invocations,
+                _inspection_error(wrapper, error),
+                recognized,
+                False,
+            )
+        if payload is None:
+            continue
+        if depth >= 4:
+            return _Inspection(
+                invocations,
+                _inspection_error(wrapper, "wrapper nesting exceeds the supported depth"),
+                recognized,
+                False,
+            )
+        nested = _inspect_payload(payload, cwd, child_dialect, depth + 1, True)
+        invocations.extend(nested.invocations)
+        recognized = recognized or nested.recognized_wrapper
+        if nested.diagnostic is not None:
+            return _Inspection(invocations, nested.diagnostic, recognized, False)
+    return _Inspection(invocations, None, recognized, False)
+
+
+def _inspect_payload(
+    command: str,
+    cwd: Path,
+    dialect: str,
+    depth: int,
+    strict: bool,
+) -> _Inspection:
+    if strict and _payload_has_dynamic_expansion(command, dialect):
+        return _Inspection(
+            [],
+            _inspection_error(
+                dialect,
+                "dynamic expansion could change the command or its separators",
+            ),
+            False,
+            False,
+        )
+    if dialect == "cmd":
+        segments, error = _cmd_segments(command)
+    elif dialect == "powershell":
+        segments, error = _powershell_segments(command)
+    else:
+        segments, error = _posix_segments(command)
+    if error is not None:
+        diagnostic = _inspection_error(dialect, error) if strict else None
+        return _Inspection([], diagnostic, False, True)
+    return _inspect_tokens(segments, cwd, dialect, depth, strict)
+
+
+def _recognized_wrapper_prefix(command: str) -> Optional[str]:
+    raw = command.lstrip()
+    if not raw:
+        return None
+    if raw[0] in {"'", '"'}:
+        quote = raw[0]
+        end = raw.find(quote, 1)
+        token = raw[1:] if end < 0 else raw[1:end]
+    else:
+        token = raw.split(None, 1)[0]
+    name = _basename(token)
+    if name in _SHELLS | _CMD_SHELLS | _POWERSHELLS:
+        return name
+    return None
+
+
+def _raw_cmd_prefix_payload(command: str) -> tuple[Optional[str], Optional[str]]:
+    match = re.search(r"(?i)(?:^|\s)/c(?=\s|$)", command)
+    if match is None:
+        return None, None
+    payload = command[match.end() :].lstrip()
+    if not payload:
+        return None, "cmd.exe /c option has no payload"
+    # With /s /c, Command Prompt conventionally wraps a quoted executable and
+    # its arguments in one extra pair of quotes:
+    #   cmd.exe /s /c ""C:\Program Files\Git\cmd\git.exe" status"
+    if len(payload) >= 2 and payload[0] == payload[-1] == '"':
+        payload = payload[1:-1]
+    return payload, None
 
 
 def _parse_git(args: Sequence[str], cwd: Path) -> Optional[tuple[str, list[str], Path]]:
@@ -522,22 +950,42 @@ def _parse_git(args: Sequence[str], cwd: Path) -> Optional[tuple[str, list[str],
     return None
 
 
-def _git_invocations(command: str, cwd: Path, depth: int = 0) -> list[tuple[str, list[str], Path]]:
-    if depth > 3:
-        return []
+def _git_invocations(
+    command: str, cwd: Path
+) -> tuple[list[tuple[str, list[str], Path]], Optional[str]]:
+    # Codex's canonical command tool is named Bash on every platform, but its
+    # payload may contain native Windows executables.  Inspect once with POSIX
+    # rules and once with cmd rules so unquoted backslash paths are not damaged.
+    prefix = _recognized_wrapper_prefix(command)
+    if prefix == "cmd":
+        payload, error = _raw_cmd_prefix_payload(command)
+        if error is not None:
+            return [], _inspection_error("cmd.exe", error)
+        if payload is not None:
+            inspection = _inspect_payload(payload, cwd, "cmd", 1, True)
+            return inspection.invocations, inspection.diagnostic
+
+    primary = _inspect_payload(command, cwd, "posix", 0, False)
+    inspections = [primary]
+    if not primary.recognized_wrapper:
+        inspections.append(_inspect_payload(command, cwd, "cmd", 0, False))
     result: list[tuple[str, list[str], Path]] = []
-    for segment in _segments(command):
-        name, args = _simple_command(segment)
-        if name == "git":
-            parsed = _parse_git(args, cwd)
-            if parsed is not None:
-                result.append(parsed)
-        elif name in _SHELLS:
-            for index, argument in enumerate(args):
-                if argument.startswith("-") and "c" in argument[1:] and index + 1 < len(args):
-                    result.extend(_git_invocations(args[index + 1], cwd, depth + 1))
-                    break
-    return result
+    seen: set[tuple[str, tuple[str, ...], str]] = set()
+    for inspection in inspections:
+        if inspection.diagnostic is not None:
+            return result, inspection.diagnostic
+        for subcommand, args, git_cwd in inspection.invocations:
+            key = (subcommand, tuple(args), str(git_cwd))
+            if key not in seen:
+                seen.add(key)
+                result.append((subcommand, args, git_cwd))
+    if all(inspection.parse_failed for inspection in inspections):
+        wrapper = prefix
+        if wrapper is not None:
+            return result, _inspection_error(
+                wrapper, "the outer command line has invalid quoting or escaping"
+            )
+    return result, None
 
 
 def _repo_paths(repo: Mapping[str, Any]) -> list[Path]:
@@ -599,13 +1047,12 @@ def _current_branch(cwd: Path, task: Optional[Mapping[str, Any]]) -> Optional[st
             ["git", "-C", str(cwd), "branch", "--show-current"],
             check=False,
             capture_output=True,
-            text=True,
             timeout=2,
         )
     except (OSError, subprocess.SubprocessError):
         result = None
     if result is not None and result.returncode == 0 and result.stdout.strip():
-        return _normal_branch(result.stdout)
+        return _normal_branch(result.stdout.decode("utf-8", errors="replace"))
     repo = _matching_repo(task, cwd)
     if repo is None:
         return None
@@ -696,9 +1143,13 @@ def command_denial_reason(
     cwd: Path,
     task: Optional[Mapping[str, Any]],
     data_dir: Path,
+    controller_path: Path = CONTROLLER,
 ) -> Optional[str]:
-    controller = _controller_prefix(data_dir)
-    for subcommand, args, git_cwd in _git_invocations(command, cwd):
+    controller = _controller_prefix(data_dir, controller_path)
+    invocations, diagnostic = _git_invocations(command, cwd)
+    if diagnostic is not None:
+        return diagnostic
+    for subcommand, args, git_cwd in invocations:
         if subcommand == "push" and _force_push(args):
             return f"Force-push is blocked by Dev Flow; use {controller}."
         if subcommand == "reset" and _has_option(args, "--hard"):
@@ -743,13 +1194,109 @@ def _deny(reason: str) -> dict[str, Any]:
     }
 
 
-def handle(payload: Mapping[str, Any], environ: Mapping[str, str]) -> Optional[dict[str, Any]]:
+class _PluginContext(NamedTuple):
+    root: Optional[Path]
+    data_dir: Optional[Path]
+    controller: Optional[Path]
+    diagnostic: Optional[str]
+
+
+def _resolve_plugin_context(
+    environ: Mapping[str, str],
+    *,
+    fallback_root: Optional[Path] = None,
+    data_dir_from_cli: bool = False,
+) -> _PluginContext:
+    problems: list[str] = []
+    root: Optional[Path] = None
+    data_dir: Optional[Path] = None
+    controller: Optional[Path] = None
+
+    raw_root = environ.get("PLUGIN_ROOT")
+    if not isinstance(raw_root, str) or not raw_root.strip():
+        if fallback_root is None:
+            problems.append("PLUGIN_ROOT is missing or empty")
+        else:
+            root = fallback_root.resolve(strict=False)
+            controller = root / "scripts" / "dev_flow.py"
+            if not controller.is_file():
+                problems.append(
+                    "the absolute hook path does not contain scripts/dev_flow.py"
+                )
+                controller = None
+    else:
+        try:
+            supplied_root = Path(raw_root).expanduser()
+            if not supplied_root.is_absolute():
+                problems.append("PLUGIN_ROOT must be an absolute path")
+            else:
+                root = supplied_root.resolve(strict=False)
+                controller = root / "scripts" / "dev_flow.py"
+            if root is not None and not controller.is_file():
+                problems.append(
+                    "PLUGIN_ROOT does not contain scripts/dev_flow.py"
+                )
+                controller = None
+        except (OSError, RuntimeError, ValueError):
+            problems.append("PLUGIN_ROOT is not a resolvable filesystem path")
+            root = None
+
     raw_data_dir = environ.get("PLUGIN_DATA")
-    if not raw_data_dir:
-        return None
-    data_dir = _path(raw_data_dir)
-    cwd = _path(str(payload.get("cwd") or os.getcwd()))
+    if not isinstance(raw_data_dir, str) or not raw_data_dir.strip():
+        problems.append("PLUGIN_DATA is missing or empty")
+    else:
+        try:
+            supplied_data_dir = Path(raw_data_dir).expanduser()
+            if not data_dir_from_cli and not supplied_data_dir.is_absolute():
+                problems.append("PLUGIN_DATA must be an absolute path")
+            else:
+                data_dir = supplied_data_dir.resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            problems.append("PLUGIN_DATA is not a resolvable filesystem path")
+            data_dir = None
+
+    diagnostic = "; ".join(problems) if problems else None
+    return _PluginContext(root, data_dir, controller, diagnostic)
+
+
+def _environment_diagnostic(event: str, detail: str) -> dict[str, Any]:
+    message = "\n".join(
+        (
+            "Dev Flow hook diagnostic:",
+            f"- Required plugin environment is unavailable: {detail}.",
+            "- No controller command was constructed and no workflow state was mutated.",
+        )
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": event,
+            "additionalContext": message,
+        }
+    }
+
+
+def handle(
+    payload: Mapping[str, Any],
+    environ: Mapping[str, str],
+    *,
+    fallback_root: Optional[Path] = None,
+    data_dir_from_cli: bool = False,
+) -> Optional[dict[str, Any]]:
     event = str(payload.get("hook_event_name", ""))
+    plugin = _resolve_plugin_context(
+        environ,
+        fallback_root=fallback_root,
+        data_dir_from_cli=data_dir_from_cli,
+    )
+    if plugin.diagnostic is not None:
+        if event in {"SessionStart", "UserPromptSubmit", "PreToolUse"}:
+            return _environment_diagnostic(event, plugin.diagnostic)
+        return None
+    assert plugin.root is not None
+    assert plugin.data_dir is not None
+    assert plugin.controller is not None
+    data_dir = plugin.data_dir
+    cwd = _path(str(payload.get("cwd") or os.getcwd()))
     tool_input_value = payload.get("tool_input")
     tool_input = tool_input_value if isinstance(tool_input_value, Mapping) else {}
     raw_workdir = tool_input.get("workdir")
@@ -757,12 +1304,14 @@ def handle(payload: Mapping[str, Any], environ: Mapping[str, str]) -> Optional[d
         workdir = _path(raw_workdir.strip(), cwd)
     else:
         workdir = cwd
-    task = load_active_task(data_dir, workdir)
+    task = load_active_task(data_dir, workdir, plugin.root)
     if task is None and workdir != cwd:
-        task = load_active_task(data_dir, cwd)
+        task = load_active_task(data_dir, cwd, plugin.root)
 
     candidates = [workdir] if workdir == cwd else [workdir, cwd]
-    in_scope = in_configured_scope(data_dir, environ, *candidates)
+    in_scope = in_configured_scope(
+        data_dir, environ, *candidates, plugin_root=plugin.root
+    )
     # Outside the configured scope the plugin must look uninstalled.  An active
     # task still owns its own directories, so narrowing the scope mid-flight
     # cannot silently drop that task's checkpoint or guardrails.
@@ -773,9 +1322,11 @@ def handle(payload: Mapping[str, Any], environ: Mapping[str, str]) -> Optional[d
         return {
             "hookSpecificOutput": {
                 "hookEventName": event,
-                "additionalContext": build_context(task, data_dir, in_scope)
+                "additionalContext": build_context(
+                    task, data_dir, in_scope, plugin.controller
+                )
                 if task is not None
-                else build_bootstrap_context(data_dir),
+                else build_bootstrap_context(data_dir, plugin.controller),
             }
         }
     if event != "PreToolUse":
@@ -806,7 +1357,9 @@ def handle(payload: Mapping[str, Any], environ: Mapping[str, str]) -> Optional[d
         command = tool_input.get("cmd")
     if not isinstance(command, str):
         return None
-    reason = command_denial_reason(command, workdir, task, data_dir)
+    reason = command_denial_reason(
+        command, workdir, task, data_dir, plugin.controller
+    )
     return _deny(reason) if reason else None
 
 
@@ -821,21 +1374,39 @@ def _cli_data_dir(argv: Sequence[str]) -> Optional[str]:
 
 def main() -> int:
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         # Codex global hook registrations run without PLUGIN_DATA in the
         # environment, so the installer passes --data-dir explicitly; the
         # argument outranks any inherited variable.
         environ: Mapping[str, str] = os.environ
         data_dir = _cli_data_dir(sys.argv[1:])
-        if data_dir:
+        if data_dir is not None:
             environ = {**os.environ, "PLUGIN_DATA": data_dir}
-        output = handle(payload, environ) if isinstance(payload, Mapping) else None
+        output = (
+            handle(
+                payload,
+                environ,
+                fallback_root=Path(__file__).resolve().parents[1]
+                if data_dir is not None
+                else None,
+                data_dir_from_cli=data_dir is not None,
+            )
+            if isinstance(payload, Mapping)
+            else None
+        )
     except Exception:
         # Hooks are an auxiliary defense; malformed state must not disable Codex.
         return 0
-    if output is not None:
-        json.dump(output, sys.stdout, ensure_ascii=False, separators=(",", ":"))
-        sys.stdout.write("\n")
+    try:
+        if output is not None:
+            encoded = json.dumps(
+                output, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            sys.stdout.buffer.write(encoded + b"\n")
+    except Exception:
+        # A hook protocol/stream failure must remain advisory and must never
+        # emit a partial denial after an internal exception.
+        return 0
     return 0
 
 

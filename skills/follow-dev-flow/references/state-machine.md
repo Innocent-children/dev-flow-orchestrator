@@ -26,9 +26,9 @@
 Use `<plugin-root>/scripts/dev_flow.py` as the sole writer of workflow state. It keeps state outside target repositories and exposes these commands:
 
 ```text
-start  show  list  scope  preflight  baseline  record-index  record-artifact
-set-route  approve  transition  prepare-workspace  record-test
-review-snapshot  cancel
+start  show  recover-quarantine  list  scope  preflight  baseline
+record-index  record-artifact  set-route  approve  transition
+prepare-workspace  record-test  review-snapshot  cancel
 ```
 
 `scope` is the only command that reads and writes plugin configuration rather than task state, so it takes no task ID or `--expected-revision`. It reports the directories where this plugin is active and, when `start` returns `OUT_OF_SCOPE`, is the supported way to widen that scope. Changing the scope is the user's decision: present the current `summary` and the rejected path, and run a `scope` mutation only after an explicit choice.
@@ -41,11 +41,12 @@ Resolve `<state-dir>` from the Dev Flow bootstrap/checkpoint context injected by
 
 ## Command templates
 
-Let `<ctl>` mean `python3 "<absolute-controller-path>" --data-dir "<state-dir>"`, using the exact absolute values injected by the plugin hook. Never omit `--data-dir` or rely on `PLUGIN_DATA` reaching Bash/exec. Repeat `--repo` for multiple repositories and reload with `show` after each successful state mutation.
+Let `<ctl>` mean the exact ordered argument prefix injected by the plugin hook: `<injected-interpreter> <absolute-controller-path> --data-dir <state-dir>`. Preserve those three absolute values and their argument boundaries; do not substitute another interpreter, reparse the displayed bootstrap/resume command through a different shell, omit `--data-dir`, or rely on `PLUGIN_DATA` reaching the execution surface. Repeat `--repo` for multiple repositories and reload with `show` after each successful state mutation.
 
 ```text
 <ctl> list --active-only
 <ctl> show --task <task-id>
+<ctl> recover-quarantine --task <task-id> --expected-revision <revision>
 <ctl> scope [--check <directory>] [--add <directory>] [--add-exclude <directory>] [--remove <directory>] [--remove-exclude <directory>] [--mode <all|allowlist>] [--clear]
 <ctl> start --requirement <text> --repo <path> [--repo <path> ...] [--flow <full|lite>]
 <ctl> preflight --task <task-id> --expected-revision <revision> [--repo <id> ...] [--remote <name>] [--base <branch>]
@@ -150,7 +151,7 @@ Let controller-detected conflicts, detached `HEAD`, unresolved bases/remotes, ac
 
 ## Baseline gate
 
-Present one table covering repository, resolved remote name and URL, base branch, candidate source ref/SHA, preflight `HEAD`, exact working-tree fingerprint/dirt, and whether a fetch is proposed. Ask the user to approve the repository scope plus baseline fetch/materialization. Record this as `approve --gate baseline-fetch` before any `baseline` call; the approval binds a hash of the complete per-repository remote/base-candidate/HEAD/working-tree evidence, and the controller rejects even a no-fetch/no-materialize baseline without it. Include `--allow-fetch` only when the user explicitly authorizes network fetching. Include `--allow-dirty` only when the user explicitly authorizes proceeding around the exact recorded dirty snapshot; without it, any dirt is rejected. These structured flags override neither one another nor free-text notes. Immediately before baseline fetch or pinning, the controller compares each live remote URL and working-tree fingerprint with the approved preflight values and stops on drift. Without `--fetch`, the live candidate base ref must still resolve to the exact approved SHA. When fetching is authorized, it fetches the approved base branch with an explicit source/destination refspec and pins the resulting verified tracking-ref SHA; repository-specific `remote.<name>.fetch` mappings cannot silently omit the base. Every subsequent `preflight` write clears this approval because remote, base candidate, `HEAD`, or working-tree evidence may have changed, so present the refreshed evidence and obtain a new approval.
+Present one table covering repository, resolved remote name and URL, base branch, candidate source ref/SHA, preflight `HEAD`, exact working-tree fingerprint/dirt, and whether a fetch is proposed. Ask the user to approve the repository scope plus baseline fetch/materialization. Record this as `approve --gate baseline-fetch` before any `baseline` call; the approval binds a hash of the complete per-repository remote/base-candidate/HEAD/working-tree evidence, and the controller rejects even a no-fetch/no-materialize baseline without it. Include `--allow-fetch` only when the user explicitly authorizes network fetching. Include `--allow-dirty` only when the user explicitly authorizes proceeding around the exact recorded dirty snapshot; without it, any dirt is rejected. These structured flags override neither one another nor free-text notes. Immediately before baseline fetch or pinning, the controller compares each live remote URL and working-tree fingerprint with the approved preflight values and stops on drift. Without `--fetch`, the live candidate base ref must still resolve to the exact approved SHA. When fetching is authorized, it fetches the approved effective URL and base branch with an explicit source/destination refspec while disabling repository hooks, custom upload-pack/transport commands, credential and askpass helpers, pruning, and automatic maintenance; repository-specific `remote.<name>.fetch` mappings cannot silently omit the base. If the remote requires an external authentication or SSH helper, ask the user to fetch it under their normal Git policy, rerun `preflight`, and approve the resulting no-fetch baseline. Every subsequent `preflight` write clears this approval because remote, base candidate, `HEAD`, or working-tree evidence may have changed, so present the refreshed evidence and obtain a new approval.
 
 Use the returned `base_sha` and `analysis_workspace.path` for every repository. Verify that each analysis workspace is detached at its pinned base commit and contains no user work before analysis. If a baseline or materialized path later moves or disappears, do not silently update it: report drift and repeat the gate or retain/recreate the exact recorded baseline through supported recovery.
 

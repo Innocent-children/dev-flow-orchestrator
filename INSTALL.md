@@ -1,48 +1,58 @@
 # Installation and file placement
 
-Keep the plugin directory intact. Paths below are relative to the plugin root unless an absolute destination is shown.
+Dev Flow Orchestrator supports native Windows, macOS, and Linux with Python 3.9 through 3.14 and a real Git installation with `git worktree` support. Keep the plugin directory intact; paths below are relative to the plugin root unless an absolute destination is shown.
+
+Use these placeholders:
+
+| Placeholder | Meaning |
+|---|---|
+| `<python>` | Absolute path to a supported Python 3.9–3.14 interpreter |
+| `<validator-python>` | Python interpreter that can import the official Codex validator dependencies |
+| `<plugin-root>` | Complete installed `dev-flow-orchestrator` directory |
+| `<PLUGIN_DATA>` | Host-local private state directory injected by Codex or selected explicitly |
 
 ## Plugin files
 
 | Source | Destination | Purpose |
 |---|---|---|
-| `.codex-plugin/plugin.json` | `<plugin-root>/.codex-plugin/plugin.json` | Required plugin manifest |
-| `.gitignore` | `<plugin-root>/.gitignore` | Excludes local Python/test by-products from plugin source control |
-| `AGENTS.md` | `<plugin-root>/AGENTS.md` | Contributor rules for maintaining this plugin |
-| `README.md` | `<plugin-root>/README.md` | Architecture, prerequisites, and validation overview |
+| `.gitattributes` | `<plugin-root>/.gitattributes` | Canonical LF checkout and handoff byte policy |
+| `.codex-plugin/plugin.json` | `<plugin-root>/.codex-plugin/plugin.json` | Required plugin manifest; deliberately omits unsupported `hooks` |
+| `.gitignore` | `<plugin-root>/.gitignore` | Excludes local Python/test by-products |
+| `LICENSE` | `<plugin-root>/LICENSE` | License |
+| `README.md` | `<plugin-root>/README.md` | English architecture, setup, and validation contract |
+| `README.zh-CN.md` | `<plugin-root>/README.zh-CN.md` | Chinese architecture, setup, and validation contract |
 | `INSTALL.md` | `<plugin-root>/INSTALL.md` | This installation and placement guide |
-| `hooks/hooks.json` | `<plugin-root>/hooks/hooks.json` | Hook registration discovered by Codex |
-| `hooks/dev_flow_hook.py` | `<plugin-root>/hooks/dev_flow_hook.py` | Resume context and best-effort safety guards |
+| `hooks/hooks.json` | `<plugin-root>/hooks/hooks.json` | Official default hook discovery with paired platform commands |
+| `hooks/dev_flow_hook.cmd` | `<plugin-root>/hooks/dev_flow_hook.cmd` | Native Windows launcher shim |
+| `hooks/dev_flow_hook.py` | `<plugin-root>/hooks/dev_flow_hook.py` | Shared resume context and fail-open guardrails |
 | `scripts/dev_flow.py` | `<plugin-root>/scripts/dev_flow.py` | Persistent state-machine controller |
-| `scripts/__init__.py` | `<plugin-root>/scripts/__init__.py` | Makes controller helpers importable by hooks/tests |
-| `skills/follow-dev-flow/SKILL.md` | `<plugin-root>/skills/follow-dev-flow/SKILL.md` | Main workflow entry point |
-| `skills/follow-dev-flow/agents/openai.yaml` | `<plugin-root>/skills/follow-dev-flow/agents/openai.yaml` | UI metadata for the main skill |
-| `skills/follow-dev-flow/assets/direct-contract-template.md` | `<plugin-root>/skills/follow-dev-flow/assets/direct-contract-template.md` | Compact plan template for the direct route |
-| `skills/follow-dev-flow/references/state-machine.md` | `<plugin-root>/skills/follow-dev-flow/references/state-machine.md` | States, commands, gates, and execution rules |
-| `skills/follow-dev-flow/references/index-routing.md` | `<plugin-root>/skills/follow-dev-flow/references/index-routing.md` | Dual-index roles, naming, freshness, and explicit project routing |
-| `skills/follow-dev-flow/references/openspec-route.md` | `<plugin-root>/skills/follow-dev-flow/references/openspec-route.md` | Dynamic OpenSpec route guidance |
-| `skills/follow-dev-flow/references/recovery.md` | `<plugin-root>/skills/follow-dev-flow/references/recovery.md` | Resume, drift, collision, and failure recovery |
-| `skills/analyze-change-impact/SKILL.md` | `<plugin-root>/skills/analyze-change-impact/SKILL.md` | codebase-memory impact-analysis procedure |
-| `skills/analyze-change-impact/agents/openai.yaml` | `<plugin-root>/skills/analyze-change-impact/agents/openai.yaml` | UI metadata for the impact skill |
-| `skills/analyze-change-impact/assets/impact-report-template.md` | `<plugin-root>/skills/analyze-change-impact/assets/impact-report-template.md` | Per-project impact-report template |
-| `skills/analyze-change-impact/references/evidence-workflow.md` | `<plugin-root>/skills/analyze-change-impact/references/evidence-workflow.md` | Graph-to-source confirmation rules |
-| `skills/review-dev-flow-change/SKILL.md` | `<plugin-root>/skills/review-dev-flow-change/SKILL.md` | Independent review procedure |
-| `skills/review-dev-flow-change/agents/openai.yaml` | `<plugin-root>/skills/review-dev-flow-change/agents/openai.yaml` | UI metadata for the review skill |
-| `skills/review-dev-flow-change/references/independent-review.md` | `<plugin-root>/skills/review-dev-flow-change/references/independent-review.md` | Snapshot coverage, finding, and verdict rules |
-| `templates/project/AGENTS.md` | Keep as a template; optionally merge into `<business-repo>/AGENTS.md` | Repository-level policy that invokes the workflow |
-| `templates/marketplace-entry.json` | Keep as a template; merge its object into a marketplace's `plugins[]` | Local plugin catalog entry |
-| `templates/personal-marketplace.example.json` | Copy to `~/.agents/plugins/marketplace.json` only when that file does not exist | Complete first personal marketplace catalog |
-| `tests/test_dev_flow.py` | `<plugin-root>/tests/test_dev_flow.py` | State-machine and Git-boundary regression tests |
-| `tests/test_hooks.py` | `<plugin-root>/tests/test_hooks.py` | Hook bootstrap and guardrail regression tests |
+| `scripts/__init__.py` | `<plugin-root>/scripts/__init__.py` | Import boundary for controller helpers |
+| `scripts/audit_runtime_imports.py` | `<plugin-root>/scripts/audit_runtime_imports.py` | Standard-library import and isolated-startup audit |
+| `scripts/candidate_identity.py` | `<plugin-root>/scripts/candidate_identity.py` | Shared canonical-v1 identity and deterministic handoff implementation |
+| `scripts/validate_package.py` | `<plugin-root>/scripts/validate_package.py` | Manifest/default-hook/inventory/reference validator |
+| `scripts/run_bundled_validators.py` | `<plugin-root>/scripts/run_bundled_validators.py` | Exact-snapshot diagnostics and official validator runner |
+| `scripts/windows_native_validation.py` | `<plugin-root>/scripts/windows_native_validation.py` | Canonical-bound native Windows self-test |
+| `scripts/windows_native_validation.cmd` | `<plugin-root>/scripts/windows_native_validation.cmd` | Windows launcher for the native self-test |
+| `skills/follow-dev-flow/` | `<plugin-root>/skills/follow-dev-flow/` | Main workflow skill, UI metadata, references, and direct-contract asset |
+| `skills/analyze-change-impact/` | `<plugin-root>/skills/analyze-change-impact/` | Impact-analysis skill, UI metadata, reference, and report asset |
+| `skills/review-dev-flow-change/` | `<plugin-root>/skills/review-dev-flow-change/` | Independent-review skill, UI metadata, and reference |
+| `templates/marketplace-entry.json` | Keep in place; merge its object into a marketplace's `plugins[]` | Local plugin catalog entry |
+| `templates/personal-marketplace.example.json` | Keep in place; copy only when the default personal marketplace does not exist | Complete first personal marketplace |
+| `tests/support.py` | `<plugin-root>/tests/support.py` | Portable test-process helpers |
+| `tests/test_dev_flow.py` | `<plugin-root>/tests/test_dev_flow.py` | Controller/Git regression suite |
+| `tests/test_hooks.py` | `<plugin-root>/tests/test_hooks.py` | Hook/launcher/guardrail regression suite |
+| `tests/test_packaging.py` | `<plugin-root>/tests/test_packaging.py` | Package and validator regression suite |
+| `tests/test_candidate_identity.py` | `<plugin-root>/tests/test_candidate_identity.py` | Canonical identity, handoff, runner, and release-workflow regression suite |
+| `.github/workflows/cross-platform.yml` | `<plugin-root>/.github/workflows/cross-platform.yml` | Native OS/Python validation matrix |
 
-Do not move individual skill references, assets, or `agents/openai.yaml` files out of their skill directories. Their relative links are intentional.
+Do not move individual skill references, assets, or `agents/openai.yaml` files out of their skill directories. Their relative links are intentional. The package does not ship a project `AGENTS.md` template; maintain project-specific guidance in each business repository.
 
 ## Recommended personal installation
 
-Use this layout when the workflow should be available across all projects:
+Use this layout when the workflow should be available across projects:
 
 ```text
-~/
+<user-home>/
 ├── .agents/plugins/marketplace.json
 └── plugins/dev-flow-orchestrator/
     ├── .codex-plugin/plugin.json
@@ -53,36 +63,80 @@ Use this layout when the workflow should be available across all projects:
     └── tests/
 ```
 
-Copy the complete plugin root to `~/plugins/dev-flow-orchestrator/`. If `~/.agents/plugins/marketplace.json` does not exist, use `templates/personal-marketplace.example.json` as its initial contents. If it already exists, merge only the object in `templates/marketplace-entry.json` into its `plugins` array and preserve the existing marketplace name, interface metadata, ordering, and plugin entries. The relative source path `./plugins/dev-flow-orchestrator` assumes this layout.
+Copy the complete plugin root to the shown plugin directory. If the default personal marketplace does not exist, use `templates/personal-marketplace.example.json` as its initial contents. If it already exists, merge only the object in `templates/marketplace-entry.json` into its `plugins` array and preserve its name, interface metadata, ordering, and existing entries. Do not copy a marketplace example over an existing catalog.
 
-Restart the ChatGPT desktop app, install the plugin from the personal marketplace, and start a new Codex task after installation or an update so the skills and hooks are reloaded.
+Restart the desktop app, install the plugin from that confirmed marketplace, and start a new Codex task so the current skills and hooks are loaded.
 
-### Limiting the plugin to specific directories
+### Hook launch contract
 
-A personal installation is visible to every project. To keep it out of unrelated ones, record a directory scope in `<PLUGIN_DATA>/config.json` through the controller. Take `<PLUGIN_DATA>` from the bootstrap context the hook injects at session start:
+Codex discovers `hooks/hooks.json` by convention; `.codex-plugin/plugin.json` must continue to omit a `hooks` field. Every bundled handler has:
+
+- `command` for macOS/Linux, using quoted `$PLUGIN_ROOT` and the shared Python handler;
+- `commandWindows` for native Windows, invoking `hooks/dev_flow_hook.cmd` through quoted `%PLUGIN_ROOT%`.
+
+The Windows shim probes `py -3`, then explicit `py -3.14` through `py -3.9`, and finally `python`; it preserves stdin/stdout and exit status and invokes the same `hooks/dev_flow_hook.py`. If no launcher supplies Python 3.9–3.14, it emits a diagnostic and performs no mutation. A global hook gets neither `PLUGIN_ROOT` nor `PLUGIN_DATA`; configure both `command` and `commandWindows` there with a verified absolute interpreter, absolute hook path, and explicit `--data-dir`.
+
+### Limit the plugin to specific directories
+
+Take `<python>`, the controller path, and `<PLUGIN_DATA>` from the injected bootstrap context. Preserve those exact argument values.
+
+macOS/Linux Bash:
 
 ```bash
-python3 ~/plugins/dev-flow-orchestrator/scripts/dev_flow.py scope --data-dir <PLUGIN_DATA> --add ~/work
+"<python>" "<plugin-root>/scripts/dev_flow.py" scope --data-dir "<PLUGIN_DATA>" --add "$HOME/work"
 ```
 
-The first `--add` switches the scope from active-everywhere to allowlist mode. Outside the scope the hooks emit nothing and `start` refuses the repository, so those sessions behave as if the plugin were not installed. Verify a directory with `scope --check <dir>` and reverse the change with `scope --clear`. See the README's `Directory scope` section for excludes, the deepest-match rule, the `DEV_FLOW_SCOPE` override, and the active-task carve-out. Because the hook reads this file on every event, a scope change applies to the next Codex event without reinstalling the plugin.
+Windows PowerShell:
 
-### Updating an already installed local copy
+```powershell
+& "<python>" "<plugin-root>\scripts\dev_flow.py" scope --data-dir "<PLUGIN_DATA>" --add "D:\projects"
+```
 
-Do not hand-edit the existing marketplace entry merely to defeat Codex caching. After replacing the files in the marketplace's referenced local plugin source, use the bundled `plugin-creator` skill helpers from its own skill root:
+Windows Command Prompt:
+
+```bat
+"<python>" "<plugin-root>\scripts\dev_flow.py" scope --data-dir "<PLUGIN_DATA>" --add "D:\projects"
+```
+
+The first `--add` changes the scope from active everywhere to allowlist mode. Verify with `scope --check <directory>` and reverse with `scope --clear`. Outside the scope, hooks emit nothing and `start` rejects the repository.
+
+### Update an installed local copy
+
+Do not hand-edit a marketplace entry to defeat caching, and do not stack cachebuster suffixes. After replacing the complete source at the marketplace's confirmed local plugin location, use the bundled `plugin-creator` helpers from their own skill root. The helper preserves the `0.2.0` base version and replaces any old `+codex.<token>` with one UTC timestamp.
+
+macOS/Linux Bash:
 
 ```bash
-python3 <plugin-creator-skill-root>/scripts/update_plugin_cachebuster.py \
-  <plugin-root>
-python3 <plugin-creator-skill-root>/scripts/read_marketplace_name.py
-codex plugin add dev-flow-orchestrator@<marketplace-name-printed-above>
+"<validator-python>" "<plugin-creator-skill-root>/scripts/update_plugin_cachebuster.py" "<plugin-root>"
+"<validator-python>" "<plugin-creator-skill-root>/scripts/read_marketplace_name.py"
+codex plugin add "dev-flow-orchestrator@<marketplace-name-printed-above>"
 ```
 
-The cachebuster helper preserves the base version and replaces any older `+codex.<token>` suffix with one UTC-timestamp suffix. The no-argument marketplace-name helper reads the default personal marketplace at `~/.agents/plugins/marketplace.json`; do not run `codex plugin marketplace add` for that default location. For a different confirmed local marketplace, pass `--marketplace-path <path-to-marketplace.json>` to `read_marketplace_name.py`, ensure that non-default marketplace is configured, and reinstall using the name it prints. Start a new Codex task after reinstall so updated skills and hooks are loaded.
+Windows PowerShell:
 
-### Upgrading from 0.1.x
+```powershell
+& "<validator-python>" "<plugin-creator-skill-root>\scripts\update_plugin_cachebuster.py" "<plugin-root>"
+& "<validator-python>" "<plugin-creator-skill-root>\scripts\read_marketplace_name.py"
+codex plugin add "dev-flow-orchestrator@<marketplace-name-printed-above>"
+```
 
-The dual-index release keeps state schema version 1 and reads existing tasks without rewriting them on load. Existing `repositories[].index` records remain the current baseline records; additive `repositories[].workspace_index` starts empty and `repositories[].index_history` starts as an empty list when absent. Later reindexing archives complete superseded records in that history. A task that has not created its implementation worktree continues normally. A task at `WORKSPACE_READY`, `PLANNING`, `IMPLEMENTING`, or `VERIFYING` must index each recorded implementation worktree with the current generation's workspace-specific project name and `persistence=false`, then record the exact returned ID with `record-index --role workspace` before the next guarded transition or review snapshot. Do not repurpose the old baseline project ID. A legacy task already in `REVIEWING` or `FINALIZING` may finish against its existing immutable snapshot/review chain; if it needs implementation or planning rework, perform a supported impact reassessment to `INDEXED` and recreate the downstream workspace/index evidence instead of bypassing the new gate.
+Windows Command Prompt:
+
+```bat
+"<validator-python>" "<plugin-creator-skill-root>\scripts\update_plugin_cachebuster.py" "<plugin-root>"
+"<validator-python>" "<plugin-creator-skill-root>\scripts\read_marketplace_name.py"
+codex plugin add "dev-flow-orchestrator@<marketplace-name-printed-above>"
+```
+
+The no-argument marketplace-name helper reads the default personal marketplace. Do not run `codex plugin marketplace add` for that default location. For a different confirmed local marketplace, pass its path to `read_marketplace_name.py` as documented by `plugin-creator`, ensure it is configured, and reinstall using the exact printed name. Start a new Codex task after reinstall.
+
+### Upgrade existing tasks
+
+State schema version 1 remains readable without rewriting a task merely on load. Evidence contract version `1` is stricter: legacy preflight, fingerprint, baseline/workspace index, test, or review evidence without the current capability profile is invalid for its next downstream gate and must be regenerated by the current controller. Do not relabel old evidence or reuse a baseline codebase-memory project as a workspace project.
+
+An existing task already bound to an immutable review chain may finish only where the controller explicitly accepts that chain. If planning or implementation resumes, use the supported reassessment/replanning transitions, refresh the current-generation workspace indexes, tests, and review snapshot, and repeat the relevant approvals.
+
+Active tasks and `<PLUGIN_DATA>` are host-local. Do not move or synchronize live state, locks, quarantine records, analysis worktrees, or linked implementation worktrees between Windows, macOS, and Linux. Finish or cancel on the originating host and start a new task on the destination host.
 
 ## Repository-scoped alternative
 
@@ -94,18 +148,24 @@ For a shared marketplace rooted at `<marketplace-root>`:
 └── plugins/dev-flow-orchestrator/
 ```
 
-The same marketplace entry works because its source path is relative to `<marketplace-root>`. Use this placement only when the repository or team should own the plugin catalog.
+The same marketplace entry works because its source path is relative to `<marketplace-root>`. Use this placement only when the repository or team owns the plugin catalog.
 
 ## Files in each business repository
 
-- Optionally merge `templates/project/AGENTS.md` into the repository's existing `AGENTS.md`. Do not overwrite project-specific instructions.
-- Do not copy the plugin hooks, controller, or state files into the business repository.
-- Do not copy a fixed OpenSpec workflow from this plugin. Run the installed OpenSpec initialization or update command for that project and let it generate the current `.codex/skills/openspec-*` files.
-- Keep the existing user- or project-scoped codebase-memory MCP configuration. This plugin intentionally has no machine-specific `.mcp.json`.
+- Keep project-specific guidance in the repository's existing `AGENTS.md`; no such template is shipped by this plugin.
+- Do not copy plugin hooks, controller, package validators, or state files into the business repository.
+- Do not copy a fixed OpenSpec workflow. Run the installed OpenSpec initialization/update command and use its current `.codex/skills/openspec-*` guidance.
+- Keep the existing user- or project-scoped codebase-memory configuration. The plugin intentionally has no machine-specific `.mcp.json`.
 
-## Runtime data
+## Runtime data and permissions
 
-Codex supplies a private `PLUGIN_DATA` path to each installed plugin's hook commands. The hooks inject the resolved absolute path into the conversation as bootstrap/checkpoint context, and the workflow skill passes it explicitly as `--data-dir` on every controller call. The controller creates these runtime-only paths there:
+The controller resolves its data root in this order: non-empty `--data-dir`, `DEV_FLOW_DATA_DIR`, `PLUGIN_DATA`, then the native per-user default:
+
+- Windows: `%LOCALAPPDATA%\dev-flow-orchestrator`, with a home-based local-app-data fallback;
+- macOS: `~/Library/Application Support/dev-flow-orchestrator`;
+- Linux: `$XDG_STATE_HOME/dev-flow-orchestrator`, or `~/.local/state/dev-flow-orchestrator`.
+
+Whitespace-only values are unset; they never select the current directory. The controller creates runtime-only paths such as:
 
 ```text
 <PLUGIN_DATA>/
@@ -116,16 +176,81 @@ Codex supplies a private `PLUGIN_DATA` path to each installed plugin's hook comm
 ├── tasks/<task-id>/state.json
 ├── tasks/<task-id>/state.lock
 ├── tasks/<task-id>/events.jsonl
+├── tasks/<task-id>/mutation-quarantine.json
 ├── tasks/<task-id>/artifacts/
 ├── tasks/<task-id>/workspace-plans/
 ├── tasks/<task-id>/reviews/
 ├── analysis/<task-id>/<repository-id>/
-├── workspaces/<task-id>/<repository-id>/
-└── workspaces/<task-id>/r<generation>/<repository-id>/
+└── workspaces/<task-id>/<repository-id>/
 ```
 
-The unnumbered workspace path is generation 0; impact reassessment retires its recorded workspaces and uses `r1`, `r2`, and later generation directories. `config.json` holds the directory scope and is the only one of these files meant to be changed by the user, through the controller's `scope` command. `workspace-registry.json` is the controller's durable cross-task ownership registry for worktree paths and repository branches; its lock serializes competing plans. `tasks/<task-id>/artifacts/` is the task's controlled location for impact reports, direct contracts, and independent review reports. The controller exclusively owns registry/lock files, `state.json`, `events.jsonl`, review snapshots, analysis worktrees, and implementation-worktree records; do not edit them manually.
+On POSIX, controller-owned directories are mode `0700` and state/configuration/event/lock/receipt/temporary files are `0600`. On Windows, standard-library Win32 bindings verify the actual owner and inherited DACL and block a mutation if the descriptor is null, unreadable, unexpectedly owned, or broadly writable. POSIX modes are never presented as Windows ACL proof.
 
-These paths are not source files and must not be copied into a business repository or committed with the plugin.
+Do not hand-edit runtime data. If a Git-changing child cannot be proven quiescent, the controller writes durable quarantine evidence and blocks further mutations. Inspect the task/process/repository state and use `recover-quarantine --expected-revision <revision>`; recovery proves the child is gone, validates postconditions, and archives the quarantine. Never delete the file or retry the mutation as a shortcut.
 
-The state records each repository's current baseline/workspace codebase-memory project identifiers, full superseded-index history, and provenance. The graph database itself remains owned by codebase-memory and is not stored under `PLUGIN_DATA`; index with `persistence=false` so no portable graph artifact is written into a business worktree. Retired and superseded project IDs remain in workflow history for audit, and the plugin does not delete external codebase-memory projects automatically. Cleanup is a separate explicitly authorized maintenance action.
+## Release validation
+
+Run from the exact candidate root. Each native CI job records `github.sha`, Git `HEAD`, worktree cleanliness, OS, Python, and a before/after package SHA-256.
+
+macOS/Linux Bash:
+
+```bash
+"<python>" -m unittest discover -s tests -v
+"<python>" scripts/audit_runtime_imports.py
+"<python>" scripts/validate_package.py
+"<validator-python>" scripts/run_bundled_validators.py --require-available
+openspec validate complete-cross-platform-support --strict
+```
+
+Windows PowerShell:
+
+```powershell
+& "<python>" -m unittest discover -s tests -v
+& "<python>" "scripts\audit_runtime_imports.py"
+& "<python>" "scripts\validate_package.py"
+& "<validator-python>" "scripts\run_bundled_validators.py" --require-available
+openspec validate complete-cross-platform-support --strict
+```
+
+Windows Command Prompt:
+
+```bat
+"<python>" -m unittest discover -s tests -v
+"<python>" "scripts\audit_runtime_imports.py"
+"<python>" "scripts\validate_package.py"
+"<validator-python>" "scripts\run_bundled_validators.py" --require-available
+openspec validate complete-cross-platform-support --strict
+```
+
+`run_bundled_validators.py` auto-discovers official validators under `CODEX_HOME` or accepts `DEV_FLOW_SKILL_VALIDATOR`, `DEV_FLOW_PLUGIN_VALIDATOR`, and `DEV_FLOW_VALIDATOR_PYTHON`. Without `--require-available`, a missing bundle/dependency is reported as `unavailable` so ordinary local development remains diagnosable. Required CI materializes the two official scripts from a pinned `openai/codex` commit, verifies their Git blob IDs and SHA-256 digests, and uses the strict flag; release handoff must likewise provide the real bundled validators and use the strict flag.
+
+### Project-local Windows self-test handoff
+
+`scripts/run_bundled_validators.py` reports two identities: cross-host `canonical_candidate_sha256` and mode-sensitive, host-only `host_local_snapshot_sha256`. Freeze every canonical input first, including `.gitattributes`, implementation, tests, workflow, documentation, manifest/cachebuster, then create new outputs outside the candidate:
+
+macOS/Linux Bash:
+
+```bash
+mkdir -p "$HOME/dev-flow-windows-handoff"
+"<python>" scripts/windows_native_validation.py prepare --candidate-root . --archive "$HOME/dev-flow-windows-handoff/dev-flow-candidate.zip" --manifest "$HOME/dev-flow-windows-handoff/dev-flow-candidate.json"
+```
+
+Transfer both files byte-for-byte and retain the printed `candidate_sha256`. On Windows, provide an existing writable child directory through a local path and an existing UNC alias to the same backing directory; do not pass a drive or share root. The runner does not manage the share.
+
+Windows PowerShell:
+
+```powershell
+& ".\scripts\windows_native_validation.cmd" run --archive "C:\dev-flow-windows-handoff\dev-flow-candidate.zip" --manifest "C:\dev-flow-windows-handoff\dev-flow-candidate.json" --expected-canonical "<canonical-sha256-from-prepare>" --local-root "C:\dev-flow-share-parent\test-root" --unc-root "\\localhost\DevFlowNative\test-root" --code-page 936 --report "C:\dev-flow-windows-handoff\windows-native-report.json"
+```
+
+Windows Command Prompt:
+
+```bat
+scripts\windows_native_validation.cmd run --archive "C:\dev-flow-windows-handoff\dev-flow-candidate.zip" --manifest "C:\dev-flow-windows-handoff\dev-flow-candidate.json" --expected-canonical "<canonical-sha256-from-prepare>" --local-root "C:\dev-flow-share-parent\test-root" --unc-root "\\localhost\DevFlowNative\test-root" --code-page 936 --report "C:\dev-flow-windows-handoff\windows-native-report.json"
+```
+
+The report parent must already exist, the report must be new and outside the candidate/test roots, and code page `936` may be replaced only with another installed non-UTF-8 page. Return `windows-native-report.json` unchanged. The runner verifies/extracts the handoff without `extractall`, uses one sentinel-owned child, isolated controller data and repository-local Git config, and refuses unsafe cleanup. It never installs/publishes/pushes, manages a share, changes persistent code-page or machine/global Git state, reuses live plugin data, or overwrites a report. A non-Windows run is always `incomplete`.
+
+This self-test proves native code-page and UNC/long-path/worktree behavior for the canonical candidate. It is not the Windows Codex-host pickup smoke and grants no publication, workflow-dispatch, marketplace, or installation authorization. An authorized release dispatch separately supplies this reviewed lowercase canonical digest to the already-frozen `.github/workflows/cross-platform.yml`, where every matrix job asserts the golden vector and exact digest.
+
+Before a release claims Windows support, an actual Windows Codex host must install the cache-busted candidate from the confirmed local marketplace, start a new task, prove default `hooks/hooks.json` discovery and `commandWindows` selection, observe real `PLUGIN_ROOT`/`PLUGIN_DATA`, and round-trip a plugin location containing spaces, Unicode, and command-shell metacharacters. Record the result against the same candidate digest; CI command tests alone are not this integration evidence.

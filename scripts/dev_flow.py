@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -22,6 +24,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -38,6 +42,7 @@ except ImportError:  # pragma: no cover - exercised only on POSIX
 
 
 SCHEMA_VERSION = 1
+EVIDENCE_CONTRACT_VERSION = 1
 TERMINAL_STATES = {"DONE", "CANCELLED"}
 ORDERED_STATES = [
     "INTAKE",
@@ -103,6 +108,14 @@ LITE_REWORK_EDGES = {
     "VERIFYING": {"IMPLEMENTING", "PREFLIGHTED"},
 }
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+WINDOWS_RESERVED_TASK_STEMS = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_PROTECTED_BRANCHES = ["main", "master", "trunk"]
 REVIEW_VERDICTS = {"PASS", "CONDITIONAL", "FAIL"}
@@ -127,6 +140,16 @@ WORKSPACE_INDEX_STATES = {
 SCOPE_MODES = ("all", "allowlist")
 SCOPE_INCLUDE_ENV = "DEV_FLOW_SCOPE"
 SCOPE_EXCLUDE_ENV = "DEV_FLOW_SCOPE_EXCLUDE"
+LOCK_TIMEOUT_SECONDS = 30.0
+LOCK_POLL_SECONDS = 0.05
+_FILESYSTEM_CASE_CACHE: dict[Any, bool] = {}
+_FILESYSTEM_UNICODE_CACHE: dict[Any, bool] = {}
+_HELD_LOCK_DIRECTORIES: contextvars.ContextVar[tuple[str, ...]] = (
+    contextvars.ContextVar("dev_flow_held_lock_directories", default=())
+)
+_ACTIVE_MUTATION_INTENTS: contextvars.ContextVar[tuple[str, ...]] = (
+    contextvars.ContextVar("dev_flow_active_mutation_intents", default=())
+)
 
 
 class FlowError(Exception):
@@ -158,6 +181,24 @@ def utc_now() -> str:
     )
 
 
+def _nonempty(value: Any) -> str | None:
+    """Return a stripped non-empty environment/argument value."""
+
+    if value is None:
+        return None
+    text = os.fspath(value) if isinstance(value, os.PathLike) else str(value)
+    text = text.strip()
+    return text or None
+
+
+def _platform_family() -> str:
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux"
+
+
 def resolve_data_dir(data_dir: str | os.PathLike[str] | None = None) -> Path:
     """Resolve state storage using CLI, environment, then platform state dir.
 
@@ -166,27 +207,65 @@ def resolve_data_dir(data_dir: str | os.PathLike[str] | None = None) -> Path:
     The returned path is absolute, but this function does not create it.
     """
 
-    candidate: str | os.PathLike[str] | None = data_dir
-    if not candidate:
-        candidate = os.environ.get("DEV_FLOW_DATA_DIR") or os.environ.get("PLUGIN_DATA")
-    if not candidate:
-        if sys.platform == "darwin":
-            candidate = Path.home() / "Library" / "Application Support" / "dev-flow-orchestrator"
-        elif os.name == "nt":  # pragma: no cover - platform-specific
-            candidate = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "dev-flow-orchestrator"
+    candidate = _nonempty(data_dir)
+    if candidate is None:
+        candidate = _nonempty(os.environ.get("DEV_FLOW_DATA_DIR"))
+    if candidate is None:
+        candidate = _nonempty(os.environ.get("PLUGIN_DATA"))
+    if candidate is None:
+        platform_family = _platform_family()
+        if platform_family == "macos":
+            candidate = str(
+                Path.home()
+                / "Library"
+                / "Application Support"
+                / "dev-flow-orchestrator"
+            )
+        elif platform_family == "windows":  # pragma: no cover - native Windows
+            local_app_data = _nonempty(os.environ.get("LOCALAPPDATA"))
+            root = (
+                Path(local_app_data)
+                if local_app_data is not None
+                else Path.home() / "AppData" / "Local"
+            )
+            candidate = str(root / "dev-flow-orchestrator")
         else:
-            candidate = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "dev-flow-orchestrator"
+            xdg_state_home = _nonempty(os.environ.get("XDG_STATE_HOME"))
+            root = (
+                Path(xdg_state_home)
+                if xdg_state_home is not None
+                else Path.home() / ".local" / "state"
+            )
+            candidate = str(root / "dev-flow-orchestrator")
     return Path(candidate).expanduser().resolve(strict=False)
 
 
 def _validate_task_id(task_id: str) -> str:
-    if not TASK_ID_RE.fullmatch(task_id):
+    encoded_length = len(task_id.encode("ascii", "ignore"))
+    if (
+        not task_id.isascii()
+        or encoded_length != len(task_id)
+        or not TASK_ID_RE.fullmatch(task_id)
+        or task_id.endswith(".")
+        or task_id.split(".", 1)[0].lower() in WINDOWS_RESERVED_TASK_STEMS
+    ):
         raise FlowError(
             "INVALID_TASK_ID",
-            "task id must be 1-64 characters using letters, digits, '.', '_' or '-'",
-            details={"task_id": task_id},
+            (
+                "task id must be 1-64 ASCII bytes matching "
+                "[A-Za-z0-9][A-Za-z0-9._-]{0,63}, must not end in '.', and "
+                "must not use a Windows reserved device-name stem"
+            ),
+            details={
+                "task_id": task_id,
+                "ascii_bytes": encoded_length if task_id.isascii() else None,
+            },
         )
     return task_id
+
+
+def _task_identity(task_id: str) -> str:
+    return _validate_task_id(task_id).lower()
 
 
 def _task_dir(task_id: str, data_dir: str | os.PathLike[str] | None = None) -> Path:
@@ -195,6 +274,592 @@ def _task_dir(task_id: str, data_dir: str | os.PathLike[str] | None = None) -> P
 
 def _state_path(task_id: str, data_dir: str | os.PathLike[str] | None = None) -> Path:
     return _task_dir(task_id, data_dir) / "state.json"
+
+
+def _nearest_existing_path(path: Path) -> tuple[Path, tuple[str, ...]]:
+    """Return the nearest existing ancestor and the uncreated suffix."""
+
+    suffix: list[str] = []
+    current = path.expanduser()
+    while not current.exists():
+        if current.parent == current:
+            raise FlowError(
+                "PATH_IDENTITY_UNAVAILABLE",
+                "path has no existing ancestor whose filesystem identity can be verified",
+                details={"path": str(path)},
+            )
+        suffix.append(current.name)
+        current = current.parent
+    try:
+        ancestor = current.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "could not resolve an existing path ancestor",
+            details={"path": str(path), "ancestor": str(current), "error": str(exc)},
+        ) from exc
+    return ancestor, tuple(reversed(suffix))
+
+
+def _windows_existing_identity(path: Path) -> dict[str, Any]:
+    """Return volume/file identity plus a handle-canonical Windows path."""
+
+    if os.name != "nt":  # pragma: no cover - native Windows helper
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "Windows file identity is unavailable on this platform",
+            details={"path": str(path)},
+        )
+    import ctypes
+    from ctypes import wintypes
+
+    class BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(BY_HANDLE_FILE_INFORMATION),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        str(path),
+        0,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x02000000,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "could not open a Windows path for stable identity",
+            details={
+                "path": str(path),
+                "winerror": ctypes.get_last_error(),
+            },
+        )
+    try:
+        information = BY_HANDLE_FILE_INFORMATION()
+        if not kernel32.GetFileInformationByHandle(
+            handle, ctypes.byref(information)
+        ):
+            raise FlowError(
+                "PATH_IDENTITY_UNAVAILABLE",
+                "could not read Windows volume/file identity",
+                details={
+                    "path": str(path),
+                    "winerror": ctypes.get_last_error(),
+                },
+            )
+        final_path: str | None = None
+        for flags in (0x1, 0x0):  # volume GUID, then normalized DOS path
+            required = kernel32.GetFinalPathNameByHandleW(
+                handle, None, 0, flags
+            )
+            if not required:
+                continue
+            buffer = ctypes.create_unicode_buffer(required + 1)
+            rendered = kernel32.GetFinalPathNameByHandleW(
+                handle, buffer, len(buffer), flags
+            )
+            if rendered and rendered < len(buffer):
+                final_path = buffer.value
+                break
+        if final_path is None:
+            raise FlowError(
+                "PATH_IDENTITY_UNAVAILABLE",
+                "could not canonicalize a Windows path by handle",
+                details={
+                    "path": str(path),
+                    "winerror": ctypes.get_last_error(),
+                },
+            )
+        file_index = (
+            int(information.nFileIndexHigh) << 32
+        ) | int(information.nFileIndexLow)
+        return {
+            "kind": "windows-file-id",
+            "volume_serial": int(
+                information.dwVolumeSerialNumber
+            ),
+            "file_index": file_index,
+            "final_path": final_path,
+        }
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _stable_existing_identity(path: Path) -> dict[str, Any]:
+    if os.name == "nt":  # pragma: no cover - native Windows
+        return _windows_existing_identity(path)
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "could not read stable filesystem identity",
+            details={"path": str(path), "error": str(exc)},
+        ) from exc
+    return {
+        "kind": "posix-file-id",
+        "device": int(metadata.st_dev),
+        "inode": int(metadata.st_ino),
+        "final_path": str(path.resolve(strict=True)),
+    }
+
+
+def _windows_directory_case_sensitive(path: Path) -> bool | None:
+    if os.name != "nt":  # pragma: no cover - native Windows helper
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class FILE_CASE_SENSITIVE_INFORMATION(ctypes.Structure):
+        _fields_ = [("Flags", wintypes.ULONG)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        str(path),
+        0,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x02000000,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "could not open a Windows directory for case-sensitivity identity",
+            details={
+                "path": str(path),
+                "winerror": ctypes.get_last_error(),
+            },
+        )
+    try:
+        information = FILE_CASE_SENSITIVE_INFORMATION()
+        if kernel32.GetFileInformationByHandleEx(
+            handle,
+            23,  # FileCaseSensitiveInfo
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        ):
+            return bool(information.Flags & 0x1)
+        error = ctypes.get_last_error()
+        if error in {1, 50, 87, 120}:
+            return None
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "could not query Windows per-directory case sensitivity",
+            details={"path": str(path), "winerror": error},
+        )
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _probe_filesystem_case_sensitive(existing: Path) -> bool:
+    """Probe case behavior on the same filesystem and clean up unconditionally."""
+
+    probe_parent = existing if existing.is_dir() else existing.parent
+    stable = _stable_existing_identity(probe_parent)
+    if os.name == "nt":  # pragma: no cover - native Windows
+        native = _windows_directory_case_sensitive(probe_parent)
+        if native is not None:
+            return native
+        cache_key: Any = (
+            "windows-directory",
+            stable.get("volume_serial"),
+            stable.get("file_index"),
+        )
+    else:
+        cache_key = ("posix-device", stable.get("device"))
+    cached = _FILESYSTEM_CASE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    probe_dir: Path | None = None
+    try:
+        probe_dir = Path(
+            tempfile.mkdtemp(prefix=".dev-flow-case-", dir=str(probe_parent))
+        )
+        mixed = probe_dir / "CaseProbe"
+        alternate = probe_dir / "caseprobe"
+        mixed.write_bytes(b"case")
+        case_sensitive = not alternate.exists()
+    except OSError as exc:
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "could not verify filesystem case behavior",
+            details={"path": str(probe_parent), "error": str(exc)},
+        ) from exc
+    finally:
+        if probe_dir is not None:
+            try:
+                shutil.rmtree(probe_dir)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise FlowError(
+                    "PATH_IDENTITY_UNAVAILABLE",
+                    "filesystem case probe could not be cleaned up safely",
+                    details={"path": str(probe_dir), "error": str(exc)},
+                ) from exc
+    _FILESYSTEM_CASE_CACHE[cache_key] = case_sensitive
+    return case_sensitive
+
+
+def _probe_filesystem_unicode_distinct(existing: Path) -> bool:
+    probe_parent = existing if existing.is_dir() else existing.parent
+    stable = _stable_existing_identity(probe_parent)
+    cache_key: Any = (
+        "windows-volume",
+        stable.get("volume_serial"),
+    ) if os.name == "nt" else (
+        "posix-device",
+        stable.get("device"),
+    )
+    cached = _FILESYSTEM_UNICODE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    probe_dir: Path | None = None
+    try:
+        probe_dir = Path(
+            tempfile.mkdtemp(prefix=".dev-flow-unicode-", dir=str(probe_parent))
+        )
+        composed = probe_dir / "\u00e9"
+        decomposed = probe_dir / "e\u0301"
+        composed.write_bytes(b"unicode")
+        distinct = not decomposed.exists()
+    except OSError as exc:
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "could not verify filesystem Unicode normalization behavior",
+            details={"path": str(probe_parent), "error": str(exc)},
+        ) from exc
+    finally:
+        if probe_dir is not None:
+            try:
+                shutil.rmtree(probe_dir)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise FlowError(
+                    "PATH_IDENTITY_UNAVAILABLE",
+                    "filesystem Unicode probe could not be cleaned up safely",
+                    details={"path": str(probe_dir), "error": str(exc)},
+                ) from exc
+    _FILESYSTEM_UNICODE_CACHE[cache_key] = distinct
+    return distinct
+
+
+def _filesystem_identity(path: Path) -> dict[str, Any]:
+    """Return a canonical identity for existing and planned filesystem paths."""
+
+    try:
+        supplied = Path(
+            os.path.abspath(os.fspath(path.expanduser()))
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "path spelling could not be normalized safely",
+            details={"path": str(path), "error": str(exc)},
+        ) from exc
+    ancestor, suffix = _nearest_existing_path(supplied)
+    stable_ancestor = _stable_existing_identity(ancestor)
+    case_sensitive = _probe_filesystem_case_sensitive(ancestor)
+    unicode_distinct = _probe_filesystem_unicode_distinct(ancestor)
+
+    def normalize(value: str) -> str:
+        return (
+            value
+            if unicode_distinct
+            else unicodedata.normalize("NFC", value)
+        )
+
+    display = ancestor.joinpath(*suffix)
+    canonical_ancestor = Path(
+        str(stable_ancestor.get("final_path") or ancestor)
+    )
+    canonical_display = canonical_ancestor.joinpath(*suffix)
+    normalized = normalize(
+        os.path.normpath(str(canonical_display))
+    )
+    if not case_sensitive:
+        normalized = normalized.casefold()
+    try:
+        anchor = canonical_ancestor.anchor or str(
+            canonical_ancestor
+        )
+        relative = canonical_ancestor.relative_to(anchor)
+        anchor_normalized = normalize(str(anchor))
+        relative_parts = tuple(
+            normalize(part) for part in relative.parts
+        )
+    except (TypeError, ValueError):
+        anchor_normalized = normalize(canonical_ancestor.anchor)
+        relative_parts = tuple(
+            normalize(part) for part in canonical_ancestor.parts
+        )
+    suffix_parts = tuple(normalize(part) for part in suffix)
+    identity_parts = relative_parts + suffix_parts
+    if not case_sensitive:
+        anchor_normalized = anchor_normalized.casefold()
+        identity_parts = tuple(part.casefold() for part in identity_parts)
+    return {
+        "path": str(display),
+        "normalized": normalized,
+        "anchor": anchor_normalized,
+        "parts": identity_parts,
+        "case_sensitive": case_sensitive,
+        "unicode_normalization_distinct": unicode_distinct,
+        "ancestor": str(ancestor),
+        "ancestor_identity": {
+            key: value
+            for key, value in stable_ancestor.items()
+            if key != "final_path"
+        },
+        "suffix_parts": suffix_parts,
+    }
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    if left.exists() and right.exists():
+        try:
+            return os.path.samefile(left, right)
+        except OSError:
+            pass
+    left_identity = _filesystem_identity(left)
+    right_identity = _filesystem_identity(right)
+    same_ancestor = (
+        left_identity.get("ancestor_identity")
+        == right_identity.get("ancestor_identity")
+        and left_identity.get("suffix_parts")
+        == right_identity.get("suffix_parts")
+    )
+    return (
+        (
+            same_ancestor
+            or left_identity.get("normalized")
+            == right_identity.get("normalized")
+            or (
+                left_identity["anchor"]
+                == right_identity["anchor"]
+                and left_identity["parts"]
+                == right_identity["parts"]
+            )
+        )
+        and left_identity["case_sensitive"]
+        == right_identity["case_sensitive"]
+        and left_identity["unicode_normalization_distinct"]
+        == right_identity["unicode_normalization_distinct"]
+    )
+
+
+def _serializable_path_identity(path: Path) -> dict[str, Any]:
+    identity = _filesystem_identity(path)
+    return {
+        "normalized": identity["normalized"],
+        "anchor": identity["anchor"],
+        "parts": list(identity["parts"]),
+        "case_sensitive": identity["case_sensitive"],
+        "unicode_normalization_distinct": identity[
+            "unicode_normalization_distinct"
+        ],
+        "ancestor_identity": identity.get("ancestor_identity"),
+        "suffix_parts": list(identity.get("suffix_parts") or ()),
+    }
+
+
+def _capability_path_identity(path: Path) -> dict[str, Any]:
+    """Return the location fields that stay stable across path creation.
+
+    Stable file IDs intentionally change when a previously planned path is
+    materialized: before creation they identify the nearest existing ancestor,
+    while afterwards they identify the new directory itself.  Capability
+    profiles need to bind the canonical location without treating that expected
+    transition as capability drift.  Ownership checks continue to use the full
+    serializable identity, including file IDs.
+    """
+
+    identity = _serializable_path_identity(path)
+    return {
+        "normalized": identity["normalized"],
+        "anchor": identity["anchor"],
+        "parts": identity["parts"],
+        "case_sensitive": identity["case_sensitive"],
+        "unicode_normalization_distinct": identity[
+            "unicode_normalization_distinct"
+        ],
+    }
+
+
+def _path_identity_equal(left: Any, right: Any) -> bool:
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    modern_identity = (
+        isinstance(left.get("ancestor_identity"), dict)
+        and isinstance(right.get("ancestor_identity"), dict)
+    )
+    location_matches = (
+        (
+            isinstance(left.get("normalized"), str)
+            and left.get("normalized") == right.get("normalized")
+        )
+        or (
+            modern_identity
+            and left.get("ancestor_identity")
+            == right.get("ancestor_identity")
+            and tuple(left.get("suffix_parts") or ())
+            == tuple(right.get("suffix_parts") or ())
+        )
+        or (
+            left.get("anchor") == right.get("anchor")
+            and tuple(left.get("parts") or ())
+            == tuple(right.get("parts") or ())
+        )
+    )
+    return (
+        location_matches
+        and left.get("case_sensitive") == right.get("case_sensitive")
+        and left.get("unicode_normalization_distinct")
+        == right.get("unicode_normalization_distinct")
+    )
+
+
+def _recorded_path_matches(
+    recorded_identity: Any, recorded_path: Any, candidate: Path
+) -> bool:
+    candidate_identity = _serializable_path_identity(candidate)
+    if isinstance(recorded_identity, dict):
+        return _path_identity_equal(recorded_identity, candidate_identity)
+    if not recorded_path:
+        return False
+    return _same_path(Path(str(recorded_path)), candidate)
+
+
+def _declared_evidence_versions(value: Any) -> Iterator[int]:
+    if isinstance(value, dict):
+        declared = value.get("evidence_contract_version")
+        if declared is not None:
+            if not isinstance(declared, int) or isinstance(declared, bool):
+                raise FlowError(
+                    "EVIDENCE_CONTRACT_INVALID",
+                    "evidence contract versions must be integers",
+                    details={"value": declared},
+                )
+            yield declared
+        for key, nested in value.items():
+            # ``metadata`` is an explicit user/integration namespace.  A
+            # third-party payload may legitimately describe its own evidence
+            # contract and must never be mistaken for this controller's
+            # durable evidence version.
+            if key == "metadata":
+                continue
+            yield from _declared_evidence_versions(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _declared_evidence_versions(nested)
+
+
+def _assert_supported_evidence_versions(value: Any) -> None:
+    newer = sorted(
+        {
+            version
+            for version in _declared_evidence_versions(value)
+            if version > EVIDENCE_CONTRACT_VERSION
+        }
+    )
+    if newer:
+        raise FlowError(
+            "EVIDENCE_CONTRACT_UNSUPPORTED",
+            "task evidence was created by a newer incompatible controller",
+            details={
+                "supported_version": EVIDENCE_CONTRACT_VERSION,
+                "encountered_versions": newer,
+            },
+        )
+
+
+def _require_current_evidence(record: Any, label: str) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        raise FlowError(
+            "EVIDENCE_REGENERATION_REQUIRED",
+            f"{label} evidence is missing and must be regenerated",
+            details={"label": label, "required_version": EVIDENCE_CONTRACT_VERSION},
+        )
+    version = record.get("evidence_contract_version")
+    if version != EVIDENCE_CONTRACT_VERSION:
+        if isinstance(version, int) and version > EVIDENCE_CONTRACT_VERSION:
+            raise FlowError(
+                "EVIDENCE_CONTRACT_UNSUPPORTED",
+                f"{label} evidence uses a newer incompatible contract",
+                details={
+                    "label": label,
+                    "supported_version": EVIDENCE_CONTRACT_VERSION,
+                    "encountered_version": version,
+                },
+            )
+        raise FlowError(
+            "EVIDENCE_REGENERATION_REQUIRED",
+            f"legacy {label} evidence must be regenerated by the current controller",
+            details={
+                "label": label,
+                "required_version": EVIDENCE_CONTRACT_VERSION,
+                "encountered_version": version,
+            },
+        )
+    return record
 
 
 def load_state(
@@ -229,6 +894,15 @@ def load_state(
             f"unsupported or invalid task state: {path}",
             details={"path": str(path), "schema_version": value.get("schema_version") if isinstance(value, dict) else None},
         )
+    stored_task_id = value.get("task_id")
+    if not isinstance(stored_task_id, str):
+        raise FlowError(
+            "UNSUPPORTED_STATE",
+            f"task state does not contain a valid task identifier: {path}",
+            details={"path": str(path), "task_id": stored_task_id},
+        )
+    _validate_task_id(stored_task_id)
+    _assert_supported_evidence_versions(value)
     # Schema v1 predates implementation-worktree indexes.  Keep the schema
     # number stable and make the additive field visible to old task snapshots
     # without rewriting them merely because they were read.
@@ -242,11 +916,66 @@ def load_state(
 
 
 def _is_within(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
+    path_identity = _filesystem_identity(path)
+    parent_identity = _filesystem_identity(parent)
+
+    def stable_id(identity: dict[str, Any]) -> dict[str, Any] | None:
+        value = identity.get("ancestor_identity")
+        return value if isinstance(value, dict) else None
+
+    path_ancestor_id = stable_id(path_identity)
+    parent_ancestor_id = stable_id(parent_identity)
+    if (
+        path_ancestor_id is not None
+        and path_ancestor_id == parent_ancestor_id
+    ):
+        parent_suffix = tuple(
+            parent_identity.get("suffix_parts") or ()
+        )
+        path_suffix = tuple(
+            path_identity.get("suffix_parts") or ()
+        )
+        return (
+            path_suffix[: len(parent_suffix)] == parent_suffix
+        )
+
+    # Existing descendants can cross a mapped-drive/UNC, symlink/junction, or
+    # per-directory case-sensitivity boundary.  Textual anchors and capability
+    # flags are not sufficient there, so walk the existing ancestor chain and
+    # compare stable volume/file identities.  A non-existing parent is handled
+    # by the common-ancestor/suffix rule above.
+    if (
+        parent_ancestor_id is not None
+        and not tuple(parent_identity.get("suffix_parts") or ())
+    ):
+        candidate = Path(str(path_identity.get("ancestor") or ""))
+        while candidate:
+            try:
+                candidate_stable = _stable_existing_identity(candidate)
+            except FlowError:
+                break
+            candidate_id = {
+                key: value
+                for key, value in candidate_stable.items()
+                if key != "final_path"
+            }
+            if candidate_id == parent_ancestor_id:
+                return True
+            if candidate.parent == candidate:
+                break
+            candidate = candidate.parent
+
+    if (
+        path_identity["case_sensitive"]
+        != parent_identity["case_sensitive"]
+        or path_identity["unicode_normalization_distinct"]
+        != parent_identity["unicode_normalization_distinct"]
+    ):
         return False
+    if path_identity["anchor"] != parent_identity["anchor"]:
+        return False
+    parent_parts = parent_identity["parts"]
+    return path_identity["parts"][: len(parent_parts)] == parent_parts
 
 
 def find_active_task_for_cwd(
@@ -288,45 +1017,517 @@ def find_active_task_for_cwd(
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _windows_security_descriptor(path: Path) -> dict[str, Any]:
+    """Read owner and DACL details through Win32 using only ``ctypes``."""
+
+    if os.name != "nt":  # pragma: no cover - native Windows implementation
+        raise FlowError(
+            "PERMISSIONS_UNSUPPORTED",
+            "Windows security descriptors are unavailable on this platform",
+            details={"path": str(path)},
+        )
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class TOKEN_USER(ctypes.Structure):
+        _fields_ = [("User", SID_AND_ATTRIBUTES)]
+
+    class ACL_HEADER(ctypes.Structure):
+        _fields_ = [
+            ("AclRevision", ctypes.c_ubyte),
+            ("Sbz1", ctypes.c_ubyte),
+            ("AclSize", ctypes.c_ushort),
+            ("AceCount", ctypes.c_ushort),
+            ("Sbz2", ctypes.c_ushort),
+        ]
+
+    class ACE_HEADER(ctypes.Structure):
+        _fields_ = [
+            ("AceType", ctypes.c_ubyte),
+            ("AceFlags", ctypes.c_ubyte),
+            ("AceSize", ctypes.c_ushort),
+        ]
+
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.GetAce.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def sid_string(sid: ctypes.c_void_p) -> str:
+        rendered = wintypes.LPWSTR()
+        if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(rendered)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return str(rendered.value)
+        finally:
+            kernel32.LocalFree(
+                ctypes.cast(rendered, ctypes.c_void_p)
+            )
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
     try:
-        path.chmod(0o700)
-    except OSError:
-        pass
+        required = wintypes.DWORD()
+        advapi32.GetTokenInformation(
+            token, 1, None, 0, ctypes.byref(required)
+        )
+        if required.value <= 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(required.value)
+        if not advapi32.GetTokenInformation(
+            token,
+            1,
+            buffer,
+            required.value,
+            ctypes.byref(required),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        current_sid = sid_string(
+            ctypes.cast(buffer, ctypes.POINTER(TOKEN_USER)).contents.User.Sid
+        )
+    finally:
+        kernel32.CloseHandle(token)
+
+    owner = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    result = advapi32.GetNamedSecurityInfoW(
+        str(path),
+        1,  # SE_FILE_OBJECT
+        0x00000001 | 0x00000004,  # OWNER_SECURITY_INFORMATION | DACL
+        ctypes.byref(owner),
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if result != 0:
+        raise OSError(result, f"GetNamedSecurityInfoW failed for {path}")
+    try:
+        if not owner.value or not dacl.value:
+            return {
+                "owner": sid_string(owner) if owner.value else None,
+                "current_user": current_sid,
+                "null_dacl": not bool(dacl.value),
+                "aces": [],
+            }
+        acl_header = ACL_HEADER.from_address(dacl.value)
+        aces: list[dict[str, Any]] = []
+        for index in range(int(acl_header.AceCount)):
+            ace_pointer = ctypes.c_void_p()
+            if not advapi32.GetAce(dacl, index, ctypes.byref(ace_pointer)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            header = ACE_HEADER.from_address(ace_pointer.value)
+            # File DACLs should use ordinary allowed/denied ACEs. Object ACEs
+            # have variable SID offsets; treating them as unverifiable keeps
+            # the controller fail closed instead of guessing.
+            if header.AceType not in {0, 1}:
+                aces.append(
+                    {
+                        "type": int(header.AceType),
+                        "sid": None,
+                        "mask": None,
+                        "inherited": bool(header.AceFlags & 0x10),
+                        "unverifiable": True,
+                    }
+                )
+                continue
+            mask = ctypes.c_uint32.from_address(ace_pointer.value + 4).value
+            sid = sid_string(ctypes.c_void_p(ace_pointer.value + 8))
+            aces.append(
+                {
+                    "type": "allow" if header.AceType == 0 else "deny",
+                    "sid": sid,
+                    "mask": int(mask),
+                    "inherited": bool(header.AceFlags & 0x10),
+                    "unverifiable": False,
+                }
+            )
+        return {
+            "owner": sid_string(owner),
+            "current_user": current_sid,
+            "null_dacl": False,
+            "aces": aces,
+        }
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _verify_windows_private_path(path: Path) -> None:
+    try:
+        descriptor = _windows_security_descriptor(path)
+    except (OSError, ValueError) as exc:
+        raise FlowError(
+            "PERMISSIONS_UNVERIFIABLE",
+            "could not verify the Windows owner and DACL",
+            details={"path": str(path), "error": str(exc)},
+        ) from exc
+    owner = descriptor.get("owner")
+    current_user = descriptor.get("current_user")
+    trusted_owners = {current_user, "S-1-5-18", "S-1-5-32-544"}
+    if descriptor.get("null_dacl") or not owner or owner not in trusted_owners:
+        raise FlowError(
+            "PERMISSIONS_UNSAFE",
+            "controller-managed Windows storage has an unsafe owner or null DACL",
+            details={"path": str(path), "owner": owner, "null_dacl": True},
+        )
+    forbidden = {
+        "S-1-1-0",  # Everyone
+        "S-1-5-7",  # Anonymous Logon
+        "S-1-5-11",  # Authenticated Users
+        "S-1-5-32-545",  # BUILTIN\Users
+    }
+    write_mask = (
+        0x40000000  # GENERIC_WRITE
+        | 0x10000000  # GENERIC_ALL
+        | 0x00010000  # DELETE
+        | 0x00040000  # WRITE_DAC
+        | 0x00080000  # WRITE_OWNER
+        | 0x00000002  # FILE_ADD_FILE / FILE_WRITE_DATA
+        | 0x00000004  # FILE_ADD_SUBDIRECTORY / FILE_APPEND_DATA
+        | 0x00000010  # FILE_WRITE_EA
+        | 0x00000040  # FILE_DELETE_CHILD
+        | 0x00000100  # FILE_WRITE_ATTRIBUTES
+    )
+    current_user_write = False
+    for ace in descriptor.get("aces", []):
+        if ace.get("unverifiable"):
+            raise FlowError(
+                "PERMISSIONS_UNVERIFIABLE",
+                "controller-managed Windows storage has an unsupported ACE",
+                details={"path": str(path), "ace": ace},
+            )
+        if ace.get("type") != "allow":
+            continue
+        mask = int(ace.get("mask") or 0)
+        sid = ace.get("sid")
+        if sid in forbidden and mask & write_mask:
+            raise FlowError(
+                "PERMISSIONS_UNSAFE",
+                "controller-managed Windows storage grants broad write access",
+                details={"path": str(path), "sid": sid, "mask": mask},
+            )
+        if sid == current_user and mask & write_mask and not ace.get("inherited"):
+            current_user_write = True
+    if owner != current_user and not current_user_write:
+        raise FlowError(
+            "PERMISSIONS_UNSAFE",
+            "trusted-system-owned Windows storage lacks an explicit current-user write grant",
+            details={"path": str(path), "owner": owner},
+        )
+
+
+def _set_private_permissions(path: Path, mode: int) -> None:
+    if os.name == "nt":  # pragma: no cover - exercised on native Windows
+        _verify_windows_private_path(path)
+        return
+    try:
+        path.chmod(mode)
+        actual = stat.S_IMODE(path.stat().st_mode)
+    except OSError as exc:
+        raise FlowError(
+            "PERMISSIONS_UNVERIFIABLE",
+            "could not apply private controller storage permissions",
+            details={"path": str(path), "mode": oct(mode), "error": str(exc)},
+        ) from exc
+    if actual != mode:
+        raise FlowError(
+            "PERMISSIONS_UNSAFE",
+            "controller-managed storage permissions are broader than required",
+            details={"path": str(path), "expected": oct(mode), "actual": oct(actual)},
+        )
+
+
+def _ensure_private_dir(path: Path) -> None:
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700, exist_ok=True)
+        except OSError as exc:
+            raise FlowError(
+                "PERMISSIONS_UNVERIFIABLE",
+                "could not create private controller storage",
+                details={"path": str(directory), "error": str(exc)},
+            ) from exc
+        _set_private_permissions(directory, 0o700)
+    if not path.is_dir():
+        raise FlowError(
+            "PERMISSIONS_UNVERIFIABLE",
+            "controller storage directory path is not a directory",
+            details={"path": str(path)},
+        )
+    _set_private_permissions(path, 0o700)
 
 
 def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
-    _ensure_dir(path.parent)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
+    _ensure_private_dir(path.parent)
+    rollback_prefix = f".{path.name}.rollback-"
+    unresolved = sorted(path.parent.glob(f"{rollback_prefix}*"))
+    if unresolved:
+        raise FlowError(
+            "ATOMIC_RECOVERY_REQUIRED",
+            "a prior atomic replacement left rollback evidence",
+            details={
+                "path": str(path),
+                "rollback_candidates": [
+                    str(candidate) for candidate in unresolved
+                ],
+            },
+        )
+
+    def fsync_parent() -> None:
+        if os.name == "nt":
+            return
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    rollback_descriptor = -1
+    rollback: Path | None = None
+    original_existed = path.exists()
     try:
-        # mkstemp already creates the file 0o600 on POSIX; fchmod only reaffirms
-        # it there. It is absent on Windows before Python 3.13, and file modes
-        # are not a meaningful ACL there anyway, so never let it abort the write.
-        _fchmod = getattr(os, "fchmod", None)
-        if _fchmod is not None:
+        rollback_descriptor, rollback_name = tempfile.mkstemp(
+            prefix=rollback_prefix, dir=path.parent
+        )
+        rollback = Path(rollback_name)
+        if os.name != "nt":
+            os.fchmod(rollback_descriptor, mode)
+        else:  # pragma: no cover - native Windows
+            _verify_windows_private_path(rollback)
+        with os.fdopen(rollback_descriptor, "wb") as rollback_handle:
+            rollback_descriptor = -1
+            if original_existed:
+                try:
+                    with path.open("rb") as original:
+                        shutil.copyfileobj(original, rollback_handle)
+                except OSError as exc:
+                    raise FlowError(
+                        "ATOMIC_WRITE_FAILED",
+                        "could not preserve the prior committed file",
+                        details={
+                            "path": str(path),
+                            "rollback": str(rollback),
+                            "phase": "backup",
+                            "error": str(exc),
+                        },
+                    ) from exc
+            rollback_handle.flush()
+            os.fsync(rollback_handle.fileno())
+        _set_private_permissions(rollback, mode)
+        if (
+            original_existed
+            and _sha256_file(rollback) != _sha256_file(path)
+        ):
+            raise FlowError(
+                "ATOMIC_WRITE_FAILED",
+                "prior committed file changed while rollback evidence was captured",
+                details={
+                    "path": str(path),
+                    "rollback": str(rollback),
+                    "phase": "backup",
+                },
+            )
+    except BaseException:
+        if rollback_descriptor >= 0:
             try:
-                _fchmod(descriptor, mode)
+                os.close(rollback_descriptor)
             except OSError:
                 pass
+        if rollback is not None:
+            try:
+                rollback.unlink()
+            except OSError:
+                pass
+        raise
+
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", dir=path.parent
+        )
+    except OSError as exc:
+        if rollback is not None:
+            try:
+                rollback.unlink()
+            except OSError:
+                pass
+        raise FlowError(
+            "ATOMIC_WRITE_FAILED",
+            "could not create a same-directory temporary state file",
+            details={"path": str(path), "error": str(exc), "phase": "create"},
+        ) from exc
+    temporary = Path(temporary_name)
+    replaced = False
+    restored = False
+    recovery_uncertain = False
+    try:
+        if os.name != "nt":
+            try:
+                os.fchmod(descriptor, mode)
+            except OSError as exc:
+                raise FlowError(
+                    "PERMISSIONS_UNVERIFIABLE",
+                    "could not apply private permissions to a temporary state file",
+                    details={"path": str(temporary), "mode": oct(mode), "error": str(exc)},
+                ) from exc
+        else:  # pragma: no cover - native Windows
+            _verify_windows_private_path(temporary)
         with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
         try:
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-        except OSError:
-            directory_fd = None
-        if directory_fd is not None:
+            os.replace(temporary, path)
+            replaced = True
+        except OSError as exc:
+            raise FlowError(
+                "ATOMIC_WRITE_FAILED",
+                "atomic state replacement failed; the previous file was preserved",
+                details={"path": str(path), "error": str(exc), "phase": "replace"},
+            ) from exc
+        try:
+            _set_private_permissions(path, mode)
+            fsync_parent()
+        except (FlowError, OSError) as post_error:
             try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+                if original_existed:
+                    if rollback is None:
+                        raise OSError(
+                            errno.ENOENT,
+                            "rollback evidence is unavailable",
+                        )
+                    os.replace(rollback, path)
+                    rollback = None
+                    _set_private_permissions(path, mode)
+                else:
+                    path.unlink()
+                fsync_parent()
+                restored = True
+            except (FlowError, OSError) as restore_error:
+                recovery_uncertain = True
+                raise FlowError(
+                    "ATOMIC_RECOVERY_UNCERTAIN",
+                    (
+                        "replacement post-check failed and the previous "
+                        "destination could not be restored safely"
+                    ),
+                    details={
+                        "path": str(path),
+                        "rollback": (
+                            str(rollback) if rollback else None
+                        ),
+                        "committed": True,
+                        "post_error": str(post_error),
+                        "restore_error": str(restore_error),
+                    },
+                ) from restore_error
+            raise FlowError(
+                "ATOMIC_POSTCHECK_FAILED",
+                (
+                    "replacement post-check failed; the previously "
+                    "committed destination was restored"
+                ),
+                details={
+                    "path": str(path),
+                    "committed": False,
+                    "restored": True,
+                    "error": str(post_error),
+                },
+            ) from post_error
     finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         try:
             temporary.unlink()
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            if not replaced:
+                raise FlowError(
+                    "ATOMIC_CLEANUP_FAILED",
+                    "an uncommitted temporary state file could not be removed",
+                    details={"path": str(temporary), "error": str(exc)},
+                ) from exc
+        if rollback is not None and not recovery_uncertain:
+            try:
+                rollback.unlink()
+                rollback = None
+                if replaced and not restored:
+                    fsync_parent()
+            except OSError as exc:
+                if replaced and not restored:
+                    raise FlowError(
+                        "ATOMIC_COMMIT_UNCERTAIN",
+                        (
+                            "replacement committed but rollback-evidence "
+                            "cleanup could not be proven durable"
+                        ),
+                        details={
+                            "path": str(path),
+                            "rollback": str(rollback),
+                            "committed": True,
+                            "error": str(exc),
+                        },
+                    ) from exc
 
 
 def _atomic_write_json(path: Path, value: Any) -> None:
@@ -335,71 +1536,1063 @@ def _atomic_write_json(path: Path, value: Any) -> None:
 
 def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode(
-        "utf-8"
+        "utf-8", "backslashreplace"
     )
 
 
+def _protocol_json_bytes(value: Any) -> bytes:
+    return (
+        json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8", "backslashreplace")
+
+
+def _write_protocol_response(value: Any) -> None:
+    payload = _protocol_json_bytes(value)
+    binary = getattr(sys.stdout, "buffer", None)
+    if binary is not None:
+        binary.write(payload)
+        binary.flush()
+    else:
+        sys.stdout.write(payload.decode("utf-8"))
+        sys.stdout.flush()
+
+
 def _append_event(path: Path, event: dict[str, Any]) -> None:
-    _ensure_dir(path.parent)
-    payload = (json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+    _ensure_private_dir(path.parent)
+    if path.exists():
+        _set_private_permissions(path, 0o600)
+    payload = (
+        json.dumps(
+            event,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8", "backslashreplace")
     descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     try:
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        else:  # pragma: no cover - exercised on native Windows
+            _verify_windows_private_path(path)
         os.write(descriptor, payload)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    _set_private_permissions(path, 0o600)
 
 
-def _acquire_exclusive(handle: Any) -> None:
-    """Take an exclusive advisory lock on an open lock file.
+def _quarantine_path(directory: Path) -> Path:
+    return directory / "mutation-quarantine.json"
 
-    POSIX uses ``fcntl.flock``; Windows uses ``msvcrt.locking`` over a one-byte
-    range.  Both release automatically when the process exits, so a crash never
-    strands a lock.  On Windows the lock is best-effort: if it cannot be taken
-    (heavy contention past msvcrt's retry window), the caller proceeds unlocked,
-    matching the pre-existing Windows behaviour rather than aborting the command.
+
+def _read_quarantine(directory: Path) -> dict[str, Any] | None:
+    path = _quarantine_path(directory)
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise FlowError(
+            "MUTATION_QUARANTINED",
+            "mutation quarantine evidence is unreadable",
+            details={"path": str(path), "error": str(exc)},
+        ) from exc
+    if not isinstance(value, dict) or value.get("ready") is not False:
+        raise FlowError(
+            "MUTATION_QUARANTINED",
+            "mutation quarantine evidence is invalid",
+            details={"path": str(path)},
+        )
+    return value
+
+
+def _assert_no_mutation_quarantine(directory: Path) -> None:
+    quarantine = _read_quarantine(directory)
+    if quarantine is not None:
+        raise FlowError(
+            "MUTATION_QUARANTINED",
+            "a prior mutating child was not proven quiescent",
+            details={
+                "path": str(_quarantine_path(directory)),
+                "pid": quarantine.get("pid"),
+                "command": quarantine.get("command"),
+                "recovery": (
+                    "prove the recorded child is gone and validate partial "
+                    "Git/filesystem postconditions before recovery"
+                ),
+            },
+        )
+
+
+def _held_task_directory() -> Path | None:
+    held = [Path(value) for value in _HELD_LOCK_DIRECTORIES.get()]
+    return next(
+        (
+            candidate
+            for candidate in held
+            if (candidate / "state.json").is_file()
+        ),
+        None,
+    )
+
+
+def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
+    """Durably announce a mutating child before it is allowed to start."""
+
+    directory = _held_task_directory()
+    if directory is None:
+        return None
+    path = _quarantine_path(directory)
+    active = set(_ACTIVE_MUTATION_INTENTS.get())
+    if str(path) in active:
+        evidence = _read_quarantine(directory)
+        if evidence is None:
+            raise FlowError(
+                "MUTATION_INTENT_LOST",
+                "active mutation intent disappeared before state commit",
+                details={"path": str(path)},
+            )
+        operations = list(evidence.get("operations") or [])
+        operations.append(
+            {
+                "command": list(command),
+                "announced_at": utc_now(),
+                "phase": "spawn_pending",
+                "gate_protocol_version": 1,
+                "target_release_authorized": False,
+                "containment_kind": (
+                    "windows_job_kill_on_close"
+                    if os.name == "nt"
+                    else "posix_process_group"
+                ),
+                "containment_established": False,
+            }
+        )
+        evidence["operations"] = operations
+        evidence["command"] = list(command)
+        evidence["phase"] = "spawn_pending"
+        evidence["pid"] = None
+        evidence["process_group"] = None
+        evidence["gate_protocol_version"] = 1
+        evidence["target_release_authorized"] = False
+        evidence["containment_kind"] = (
+            "windows_job_kill_on_close"
+            if os.name == "nt"
+            else "posix_process_group"
+        )
+        evidence["containment_established"] = False
+        _atomic_write_json(path, evidence)
+        return path
+    if path.exists():
+        raise FlowError(
+            "MUTATION_QUARANTINED",
+            "a prior mutation intent remains active",
+            details={"path": str(path)},
+        )
+    state_revision: int | None = None
+    try:
+        state_value = json.loads(
+            (directory / "state.json").read_text(encoding="utf-8")
+        )
+        if isinstance(state_value, dict):
+            state_revision = int(state_value.get("revision", 0))
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    announced_at = utc_now()
+    evidence = {
+        "schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "ready": False,
+        "recovery_id": str(uuid.uuid4()),
+        "created_at": announced_at,
+        "updated_at": announced_at,
+        "phase": "spawn_pending",
+        "pid": None,
+        "process_group": None,
+        "gate_protocol_version": 1,
+        "target_release_authorized": False,
+        "containment_kind": (
+            "windows_job_kill_on_close"
+            if os.name == "nt"
+            else "posix_process_group"
+        ),
+        "containment_established": False,
+        "command": list(command),
+        "operations": [
+            {
+                "command": list(command),
+                "announced_at": announced_at,
+                "phase": "spawn_pending",
+                "gate_protocol_version": 1,
+                "target_release_authorized": False,
+                "containment_kind": (
+                    "windows_job_kill_on_close"
+                    if os.name == "nt"
+                    else "posix_process_group"
+                ),
+                "containment_established": False,
+            }
+        ],
+        "platform": _platform_family(),
+        "state_revision": state_revision,
+        "expected_committed_revision": (
+            state_revision + 1
+            if isinstance(state_revision, int)
+            else None
+        ),
+        "cause": None,
+        "required_recovery": [
+            "prove_child_quiescent",
+            "validate_partial_git_and_filesystem_postconditions",
+        ],
+    }
+    # This write is deliberately before Popen.  If it cannot be committed,
+    # the target process is never started.
+    _atomic_write_json(path, evidence)
+    _ACTIVE_MUTATION_INTENTS.set(
+        (*_ACTIVE_MUTATION_INTENTS.get(), str(path))
+    )
+    return path
+
+
+def _update_mutation_intent(
+    path: Path | None,
+    process: subprocess.Popen[bytes],
+    command: Sequence[str],
+    *,
+    phase: str,
+    cause: BaseException | None = None,
+    target_release_authorized: bool | None = None,
+) -> None:
+    if path is None:
+        return
+    directory = path.parent
+    evidence = _read_quarantine(directory)
+    if evidence is None:
+        raise FlowError(
+            "MUTATION_INTENT_LOST",
+            "mutation intent disappeared while its child was active",
+            details={"path": str(path), "pid": process.pid},
+        )
+    evidence.update(
+        {
+            "updated_at": utc_now(),
+            "phase": phase,
+            "pid": process.pid,
+            "process_group": (
+                process.pid if os.name != "nt" else None
+            ),
+            "command": list(command),
+            "cause": (
+                f"{type(cause).__name__}: {cause}"
+                if cause is not None
+                else None
+            ),
+        }
+    )
+    if target_release_authorized is not None:
+        evidence["target_release_authorized"] = (
+            target_release_authorized
+        )
+    if phase == "child_owned":
+        evidence["containment_established"] = True
+    operations = list(evidence.get("operations") or [])
+    if operations:
+        operations[-1] = {
+            **operations[-1],
+            "phase": phase,
+            "pid": process.pid,
+            "updated_at": evidence["updated_at"],
+        }
+        if target_release_authorized is not None:
+            operations[-1]["target_release_authorized"] = (
+                target_release_authorized
+            )
+        if phase == "child_owned":
+            operations[-1]["containment_established"] = True
+    evidence["operations"] = operations
+    _atomic_write_json(path, evidence)
+
+
+def _forget_active_mutation_intents(directory: Path) -> None:
+    prefix = str(_quarantine_path(directory))
+    _ACTIVE_MUTATION_INTENTS.set(
+        tuple(
+            item
+            for item in _ACTIVE_MUTATION_INTENTS.get()
+            if item != prefix
+        )
+    )
+
+
+def _complete_mutation_intent(
+    task_dir: Path, committed_revision: int
+) -> None:
+    path = _quarantine_path(task_dir)
+    if str(path) not in set(_ACTIVE_MUTATION_INTENTS.get()):
+        return
+    evidence = _read_quarantine(task_dir)
+    if evidence is None:
+        raise FlowError(
+            "MUTATION_INTENT_LOST",
+            "mutation committed but its durable intent disappeared",
+            details={
+                "path": str(path),
+                "committed_revision": committed_revision,
+            },
+        )
+    evidence.update(
+        {
+            "updated_at": utc_now(),
+            "phase": "postconditions_committed",
+            "committed_revision": committed_revision,
+            "pid": None,
+            "process_group": None,
+        }
+    )
+    _atomic_write_json(path, evidence)
+    try:
+        path.unlink()
+        if os.name != "nt":
+            directory_fd = os.open(task_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    except OSError as exc:
+        if not path.exists():
+            try:
+                evidence["phase"] = "clear_durability_uncertain"
+                _atomic_write_json(path, evidence)
+            except FlowError:
+                pass
+        raise FlowError(
+            "MUTATION_COMMITTED_QUARANTINE",
+            (
+                "state committed but mutation-intent cleanup could not be "
+                "proven durable; reload and recover before continuing"
+            ),
+            details={
+                "path": str(path),
+                "committed_revision": committed_revision,
+                "error": str(exc),
+            },
+        ) from exc
+    finally:
+        _forget_active_mutation_intents(task_dir)
+
+
+def _abandon_unstarted_mutation_intent(path: Path | None) -> None:
+    """Withdraw only the newest intent when its real target never started.
+
+    A single controller transition can perform several mutating Git commands
+    before committing state (for example, one fetch or worktree creation per
+    repository).  If a later target cannot start, earlier operations still
+    require durable recovery evidence; removing the whole marker would lose
+    that fact.
     """
 
-    if fcntl is not None:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-    elif msvcrt is not None:
-        try:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-        except OSError:
-            pass
+    if path is None:
+        return
+    forget_active = False
+    try:
+        evidence = _read_quarantine(path.parent)
+        if evidence is None:
+            forget_active = True
+            return
+        operations = list(evidence.get("operations") or [])
+        if len(operations) > 1:
+            operations.pop()
+            previous = operations[-1]
+            evidence.update(
+                {
+                    "updated_at": utc_now(),
+                    "operations": operations,
+                    "command": list(previous.get("command") or []),
+                    "phase": previous.get("phase") or "child_quiescent",
+                    "pid": previous.get("pid"),
+                    "process_group": (
+                        previous.get("pid")
+                        if os.name != "nt"
+                        else None
+                    ),
+                    "gate_protocol_version": previous.get(
+                        "gate_protocol_version"
+                    ),
+                    "target_release_authorized": bool(
+                        previous.get("target_release_authorized")
+                    ),
+                    "containment_kind": previous.get(
+                        "containment_kind"
+                    ),
+                    "containment_established": bool(
+                        previous.get("containment_established")
+                    ),
+                    "cause": None,
+                }
+            )
+            _atomic_write_json(path, evidence)
+            return
+        path.unlink()
+        forget_active = True
+        if os.name != "nt":
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    except FileNotFoundError:
+        forget_active = True
+    except OSError as exc:
+        raise FlowError(
+            "MUTATION_QUARANTINED",
+            "an unstarted mutation intent could not be cleared durably",
+            details={"path": str(path), "error": str(exc)},
+        ) from exc
+    finally:
+        if forget_active:
+            _forget_active_mutation_intents(path.parent)
 
 
-def _release_exclusive(handle: Any) -> None:
-    if fcntl is not None:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    elif msvcrt is not None:
+def _persist_mutation_quarantine(
+    process: subprocess.Popen[bytes],
+    command: Sequence[str],
+    error: BaseException,
+) -> Path | None:
+    directory = _held_task_directory()
+    if directory is None:
+        return None
+    path = _quarantine_path(directory)
+    try:
+        if path.exists():
+            _update_mutation_intent(
+                path,
+                process,
+                command,
+                phase="quiescence_unproven",
+                cause=error,
+            )
+            return path
+    except FlowError:
+        # The pre-spawn marker is already durable.  Preserve it rather than
+        # letting an update failure erase the only fail-closed evidence.
+        if path.exists():
+            return path
+    state_revision: int | None = None
+    state_path = directory / "state.json"
+    try:
+        state_value = json.loads(state_path.read_text(encoding="utf-8"))
+        if isinstance(state_value, dict):
+            state_revision = int(state_value.get("revision", 0))
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    evidence = {
+        "schema_version": 1,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "ready": False,
+        "created_at": utc_now(),
+        "pid": process.pid,
+        "process_group": (
+            process.pid if os.name != "nt" else None
+        ),
+        "containment_kind": (
+            "windows_job_kill_on_close"
+            if os.name == "nt"
+            else "posix_process_group"
+        ),
+        "containment_established": os.name != "nt",
+        "command": list(command),
+        "platform": _platform_family(),
+        "state_revision": state_revision,
+        "cause": f"{type(error).__name__}: {error}",
+        "required_recovery": [
+            "prove_child_quiescent",
+            "validate_partial_git_and_filesystem_postconditions",
+        ],
+    }
+    _atomic_write_json(path, evidence)
+    return path
+
+
+def _quarantined_process_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        raise FlowError(
+            "QUARANTINE_INVALID",
+            "mutation quarantine does not contain a valid child process id",
+            details={"pid": pid},
+        )
+    if os.name == "nt":  # pragma: no cover - exercised on native Windows
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+        ]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        process = kernel32.OpenProcess(0x00100000, False, pid)
+        if not process:
+            error = ctypes.get_last_error()
+            if error == 87:  # ERROR_INVALID_PARAMETER: process is gone.
+                return False
+            if error == 5:  # Access denied proves a process still owns the id.
+                return True
+            raise FlowError(
+                "QUARANTINE_PROCESS_UNVERIFIABLE",
+                "could not determine whether the quarantined child still exists",
+                details={"pid": pid, "winerror": error},
+            )
         try:
+            wait_result = int(kernel32.WaitForSingleObject(process, 0))
+            if wait_result == 258:  # WAIT_TIMEOUT
+                return True
+            if wait_result == 0:  # WAIT_OBJECT_0
+                return False
+            raise FlowError(
+                "QUARANTINE_PROCESS_UNVERIFIABLE",
+                "could not wait on the quarantined child process",
+                details={
+                    "pid": pid,
+                    "wait_result": wait_result,
+                    "winerror": ctypes.get_last_error(),
+                },
+            )
+        finally:
+            kernel32.CloseHandle(process)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return False
+        if exc.errno == errno.EPERM:
+            return True
+        raise FlowError(
+            "QUARANTINE_PROCESS_UNVERIFIABLE",
+            "could not determine whether the quarantined child still exists",
+            details={"pid": pid, "error": str(exc)},
+        ) from exc
+    return True
+
+
+def _quarantine_processes_alive(quarantine: dict[str, Any]) -> bool:
+    if (
+        quarantine.get("gate_protocol_version") == 1
+        and quarantine.get("phase") == "spawn_pending"
+        and quarantine.get("pid") is None
+        and quarantine.get("target_release_authorized") is False
+        and quarantine.get("containment_established") is False
+    ):
+        # The only process that could have existed was the no-side-effect gate.
+        # The controller lock can be reacquired only after its parent has
+        # exited, which closes the gate pipe; without a durable release
+        # authorization the real target could never have started.
+        return False
+    if quarantine.get("gate_protocol_version") == 1:
+        expected_containment = (
+            "windows_job_kill_on_close"
+            if os.name == "nt"
+            else "posix_process_group"
+        )
+        if (
+            quarantine.get("containment_kind")
+            != expected_containment
+            or quarantine.get("containment_established") is not True
+        ):
+            raise FlowError(
+                "QUARANTINE_INVALID",
+                "mutation quarantine lacks valid child-containment evidence",
+                details={
+                    "containment_kind": quarantine.get(
+                        "containment_kind"
+                    ),
+                    "containment_established": quarantine.get(
+                        "containment_established"
+                    ),
+                },
+            )
+    if (
+        quarantine.get("pid") is None
+        and quarantine.get("phase")
+        in {"postconditions_committed", "clear_durability_uncertain"}
+    ):
+        return False
+    process_group = quarantine.get("process_group")
+    if os.name != "nt" and isinstance(process_group, int):
+        return _posix_process_group_alive(process_group)
+    return _quarantined_process_alive(quarantine.get("pid"))
+
+
+def _validate_partial_workspace_plan(
+    state_value: dict[str, Any], task_dir: Path
+) -> list[dict[str, Any]]:
+    controller_plan = (state_value.get("workspace") or {}).get("plan") or {}
+    plan_path_value = controller_plan.get("path")
+    if not plan_path_value:
+        return []
+    plan_path = Path(str(plan_path_value))
+    try:
+        evidence = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise FlowError(
+            "QUARANTINE_POSTCONDITION_FAILED",
+            "workspace plan cannot be read during quarantine recovery",
+            details={"path": str(plan_path), "error": str(exc)},
+        ) from exc
+    _require_current_evidence(evidence, "workspace plan")
+    if _sha256_file(plan_path) != controller_plan.get("sha256"):
+        raise FlowError(
+            "QUARANTINE_POSTCONDITION_FAILED",
+            "workspace plan changed while a mutation was quarantined",
+            details={"path": str(plan_path)},
+        )
+    by_id = {
+        repo.get("id"): repo for repo in state_value.get("repositories", [])
+    }
+    checked: list[dict[str, Any]] = []
+    data_root = task_dir.parent.parent
+    for plan in evidence.get("repositories", []):
+        repo = by_id.get(plan.get("repository_id"))
+        if not repo:
+            raise FlowError(
+                "QUARANTINE_POSTCONDITION_FAILED",
+                "workspace plan names an unknown repository",
+                details={"repository_id": plan.get("repository_id")},
+            )
+        destination = Path(str(plan.get("path", ""))).resolve(strict=False)
+        workspace = repo.get("workspace") or {}
+        if workspace.get("ready") and _recorded_path_matches(
+            workspace.get("path_identity"),
+            workspace.get("path"),
+            destination,
+        ):
+            checked.append(
+                {
+                    "repository_id": repo["id"],
+                    "path": str(destination),
+                    "state": "recorded-ready",
+                }
+            )
+            continue
+        if not destination.exists():
+            checked.append(
+                {
+                    "repository_id": repo["id"],
+                    "path": str(destination),
+                    "state": "absent",
+                }
+            )
+            continue
+        source = Path(repo["path"]).resolve(strict=True)
+        root = _git_optional(destination, "rev-parse", "--show-toplevel")
+        branch = _git_optional(
+            destination, "symbolic-ref", "--quiet", "--short", "HEAD"
+        )
+        head = _git_optional(destination, "rev-parse", "HEAD")
+        status_available, status_porcelain = _status_porcelain(destination)
+        entry = next(
+            (
+                item
+                for item in _worktree_entries(source)
+                if item.get("worktree")
+                and _same_path(Path(item["worktree"]), destination)
+            ),
+            None,
+        )
+        if (
+            not root
+            or not _same_path(Path(root), destination)
+            or not _same_path(
+                _git_common_dir(destination), _git_common_dir(source)
+            )
+            or not _is_linked_worktree(destination)
+            or branch != plan.get("branch")
+            or head != plan.get("base_sha")
+            or not status_available
+            or bool(status_porcelain)
+            or not entry
+            or entry.get("branch") != plan.get("branch_ref")
+            or entry.get("HEAD") != head
+            or not _has_exact_workspace_claim(
+                data_root,
+                state_value,
+                repo,
+                destination,
+                str(plan.get("branch")),
+            )
+        ):
+            raise FlowError(
+                "QUARANTINE_POSTCONDITION_FAILED",
+                "partial workspace mutation does not satisfy the approved clean postconditions",
+                details={
+                    "repository_id": repo["id"],
+                    "path": str(destination),
+                    "branch": branch,
+                    "head": head,
+                    "dirty": bool(status_porcelain),
+                },
+            )
+        checked.append(
+            {
+                "repository_id": repo["id"],
+                "path": str(destination),
+                "state": "complete-unrecorded",
+            }
+        )
+    return checked
+
+
+def _validate_quarantine_postconditions(
+    state_value: dict[str, Any],
+    task_dir: Path,
+    quarantine: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    repositories: list[dict[str, Any]] = []
+    partial_analysis: list[dict[str, Any]] = []
+    mutation_commands = [
+        item.get("command")
+        for item in (quarantine or {}).get("operations", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("command"), list)
+    ]
+    if isinstance((quarantine or {}).get("command"), list):
+        mutation_commands.append((quarantine or {})["command"])
+    data_root = task_dir.parent.parent
+    for repo in state_value.get("repositories", []):
+        source = Path(repo["path"]).resolve(strict=True)
+        canonical = _canonical_repo(str(source))
+        if not _same_path(source, canonical):
+            raise FlowError(
+                "QUARANTINE_POSTCONDITION_FAILED",
+                "repository root identity changed during the quarantined mutation",
+                details={"repository_id": repo.get("id")},
+            )
+        operations = _operation_state(source)
+        active = [name for name, value in operations.items() if value]
+        if active:
+            raise FlowError(
+                "QUARANTINE_POSTCONDITION_FAILED",
+                "repository still has an incomplete Git operation",
+                details={
+                    "repository_id": repo.get("id"),
+                    "operations": active,
+                },
+            )
+        baseline = repo.get("baseline")
+        if isinstance(baseline, dict):
+            _require_current_evidence(
+                baseline, f"baseline:{repo.get('id')}"
+            )
+            source_profile = _git_capability_profile(source)
+            if source_profile["sha256"] != baseline.get(
+                "capability_profile_sha256"
+            ):
+                raise FlowError(
+                    "QUARANTINE_POSTCONDITION_FAILED",
+                    "repository capability profile changed during the quarantined mutation",
+                    details={"repository_id": repo.get("id")},
+                )
+        analysis = repo.get("analysis_workspace")
+        if isinstance(analysis, dict) and analysis.get("ready"):
+            error = _analysis_workspace_integrity_error(repo)
+            if error:
+                raise FlowError(
+                    "QUARANTINE_POSTCONDITION_FAILED",
+                    error,
+                    details={"repository_id": repo.get("id")},
+                )
+        else:
+            candidate = (
+                data_root
+                / "analysis"
+                / str(state_value.get("task_id"))
+                / str(repo.get("id"))
+            ).resolve(strict=False)
+            if candidate.exists():
+                matching_command = next(
+                    (
+                        command
+                        for command in mutation_commands
+                        if "worktree" in command
+                        and "add" in command
+                        and str(candidate) in command
+                    ),
+                    None,
+                )
+                expected_head = (
+                    str(matching_command[-1])
+                    if matching_command
+                    else None
+                )
+                root = _git_optional(
+                    candidate, "rev-parse", "--show-toplevel"
+                )
+                head = _git_optional(
+                    candidate, "rev-parse", "HEAD"
+                )
+                branch = _git_optional(
+                    candidate,
+                    "symbolic-ref",
+                    "--quiet",
+                    "--short",
+                    "HEAD",
+                )
+                status_available, status_porcelain = (
+                    _status_porcelain(candidate)
+                )
+                entry = next(
+                    (
+                        item
+                        for item in _worktree_entries(source)
+                        if item.get("worktree")
+                        and _same_path(
+                            Path(item["worktree"]), candidate
+                        )
+                    ),
+                    None,
+                )
+                permissions_safe = True
+                try:
+                    if os.name == "nt":
+                        _verify_windows_private_path(candidate)
+                    else:
+                        permissions_safe = (
+                            stat.S_IMODE(candidate.stat().st_mode)
+                            == 0o700
+                        )
+                except FlowError:
+                    permissions_safe = False
+                if (
+                    expected_head is None
+                    or not root
+                    or not _same_path(Path(root), candidate)
+                    or not _same_path(
+                        _git_common_dir(candidate),
+                        _git_common_dir(source),
+                    )
+                    or not _is_linked_worktree(candidate)
+                    or head != expected_head
+                    or branch is not None
+                    or not status_available
+                    or bool(status_porcelain)
+                    or not entry
+                    or entry.get("HEAD") != head
+                    or "detached" not in entry
+                    or not permissions_safe
+                ):
+                    raise FlowError(
+                        "QUARANTINE_POSTCONDITION_FAILED",
+                        (
+                            "unrecorded analysis worktree does not match "
+                            "the quarantined approved mutation"
+                        ),
+                        details={
+                            "repository_id": repo.get("id"),
+                            "path": str(candidate),
+                            "expected_head": expected_head,
+                            "actual_head": head,
+                            "branch": branch,
+                            "dirty": bool(status_porcelain),
+                            "permissions_safe": permissions_safe,
+                        },
+                    )
+                partial_analysis.append(
+                    {
+                        "repository_id": repo.get("id"),
+                        "path": str(candidate),
+                        "head_sha": head,
+                        "state": "complete-unrecorded",
+                    }
+                )
+        workspace = repo.get("workspace")
+        if isinstance(workspace, dict) and workspace.get("ready"):
+            error = _workspace_integrity_error(state_value, repo)
+            if error:
+                raise FlowError(
+                    "QUARANTINE_POSTCONDITION_FAILED",
+                    error,
+                    details={"repository_id": repo.get("id")},
+                )
+        repositories.append(
+            {
+                "repository_id": repo.get("id"),
+                "source_path": str(source),
+                "operations": operations,
+            }
+        )
+    partial_workspaces = _validate_partial_workspace_plan(
+        state_value, task_dir
+    )
+    return {
+        "repositories": repositories,
+        "partial_analysis_worktrees": partial_analysis,
+        "partial_workspaces": partial_workspaces,
+    }
+
+
+def _acquire_exclusive(handle: Any, lock_path: Path) -> None:
+    """Take an exclusive advisory lock on an open lock file.
+
+    POSIX uses ``fcntl.lockf``; Windows uses ``msvcrt.locking`` over byte zero.
+    Both release automatically when the process exits. Every unsupported or
+    failed backend is a structured fail-closed error.
+    """
+
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            if fcntl is not None:
+                fcntl.lockf(
+                    handle.fileno(),
+                    fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    1,
+                    0,
+                    os.SEEK_SET,
+                )
+            elif msvcrt is not None:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                raise FlowError(
+                    "LOCK_UNSUPPORTED",
+                    "no verified operating-system lock backend is available",
+                    details={
+                        "path": str(lock_path),
+                        "platform": _platform_family(),
+                    },
+                )
+            return
+        except FlowError:
+            raise
+        except (OSError, ValueError) as exc:
+            busy = isinstance(exc, OSError) and exc.errno in {
+                errno.EACCES,
+                errno.EAGAIN,
+                errno.EDEADLK,
+            }
+            if busy and time.monotonic() < deadline:
+                time.sleep(LOCK_POLL_SECONDS)
+                continue
+            if busy:
+                raise FlowError(
+                    "LOCK_TIMEOUT",
+                    "timed out waiting for the exclusive controller lock",
+                    details={
+                        "path": str(lock_path),
+                        "platform": _platform_family(),
+                        "timeout_seconds": LOCK_TIMEOUT_SECONDS,
+                    },
+                ) from exc
+            raise FlowError(
+                "LOCK_ACQUIRE_FAILED",
+                "could not acquire the exclusive controller lock",
+                details={
+                    "path": str(lock_path),
+                    "platform": _platform_family(),
+                    "error": str(exc),
+                },
+            ) from exc
+
+
+def _release_exclusive(handle: Any, lock_path: Path) -> None:
+    try:
+        if fcntl is not None:
+            fcntl.lockf(
+                handle.fileno(),
+                fcntl.LOCK_UN,
+                1,
+                0,
+                os.SEEK_SET,
+            )
+        elif msvcrt is not None:
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
+        else:
+            raise FlowError(
+                "LOCK_UNSUPPORTED",
+                "no verified operating-system lock backend is available",
+                details={"path": str(lock_path), "platform": _platform_family()},
+            )
+    except FlowError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise FlowError(
+            "LOCK_RELEASE_FAILED",
+            (
+                "exclusive controller lock release could not be verified; "
+                "reload durable state before any retry"
+            ),
+            details={
+                "path": str(lock_path),
+                "platform": _platform_family(),
+                "error": str(exc),
+            },
+        ) from exc
 
 
 @contextlib.contextmanager
-def _file_lock(directory: Path, name: str) -> Iterator[None]:
-    _ensure_dir(directory)
+def _file_lock(
+    directory: Path, name: str, *, allow_quarantine: bool = False
+) -> Iterator[None]:
+    _ensure_private_dir(directory)
     lock_path = directory / name
     with lock_path.open("a+b") as handle:
+        _set_private_permissions(lock_path, 0o600)
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+            os.fsync(handle.fileno())
+        handle.seek(0)
+        _acquire_exclusive(handle, lock_path)
+        token: contextvars.Token[tuple[str, ...]] | None = None
         try:
-            lock_path.chmod(0o600)
-        except OSError:
-            pass
-        _acquire_exclusive(handle)
-        try:
+            if not allow_quarantine:
+                _assert_no_mutation_quarantine(directory)
+            token = _HELD_LOCK_DIRECTORIES.set(
+                (
+                    *_HELD_LOCK_DIRECTORIES.get(),
+                    str(directory.resolve(strict=False)),
+                )
+            )
             yield
         finally:
-            _release_exclusive(handle)
+            if token is not None:
+                _HELD_LOCK_DIRECTORIES.reset(token)
+            try:
+                _release_exclusive(handle, lock_path)
+            finally:
+                _forget_active_mutation_intents(directory)
 
 
 @contextlib.contextmanager
-def _task_lock(task_dir: Path) -> Iterator[None]:
-    with _file_lock(task_dir, "state.lock"):
+def _task_lock(
+    task_dir: Path, *, allow_quarantine: bool = False
+) -> Iterator[None]:
+    with _file_lock(
+        task_dir, "state.lock", allow_quarantine=allow_quarantine
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def _task_namespace_lock(data_root: Path) -> Iterator[None]:
+    with _file_lock(data_root, "task-namespace.lock"):
         yield
 
 
@@ -464,10 +2657,16 @@ def _normalize_scope(value: Any) -> dict[str, Any]:
                 f"scope.{key} must be a list of directories",
                 details={"key": key},
             )
-        roots = {
-            _normalize_scope_root(item, f"scope.{key}", code="CONFIG_INVALID")
-            for item in raw
-        }
+        roots: list[str] = []
+        for item in raw:
+            root = _normalize_scope_root(
+                item, f"scope.{key}", code="CONFIG_INVALID"
+            )
+            if not any(
+                _same_path(Path(root), Path(existing))
+                for existing in roots
+            ):
+                roots.append(root)
         scope[key] = sorted(roots)
     return scope
 
@@ -509,11 +2708,15 @@ def _scope_env_roots(environ: Any, name: str) -> list[str] | None:
     raw = environ.get(name)
     if not isinstance(raw, str) or not raw.strip():
         return None
-    roots = {
-        _normalize_scope_root(item, name)
-        for item in raw.split(os.pathsep)
-        if item.strip()
-    }
+    roots: list[str] = []
+    for item in raw.split(os.pathsep):
+        if not item.strip():
+            continue
+        root = _normalize_scope_root(item, name)
+        if not any(
+            _same_path(Path(root), Path(existing)) for existing in roots
+        ):
+            roots.append(root)
     return sorted(roots) or None
 
 
@@ -560,7 +2763,9 @@ def evaluate_scope(path: str | os.PathLike[str], scope: dict[str, Any]) -> dict[
             candidate = Path(root)
             if not _is_within(current, candidate):
                 continue
-            candidate_depth = len(candidate.parts)
+            candidate_depth = len(
+                _filesystem_identity(candidate)["parts"]
+            )
             if candidate_depth > depth or (
                 candidate_depth == depth and candidate_rule == "exclude"
             ):
@@ -620,10 +2825,16 @@ def _assert_path_in_scope(
     )
 
 
-def _load_workspace_registry(data_root: Path) -> dict[str, Any]:
+def _load_workspace_registry(
+    data_root: Path, *, allow_legacy_container: bool = False
+) -> dict[str, Any]:
     path = data_root / "workspace-registry.json"
     if not path.exists():
-        return {"schema_version": SCHEMA_VERSION, "claims": []}
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+            "claims": [],
+        }
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -641,6 +2852,26 @@ def _load_workspace_registry(data_root: Path) -> dict[str, Any]:
             "WORKSPACE_REGISTRY_INVALID",
             "workspace ownership registry has an unsupported structure",
             details={"path": str(path)},
+        )
+    _assert_supported_evidence_versions(value)
+    if (
+        value.get("evidence_contract_version")
+        != EVIDENCE_CONTRACT_VERSION
+        and not allow_legacy_container
+    ):
+        raise FlowError(
+            "EVIDENCE_REGENERATION_REQUIRED",
+            (
+                "legacy workspace registry evidence must be regenerated from "
+                "a current approved workspace plan"
+            ),
+            details={
+                "path": str(path),
+                "required_version": EVIDENCE_CONTRACT_VERSION,
+                "encountered_version": value.get(
+                    "evidence_contract_version"
+                ),
+            },
         )
     return value
 
@@ -671,13 +2902,41 @@ def _state_workspace_claims(data_root: Path) -> list[dict[str, Any]]:
             for workspace in [repo.get("workspace"), *repo.get("workspace_history", [])]:
                 if not isinstance(workspace, dict) or not workspace.get("path"):
                     continue
+                workspace_path = Path(workspace["path"]).resolve(strict=False)
+                source_path = Path(repo.get("path", "")).resolve(strict=False)
+                common_path = (
+                    Path(common_dir)
+                    if not common_dir.startswith("unavailable:")
+                    else None
+                )
                 claims.append(
                     {
+                        "evidence_contract_version": workspace.get(
+                            "evidence_contract_version"
+                        ),
                         "task_id": task_id,
                         "repository_id": repo.get("id"),
-                        "path": str(Path(workspace["path"]).resolve(strict=False)),
+                        "source_path": str(source_path),
+                        "source_identity": _serializable_path_identity(source_path),
+                        "path": str(workspace_path),
+                        "path_identity": _serializable_path_identity(workspace_path),
                         "branch": workspace.get("branch"),
+                        "branch_ref": workspace.get("branch_ref"),
+                        "planned_ref_oid": workspace.get(
+                            "planned_ref_oid"
+                        ),
+                        "ref_case_sensitive": workspace.get(
+                            "ref_case_sensitive"
+                        ),
+                        "ref_unicode_normalization_distinct": workspace.get(
+                            "ref_unicode_normalization_distinct"
+                        ),
                         "source_common_dir": common_dir,
+                        "source_common_dir_identity": (
+                            _serializable_path_identity(common_path)
+                            if common_path is not None
+                            else None
+                        ),
                         "workspace_generation": workspace.get(
                             "workspace_generation"
                         ),
@@ -697,14 +2956,48 @@ def _state_workspace_claims(data_root: Path) -> list[dict[str, Any]]:
             for planned in evidence.get("repositories", []):
                 if not planned.get("path"):
                     continue
+                planned_path = Path(planned["path"]).resolve(strict=False)
+                source_path = Path(
+                    planned.get("source_path", "")
+                ).resolve(strict=False)
+                common_dir = _source_common_dir_for_claim(source_path)
+                common_path = (
+                    Path(common_dir)
+                    if not common_dir.startswith("unavailable:")
+                    else None
+                )
                 claims.append(
                     {
+                        "evidence_contract_version": evidence.get(
+                            "evidence_contract_version"
+                        ),
                         "task_id": task_id,
                         "repository_id": planned.get("repository_id"),
-                        "path": str(Path(planned["path"]).resolve(strict=False)),
+                        "source_path": str(source_path),
+                        "source_identity": planned.get("source_identity")
+                        or _serializable_path_identity(source_path),
+                        "path": str(planned_path),
+                        "path_identity": planned.get("path_identity")
+                        or _serializable_path_identity(planned_path),
                         "branch": planned.get("branch"),
-                        "source_common_dir": _source_common_dir_for_claim(
-                            planned.get("source_path")
+                        "branch_ref": planned.get("branch_ref"),
+                        "planned_ref_oid": planned.get(
+                            "planned_ref_oid"
+                        ),
+                        "ref_case_sensitive": planned.get(
+                            "ref_case_sensitive"
+                        ),
+                        "ref_unicode_normalization_distinct": planned.get(
+                            "ref_unicode_normalization_distinct"
+                        ),
+                        "source_common_dir": common_dir,
+                        "source_common_dir_identity": planned.get(
+                            "source_common_dir_identity"
+                        )
+                        or (
+                            _serializable_path_identity(common_path)
+                            if common_path is not None
+                            else None
                         ),
                         "workspace_generation": controller_plan.get(
                             "workspace_generation"
@@ -721,25 +3014,52 @@ def _claim_workspace_plan(
     state_value: dict[str, Any],
     plan_sha256: str,
     plans: Sequence[dict[str, Any]],
+    *,
+    registry_locked: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    with _workspace_registry_lock(data_root):
-        registry = _load_workspace_registry(data_root)
+    lock_context = (
+        contextlib.nullcontext()
+        if registry_locked
+        else _workspace_registry_lock(data_root)
+    )
+    with lock_context:
+        registry = _load_workspace_registry(
+            data_root, allow_legacy_container=True
+        )
         existing_claims = [*registry["claims"], *_state_workspace_claims(data_root)]
         proposed: list[dict[str, Any]] = []
         for plan in plans:
+            source_path = Path(plan["source_path"]).resolve(strict=False)
+            workspace_path = Path(plan["path"]).resolve(strict=False)
+            source_common_dir = _source_common_dir_for_claim(source_path)
+            source_common_path = (
+                Path(source_common_dir)
+                if not source_common_dir.startswith("unavailable:")
+                else None
+            )
             proposed.append(
                 {
+                    "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                     "claim_id": str(uuid.uuid4()),
                     "task_id": state_value["task_id"],
                     "repository_id": plan["repository_id"],
-                    "source_path": str(
-                        Path(plan["source_path"]).resolve(strict=False)
+                    "source_path": str(source_path),
+                    "source_identity": _serializable_path_identity(source_path),
+                    "source_common_dir": source_common_dir,
+                    "source_common_dir_identity": (
+                        _serializable_path_identity(source_common_path)
+                        if source_common_path is not None
+                        else None
                     ),
-                    "source_common_dir": _source_common_dir_for_claim(
-                        plan["source_path"]
-                    ),
-                    "path": str(Path(plan["path"]).resolve(strict=False)),
+                    "path": str(workspace_path),
+                    "path_identity": _serializable_path_identity(workspace_path),
                     "branch": plan["branch"],
+                    "branch_ref": plan.get("branch_ref"),
+                    "planned_ref_oid": plan.get("planned_ref_oid"),
+                    "ref_case_sensitive": plan.get("ref_case_sensitive"),
+                    "ref_unicode_normalization_distinct": plan.get(
+                        "ref_unicode_normalization_distinct"
+                    ),
                     "workspace_generation": int(
                         (state_value.get("workspace") or {}).get("generation", 0)
                     ),
@@ -754,15 +3074,53 @@ def _claim_workspace_plan(
                     claimed.get("task_id") == candidate["task_id"]
                     and claimed.get("repository_id")
                     == candidate["repository_id"]
-                    and claimed.get("path") == candidate["path"]
+                    and _recorded_path_matches(
+                        claimed.get("path_identity"),
+                        claimed.get("path"),
+                        candidate_path,
+                    )
                     and claimed.get("branch") == candidate["branch"]
-                    and claimed.get("source_common_dir")
-                    == candidate["source_common_dir"]
+                    and claimed.get("branch_ref")
+                    == candidate.get("branch_ref")
+                    and claimed.get("planned_ref_oid")
+                    == candidate.get("planned_ref_oid")
+                    and claimed.get(
+                        "ref_unicode_normalization_distinct"
+                    )
+                    == candidate.get(
+                        "ref_unicode_normalization_distinct"
+                    )
+                    and (
+                        _path_identity_equal(
+                            claimed.get("source_common_dir_identity"),
+                            candidate.get("source_common_dir_identity"),
+                        )
+                        if candidate.get("source_common_dir_identity")
+                        else claimed.get("source_common_dir")
+                        == candidate["source_common_dir"]
+                    )
                     and claimed.get("workspace_generation")
                     == candidate["workspace_generation"]
                     and claimed.get("plan_sha256") == candidate["plan_sha256"]
                 )
                 if exact_retry:
+                    continue
+                regenerating_same_legacy_claim = (
+                    claimed.get("evidence_contract_version")
+                    != EVIDENCE_CONTRACT_VERSION
+                    and claimed.get("task_id") == candidate["task_id"]
+                    and claimed.get("repository_id")
+                    == candidate["repository_id"]
+                    and claimed.get("workspace_generation")
+                    == candidate["workspace_generation"]
+                    and _recorded_path_matches(
+                        claimed.get("path_identity"),
+                        claimed.get("path"),
+                        candidate_path,
+                    )
+                    and claimed.get("branch") == candidate["branch"]
+                )
+                if regenerating_same_legacy_claim:
                     continue
                 claimed_path_value = claimed.get("path")
                 claimed_path = (
@@ -777,20 +3135,92 @@ def _claim_workspace_plan(
                         or _is_within(claimed_path, candidate_path)
                     )
                 )
-                branch_conflict = bool(
-                    candidate.get("branch")
-                    and claimed.get("branch")
-                    and (
-                        candidate["branch"] == claimed["branch"]
-                        or candidate["branch"].startswith(
-                            f"{claimed['branch']}/"
+                candidate_ref = candidate.get("branch_ref") or (
+                    f"refs/heads/{candidate['branch']}"
+                    if candidate.get("branch")
+                    else None
+                )
+                claimed_ref = claimed.get("branch_ref") or (
+                    f"refs/heads/{claimed['branch']}"
+                    if claimed.get("branch")
+                    else None
+                )
+                ref_case_sensitive = bool(
+                    candidate.get("ref_case_sensitive", True)
+                    and claimed.get("ref_case_sensitive", True)
+                )
+                ref_unicode_distinct = bool(
+                    candidate.get(
+                        "ref_unicode_normalization_distinct", True
+                    )
+                    and claimed.get(
+                        "ref_unicode_normalization_distinct", True
+                    )
+                )
+                candidate_ref_identity = (
+                    (
+                        str(candidate_ref)
+                        if ref_unicode_distinct
+                        else unicodedata.normalize(
+                            "NFC", str(candidate_ref)
                         )
-                        or claimed["branch"].startswith(
-                            f"{candidate['branch']}/"
+                    )
+                    if candidate_ref
+                    else None
+                )
+                claimed_ref_identity = (
+                    (
+                        str(claimed_ref)
+                        if ref_unicode_distinct
+                        else unicodedata.normalize(
+                            "NFC", str(claimed_ref)
+                        )
+                    )
+                    if claimed_ref
+                    else None
+                )
+                if not ref_case_sensitive:
+                    candidate_ref_identity = (
+                        candidate_ref_identity.casefold()
+                        if candidate_ref_identity
+                        else None
+                    )
+                    claimed_ref_identity = (
+                        claimed_ref_identity.casefold()
+                        if claimed_ref_identity
+                        else None
+                    )
+                branch_conflict = bool(
+                    candidate_ref_identity
+                    and claimed_ref_identity
+                    and (
+                        candidate_ref_identity == claimed_ref_identity
+                        or candidate_ref_identity.startswith(
+                            f"{claimed_ref_identity}/"
+                        )
+                        or claimed_ref_identity.startswith(
+                            f"{candidate_ref_identity}/"
                         )
                     )
                     and candidate.get("source_common_dir")
-                    == claimed.get("source_common_dir")
+                    and (
+                        _path_identity_equal(
+                            candidate.get("source_common_dir_identity"),
+                            claimed.get("source_common_dir_identity"),
+                        )
+                        if candidate.get("source_common_dir_identity")
+                        and claimed.get("source_common_dir_identity")
+                        else _same_path(
+                            Path(candidate["source_common_dir"]),
+                            Path(str(claimed.get("source_common_dir"))),
+                        )
+                        if claimed.get("source_common_dir")
+                        and not str(claimed.get("source_common_dir")).startswith(
+                            "unavailable:"
+                        )
+                        else candidate.get("source_common_dir")
+                        == claimed.get("source_common_dir")
+                    )
                 )
                 if path_conflict or branch_conflict:
                     raise FlowError(
@@ -813,13 +3243,29 @@ def _claim_workspace_plan(
                 (
                     claim
                     for claim in registry["claims"]
-                    if claim.get("task_id") == candidate["task_id"]
+                    if claim.get("evidence_contract_version")
+                    == EVIDENCE_CONTRACT_VERSION
+                    and claim.get("task_id") == candidate["task_id"]
                     and claim.get("repository_id") == candidate["repository_id"]
                     and claim.get("workspace_generation")
                     == candidate["workspace_generation"]
                     and claim.get("plan_sha256") == candidate["plan_sha256"]
-                    and claim.get("path") == candidate["path"]
+                    and _recorded_path_matches(
+                        claim.get("path_identity"),
+                        claim.get("path"),
+                        Path(candidate["path"]),
+                    )
                     and claim.get("branch") == candidate["branch"]
+                    and claim.get("branch_ref")
+                    == candidate.get("branch_ref")
+                    and claim.get("planned_ref_oid")
+                    == candidate.get("planned_ref_oid")
+                    and claim.get(
+                        "ref_unicode_normalization_distinct"
+                    )
+                    == candidate.get(
+                        "ref_unicode_normalization_distinct"
+                    )
                 ),
                 None,
             )
@@ -827,19 +3273,36 @@ def _claim_workspace_plan(
                 registry["claims"].append(candidate)
                 existing = candidate
             selected_claims[candidate["repository_id"]] = existing
+        registry["evidence_contract_version"] = (
+            EVIDENCE_CONTRACT_VERSION
+        )
         _atomic_write_json(data_root / "workspace-registry.json", registry)
         for plan in plans:
             claim = selected_claims[plan["repository_id"]]
             plan["workspace_claim"] = {
                 "claim_id": claim["claim_id"],
                 "registry_path": str(data_root / "workspace-registry.json"),
+                "registry_identity": _serializable_path_identity(
+                    data_root / "workspace-registry.json"
+                ),
                 "plan_sha256": plan_sha256,
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+                "path_identity": claim.get("path_identity"),
+                "source_identity": claim.get("source_identity"),
+                "source_common_dir_identity": claim.get(
+                    "source_common_dir_identity"
+                ),
             }
         return selected_claims
 
 
 def _actor() -> str:
-    return os.environ.get("DEV_FLOW_ACTOR") or os.environ.get("USER") or "unknown"
+    return (
+        _nonempty(os.environ.get("DEV_FLOW_ACTOR"))
+        or _nonempty(os.environ.get("USER"))
+        or _nonempty(os.environ.get("USERNAME"))
+        or "unknown"
+    )
 
 
 def _commit_state(
@@ -867,6 +3330,7 @@ def _commit_state(
     }
     _atomic_write_json(task_dir / "state.json", new_state)
     _append_event(task_dir / "events.jsonl", event)
+    _complete_mutation_intent(task_dir, revision)
     return event
 
 
@@ -890,12 +3354,488 @@ def _locked_state(
     task_id: str,
     data_dir: str | os.PathLike[str] | None,
     expected_revision: int,
+    *,
+    lock_workspace_registry: bool = False,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
     task_dir = _task_dir(task_id, data_dir)
     with _task_lock(task_dir):
         state_value = load_state(task_id, data_dir)
         _check_revision(state_value, expected_revision)
-        yield task_dir, state_value
+        if lock_workspace_registry:
+            with _workspace_registry_lock(resolve_data_dir(data_dir)):
+                yield task_dir, state_value
+        else:
+            yield task_dir, state_value
+
+
+def _posix_process_group_alive(process_group: int) -> bool:
+    if os.name == "nt":  # pragma: no cover - POSIX helper
+        return False
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return False
+        if exc.errno == errno.EPERM:
+            return True
+        raise
+    return True
+
+
+def _quiesce_completed_process_group(
+    process: subprocess.Popen[bytes], command: Sequence[str]
+) -> None:
+    if os.name == "nt" or not _posix_process_group_alive(process.pid):
+        return
+    for signal_number, timeout_seconds in ((15, 2.0), (9, 5.0)):
+        try:
+            os.killpg(process.pid, signal_number)
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if not _posix_process_group_alive(process.pid):
+                return
+            time.sleep(0.05)
+    error = RuntimeError(
+        "owned process group remained active after its leader exited"
+    )
+    quarantine = _persist_mutation_quarantine(process, command, error)
+    raise FlowError(
+        "MUTATION_QUARANTINED",
+        "mutating child descendants could not be proven quiescent",
+        details={
+            "pid": process.pid,
+            "process_group": process.pid,
+            "command": list(command),
+            "quarantine": str(quarantine) if quarantine else None,
+        },
+    )
+
+
+def _windows_kill_on_close_job(
+    process: subprocess.Popen[bytes], command: Sequence[str]
+) -> Any:
+    if os.name != "nt":  # pragma: no cover - native Windows helper
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class BASIC_LIMITS(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class EXTENDED_LIMITS(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BASIC_LIMITS),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.LPCWSTR,
+    ]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+    ]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def ownership_failure(message: str, error: int) -> None:
+        try:
+            process.terminate()
+            process.wait(timeout=5.0)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            quarantine = _persist_mutation_quarantine(
+                process, command, exc
+            )
+            raise FlowError(
+                "MUTATION_QUARANTINED",
+                "unowned Windows child could not be proven quiescent",
+                details={
+                    "pid": process.pid,
+                    "winerror": error,
+                    "quarantine": (
+                        str(quarantine) if quarantine else None
+                    ),
+                },
+            ) from exc
+        raise FlowError(
+            "PROCESS_OWNERSHIP_FAILED",
+            message,
+            details={"pid": process.pid, "winerror": error},
+        )
+
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        ownership_failure(
+            "could not create a Windows child-process job",
+            ctypes.get_last_error(),
+        )
+    limits = EXTENDED_LIMITS()
+    limits.BasicLimitInformation.LimitFlags = 0x00002000
+    if not kernel32.SetInformationJobObject(
+        job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+    ) or not kernel32.AssignProcessToJobObject(
+        job, wintypes.HANDLE(process._handle)  # type: ignore[attr-defined]
+    ):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(job)
+        ownership_failure(
+            "could not place a mutating child in an owned Windows job",
+            error,
+        )
+    return job
+
+
+def _terminate_windows_job(job: Any) -> None:
+    if os.name != "nt" or not job:  # pragma: no cover - native Windows
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.TerminateJobObject.argtypes = [
+        wintypes.HANDLE,
+        wintypes.UINT,
+    ]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    if not kernel32.TerminateJobObject(job, 1):
+        raise OSError(
+            ctypes.get_last_error(), "TerminateJobObject failed"
+        )
+
+
+def _windows_job_active_processes(job: Any) -> int:
+    if os.name != "nt" or not job:  # pragma: no cover - native Windows
+        return 0
+    import ctypes
+    from ctypes import wintypes
+
+    class BASIC_ACCOUNTING(ctypes.Structure):
+        _fields_ = [
+            ("TotalUserTime", ctypes.c_longlong),
+            ("TotalKernelTime", ctypes.c_longlong),
+            ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+            ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+            ("TotalPageFaultCount", wintypes.DWORD),
+            ("TotalProcesses", wintypes.DWORD),
+            ("ActiveProcesses", wintypes.DWORD),
+            ("TotalTerminatedProcesses", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+    accounting = BASIC_ACCOUNTING()
+    returned = wintypes.DWORD()
+    if not kernel32.QueryInformationJobObject(
+        job,
+        1,  # JobObjectBasicAccountingInformation
+        ctypes.byref(accounting),
+        ctypes.sizeof(accounting),
+        ctypes.byref(returned),
+    ):
+        raise OSError(
+            ctypes.get_last_error(),
+            "QueryInformationJobObject failed",
+        )
+    return int(accounting.ActiveProcesses)
+
+
+def _quiesce_windows_job(
+    job: Any,
+    process: subprocess.Popen[bytes],
+    command: Sequence[str],
+) -> None:
+    if os.name != "nt" or not job:  # pragma: no cover - native Windows
+        return
+    try:
+        active = _windows_job_active_processes(job)
+        if active:
+            _terminate_windows_job(job)
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if _windows_job_active_processes(job) == 0:
+                    return
+                time.sleep(0.05)
+            active = _windows_job_active_processes(job)
+        if active:
+            raise OSError(
+                errno.EBUSY,
+                f"Windows job still contains {active} active processes",
+            )
+    except OSError as exc:
+        quarantine = _persist_mutation_quarantine(
+            process, command, exc
+        )
+        raise FlowError(
+            "MUTATION_QUARANTINED",
+            "Windows child job could not be proven quiescent",
+            details={
+                "pid": process.pid,
+                "command": list(command),
+                "quarantine": (
+                    str(quarantine) if quarantine else None
+                ),
+                "error": str(exc),
+            },
+        ) from exc
+
+
+def _close_windows_job(job: Any) -> None:
+    if os.name != "nt" or not job:  # pragma: no cover - native Windows
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    if not kernel32.CloseHandle(job):
+        raise OSError(ctypes.get_last_error(), "CloseHandle failed")
+
+
+_MUTATION_GATE_ENVELOPE = b"DEV_FLOW_GATE_V1:"
+_MUTATION_GATE_CODE = """
+import base64
+import json
+import subprocess
+import sys
+
+gate = sys.stdin.buffer.read(1)
+command = json.loads(sys.argv[1])
+if gate != b"G":
+    sys.exit(253)
+try:
+    result = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    envelope = {
+        "version": 1,
+        "status": "completed",
+        "returncode": result.returncode,
+        "stdout": base64.b64encode(result.stdout).decode("ascii"),
+        "stderr": base64.b64encode(result.stderr).decode("ascii"),
+    }
+except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    envelope = {
+        "version": 1,
+        "status": "spawn_error",
+        "error": str(exc),
+        "errno": getattr(exc, "errno", None),
+        "winerror": getattr(exc, "winerror", None),
+    }
+payload = json.dumps(
+    envelope,
+    sort_keys=True,
+    separators=(",", ":"),
+).encode("utf-8", "backslashreplace")
+sys.stdout.buffer.write(b"DEV_FLOW_GATE_V1:" + payload)
+sys.stdout.buffer.flush()
+""".strip()
+# Compatibility aliases retained for focused downstream tests and diagnostics.
+_WINDOWS_MUTATION_GATE_CODE = _MUTATION_GATE_CODE
+
+
+def _mutation_gate_command(
+    command: Sequence[str],
+) -> list[str]:
+    return [
+        sys.executable,
+        "-I",
+        "-S",
+        "-c",
+        _MUTATION_GATE_CODE,
+        json.dumps(list(command), ensure_ascii=True),
+    ]
+
+
+def _windows_mutation_gate_command(
+    command: Sequence[str],
+) -> list[str]:
+    return _mutation_gate_command(command)
+
+
+def _terminate_and_quiesce_owned_child(
+    process: subprocess.Popen[bytes],
+    command: Sequence[str],
+    *,
+    protected_child: bool,
+    windows_job: Any,
+) -> bool:
+    """Best-effort termination whose result is safe to use before unlock."""
+
+    try:
+        if os.name == "nt" and windows_job:
+            _terminate_windows_job(windows_job)
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                pass
+            _quiesce_windows_job(windows_job, process, command)
+            return _windows_job_active_processes(windows_job) == 0
+        if os.name != "nt" and protected_child:
+            process_group = process.pid
+            if _posix_process_group_alive(process_group):
+                try:
+                    os.killpg(process_group, 15)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + 2.0
+            while (
+                time.monotonic() < deadline
+                and _posix_process_group_alive(process_group)
+            ):
+                time.sleep(0.05)
+            if _posix_process_group_alive(process_group):
+                try:
+                    os.killpg(process_group, 9)
+                except ProcessLookupError:
+                    pass
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                pass
+            deadline = time.monotonic() + 5.0
+            while (
+                time.monotonic() < deadline
+                and _posix_process_group_alive(process_group)
+            ):
+                time.sleep(0.05)
+            return not _posix_process_group_alive(process_group)
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5.0)
+        return process.poll() is not None
+    except BaseException:
+        return False
+
+
+def _parse_mutation_gate_envelope(
+    stdout: bytes, stderr: bytes, returncode: int
+) -> dict[str, Any]:
+    if (
+        returncode != 0
+        or stderr
+        or not stdout.startswith(_MUTATION_GATE_ENVELOPE)
+    ):
+        raise FlowError(
+            "MUTATION_GATE_PROTOCOL_FAILED",
+            "mutation gate did not return its private completion envelope",
+            details={
+                "gate_returncode": returncode,
+                "stdout_sha256": _sha256_bytes(stdout),
+                "stderr_sha256": _sha256_bytes(stderr),
+            },
+        )
+    payload = stdout[len(_MUTATION_GATE_ENVELOPE) :]
+    try:
+        envelope = json.loads(payload.decode("utf-8", "strict"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise FlowError(
+            "MUTATION_GATE_PROTOCOL_FAILED",
+            "mutation gate returned an invalid completion envelope",
+            details={
+                "payload_sha256": _sha256_bytes(payload),
+                "error": str(exc),
+            },
+        ) from exc
+    if not isinstance(envelope, dict) or envelope.get("version") != 1:
+        raise FlowError(
+            "MUTATION_GATE_PROTOCOL_FAILED",
+            "mutation gate returned an unsupported completion envelope",
+        )
+    status = envelope.get("status")
+    if status == "spawn_error":
+        return envelope
+    returncode_value = envelope.get("returncode")
+    if (
+        status != "completed"
+        or not isinstance(returncode_value, int)
+        or isinstance(returncode_value, bool)
+        or not isinstance(envelope.get("stdout"), str)
+        or not isinstance(envelope.get("stderr"), str)
+    ):
+        raise FlowError(
+            "MUTATION_GATE_PROTOCOL_FAILED",
+            "mutation gate completion envelope is incomplete",
+        )
+    import base64
+    import binascii
+
+    try:
+        target_stdout = base64.b64decode(
+            envelope["stdout"].encode("ascii"), validate=True
+        )
+        target_stderr = base64.b64decode(
+            envelope["stderr"].encode("ascii"), validate=True
+        )
+    except (UnicodeError, binascii.Error) as exc:
+        raise FlowError(
+            "MUTATION_GATE_PROTOCOL_FAILED",
+            "mutation gate completion bytes are invalid",
+            details={"error": str(exc)},
+        ) from exc
+    return {
+        **envelope,
+        "stdout_bytes": target_stdout,
+        "stderr_bytes": target_stderr,
+    }
 
 
 def _run(
@@ -905,10 +3845,17 @@ def _run(
     check: bool = True,
     text: bool = True,
     evidence_git: bool = False,
+    mutation: bool = False,
 ) -> subprocess.CompletedProcess[Any]:
     environment = os.environ.copy()
     environment["LC_ALL"] = "C"
-    is_git = bool(command) and Path(command[0]).name == "git"
+    environment["LANG"] = "C"
+    executable = (
+        re.split(r"[\\/]", str(command[0]))[-1].casefold()
+        if command
+        else ""
+    )
+    is_git = executable in {"git", "git.exe"}
     if is_git:
         # ``git -C`` does not override repository redirection variables.  A
         # caller-controlled environment must not be able to make identity,
@@ -930,12 +3877,35 @@ def _run(
                 "GIT_CONFIG_NOSYSTEM",
                 "GIT_CEILING_DIRECTORIES",
                 "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+                "GIT_EXEC_PATH",
                 "GIT_SHALLOW_FILE",
                 "GIT_GRAFT_FILE",
+                "GIT_TEMPLATE_DIR",
                 "GIT_REPLACE_REF_BASE",
-            } or key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+                "GIT_ALLOW_PROTOCOL",
+                "GIT_PROTOCOL_FROM_USER",
+                "GIT_REDIRECT_STDERR",
+            } or key.startswith(
+                (
+                    "GIT_CONFIG_KEY_",
+                    "GIT_CONFIG_VALUE_",
+                    "GIT_TRACE",
+                )
+            ):
                 environment.pop(key, None)
         environment.pop("GIT_CONFIG_COUNT", None)
+        for key in (
+            "GIT_ASKPASS",
+            "GIT_PROXY_COMMAND",
+            "GIT_SSH",
+            "GIT_SSH_COMMAND",
+            "GIT_SSH_VARIANT",
+            "SSH_ASKPASS",
+            "SSH_ASKPASS_REQUIRE",
+        ):
+            environment.pop(key, None)
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["SSH_ASKPASS_REQUIRE"] = "never"
         environment["GIT_NO_REPLACE_OBJECTS"] = "1"
         environment["GIT_NO_LAZY_FETCH"] = "1"
         # Disable both environment-selected and repository-local legacy grafts.
@@ -943,29 +3913,338 @@ def _run(
     if evidence_git:
         environment.pop("GIT_EXTERNAL_DIFF", None)
         environment.pop("GIT_DIFF_OPTS", None)
-    try:
-        result = subprocess.run(
-            list(command),
-            cwd=cwd,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=text,
-            check=False,
+    protected_child = bool(_HELD_LOCK_DIRECTORIES.get())
+    if mutation and not protected_child:
+        raise FlowError(
+            "MUTATION_LOCK_REQUIRED",
+            "a mutating child cannot start outside a controller lock",
+            details={"command": list(command)},
         )
-    except OSError as exc:
+    mutation_intent = (
+        _begin_mutation_intent(command) if mutation else None
+    )
+    gated_mutation = bool(mutation and protected_child)
+    launch_command = (
+        _mutation_gate_command(command)
+        if gated_mutation
+        else list(command)
+    )
+    process_kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "env": environment,
+        "stdin": (
+            subprocess.PIPE
+            if gated_mutation
+            else subprocess.DEVNULL
+        ),
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": False,
+    }
+    if protected_child and os.name == "nt":  # pragma: no cover - native Windows
+        process_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    elif protected_child:
+        process_kwargs["start_new_session"] = True
+    try:
+        process = subprocess.Popen(launch_command, **process_kwargs)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        _abandon_unstarted_mutation_intent(mutation_intent)
         raise FlowError(
             "COMMAND_FAILED",
             f"could not execute {command[0]}",
-            details={"command": list(command), "error": str(exc)},
+            details={
+                "command": list(command),
+                "cwd": str(cwd) if cwd else None,
+                "error": str(exc),
+                "failure_kind": "spawn",
+                "errno": getattr(exc, "errno", None),
+            },
         ) from exc
+    windows_job: Any = None
+    if protected_child and os.name == "nt":  # pragma: no cover - native Windows
+        try:
+            windows_job = _windows_kill_on_close_job(
+                process, command
+            )
+        except FlowError as exc:
+            if (
+                gated_mutation
+                and exc.code == "PROCESS_OWNERSHIP_FAILED"
+            ):
+                _abandon_unstarted_mutation_intent(
+                    mutation_intent
+                )
+            raise
+    if mutation:
+        try:
+            _update_mutation_intent(
+                mutation_intent,
+                process,
+                command,
+                phase="child_owned",
+            )
+            _update_mutation_intent(
+                mutation_intent,
+                process,
+                command,
+                phase="target_release_authorized",
+                target_release_authorized=True,
+            )
+        except BaseException as exc:
+            cleanup_error: BaseException | None = None
+            try:
+                _terminate_and_quiesce_owned_child(
+                    process,
+                    command,
+                    protected_child=protected_child,
+                    windows_job=windows_job,
+                )
+            except BaseException as nested_error:
+                cleanup_error = nested_error
+                if os.name == "nt" and windows_job:
+                    try:
+                        _terminate_windows_job(windows_job)
+                    except BaseException:
+                        pass
+                elif os.name != "nt" and protected_child:
+                    try:
+                        os.killpg(process.pid, 9)
+                    except BaseException:
+                        pass
+            if os.name == "nt" and windows_job:
+                try:
+                    _close_windows_job(windows_job)
+                except BaseException:
+                    pass
+            quarantine = _persist_mutation_quarantine(
+                process, command, cleanup_error or exc
+            )
+            raise FlowError(
+                "MUTATION_QUARANTINED",
+                (
+                    "mutating child ownership was established but its "
+                    "durable PID evidence could not be updated"
+                ),
+                details={
+                    "pid": process.pid,
+                    "command": list(command),
+                    "quarantine": (
+                        str(quarantine) if quarantine else None
+                    ),
+                },
+            ) from exc
+    try:
+        if gated_mutation:
+            stdout_bytes, stderr_bytes = process.communicate(
+                input=b"G"
+            )
+        else:
+            stdout_bytes, stderr_bytes = process.communicate()
+        if os.name == "nt" and windows_job:
+            _quiesce_windows_job(
+                windows_job, process, command
+            )
+        elif protected_child and os.name != "nt":
+            _quiesce_completed_process_group(process, command)
+    except BaseException as exc:
+        cleanup_error = None
+        try:
+            quiescent = _terminate_and_quiesce_owned_child(
+                process,
+                command,
+                protected_child=protected_child,
+                windows_job=windows_job,
+            )
+        except BaseException as nested_error:
+            quiescent = False
+            cleanup_error = nested_error
+            if os.name == "nt" and windows_job:
+                try:
+                    _terminate_windows_job(windows_job)
+                except BaseException:
+                    pass
+            elif os.name != "nt" and protected_child:
+                try:
+                    os.killpg(process.pid, 9)
+                except BaseException:
+                    pass
+        if not quiescent:
+            quarantine = _persist_mutation_quarantine(
+                process, command, cleanup_error or exc
+            )
+            try:
+                _close_windows_job(windows_job)
+            except BaseException:
+                pass
+            raise FlowError(
+                "MUTATION_QUARANTINED",
+                "protected child failed and could not be proven quiescent",
+                details={
+                    "pid": process.pid,
+                    "command": list(command),
+                    "quarantine": str(quarantine) if quarantine else None,
+                },
+            ) from exc
+        if mutation:
+            try:
+                _update_mutation_intent(
+                    mutation_intent,
+                    process,
+                    command,
+                    phase="interrupted_quiescent",
+                    cause=exc,
+                )
+            except BaseException as evidence_error:
+                quarantine = _persist_mutation_quarantine(
+                    process, command, evidence_error
+                )
+                try:
+                    _close_windows_job(windows_job)
+                except BaseException:
+                    pass
+                raise FlowError(
+                    "MUTATION_QUARANTINED",
+                    "child was quiesced but interruption evidence could not be finalized",
+                    details={
+                        "pid": process.pid,
+                        "quarantine": (
+                            str(quarantine) if quarantine else None
+                        ),
+                    },
+                ) from evidence_error
+        try:
+            _close_windows_job(windows_job)
+        except BaseException as close_error:
+            quarantine = _persist_mutation_quarantine(
+                process, command, close_error
+            )
+            raise FlowError(
+                "MUTATION_QUARANTINED",
+                "Windows child job could not be closed after interruption",
+                details={
+                    "pid": process.pid,
+                    "quarantine": (
+                        str(quarantine) if quarantine else None
+                    ),
+                },
+            ) from close_error
+        raise
+    try:
+        _close_windows_job(windows_job)
+    except BaseException as exc:
+        quarantine = _persist_mutation_quarantine(process, command, exc)
+        raise FlowError(
+            "MUTATION_QUARANTINED",
+            "Windows child-process ownership could not be released safely",
+            details={
+                "pid": process.pid,
+                "command": list(command),
+                "quarantine": str(quarantine) if quarantine else None,
+                "error": str(exc),
+            },
+        ) from exc
+    stdout_bytes = stdout_bytes or b""
+    stderr_bytes = stderr_bytes or b""
+    effective_returncode = int(process.returncode or 0)
+    if gated_mutation:
+        try:
+            gate_envelope = _parse_mutation_gate_envelope(
+                stdout_bytes,
+                stderr_bytes,
+                effective_returncode,
+            )
+        except FlowError as exc:
+            quarantine = _persist_mutation_quarantine(
+                process, command, exc
+            )
+            raise FlowError(
+                "MUTATION_QUARANTINED",
+                "mutation gate completion could not be authenticated",
+                details={
+                    "pid": process.pid,
+                    "command": list(command),
+                    "quarantine": (
+                        str(quarantine) if quarantine else None
+                    ),
+                },
+            ) from exc
+        if gate_envelope.get("status") == "spawn_error":
+            spawn_details = {
+                key: gate_envelope.get(key)
+                for key in ("error", "errno", "winerror")
+            }
+            _abandon_unstarted_mutation_intent(mutation_intent)
+            raise FlowError(
+                "COMMAND_FAILED",
+                f"could not execute {command[0]}",
+                details={
+                    "command": list(command),
+                    "cwd": str(cwd) if cwd else None,
+                    "failure_kind": "spawn",
+                    **spawn_details,
+                },
+            )
+        effective_returncode = int(gate_envelope["returncode"])
+        stdout_bytes = gate_envelope["stdout_bytes"]
+        stderr_bytes = gate_envelope["stderr_bytes"]
+    if mutation:
+        try:
+            _update_mutation_intent(
+                mutation_intent,
+                process,
+                command,
+                phase=(
+                    "child_quiescent"
+                    if effective_returncode == 0
+                    else "child_failed_quiescent"
+                ),
+            )
+        except BaseException as exc:
+            quarantine = _persist_mutation_quarantine(
+                process, command, exc
+            )
+            raise FlowError(
+                "MUTATION_QUARANTINED",
+                "child exited but durable mutation evidence could not be finalized",
+                details={
+                    "pid": process.pid,
+                    "command": list(command),
+                    "quarantine": (
+                        str(quarantine) if quarantine else None
+                    ),
+                },
+            ) from exc
+    if text:
+        stdout: Any = stdout_bytes.decode("utf-8", "backslashreplace")
+        stderr: Any = stderr_bytes.decode("utf-8", "backslashreplace")
+    else:
+        stdout = stdout_bytes
+        stderr = stderr_bytes
+    result = subprocess.CompletedProcess(
+        args=list(command),
+        returncode=effective_returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
     if check and result.returncode != 0:
-        stderr = result.stderr.strip() if text else result.stderr.decode("utf-8", "replace").strip()
+        rendered_stderr = (
+            result.stderr.strip()
+            if text
+            else result.stderr.decode("utf-8", "backslashreplace").strip()
+        )
         raise FlowError(
             "COMMAND_FAILED",
             f"command failed with exit code {result.returncode}",
-            details={"command": list(command), "cwd": str(cwd) if cwd else None, "stderr": stderr},
+            details={
+                "command": list(command),
+                "cwd": str(cwd) if cwd else None,
+                "stderr": rendered_stderr,
+                "stderr_sha256": _sha256_bytes(stderr_bytes),
+                "failure_kind": "exit",
+                "returncode": result.returncode,
+            },
         )
     return result
 
@@ -977,12 +4256,190 @@ def _git(repo: Path, *arguments: str, check: bool = True, text: bool = True) -> 
     return result.stdout
 
 
+def _git_mutating(
+    repo: Path, *arguments: str, text: bool = True
+) -> Any:
+    result = _run(
+        ["git", "-C", str(repo), *arguments],
+        check=True,
+        text=text,
+        mutation=True,
+    )
+    if text:
+        return result.stdout.strip()
+    return result.stdout
+
+
 def _git_optional(repo: Path, *arguments: str) -> str | None:
     result = _run(["git", "-C", str(repo), *arguments], check=False, text=True)
     if result.returncode != 0:
         return None
     value = result.stdout.strip()
     return value or None
+
+
+def _git_config_value(repo: Path, key: str) -> str | None:
+    result = _run(
+        ["git", "-C", str(repo), "config", "--get", key],
+        check=False,
+        text=True,
+    )
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        raise FlowError(
+            "GIT_CAPABILITY_UNAVAILABLE",
+            f"could not read effective Git setting {key}",
+            details={
+                "repository": str(repo),
+                "key": key,
+                "stderr": result.stderr.strip(),
+            },
+        )
+    return result.stdout.strip()
+
+
+def _git_bool_config(repo: Path, key: str, default: bool) -> bool:
+    value = _git_config_value(repo, key)
+    if value is None:
+        return default
+    lowered = value.strip().lower()
+    if lowered in {"true", "yes", "on", "1"}:
+        return True
+    if lowered in {"false", "no", "off", "0"}:
+        return False
+    raise FlowError(
+        "GIT_CAPABILITY_CONTRADICTION",
+        f"effective Git setting {key} is not boolean",
+        details={"repository": str(repo), "key": key, "value": value},
+    )
+
+
+def _probe_worktree_capabilities(repo: Path) -> dict[str, Any]:
+    probe_root: Path | None = None
+    try:
+        probe_root = Path(
+            tempfile.mkdtemp(prefix=".dev-flow-capability-", dir=str(repo))
+        )
+        regular = probe_root / "mode-probe"
+        regular.write_bytes(b"mode")
+        before = stat.S_IMODE(regular.stat().st_mode)
+        file_mode = False
+        if os.name != "nt":
+            regular.chmod(before ^ stat.S_IXUSR)
+            after = stat.S_IMODE(regular.stat().st_mode)
+            file_mode = bool((before ^ after) & stat.S_IXUSR)
+        target = probe_root / "symlink-target"
+        link = probe_root / "symlink-probe"
+        target.write_bytes(b"target")
+        try:
+            os.symlink(target.name, link)
+            symlinks = link.is_symlink()
+        except (OSError, NotImplementedError):
+            symlinks = False
+        unicode_normalization_distinct = (
+            _probe_filesystem_unicode_distinct(probe_root)
+        )
+        case_sensitive = _probe_filesystem_case_sensitive(probe_root)
+        return {
+            "case_sensitive": case_sensitive,
+            "file_mode": file_mode,
+            "symlinks": symlinks,
+            "unicode_normalization_distinct": unicode_normalization_distinct,
+        }
+    except FlowError:
+        raise
+    except OSError as exc:
+        raise FlowError(
+            "GIT_CAPABILITY_UNAVAILABLE",
+            "could not probe worktree filesystem capabilities",
+            details={"repository": str(repo), "error": str(exc)},
+        ) from exc
+    finally:
+        if probe_root is not None:
+            try:
+                shutil.rmtree(probe_root)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise FlowError(
+                    "GIT_CAPABILITY_UNAVAILABLE",
+                    "worktree capability probe could not be cleaned up",
+                    details={"repository": str(repo), "path": str(probe_root), "error": str(exc)},
+                ) from exc
+
+
+def _git_capability_profile(
+    repo: Path, filesystem_path: Path | None = None
+) -> dict[str, Any]:
+    resolved = repo.resolve(strict=True)
+    profile_path = filesystem_path or resolved
+    probe_target = resolved
+    if filesystem_path is not None:
+        probe_target, _ = _nearest_existing_path(filesystem_path)
+        if not probe_target.is_dir():
+            probe_target = probe_target.parent
+    filesystem = _probe_worktree_capabilities(probe_target)
+    core_file_mode = _git_bool_config(
+        resolved, "core.fileMode", filesystem["file_mode"]
+    )
+    core_symlinks = _git_bool_config(
+        resolved, "core.symlinks", filesystem["symlinks"]
+    )
+    core_ignore_case = _git_bool_config(
+        resolved, "core.ignoreCase", not filesystem["case_sensitive"]
+    )
+    contradictions: list[str] = []
+    if core_file_mode and not filesystem["file_mode"]:
+        contradictions.append("core.fileMode=true but executable mode changes are unavailable")
+    if core_symlinks and not filesystem["symlinks"]:
+        contradictions.append("core.symlinks=true but native symlink creation is unavailable")
+    if not core_ignore_case and not filesystem["case_sensitive"]:
+        contradictions.append("core.ignoreCase=false on a case-insensitive filesystem")
+    if contradictions:
+        raise FlowError(
+            "GIT_CAPABILITY_CONTRADICTION",
+            "effective Git settings contradict verified worktree capabilities",
+            details={
+                "repository": str(resolved),
+                "contradictions": contradictions,
+                "filesystem": filesystem,
+            },
+        )
+    autocrlf = (_git_config_value(resolved, "core.autocrlf") or "false").lower()
+    eol = (_git_config_value(resolved, "core.eol") or "native").lower()
+    if autocrlf not in {"true", "false", "input"} or eol not in {
+        "native",
+        "lf",
+        "crlf",
+    }:
+        raise FlowError(
+            "GIT_CAPABILITY_CONTRADICTION",
+            "effective line-ending settings are not recognized",
+            details={
+                "repository": str(resolved),
+                "core.autocrlf": autocrlf,
+                "core.eol": eol,
+            },
+        )
+    profile: dict[str, Any] = {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "platform": _platform_family(),
+        "core_file_mode": core_file_mode,
+        "core_symlinks": core_symlinks,
+        "core_ignore_case": core_ignore_case,
+        "core_autocrlf": autocrlf,
+        "core_eol": eol,
+        "filesystem": filesystem,
+        "filesystem_identity": _capability_path_identity(profile_path),
+        "git_version": _run(["git", "--version"]).stdout.strip(),
+    }
+    profile["sha256"] = _sha256_bytes(
+        json.dumps(profile, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8", "backslashreplace"
+        )
+    )
+    return profile
 
 
 def _evidence_git_command(repo: Path, *arguments: str) -> list[str]:
@@ -1000,12 +4457,6 @@ def _evidence_git_command(repo: Path, *arguments: str) -> list[str]:
         "core.trustctime=true",
         "-c",
         "core.checkStat=default",
-        "-c",
-        "core.fileMode=true",
-        "-c",
-        "core.symlinks=true",
-        "-c",
-        "core.ignoreCase=false",
         "-c",
         "core.quotePath=true",
         "-c",
@@ -1332,11 +4783,15 @@ def _assert_no_dirty_submodules(repo: Path) -> None:
         )
 
 
-def _tracked_worktree_manifest(repo: Path) -> list[dict[str, Any]]:
+def _tracked_worktree_manifest(
+    repo: Path, capability_profile: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     """Bind raw tracked filesystem bytes/types/modes, including submodules."""
 
     manifest: list[dict[str, Any]] = []
     visited: set[Path] = set()
+    profile = capability_profile or _git_capability_profile(repo)
+    case_aliases: dict[str, str] = {}
 
     def visit(current: Path, prefix: bytes) -> None:
         resolved = current.resolve(strict=True)
@@ -1347,12 +4802,52 @@ def _tracked_worktree_manifest(repo: Path) -> list[dict[str, Any]]:
             resolved, "ls-files", "--stage", "-z", "--cached", "--", text=False
         )
         for record in output.split(b"\0"):
+            if not record:
+                continue
             metadata, separator, path_bytes = record.partition(b"\t")
             fields = metadata.split(b" ")
             if not separator or len(fields) != 3:
-                continue
+                raise FlowError(
+                    "GIT_EVIDENCE_MALFORMED",
+                    "git ls-files returned a malformed tracked-entry record",
+                    details={
+                        "repository": str(resolved),
+                        "record_hex": record.hex(),
+                    },
+                )
             index_mode, index_oid, stage = fields
             full_path = prefix + (b"/" if prefix else b"") + path_bytes
+            display_path = os.fsdecode(full_path)
+            filesystem = profile.get("filesystem") or {}
+            case_aliasing = bool(
+                profile.get("core_ignore_case")
+                or not filesystem.get("case_sensitive", True)
+            )
+            unicode_aliasing = not filesystem.get(
+                "unicode_normalization_distinct", True
+            )
+            if case_aliasing or unicode_aliasing:
+                alias = (
+                    unicodedata.normalize("NFC", display_path)
+                    if unicode_aliasing
+                    else display_path
+                )
+                if case_aliasing:
+                    alias = alias.casefold()
+                previous = case_aliases.get(alias)
+                if previous is not None and previous != full_path.hex():
+                    raise FlowError(
+                        "CASE_COLLISION_UNSUPPORTED",
+                        "tracked paths collide on the verified worktree filesystem",
+                        details={
+                            "repository": str(repo),
+                            "first_path_bytes_hex": previous,
+                            "second_path_bytes_hex": full_path.hex(),
+                            "case_aliasing": case_aliasing,
+                            "unicode_aliasing": unicode_aliasing,
+                        },
+                    )
+                case_aliases[alias] = full_path.hex()
             target = resolved / os.fsdecode(path_bytes)
             item: dict[str, Any] = {
                 "path": full_path.decode("utf-8", "replace"),
@@ -1413,7 +4908,7 @@ def _repo_id(root: Path, existing: set[str]) -> str:
     base = _slug(root.name)[:40]
     candidate = base
     if candidate in existing:
-        digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha256(os.fsencode(str(root))).hexdigest()[:8]
         candidate = f"{base}-{digest}"
     return candidate
 
@@ -1424,22 +4919,73 @@ def _split_lines(value: str | None) -> list[str]:
     return [line for line in value.splitlines() if line]
 
 
+def _selector_is_path_like(selector: str) -> bool:
+    return bool(
+        "/" in selector
+        or "\\" in selector
+        or selector.startswith((".", "~"))
+        or re.match(r"^[A-Za-z]:", selector)
+        or selector.startswith(("//", "\\\\"))
+    )
+
+
+def _selector_path(selector: str) -> Path | None:
+    windows_drive = bool(re.match(r"^[A-Za-z]:[\\/]", selector))
+    windows_unc = selector.startswith("\\\\")
+    if os.name != "nt" and (windows_drive or windows_unc):
+        # A foreign Windows absolute path is still path-like, and therefore
+        # must never fall back to a basename selector on a POSIX host.
+        return None
+    normalized = selector
+    if os.name != "nt" and "\\" in normalized:
+        normalized = normalized.replace("\\", "/")
+    try:
+        return Path(normalized).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise FlowError(
+            "PATH_IDENTITY_UNAVAILABLE",
+            "repository selector path could not be normalized",
+            details={"selector": selector, "error": str(exc)},
+        ) from exc
+
+
 def _repo_by_selector(state_value: dict[str, Any], selectors: Sequence[str] | None) -> list[dict[str, Any]]:
     repositories = state_value.get("repositories", [])
     if not selectors:
         return repositories
     selected: list[dict[str, Any]] = []
     for selector in selectors:
-        normalized_path = str(Path(selector).expanduser().resolve(strict=False)) if os.sep in selector or selector.startswith(".") else None
-        matches = [
-            repo
-            for repo in repositories
-            if selector == repo.get("id")
-            or selector == repo.get("path")
-            or selector == repo.get("canonical_path")
-            or normalized_path in {repo.get("path"), repo.get("canonical_path")}
-            or selector == Path(str(repo.get("path", ""))).name
-        ]
+        if _selector_is_path_like(selector):
+            normalized_path = _selector_path(selector)
+            matches = []
+            if normalized_path is not None:
+                for repo in repositories:
+                    recorded_paths = {
+                        str(value)
+                        for value in (
+                            repo.get("path"),
+                            repo.get("canonical_path"),
+                        )
+                        if value
+                    }
+                    if any(
+                        _same_path(normalized_path, Path(value))
+                        for value in recorded_paths
+                    ):
+                        matches.append(repo)
+        else:
+            matches = [
+                repo
+                for repo in repositories
+                if selector == repo.get("id")
+                or selector == Path(str(repo.get("path", ""))).name
+            ]
+        matches = list(
+            {
+                str(repo.get("id")): repo
+                for repo in matches
+            }.values()
+        )
         if len(matches) != 1:
             raise FlowError(
                 "REPOSITORY_NOT_FOUND" if not matches else "AMBIGUOUS_REPOSITORY",
@@ -1613,8 +5159,9 @@ def _preflight_repo(
         blockers.append("base_branch_unresolved")
     if remote and remote not in _split_lines(_git_optional(repo, "remote")):
         blockers.append("remote_not_found")
-    worktree_fingerprint_sha256 = _fingerprint_repo(repo)["sha256"]
+    fingerprint = _fingerprint_repo(repo)
     return {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "checked_at": utc_now(),
         "branch": branch,
         "head_sha": head_sha,
@@ -1630,7 +5177,12 @@ def _preflight_repo(
         "conflicts": conflicts,
         "operations": operations,
         "dirty": bool(staged or unstaged or untracked or conflicts),
-        "worktree_fingerprint_sha256": worktree_fingerprint_sha256,
+        "worktree_fingerprint_sha256": fingerprint["sha256"],
+        "capability_profile": fingerprint["capability_profile"],
+        "capability_profile_sha256": fingerprint["capability_profile_sha256"],
+        "tracked_worktree_manifest_sha256": fingerprint[
+            "tracked_worktree_manifest_sha256"
+        ],
         "blockers": blockers,
         "ready": not blockers,
     }
@@ -1742,7 +5294,15 @@ def _hash_artifact(path: Path) -> dict[str, Any]:
 
     visit(path, Path())
     manifest = b"".join(
-        (json.dumps(entry, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+        (
+            json.dumps(
+                entry,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8", "backslashreplace")
         for entry in entries
     )
     return {
@@ -1798,6 +5358,7 @@ def _latest_artifact(state_value: dict[str, Any], kind: str) -> dict[str, Any] |
 
 
 def _assert_artifact_unchanged(artifact: dict[str, Any]) -> None:
+    _require_current_evidence(artifact, "artifact")
     path_value = artifact.get("path")
     if not path_value:
         raise FlowError(
@@ -1806,6 +5367,17 @@ def _assert_artifact_unchanged(artifact: dict[str, Any]) -> None:
             details={"artifact_id": artifact.get("artifact_id")},
         )
     path = Path(path_value)
+    if not _recorded_path_matches(
+        artifact.get("path_identity"), path_value, path
+    ):
+        raise FlowError(
+            "ARTIFACT_CHANGED",
+            f"recorded artifact path identity changed: {path}",
+            details={
+                "artifact_id": artifact.get("artifact_id"),
+                "path": str(path),
+            },
+        )
     try:
         current = _hash_artifact(path)
     except (FlowError, OSError) as exc:
@@ -2022,8 +5594,9 @@ def _require_review_gate(state_value: dict[str, Any]) -> tuple[dict[str, Any], d
     return approval, report
 
 
-def _fingerprint_repo(repo: Path) -> dict[str, Any]:
+def _fingerprint_repo_once(repo: Path) -> dict[str, Any]:
     resolved_repo = repo.resolve(strict=True)
+    capability_profile = _git_capability_profile(repo)
     _assert_evidence_supported(repo)
     head = _git_evidence(repo, "rev-parse", "HEAD")
     cached = _git_diff(
@@ -2059,8 +5632,15 @@ def _fingerprint_repo(repo: Path) -> dict[str, Any]:
             content_hash = _sha256_file(target)
             item_type = "file"
         else:
-            content_hash = None
-            item_type = "other"
+            raise FlowError(
+                "UNTRACKED_TYPE_UNSUPPORTED",
+                "untracked review evidence supports only regular files and symlinks",
+                details={
+                    "repository": str(repo),
+                    "path": relative,
+                    "mode": format(metadata.st_mode & 0o177777, "06o"),
+                },
+            )
         untracked.append(
             {
                 "path": relative,
@@ -2070,7 +5650,9 @@ def _fingerprint_repo(repo: Path) -> dict[str, Any]:
                 "sha256": content_hash,
             }
         )
+    tracked_worktree = _tracked_worktree_manifest(repo, capability_profile)
     payload = {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "path": str(resolved_repo),
         "root": _git_evidence(repo, "rev-parse", "--show-toplevel"),
         "branch": _git_evidence_optional(
@@ -2085,13 +5667,40 @@ def _fingerprint_repo(repo: Path) -> dict[str, Any]:
         "head_sha": head,
         "cached_sha256": _sha256_bytes(cached),
         "unstaged_sha256": _sha256_bytes(unstaged),
-        "tracked_worktree": _tracked_worktree_manifest(repo),
+        "capability_profile": capability_profile,
+        "capability_profile_sha256": capability_profile["sha256"],
+        "tracked_worktree": tracked_worktree,
+        "tracked_worktree_manifest_sha256": _sha256_bytes(
+            json.dumps(
+                tracked_worktree, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8", "backslashreplace")
+        ),
         "untracked": untracked,
     }
     payload["sha256"] = _sha256_bytes(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8", "backslashreplace"
+        )
     )
     return payload
+
+
+def _fingerprint_repo(repo: Path) -> dict[str, Any]:
+    """Return a complete fingerprint only after two identical observations."""
+
+    first = _fingerprint_repo_once(repo)
+    second = _fingerprint_repo_once(repo)
+    if first.get("sha256") != second.get("sha256"):
+        raise FlowError(
+            "WORKTREE_CHANGED",
+            "repository changed while complete byte evidence was being captured",
+            details={
+                "repository": str(repo.resolve(strict=False)),
+                "first_sha256": first.get("sha256"),
+                "second_sha256": second.get("sha256"),
+            },
+        )
+    return second
 
 
 def _untracked_filesystem_path(item: dict[str, Any]) -> str:
@@ -2107,6 +5716,95 @@ def _untracked_filesystem_path(item: dict[str, Any]) -> str:
             ) from exc
     # Compatibility for evidence recorded before raw path bytes were bound.
     return str(item.get("path", ""))
+
+
+def _validate_untracked_archive(
+    archive_path: Path, manifest: Sequence[dict[str, Any]]
+) -> None:
+    """Prove that archived untracked entries match their byte manifest."""
+
+    try:
+        with tarfile.open(archive_path, mode="r") as archive:
+            members = {
+                member.name.rstrip("/"): member
+                for member in archive.getmembers()
+            }
+            for item in manifest:
+                relative = _untracked_filesystem_path(item).replace(
+                    os.sep, "/"
+                )
+                member = members.get(relative.rstrip("/"))
+                if member is None:
+                    raise FlowError(
+                        "REVIEW_SNAPSHOT_CHANGED",
+                        "untracked archive is missing a manifest entry",
+                        details={
+                            "archive": str(archive_path),
+                            "path": item.get("path"),
+                        },
+                    )
+                item_type = item.get("type")
+                type_matches = (
+                    (item_type == "file" and member.isfile())
+                    or (item_type == "symlink" and member.issym())
+                    or (
+                        item_type == "other"
+                        and not member.isfile()
+                        and not member.issym()
+                    )
+                )
+                if item_type == "file":
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        raise FlowError(
+                            "REVIEW_SNAPSHOT_CHANGED",
+                            "untracked regular file has no archived bytes",
+                            details={
+                                "archive": str(archive_path),
+                                "path": item.get("path"),
+                            },
+                        )
+                    digest = hashlib.sha256()
+                    with extracted:
+                        for chunk in iter(
+                            lambda: extracted.read(1024 * 1024), b""
+                        ):
+                            digest.update(chunk)
+                    actual_sha = digest.hexdigest()
+                elif item_type == "symlink":
+                    actual_sha = (
+                        _sha256_bytes(os.fsencode(member.linkname))
+                        if member.issym()
+                        else None
+                    )
+                else:
+                    actual_sha = None
+                if (
+                    not type_matches
+                    or actual_sha != item.get("sha256")
+                    or (
+                        item_type == "file"
+                        and member.size != item.get("size")
+                    )
+                ):
+                    raise FlowError(
+                        "REVIEW_SNAPSHOT_CHANGED",
+                        "untracked archive bytes differ from the manifest",
+                        details={
+                            "archive": str(archive_path),
+                            "path": item.get("path"),
+                            "expected_sha256": item.get("sha256"),
+                            "actual_sha256": actual_sha,
+                        },
+                    )
+    except FlowError:
+        raise
+    except (OSError, tarfile.TarError) as exc:
+        raise FlowError(
+            "REVIEW_SNAPSHOT_INVALID",
+            "untracked review archive could not be verified",
+            details={"archive": str(archive_path), "error": str(exc)},
+        ) from exc
 
 
 def _working_path(repo: dict[str, Any]) -> Path:
@@ -2242,16 +5940,23 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
     roots: list[Path] = []
     for supplied in args.repo:
         root = _canonical_repo(supplied)
-        if root not in roots:
+        if not any(_same_path(root, existing) for existing in roots):
             roots.append(root)
     if not roots:
         raise FlowError("INVALID_ARGUMENT", "start requires at least one distinct Git repository")
     for root in roots:
         _assert_path_in_scope(root, "repository", args.data_dir)
-    common_dirs: dict[Path, Path] = {}
+    common_dirs: list[tuple[Path, Path]] = []
     for root in roots:
         common_dir = _git_evidence_path(root, "--git-common-dir")
-        previous = common_dirs.get(common_dir)
+        previous = next(
+            (
+                previous_root
+                for previous_common_dir, previous_root in common_dirs
+                if _same_path(common_dir, previous_common_dir)
+            ),
+            None,
+        )
         if previous is not None:
             raise FlowError(
                 "DUPLICATE_GIT_REPOSITORY",
@@ -2262,7 +5967,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                     "git_common_dir": str(common_dir),
                 },
             )
-        common_dirs[common_dir] = root
+        common_dirs.append((common_dir, root))
     protected = list(dict.fromkeys(args.protected_branch or DEFAULT_PROTECTED_BRANCHES))
     repositories: list[dict[str, Any]] = []
     ids: set[str] = set()
@@ -2285,44 +5990,230 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 "workspace_history": [],
             }
         )
-    task_dir = _task_dir(task_id, args.data_dir)
-    with _task_lock(task_dir):
-        if (task_dir / "state.json").exists():
-            raise FlowError("TASK_EXISTS", f"task already exists: {task_id}", details={"task_id": task_id})
-        _ensure_dir(task_dir / "artifacts")
-        created = utc_now()
-        state_value: dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
-            "task_id": task_id,
-            "requirement": requirement,
-            "status": "INTAKE",
-            "revision": 0,
-            "created_at": created,
-            "updated_at": created,
-            "flow": flow,
-            "route": None,
-            "repositories": repositories,
-            "artifacts": [],
-            "approvals": {},
-            "tests": [],
-            "review_snapshots": [],
-            "impact_generation": 0,
-            "planning_generation": 0,
-            "workspace": {
-                "strategy": "in-place" if flow == "lite" else "worktree",
-                "ready": False,
-                "generation": 0,
-            },
-            "blocked": None,
-            "cancelled": None,
-        }
-        _commit_state(None, state_value, task_dir, "task_started", {"repository_ids": sorted(ids)})
+    data_root = resolve_data_dir(args.data_dir)
+    task_dir = _task_dir(task_id, data_root)
+    identity = _task_identity(task_id)
+    with _task_namespace_lock(data_root):
+        tasks_root = data_root / "tasks"
+        if tasks_root.is_dir():
+            for candidate in tasks_root.iterdir():
+                if not candidate.is_dir():
+                    continue
+                try:
+                    candidate_identity = _task_identity(candidate.name)
+                except FlowError:
+                    # Non-portable legacy directories are not adoptable by a
+                    # new task, but still reserve their literal case-folded
+                    # spelling so creation cannot alias them.
+                    candidate_identity = candidate.name.lower()
+                if candidate_identity == identity:
+                    code = "TASK_EXISTS" if candidate.name == task_id else "TASK_ID_COLLISION"
+                    raise FlowError(
+                        code,
+                        (
+                            f"task already exists: {task_id}"
+                            if code == "TASK_EXISTS"
+                            else "task id has the same portable identity as an existing task"
+                        ),
+                        details={
+                            "task_id": task_id,
+                            "existing_task_id": candidate.name,
+                            "portable_identity": identity,
+                        },
+                    )
+        with _task_lock(task_dir):
+            if (task_dir / "state.json").exists():
+                raise FlowError(
+                    "TASK_EXISTS",
+                    f"task already exists: {task_id}",
+                    details={"task_id": task_id},
+                )
+            _ensure_private_dir(task_dir / "artifacts")
+            created = utc_now()
+            state_value: dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+                "task_id": task_id,
+                "requirement": requirement,
+                "status": "INTAKE",
+                "revision": 0,
+                "created_at": created,
+                "updated_at": created,
+                "flow": flow,
+                "route": None,
+                "repositories": repositories,
+                "artifacts": [],
+                "approvals": {},
+                "tests": [],
+                "review_snapshots": [],
+                "mutation_recoveries": [],
+                "impact_generation": 0,
+                "planning_generation": 0,
+                "workspace": {
+                    "strategy": "in-place" if flow == "lite" else "worktree",
+                    "ready": False,
+                    "generation": 0,
+                },
+                "blocked": None,
+                "cancelled": None,
+            }
+            _commit_state(
+                None,
+                state_value,
+                task_dir,
+                "task_started",
+                {"repository_ids": sorted(ids)},
+            )
     return _result("start", state_value, task=state_value)
 
 
 def command_show(args: argparse.Namespace) -> dict[str, Any]:
     state_value = load_state(_task_arg(args), args.data_dir)
     return _result("show", state_value, task=state_value)
+
+
+def _archive_quarantine(
+    task_dir: Path, quarantine: dict[str, Any]
+) -> Path:
+    recovery_id = str(
+        quarantine.get("recovery_id") or uuid.uuid4()
+    )
+    source = _quarantine_path(task_dir)
+    archive = task_dir / f"mutation-quarantine.recovered-{recovery_id}.json"
+    try:
+        os.replace(source, archive)
+    except OSError as exc:
+        raise FlowError(
+            "QUARANTINE_ARCHIVE_FAILED",
+            "validated quarantine could not be archived; mutations remain blocked",
+            details={
+                "source": str(source),
+                "archive": str(archive),
+                "error": str(exc),
+            },
+        ) from exc
+    _set_private_permissions(archive, 0o600)
+    return archive
+
+
+def command_recover_quarantine(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    task_id = _task_arg(args)
+    task_dir = _task_dir(task_id, args.data_dir)
+    with _task_lock(task_dir, allow_quarantine=True):
+        current = load_state(task_id, args.data_dir)
+        _check_revision(current, args.expected_revision)
+        quarantine = _read_quarantine(task_dir)
+        if quarantine is None:
+            raise FlowError(
+                "QUARANTINE_NOT_FOUND",
+                "task has no active mutation quarantine",
+                details={"task_id": task_id},
+            )
+        _require_current_evidence(quarantine, "mutation quarantine")
+        recovery_id = quarantine.get("recovery_id")
+        validated_revision = quarantine.get(
+            "recovery_validated_revision"
+        )
+        recoveries = current.get("mutation_recoveries") or []
+        completed = next(
+            (
+                item
+                for item in recoveries
+                if isinstance(item, dict)
+                and item.get("recovery_id") == recovery_id
+            ),
+            None,
+        )
+        if (
+            recovery_id
+            and validated_revision == current.get("revision")
+            and completed
+        ):
+            archive = _archive_quarantine(task_dir, quarantine)
+            return _result(
+                "recover-quarantine",
+                current,
+                recovered=True,
+                unchanged=True,
+                recovery=completed,
+                archive_path=str(archive),
+            )
+        compatible_revisions = {
+            quarantine.get("state_revision"),
+            quarantine.get("expected_committed_revision"),
+            quarantine.get("committed_revision"),
+        }
+        if current.get("revision") not in compatible_revisions:
+            raise FlowError(
+                "QUARANTINE_REVISION_CHANGED",
+                "task revision changed after the quarantined child was recorded",
+                details={
+                    "quarantine_revision": quarantine.get(
+                        "state_revision"
+                    ),
+                    "expected_committed_revision": quarantine.get(
+                        "expected_committed_revision"
+                    ),
+                    "committed_revision": quarantine.get(
+                        "committed_revision"
+                    ),
+                    "current_revision": current.get("revision"),
+                },
+            )
+        if _quarantine_processes_alive(quarantine):
+            raise FlowError(
+                "QUARANTINE_CHILD_ACTIVE",
+                "the quarantined child process is still active",
+                details={"pid": quarantine.get("pid")},
+            )
+        validation = _validate_quarantine_postconditions(
+            current, task_dir, quarantine
+        )
+        recovery_id = str(uuid.uuid4())
+        recovery = {
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+            "recovery_id": recovery_id,
+            "recovered_at": utc_now(),
+            "quarantined_pid": quarantine.get("pid"),
+            "quarantined_command": quarantine.get("command"),
+            "state_revision": current.get("revision"),
+            "validation": validation,
+        }
+        validated_quarantine = {
+            **quarantine,
+            "recovery_id": recovery_id,
+            "recovery_validated_at": recovery["recovered_at"],
+            "recovery_validated_revision": int(
+                current.get("revision", 0)
+            )
+            + 1,
+            "validation": validation,
+        }
+        _atomic_write_json(
+            _quarantine_path(task_dir), validated_quarantine
+        )
+        state_value = _copy_state(current)
+        state_value.setdefault("mutation_recoveries", []).append(recovery)
+        _commit_state(
+            current,
+            state_value,
+            task_dir,
+            "mutation_quarantine_recovered",
+            {
+                "recovery_id": recovery_id,
+                "quarantined_pid": quarantine.get("pid"),
+            },
+        )
+        archive = _archive_quarantine(task_dir, validated_quarantine)
+    return _result(
+        "recover-quarantine",
+        state_value,
+        recovered=True,
+        recovery=recovery,
+        archive_path=str(archive),
+    )
 
 
 def command_list(args: argparse.Namespace) -> dict[str, Any]:
@@ -2332,7 +6223,9 @@ def command_list(args: argparse.Namespace) -> dict[str, Any]:
         for state_file in tasks_dir.glob("*/state.json"):
             try:
                 state_value = load_state(state_file)
-            except FlowError:
+            except FlowError as exc:
+                if exc.code == "EVIDENCE_CONTRACT_UNSUPPORTED":
+                    raise
                 continue
             if args.active_only and state_value.get("status") in TERMINAL_STATES:
                 continue
@@ -2362,20 +6255,32 @@ def _apply_scope_changes(scope: dict[str, Any], args: argparse.Namespace) -> Non
         for supplied in getattr(args, option) or []:
             flag = "--" + option.replace("_", "-")
             root = _normalize_scope_root(supplied, flag)
-            if root not in scope[key]:
+            matches = [
+                configured
+                for configured in scope[key]
+                if _same_path(Path(root), Path(configured))
+            ]
+            if len(matches) != 1:
                 raise FlowError(
                     "SCOPE_PATH_NOT_CONFIGURED",
                     f"{flag} does not match a configured scope directory",
-                    details={"path": root, "configured": list(scope[key])},
+                    details={
+                        "path": root,
+                        "configured": list(scope[key]),
+                        "identity_matches": matches,
+                    },
                 )
-            scope[key].remove(root)
+            scope[key].remove(matches[0])
     # Adding the first included directory is what turns the allowlist on; an
     # include recorded while the mode stays "all" would silently do nothing.
     activates = args.mode is None and scope["mode"] == "all" and not scope["include"]
     for option, key in (("add", "include"), ("add_exclude", "exclude")):
         for supplied in getattr(args, option) or []:
             root = _normalize_scope_root(supplied, "--" + option.replace("_", "-"))
-            if root not in scope[key]:
+            if not any(
+                _same_path(Path(root), Path(configured))
+                for configured in scope[key]
+            ):
                 scope[key].append(root)
     if activates and scope["include"]:
         scope["mode"] = "allowlist"
@@ -2533,8 +6438,12 @@ def _preflight_remote_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
                 "PREFLIGHT_REQUIRED",
                 f"repository is missing preflight evidence: {repo.get('id')}",
             )
+        _require_current_evidence(preflight, f"preflight:{repo.get('id')}")
         repositories.append(
             {
+                "evidence_contract_version": preflight.get(
+                    "evidence_contract_version"
+                ),
                 "repository_id": repo["id"],
                 "remote": preflight.get("remote"),
                 "remote_url": preflight.get("remote_url"),
@@ -2547,11 +6456,15 @@ def _preflight_remote_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
                 "worktree_fingerprint_sha256": preflight.get(
                     "worktree_fingerprint_sha256"
                 ),
+                "capability_profile_sha256": preflight.get(
+                    "capability_profile_sha256"
+                ),
             }
         )
     repositories.sort(key=lambda item: item["repository_id"])
     return {
         "schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "task_id": state_value["task_id"],
         "repositories": repositories,
     }
@@ -2626,8 +6539,12 @@ def _lite_preflight_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
                 "PREFLIGHT_REQUIRED",
                 f"repository is missing preflight evidence: {repo.get('id')}",
             )
+        _require_current_evidence(preflight, f"preflight:{repo.get('id')}")
         repositories.append(
             {
+                "evidence_contract_version": preflight.get(
+                    "evidence_contract_version"
+                ),
                 "repository_id": repo["id"],
                 "branch": preflight.get("branch"),
                 "head_sha": preflight.get("head_sha"),
@@ -2637,11 +6554,15 @@ def _lite_preflight_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
                 "worktree_fingerprint_sha256": preflight.get(
                     "worktree_fingerprint_sha256"
                 ),
+                "capability_profile_sha256": preflight.get(
+                    "capability_profile_sha256"
+                ),
             }
         )
     repositories.sort(key=lambda item: item["repository_id"])
     return {
         "schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "task_id": state_value["task_id"],
         "repositories": repositories,
     }
@@ -2736,20 +6657,34 @@ def _materialize_analysis_workspace(
     state_value: dict[str, Any], repo: dict[str, Any], data_root: Path
 ) -> dict[str, Any]:
     source = Path(repo["path"]).resolve(strict=True)
+    baseline = _require_current_evidence(
+        repo.get("baseline"), f"baseline:{repo.get('id')}"
+    )
     _assert_evidence_supported(source)
-    base_sha = (repo.get("baseline") or {}).get("base_sha")
+    base_sha = baseline.get("base_sha")
     if not base_sha:
         raise FlowError("BASELINE_REQUIRED", f"repository is missing a baseline: {repo['id']}")
     _assert_tree_checkout_supported(source, base_sha)
     destination = (
         data_root / "analysis" / state_value["task_id"] / repo["id"]
     ).resolve(strict=False)
+    source_profile = _git_capability_profile(source)
+    if source_profile["sha256"] != baseline.get(
+        "capability_profile_sha256"
+    ):
+        raise FlowError(
+            "GIT_CAPABILITY_CHANGED",
+            "source repository capabilities changed after baseline",
+            details={"repository_id": repo.get("id")},
+        )
+    destination_profile = _git_capability_profile(source, destination)
     entries = _worktree_entries(source)
     destination_entry = next(
         (
             entry
             for entry in entries
-            if Path(entry.get("worktree", "")).resolve(strict=False) == destination
+            if entry.get("worktree")
+            and _same_path(Path(entry["worktree"]), destination)
         ),
         None,
     )
@@ -2762,13 +6697,15 @@ def _materialize_analysis_workspace(
         status_available, status_porcelain = _status_porcelain(destination)
         if root:
             try:
-                same_common_dir = _git_common_dir(destination) == _git_common_dir(source)
+                same_common_dir = _same_path(
+                    _git_common_dir(destination), _git_common_dir(source)
+                )
                 linked_worktree = _is_linked_worktree(destination)
             except (FlowError, OSError):
                 same_common_dir = False
         if (
             not root
-            or Path(root).resolve(strict=False) != destination
+            or not _same_path(Path(root), destination)
             or not same_common_dir
             or not linked_worktree
             or head != base_sha
@@ -2794,29 +6731,59 @@ def _materialize_analysis_workspace(
                     "status_porcelain": status_porcelain,
                 },
             )
+        fingerprint = _fingerprint_repo(destination)
+        if fingerprint["capability_profile_sha256"] != destination_profile[
+            "sha256"
+        ]:
+            raise FlowError(
+                "ANALYSIS_WORKSPACE_VERIFY_FAILED",
+                "analysis worktree capabilities differ from the approved destination profile",
+                details={"repository_id": repo.get("id")},
+            )
+        _set_private_permissions(destination, 0o700)
         return {
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
             "path": str(destination),
+            "path_identity": _serializable_path_identity(destination),
+            "source_identity": _serializable_path_identity(source),
+            "source_common_dir_identity": _serializable_path_identity(
+                _git_common_dir(source)
+            ),
             "head_sha": head,
             "detached": True,
             "ready": True,
             "created": False,
             "materialized_at": utc_now(),
+            "filesystem_identity": _serializable_path_identity(destination),
+            "source_capability_profile_sha256": source_profile["sha256"],
+            "capability_profile_sha256": fingerprint[
+                "capability_profile_sha256"
+            ],
+            "fingerprint_sha256": fingerprint["sha256"],
         }
     if destination_entry:
         recorded = repo.get("analysis_workspace") or {}
-        recorded_path = Path(recorded.get("path", "")).resolve(strict=False)
-        if not recorded.get("ready") or recorded_path != destination:
+        if not recorded.get("ready") or not _recorded_path_matches(
+            recorded.get("path_identity"),
+            recorded.get("path"),
+            destination,
+        ):
             raise FlowError(
                 "ANALYSIS_WORKSPACE_COLLISION",
                 f"Git reports an unowned analysis path that is unavailable: {destination}",
                 details={"repository_id": repo["id"], "path": str(destination)},
             )
-    _ensure_dir(destination.parent)
+    _ensure_private_dir(destination.parent)
     add_arguments = ["worktree", "add"]
     if destination_entry:
         add_arguments.append("--force")
     add_arguments.extend(["--detach", str(destination), base_sha])
-    _git(source, "-c", f"core.hooksPath={os.devnull}", *add_arguments)
+    _git_mutating(
+        source,
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        *add_arguments,
+    )
     head = _git(destination, "rev-parse", "HEAD")
     branch = _git_optional(destination, "symbolic-ref", "--quiet", "--short", "HEAD")
     status_available, status_porcelain = _status_porcelain(destination)
@@ -2824,14 +6791,17 @@ def _materialize_analysis_workspace(
         (
             entry
             for entry in _worktree_entries(source)
-            if Path(entry.get("worktree", "")).resolve(strict=False) == destination
+            if entry.get("worktree")
+            and _same_path(Path(entry["worktree"]), destination)
         ),
         None,
     )
     if (
         head != base_sha
         or branch is not None
-        or _git_common_dir(destination) != _git_common_dir(source)
+        or not _same_path(
+            _git_common_dir(destination), _git_common_dir(source)
+        )
         or not _is_linked_worktree(destination)
         or not status_available
         or bool(status_porcelain)
@@ -2850,22 +6820,55 @@ def _materialize_analysis_workspace(
                 "status_porcelain": status_porcelain,
             },
         )
+    fingerprint = _fingerprint_repo(destination)
+    if fingerprint["capability_profile_sha256"] != destination_profile[
+        "sha256"
+    ]:
+        raise FlowError(
+            "ANALYSIS_WORKSPACE_VERIFY_FAILED",
+            "analysis worktree capabilities differ from the approved destination profile",
+            details={"repository_id": repo.get("id")},
+        )
+    _set_private_permissions(destination, 0o700)
     return {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "path": str(destination),
+        "path_identity": _serializable_path_identity(destination),
+        "source_identity": _serializable_path_identity(source),
+        "source_common_dir_identity": _serializable_path_identity(
+            _git_common_dir(source)
+        ),
         "head_sha": head,
         "detached": True,
         "ready": True,
         "created": True,
         "materialized_at": utc_now(),
+        "filesystem_identity": _serializable_path_identity(destination),
+        "source_capability_profile_sha256": source_profile["sha256"],
+        "capability_profile_sha256": fingerprint["capability_profile_sha256"],
+        "fingerprint_sha256": fingerprint["sha256"],
     }
 
 
 def _analysis_workspace_integrity_error(repo: dict[str, Any]) -> str | None:
     analysis = repo.get("analysis_workspace") or {}
+    try:
+        _require_current_evidence(repo.get("baseline"), f"baseline:{repo.get('id')}")
+        _require_current_evidence(analysis, f"analysis-workspace:{repo.get('id')}")
+    except FlowError as exc:
+        return exc.message
     if not analysis.get("ready") or not analysis.get("path"):
         return f"analysis workspace is not ready: {repo.get('id')}"
     source = Path(repo["path"]).resolve(strict=False)
     path = Path(analysis["path"]).resolve(strict=False)
+    if not _recorded_path_matches(
+        analysis.get("source_identity"), repo.get("path"), source
+    ):
+        return f"analysis source identity changed: {repo.get('id')}"
+    if not _recorded_path_matches(
+        analysis.get("path_identity"), analysis.get("path"), path
+    ):
+        return f"analysis workspace path identity changed: {repo.get('id')}"
     if not path.is_dir():
         return f"analysis workspace path is missing: {repo.get('id')}"
     expected_head = (repo.get("baseline") or {}).get("base_sha")
@@ -2874,7 +6877,9 @@ def _analysis_workspace_integrity_error(repo: dict[str, Any]) -> str | None:
     branch = _git_optional(path, "symbolic-ref", "--quiet", "--short", "HEAD")
     status_available, status_porcelain = _status_porcelain(path)
     try:
-        same_common_dir = _git_common_dir(path) == _git_common_dir(source)
+        same_common_dir = _same_path(
+            _git_common_dir(path), _git_common_dir(source)
+        )
         linked_worktree = _is_linked_worktree(path)
     except (FlowError, OSError):
         same_common_dir = False
@@ -2883,13 +6888,14 @@ def _analysis_workspace_integrity_error(repo: dict[str, Any]) -> str | None:
         (
             item
             for item in _worktree_entries(source)
-            if Path(item.get("worktree", "")).resolve(strict=False) == path
+            if item.get("worktree")
+            and _same_path(Path(item["worktree"]), path)
         ),
         None,
     )
     if (
         not root
-        or Path(root).resolve(strict=False) != path
+        or not _same_path(Path(root), path)
         or head != expected_head
         or branch is not None
         or not same_common_dir
@@ -2901,6 +6907,22 @@ def _analysis_workspace_integrity_error(repo: dict[str, Any]) -> str | None:
         or "detached" not in entry
     ):
         return f"analysis workspace identity, baseline or cleanliness changed: {repo.get('id')}"
+    try:
+        fingerprint = _fingerprint_repo(path)
+    except FlowError as exc:
+        return f"analysis workspace evidence cannot be regenerated: {repo.get('id')}: {exc.message}"
+    if (
+        fingerprint.get("capability_profile_sha256")
+        != analysis.get("capability_profile_sha256")
+    ):
+        return f"analysis workspace capability profile changed: {repo.get('id')}"
+    source_profile = _git_capability_profile(source)
+    if source_profile["sha256"] != analysis.get(
+        "source_capability_profile_sha256"
+    ):
+        return f"analysis source capability profile changed: {repo.get('id')}"
+    if fingerprint.get("sha256") != analysis.get("fingerprint_sha256"):
+        return f"analysis workspace fingerprint changed: {repo.get('id')}"
     return None
 
 
@@ -2918,12 +6940,23 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
         already_baselined = current.get("status") == "BASELINED" and all(
             repo.get("baseline") for repo in current["repositories"]
         )
+        regenerate_baseline = already_baselined and any(
+            (repo.get("baseline") or {}).get(
+                "evidence_contract_version"
+            )
+            != EVIDENCE_CONTRACT_VERSION
+            for repo in current["repositories"]
+        )
         if already_baselined and args.fetch:
             raise FlowError(
                 "BASELINE_ALREADY_PINNED",
                 "--fetch cannot repin an existing baseline; the recorded base is immutable",
             )
-        if already_baselined and not args.materialize:
+        if (
+            already_baselined
+            and not regenerate_baseline
+            and not args.materialize
+        ):
             return _result(
                 "baseline",
                 current,
@@ -2938,8 +6971,9 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                 ],
             )
         state_value = _copy_state(current)
-        if not already_baselined:
+        if not already_baselined or regenerate_baseline:
             for repo in state_value["repositories"]:
+                previous_baseline = repo.get("baseline") or {}
                 preflight = repo.get("preflight") or {}
                 if not preflight.get("ready"):
                     raise FlowError(
@@ -2975,6 +7009,7 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 if args.fetch and remote:
                     fetch_refspec = preflight.get("fetch_refspec")
+                    remote_url = preflight.get("remote_url")
                     if fetch_refspec != _approved_fetch_refspec(
                         remote, preflight.get("base_branch")
                     ):
@@ -2986,13 +7021,60 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                                 "fetch_refspec": fetch_refspec,
                             },
                         )
-                    _git(
+                    if (
+                        not isinstance(remote_url, str)
+                        or not remote_url.strip()
+                    ):
+                        raise FlowError(
+                            "REMOTE_URL_UNAVAILABLE",
+                            "approved fetch has no usable remote URL",
+                            details={
+                                "repository_id": repo["id"],
+                                "remote": remote,
+                            },
+                        )
+                    _git_mutating(
                         path,
+                        "-c",
+                        f"core.hooksPath={os.devnull}",
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-c",
+                        "core.gitProxy=",
+                        "-c",
+                        "core.askPass=",
+                        "-c",
+                        "core.sshCommand=ssh",
+                        "-c",
+                        "credential.helper=",
+                        "-c",
+                        "maintenance.auto=false",
+                        "-c",
+                        "gc.auto=0",
+                        "-c",
+                        "protocol.allow=never",
+                        "-c",
+                        "protocol.file.allow=always",
+                        "-c",
+                        "protocol.git.allow=always",
+                        "-c",
+                        "protocol.http.allow=always",
+                        "-c",
+                        "protocol.https.allow=always",
+                        "-c",
+                        "protocol.ssh.allow=always",
+                        "-c",
+                        "protocol.ext.allow=never",
                         "fetch",
                         "--no-tags",
                         "--no-recurse-submodules",
+                        "--no-auto-maintenance",
+                        "--no-write-commit-graph",
+                        "--no-prune",
+                        "--no-prune-tags",
+                        "--upload-pack=git-upload-pack",
                         "--",
-                        remote,
+                        remote_url,
                         fetch_refspec,
                     )
                 source_ref, base_sha = _baseline_ref(path, remote, preflight["base_branch"])
@@ -3011,7 +7093,23 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                             "actual_sha": base_sha,
                         },
                     )
+                if (
+                    regenerate_baseline
+                    and previous_baseline.get("base_sha") != base_sha
+                ):
+                    raise FlowError(
+                        "EVIDENCE_REGENERATION_REQUIRED",
+                        "legacy baseline no longer resolves to its recorded immutable object",
+                        details={
+                            "repository_id": repo["id"],
+                            "recorded_base_sha": previous_baseline.get(
+                                "base_sha"
+                            ),
+                            "current_base_sha": base_sha,
+                        },
+                    )
                 repo["baseline"] = {
+                    "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                     "recorded_at": utc_now(),
                     "remote": remote,
                     "base_branch": preflight["base_branch"],
@@ -3022,6 +7120,13 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                     "fetched": bool(args.fetch and remote),
                     "pre_fetch_base_sha": pre_fetch_sha,
                     "fetch_refspec": preflight.get("fetch_refspec"),
+                    "capability_profile": preflight.get("capability_profile"),
+                    "capability_profile_sha256": preflight.get(
+                        "capability_profile_sha256"
+                    ),
+                    "worktree_fingerprint_sha256": preflight.get(
+                        "worktree_fingerprint_sha256"
+                    ),
                 }
         if args.materialize:
             source_fingerprints = {
@@ -3114,6 +7219,34 @@ def _index_provenance_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
                 "INDEX_REQUIRED",
                 f"repository is missing index provenance: {repo.get('id')}",
             )
+        _require_current_evidence(index, f"baseline-index:{repo.get('id')}")
+        integrity_error = _analysis_workspace_integrity_error(repo)
+        if integrity_error:
+            raise FlowError(
+                "ANALYSIS_WORKSPACE_CHANGED",
+                integrity_error,
+                details={"repository_id": repo.get("id")},
+            )
+        analysis_workspace = repo.get("analysis_workspace") or {}
+        analysis_path = Path(str(analysis_workspace.get("path", "")))
+        if (
+            not _recorded_path_matches(
+                index.get("repo_path_identity"),
+                index.get("repo_path"),
+                analysis_path,
+            )
+            or index.get("commit_sha")
+            != (repo.get("baseline") or {}).get("base_sha")
+            or index.get("capability_profile_sha256")
+            != analysis_workspace.get("capability_profile_sha256")
+            or index.get("fingerprint_sha256")
+            != analysis_workspace.get("fingerprint_sha256")
+        ):
+            raise FlowError(
+                "INDEX_PROVENANCE_INVALID",
+                "baseline index no longer binds the current analysis evidence",
+                details={"repository_id": repo.get("id")},
+            )
         if not index.get("index_record_id"):
             raise FlowError(
                 "INDEX_PROVENANCE_INVALID",
@@ -3121,6 +7254,9 @@ def _index_provenance_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
             )
         receipt = index.get("receipt")
         if isinstance(receipt, dict):
+            _require_current_evidence(
+                receipt, f"index-receipt:{repo.get('id')}"
+            )
             receipt_path = Path(str(receipt.get("path", "")))
             expected_receipt_sha = receipt.get("sha256")
             try:
@@ -3132,6 +7268,11 @@ def _index_provenance_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
             if (
                 not isinstance(expected_receipt_sha, str)
                 or actual_receipt_sha != expected_receipt_sha
+                or not _recorded_path_matches(
+                    receipt.get("path_identity"),
+                    receipt.get("path"),
+                    receipt_path,
+                )
             ):
                 raise FlowError(
                     "INDEX_RECEIPT_CHANGED",
@@ -3158,11 +7299,17 @@ def _index_provenance_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
                 )
         repositories.append(
             {
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                 "repository_id": repo["id"],
                 "index_record_id": index["index_record_id"],
                 "commit_sha": index.get("commit_sha"),
                 "index_id": index.get("index_id"),
                 "receipt": index.get("receipt"),
+                "repo_path_identity": index.get("repo_path_identity"),
+                "capability_profile_sha256": index.get(
+                    "capability_profile_sha256"
+                ),
+                "fingerprint_sha256": index.get("fingerprint_sha256"),
                 "metadata": index.get("metadata") or {},
                 "impact_degraded_approval_id": index.get(
                     "impact_degraded_approval_id"
@@ -3172,6 +7319,7 @@ def _index_provenance_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
     repositories.sort(key=lambda item: item["repository_id"])
     return {
         "schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "task_id": state_value["task_id"],
         "repositories": repositories,
     }
@@ -3186,7 +7334,9 @@ def _index_receipt(path_value: str | None) -> dict[str, Any] | None:
         return None
     receipt_path = Path(path_value).expanduser().resolve(strict=True)
     return {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "path": str(receipt_path),
+        "path_identity": _serializable_path_identity(receipt_path),
         "sha256": _sha256_file(receipt_path),
         "size": receipt_path.stat().st_size,
     }
@@ -3515,11 +7665,21 @@ def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
                         },
                     )
                 replacement = {
+                    "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                     "index_record_id": str(uuid.uuid4()),
                     "recorded_at": utc_now(),
                     "role": "baseline",
                     "commit_sha": resolved,
                     "repo_path": str(repo_path),
+                    "repo_path_identity": _serializable_path_identity(
+                        repo_path
+                    ),
+                    "capability_profile_sha256": analysis_workspace.get(
+                        "capability_profile_sha256"
+                    ),
+                    "fingerprint_sha256": analysis_workspace.get(
+                        "fingerprint_sha256"
+                    ),
                     "index_id": normalized_index_id,
                     "recommended_index_id": _recommended_index_name(
                         state_value, repo, "baseline"
@@ -3584,11 +7744,13 @@ def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
             ).get("sha256")
             fingerprint = _fingerprint_repo(repo_path)
             replacement = {
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                 "index_record_id": str(uuid.uuid4()),
                 "recorded_at": utc_now(),
                 "role": "workspace",
                 "commit_sha": actual_head,
                 "repo_path": str(repo_path),
+                "repo_path_identity": _serializable_path_identity(repo_path),
                 "index_id": normalized_index_id,
                 "recommended_index_id": _recommended_index_name(
                     state_value, repo, "workspace"
@@ -3596,6 +7758,9 @@ def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
                 "receipt": receipt,
                 "metadata": metadata,
                 "fingerprint_sha256": fingerprint["sha256"],
+                "capability_profile_sha256": fingerprint[
+                    "capability_profile_sha256"
+                ],
                 "workspace_generation": generation,
                 "workspace_plan_sha256": plan_sha,
                 "workspace_branch": actual_branch,
@@ -3666,10 +7831,10 @@ def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
 def command_record_artifact(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     artifact_path = Path(args.path).expanduser().resolve(strict=True)
-    artifact_hash = _hash_artifact(artifact_path)
-    digest = artifact_hash["sha256"]
     metadata = _parse_json_object(args.metadata_json, "--metadata-json")
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+        artifact_hash = _hash_artifact(artifact_path)
+        digest = artifact_hash["sha256"]
         _assert_status(current, set(ALL_STATES) - TERMINAL_STATES - {"BLOCKED"}, "record-artifact")
         if args.kind in {"workspace-plan", "review-snapshot"}:
             raise FlowError(
@@ -3785,11 +7950,20 @@ def command_record_artifact(args: argparse.Namespace) -> dict[str, Any]:
             metadata = dict(metadata)
             metadata["planning_context"] = planning_context
             metadata["planning_context_sha256"] = planning_context_sha
+        final_artifact_hash = _hash_artifact(artifact_path)
+        if final_artifact_hash != artifact_hash:
+            raise FlowError(
+                "ARTIFACT_CHANGED",
+                "artifact changed while it was being recorded",
+                details={"path": str(artifact_path)},
+            )
         state_value = _copy_state(current)
         artifact = {
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
             "artifact_id": str(uuid.uuid4()),
             "kind": args.kind,
             "path": str(artifact_path),
+            "path_identity": _serializable_path_identity(artifact_path),
             "sha256": digest,
             "artifact_type": artifact_hash["artifact_type"],
             "size": artifact_hash["size"],
@@ -4101,15 +8275,20 @@ def _has_exact_workspace_claim(
     path: Path,
     branch: str,
 ) -> bool:
-    registry = _load_workspace_registry(data_root)
+    registry = _load_workspace_registry(
+        data_root, allow_legacy_container=True
+    )
     generation = int((state_value.get("workspace") or {}).get("generation", 0))
-    canonical_path = str(path.resolve(strict=False))
     return any(
         isinstance(claim, dict)
+        and claim.get("evidence_contract_version")
+        == EVIDENCE_CONTRACT_VERSION
         and claim.get("task_id") == state_value.get("task_id")
         and claim.get("repository_id") == repo.get("id")
         and claim.get("workspace_generation") == generation
-        and claim.get("path") == canonical_path
+        and _recorded_path_matches(
+            claim.get("path_identity"), claim.get("path"), path
+        )
         and claim.get("branch") == branch
         for claim in registry.get("claims", [])
     )
@@ -4123,6 +8302,106 @@ def _containing_git_worktree(path: Path) -> Path | None:
         return None
     root = _git_optional(ancestor, "rev-parse", "--show-toplevel")
     return Path(root).resolve(strict=False) if root else None
+
+
+def _branch_ref_state(
+    source: Path, branch: str, protected_branches: Sequence[str]
+) -> dict[str, Any]:
+    branch_ref = f"refs/heads/{branch}"
+    common_dir = _git_common_dir(source)
+    ref_case_sensitive = _probe_filesystem_case_sensitive(common_dir)
+    ref_unicode_distinct = _probe_filesystem_unicode_distinct(common_dir)
+    output = _git(
+        source,
+        "for-each-ref",
+        "--format=%(refname)%09%(objectname)",
+        "refs/heads",
+        text=False,
+    )
+    refs: dict[str, str] = {}
+    for line in output.splitlines():
+        ref_name_bytes, separator, object_id_bytes = line.partition(b"\t")
+        if (
+            not separator
+            or not ref_name_bytes
+            or not object_id_bytes
+        ):
+            raise FlowError(
+                "GIT_EVIDENCE_MALFORMED",
+                "Git returned malformed local-ref identity evidence",
+                details={
+                    "repository": str(source),
+                    "record_hex": line.hex(),
+                },
+            )
+        try:
+            ref_name = ref_name_bytes.decode("utf-8", "strict")
+            object_id = object_id_bytes.decode("ascii", "strict")
+        except UnicodeError as exc:
+            raise FlowError(
+                "REF_IDENTITY_UNAVAILABLE",
+                "local ref identity is not representable losslessly",
+                details={
+                    "repository": str(source),
+                    "record_hex": line.hex(),
+                },
+            ) from exc
+        refs[ref_name] = object_id
+
+    def alias(value: str) -> str:
+        normalized = (
+            value
+            if ref_unicode_distinct
+            else unicodedata.normalize("NFC", value)
+        )
+        return normalized if ref_case_sensitive else normalized.casefold()
+
+    protected_refs = {f"refs/heads/{item}" for item in protected_branches}
+    if any(alias(item) == alias(branch_ref) for item in protected_refs):
+        raise FlowError(
+            "PROTECTED_BRANCH",
+            f"workspace branch aliases a protected branch: {branch}",
+            details={
+                "repository": str(source),
+                "branch": branch,
+                "branch_ref": branch_ref,
+                "ref_case_sensitive": ref_case_sensitive,
+                "ref_unicode_normalization_distinct": ref_unicode_distinct,
+            },
+        )
+    for existing_ref in refs:
+        if existing_ref == branch_ref:
+            continue
+        filesystem_alias = alias(existing_ref) == alias(branch_ref)
+        directory_file_alias = (
+            existing_ref.startswith(f"{branch_ref}/")
+            or branch_ref.startswith(f"{existing_ref}/")
+        )
+        if filesystem_alias or directory_file_alias:
+            raise FlowError(
+                "WORKSPACE_REF_COLLISION",
+                "workspace branch is path-equivalent to an incompatible existing ref",
+                details={
+                    "repository": str(source),
+                    "branch_ref": branch_ref,
+                    "existing_ref": existing_ref,
+                    "ref_case_sensitive": ref_case_sensitive,
+                    "ref_unicode_normalization_distinct": ref_unicode_distinct,
+                    "collision": (
+                        "filesystem_alias"
+                        if filesystem_alias
+                        else "directory_file_alias"
+                    ),
+                },
+            )
+    return {
+        "branch_ref": branch_ref,
+        "planned_ref_oid": refs.get(branch_ref),
+        "ref_case_sensitive": ref_case_sensitive,
+        "ref_unicode_normalization_distinct": ref_unicode_distinct,
+        "git_common_dir": str(common_dir),
+        "git_common_dir_identity": _serializable_path_identity(common_dir),
+    }
 
 
 def _workspace_plan(
@@ -4148,6 +8427,26 @@ def _workspace_plan(
         / (f"r{generation}" if generation else "")
     ).resolve(strict=False)
     for repo in selected:
+        baseline = _require_current_evidence(repo.get("baseline"), "baseline")
+        source_repo = Path(repo["path"]).resolve(strict=True)
+        source_capability_profile = _git_capability_profile(source_repo)
+        if (
+            baseline.get("capability_profile_sha256")
+            != source_capability_profile["sha256"]
+        ):
+            raise FlowError(
+                "GIT_CAPABILITY_CHANGED",
+                "repository capabilities changed after the approved baseline",
+                details={
+                    "repository_id": repo["id"],
+                    "baseline_capability_profile_sha256": baseline.get(
+                        "capability_profile_sha256"
+                    ),
+                    "current_capability_profile_sha256": (
+                        source_capability_profile["sha256"]
+                    ),
+                },
+            )
         default_branch = f"codex/{state_value['task_id']}"
         if generation:
             default_branch = f"{default_branch}-r{generation}"
@@ -4172,8 +8471,14 @@ def _workspace_plan(
                 f"workspace branch name is invalid: {branch}",
                 details={"repository_id": repo["id"], "branch": branch},
             )
+        protected_ref_names = set(protected)
+        if base_branch:
+            protected_ref_names.add(base_branch)
+        branch_state = _branch_ref_state(
+            source_repo, branch, sorted(protected_ref_names)
+        )
         symbolic_target = _git_optional(
-            Path(repo["path"]),
+            source_repo,
             "symbolic-ref",
             "--quiet",
             f"refs/heads/{branch}",
@@ -4200,10 +8505,15 @@ def _workspace_plan(
             path = data_root / "workspaces" / state_value["task_id"] / f"r{generation}" / repo["id"]
         else:
             path = data_root / "workspaces" / state_value["task_id"] / repo["id"]
+        capability_profile = _git_capability_profile(source_repo, path)
         recorded = repo.get("workspace") or {}
         exact_recorded = bool(
             recorded.get("ready")
-            and Path(recorded.get("path", "")).resolve(strict=False) == path
+            and _recorded_path_matches(
+                recorded.get("path_identity"),
+                recorded.get("path"),
+                path,
+            )
             and recorded.get("branch") == branch
             and recorded.get("workspace_generation") == generation
         )
@@ -4217,7 +8527,14 @@ def _workspace_plan(
                 if retired_path_value
                 else None
             )
-            if retired_path == path or retired.get("branch") == branch:
+            if (
+                retired_path is not None
+                and _recorded_path_matches(
+                    retired.get("path_identity"),
+                    retired.get("path"),
+                    path,
+                )
+            ) or retired.get("branch") == branch:
                 raise FlowError(
                     "RETIRED_WORKSPACE_REUSE",
                     "a retired workspace path or branch cannot be reused",
@@ -4264,15 +8581,19 @@ def _workspace_plan(
                     },
                 )
         for configured_repo in state_value.get("repositories", []):
-            source = Path(configured_repo["path"]).resolve(strict=False)
-            if _is_within(path, source) or _is_within(source, path):
+            configured_source = Path(configured_repo["path"]).resolve(
+                strict=False
+            )
+            if _is_within(path, configured_source) or _is_within(
+                configured_source, path
+            ):
                 raise FlowError(
                     "WORKSPACE_NOT_ISOLATED",
                     "workspace path must be independent from every source checkout",
                     details={
                         "repository_id": repo["id"],
                         "path": str(path),
-                        "source_path": str(source),
+                        "source_path": str(configured_source),
                     },
                 )
             analysis = configured_repo.get("analysis_workspace") or {}
@@ -4294,7 +8615,7 @@ def _workspace_plan(
                     continue
                 entry_path = Path(entry_path_value).resolve(strict=False)
                 exact_allowed = bool(
-                    entry_path == path
+                    _same_path(entry_path, path)
                     and configured_repo.get("id") == repo.get("id")
                     and (exact_recorded or exact_claimed)
                 )
@@ -4312,7 +8633,8 @@ def _workspace_plan(
                     )
         containing_root = _containing_git_worktree(path)
         if containing_root and not (
-            containing_root == path and (exact_recorded or exact_claimed)
+            _same_path(containing_root, path)
+            and (exact_recorded or exact_claimed)
         ):
             raise FlowError(
                 "WORKSPACE_NOT_ISOLATED",
@@ -4328,17 +8650,43 @@ def _workspace_plan(
             raise FlowError("BASELINE_REQUIRED", f"repository is missing a baseline: {repo['id']}")
         plans.append(
             {
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                 "repository_id": repo["id"],
                 "source_path": repo["path"],
+                "source_identity": _serializable_path_identity(source_repo),
                 "path": str(path),
+                "path_identity": _serializable_path_identity(path),
                 "branch": branch,
+                "branch_ref": branch_state["branch_ref"],
+                "planned_ref_oid": (
+                    recorded.get("planned_ref_oid")
+                    if exact_recorded
+                    else branch_state["planned_ref_oid"]
+                ),
+                "ref_case_sensitive": branch_state["ref_case_sensitive"],
+                "ref_unicode_normalization_distinct": branch_state[
+                    "ref_unicode_normalization_distinct"
+                ],
+                "source_common_dir": branch_state["git_common_dir"],
+                "source_common_dir_identity": branch_state[
+                    "git_common_dir_identity"
+                ],
                 "base_sha": base_sha,
+                "capability_profile": capability_profile,
+                "capability_profile_sha256": capability_profile["sha256"],
+                "source_capability_profile_sha256": (
+                    source_capability_profile["sha256"]
+                ),
                 "strategy": "worktree",
                 "owner_task_id": state_value["task_id"],
                 "workspace_generation": generation,
                 "previously_recorded": bool(
                     recorded.get("ready")
-                    and Path(recorded.get("path", "")).resolve(strict=False) == path
+                    and _recorded_path_matches(
+                        recorded.get("path_identity"),
+                        recorded.get("path"),
+                        path,
+                    )
                     and recorded.get("branch") == branch
                     and recorded.get("base_sha") == base_sha
                 ),
@@ -4362,11 +8710,36 @@ def _workspace_plan_evidence(
 ) -> dict[str, Any]:
     evidence_repositories = [
         {
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
             "repository_id": plan["repository_id"],
             "source_path": plan["source_path"],
+            "source_identity": plan["source_identity"],
             "path": plan["path"],
+            # The approval digest must survive the expected transition from a
+            # planned path (identified through its nearest existing ancestor)
+            # to a materialized directory (which has its own file ID).  Live
+            # ownership checks retain and revalidate the complete identities.
+            "path_identity": _capability_path_identity(
+                Path(plan["path"])
+            ),
             "branch": plan["branch"],
+            "branch_ref": plan["branch_ref"],
+            "planned_ref_oid": plan["planned_ref_oid"],
+            "ref_case_sensitive": plan["ref_case_sensitive"],
+            "ref_unicode_normalization_distinct": plan[
+                "ref_unicode_normalization_distinct"
+            ],
+            "source_common_dir": plan["source_common_dir"],
+            "source_common_dir_identity": plan[
+                "source_common_dir_identity"
+            ],
             "base_sha": plan["base_sha"],
+            "capability_profile_sha256": plan[
+                "capability_profile_sha256"
+            ],
+            "source_capability_profile_sha256": plan[
+                "source_capability_profile_sha256"
+            ],
             "strategy": "worktree",
         }
         for plan in plans
@@ -4374,6 +8747,7 @@ def _workspace_plan_evidence(
     evidence_repositories.sort(key=lambda item: item["repository_id"])
     return {
         "schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "task_id": state_value["task_id"],
         "strategy": "worktree",
         "workspace_generation": int(
@@ -4398,17 +8772,260 @@ def _worktree_entries(repo: Path) -> list[dict[str, str]]:
     return entries
 
 
+def _assert_workspace_plan_claim(plan: dict[str, Any]) -> None:
+    receipt = plan.get("workspace_claim") or {}
+    registry_path_value = receipt.get("registry_path")
+    claim_id = receipt.get("claim_id")
+    if not registry_path_value or not claim_id:
+        raise FlowError(
+            "WORKSPACE_OWNERSHIP_CONFLICT",
+            "workspace plan has no durable ownership receipt",
+            details={"repository_id": plan.get("repository_id")},
+        )
+    registry_path = Path(str(registry_path_value))
+    if not _recorded_path_matches(
+        receipt.get("registry_identity"), registry_path_value, registry_path
+    ):
+        raise FlowError(
+            "WORKSPACE_REGISTRY_INVALID",
+            "workspace ownership registry path identity changed",
+            details={"path": str(registry_path)},
+        )
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise FlowError(
+            "WORKSPACE_REGISTRY_INVALID",
+            "workspace ownership registry cannot be revalidated",
+            details={"path": str(registry_path), "error": str(exc)},
+        ) from exc
+    if (
+        not isinstance(registry, dict)
+        or registry.get("schema_version") != SCHEMA_VERSION
+        or not isinstance(registry.get("claims"), list)
+    ):
+        raise FlowError(
+            "WORKSPACE_REGISTRY_INVALID",
+            "workspace ownership registry has an invalid structure",
+            details={"path": str(registry_path)},
+        )
+    _assert_supported_evidence_versions(registry)
+    _require_current_evidence(registry, "workspace registry")
+    claim = next(
+        (
+            item
+            for item in registry.get("claims", [])
+            if isinstance(item, dict) and item.get("claim_id") == claim_id
+        ),
+        None,
+    )
+    _require_current_evidence(claim, "workspace ownership claim")
+    destination = Path(plan["path"])
+    source = Path(plan["source_path"])
+    if (
+        not claim
+        or claim.get("task_id") != plan.get("owner_task_id")
+        or claim.get("repository_id") != plan.get("repository_id")
+        or not _recorded_path_matches(
+            claim.get("path_identity"), claim.get("path"), destination
+        )
+        or not _recorded_path_matches(
+            claim.get("source_identity"), claim.get("source_path"), source
+        )
+        or claim.get("branch_ref") != plan.get("branch_ref")
+        or claim.get("planned_ref_oid") != plan.get("planned_ref_oid")
+        or claim.get("ref_case_sensitive")
+        != plan.get("ref_case_sensitive")
+        or claim.get("ref_unicode_normalization_distinct")
+        != plan.get("ref_unicode_normalization_distinct")
+        or claim.get("plan_sha256") != receipt.get("plan_sha256")
+    ):
+        raise FlowError(
+            "WORKSPACE_OWNERSHIP_CONFLICT",
+            "workspace ownership claim changed after plan approval",
+            details={
+                "repository_id": plan.get("repository_id"),
+                "claim_id": claim_id,
+                "registry_path": str(registry_path),
+            },
+        )
+
+
+def _workspace_outcome(
+    plan: dict[str, Any],
+    *,
+    created: bool,
+    head_sha: str,
+    recovered_unrecorded: bool = False,
+) -> dict[str, Any]:
+    destination = Path(plan["path"]).resolve(strict=True)
+    fingerprint = _fingerprint_repo(destination)
+    if fingerprint["capability_profile_sha256"] != plan.get(
+        "capability_profile_sha256"
+    ):
+        raise FlowError(
+            "WORKSPACE_VERIFY_FAILED",
+            "materialized worktree capability profile differs from the approved plan",
+            details={
+                "repository_id": plan.get("repository_id"),
+                "planned_capability_profile_sha256": plan.get(
+                    "capability_profile_sha256"
+                ),
+                "actual_capability_profile_sha256": fingerprint[
+                    "capability_profile_sha256"
+                ],
+            },
+        )
+    return {
+        **plan,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "ready": True,
+        "created": created,
+        "head_sha": head_sha,
+        "recovered_unrecorded": recovered_unrecorded,
+        "path_identity": _serializable_path_identity(destination),
+        "source_identity": _serializable_path_identity(
+            Path(plan["source_path"])
+        ),
+        "capability_profile": fingerprint["capability_profile"],
+        "capability_profile_sha256": fingerprint[
+            "capability_profile_sha256"
+        ],
+        "fingerprint_sha256": fingerprint["sha256"],
+        "tracked_worktree_manifest_sha256": fingerprint[
+            "tracked_worktree_manifest_sha256"
+        ],
+    }
+
+
 def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
+    _require_current_evidence(plan, "workspace plan")
     source = Path(plan["source_path"]).resolve(strict=True)
+    if not _recorded_path_matches(
+        plan.get("source_identity"), plan.get("source_path"), source
+    ):
+        raise FlowError(
+            "WORKSPACE_PLAN_MISMATCH",
+            "workspace plan source identity changed before mutation",
+            details={"repository_id": plan.get("repository_id")},
+        )
     _assert_evidence_supported(source)
     _assert_tree_checkout_supported(source, plan["base_sha"])
     destination = Path(plan["path"]).resolve(strict=False)
+    if not _recorded_path_matches(
+        plan.get("path_identity"), plan.get("path"), destination
+    ):
+        raise FlowError(
+            "WORKSPACE_PLAN_MISMATCH",
+            "workspace destination identity changed before mutation",
+            details={"repository_id": plan.get("repository_id")},
+        )
+    current_source_profile = _git_capability_profile(source)
+    if current_source_profile["sha256"] != plan.get(
+        "source_capability_profile_sha256"
+    ):
+        raise FlowError(
+            "GIT_CAPABILITY_CHANGED",
+            "source repository capabilities changed after workspace approval",
+            details={
+                "repository_id": plan.get("repository_id"),
+                "planned_capability_profile_sha256": plan.get(
+                    "source_capability_profile_sha256"
+                ),
+                "current_capability_profile_sha256": (
+                    current_source_profile["sha256"]
+                ),
+            },
+        )
+    current_workspace_profile = _git_capability_profile(source, destination)
+    if current_workspace_profile["sha256"] != plan.get(
+        "capability_profile_sha256"
+    ):
+        raise FlowError(
+            "GIT_CAPABILITY_CHANGED",
+            "workspace filesystem capabilities changed after approval",
+            details={
+                "repository_id": plan.get("repository_id"),
+                "planned_capability_profile_sha256": plan.get(
+                    "capability_profile_sha256"
+                ),
+                "current_capability_profile_sha256": (
+                    current_workspace_profile["sha256"]
+                ),
+            },
+        )
+    if (
+        _run(
+            ["git", "-C", str(source), "cat-file", "-e", f"{plan['base_sha']}^{{commit}}"],
+            check=False,
+        ).returncode
+        != 0
+    ):
+        raise FlowError(
+            "WORKSPACE_BASE_MISMATCH",
+            "approved workspace base object is no longer available",
+            details={
+                "repository_id": plan.get("repository_id"),
+                "base_sha": plan.get("base_sha"),
+            },
+        )
     branch = plan["branch"]
-    branch_ref = f"refs/heads/{branch}"
+    branch_ref = plan.get("branch_ref") or f"refs/heads/{branch}"
+    if branch_ref != f"refs/heads/{branch}":
+        raise FlowError(
+            "WORKSPACE_PLAN_MISMATCH",
+            "workspace branch and full ref identity disagree",
+            details={"branch": branch, "branch_ref": branch_ref},
+        )
     previously_recorded = bool(plan.get("previously_recorded"))
+    current_branch_state = _branch_ref_state(source, branch, [])
+    current_ref_oid = current_branch_state["planned_ref_oid"]
+    if (
+        (
+            not previously_recorded
+            and current_ref_oid != plan.get("planned_ref_oid")
+        )
+        or current_branch_state["branch_ref"] != branch_ref
+        or current_branch_state["ref_case_sensitive"]
+        != plan.get("ref_case_sensitive")
+        or current_branch_state["ref_unicode_normalization_distinct"]
+        != plan.get("ref_unicode_normalization_distinct")
+        or not _path_identity_equal(
+            current_branch_state["git_common_dir_identity"],
+            plan.get("source_common_dir_identity"),
+        )
+    ):
+        raise FlowError(
+            "WORKSPACE_PLAN_MISMATCH",
+            "workspace branch or ref-storage identity changed after plan approval",
+            details={
+                "branch_ref": branch_ref,
+                "planned_ref_oid": plan.get("planned_ref_oid"),
+                "current_ref_oid": current_ref_oid,
+                "planned_ref_case_sensitive": plan.get(
+                    "ref_case_sensitive"
+                ),
+                "current_ref_case_sensitive": current_branch_state[
+                    "ref_case_sensitive"
+                ],
+            },
+        )
+    _assert_workspace_plan_claim(plan)
+    registry_path = Path(
+        str((plan.get("workspace_claim") or {}).get("registry_path"))
+    )
+    managed_destination = _is_within(destination, registry_path.parent)
     entries = _worktree_entries(source)
     branch_entry = next((entry for entry in entries if entry.get("branch") == branch_ref), None)
-    destination_entry = next((entry for entry in entries if Path(entry.get("worktree", "")).resolve(strict=False) == destination), None)
+    destination_entry = next(
+        (
+            entry
+            for entry in entries
+            if entry.get("worktree")
+            and _same_path(Path(entry["worktree"]), destination)
+        ),
+        None,
+    )
     if destination.exists():
         root = _git_optional(destination, "rev-parse", "--show-toplevel")
         actual_branch = _git_optional(destination, "symbolic-ref", "--quiet", "--short", "HEAD")
@@ -4418,7 +9035,9 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
         status_available, status_porcelain = _status_porcelain(destination)
         if root:
             try:
-                same_common_dir = _git_common_dir(destination) == _git_common_dir(source)
+                same_common_dir = _same_path(
+                    _git_common_dir(destination), _git_common_dir(source)
+                )
                 linked_worktree = _is_linked_worktree(destination)
             except (FlowError, OSError):
                 same_common_dir = False
@@ -4440,12 +9059,10 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
         head_is_acceptable = (
             base_is_ancestor if previously_recorded else actual_head == plan["base_sha"]
         )
-        unrecorded_is_clean = previously_recorded or (
-            status_available and not status_porcelain
-        )
+        unrecorded_is_clean = status_available and not status_porcelain
         if (
             not root
-            or Path(root).resolve(strict=False) != destination
+            or not _same_path(Path(root), destination)
             or not same_common_dir
             or not linked_worktree
             or actual_branch != branch
@@ -4479,13 +9096,14 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
                     "reason": reason,
                 },
             )
-        return {
-            **plan,
-            "ready": True,
-            "created": False,
-            "head_sha": actual_head,
-            "recovered_unrecorded": not previously_recorded,
-        }
+        if managed_destination:
+            _set_private_permissions(destination, 0o700)
+        return _workspace_outcome(
+            plan,
+            created=False,
+            head_sha=actual_head,
+            recovered_unrecorded=not previously_recorded,
+        )
     if destination_entry:
         raise FlowError("WORKSPACE_COLLISION", f"Git reports the workspace path but it is unavailable: {destination}", details={"path": str(destination)})
     if branch_entry:
@@ -4506,7 +9124,10 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
                 "symbolic_target": symbolic_target,
             },
         )
-    _ensure_dir(destination.parent)
+    if managed_destination:
+        _ensure_private_dir(destination.parent)
+    else:
+        _ensure_dir(destination.parent)
     if _ref_exists(source, branch_ref):
         branch_head = _git(source, "rev-parse", branch_ref)
         if previously_recorded:
@@ -4539,7 +9160,7 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
                     "previously_recorded": previously_recorded,
                 },
             )
-        _git(
+        _git_mutating(
             source,
             "-c",
             f"core.hooksPath={os.devnull}",
@@ -4549,7 +9170,7 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
             branch,
         )
     else:
-        _git(
+        _git_mutating(
             source,
             "-c",
             f"core.hooksPath={os.devnull}",
@@ -4568,16 +9189,19 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
         (
             entry
             for entry in _worktree_entries(source)
-            if Path(entry.get("worktree", "")).resolve(strict=False) == destination
+            if entry.get("worktree")
+            and _same_path(Path(entry["worktree"]), destination)
         ),
         None,
     )
     if (
         not actual_root
-        or Path(actual_root).resolve(strict=False) != destination
+        or not _same_path(Path(actual_root), destination)
         or actual_branch != branch
         or actual_head != plan["base_sha"]
-        or _git_common_dir(destination) != _git_common_dir(source)
+        or not _same_path(
+            _git_common_dir(destination), _git_common_dir(source)
+        )
         or not _is_linked_worktree(destination)
         or not status_available
         or bool(status_porcelain)
@@ -4597,7 +9221,11 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
                 "status_porcelain": status_porcelain,
             },
         )
-    return {**plan, "ready": True, "created": True, "head_sha": actual_head}
+    if managed_destination:
+        _set_private_permissions(destination, 0o700)
+    return _workspace_outcome(
+        plan, created=True, head_sha=actual_head
+    )
 
 
 def _workspace_claim_integrity_error(
@@ -4605,11 +9233,22 @@ def _workspace_claim_integrity_error(
 ) -> str | None:
     workspace = repo.get("workspace") or {}
     receipt = workspace.get("workspace_claim") or {}
+    try:
+        _require_current_evidence(workspace, "workspace")
+        _require_current_evidence(receipt, "workspace claim receipt")
+    except FlowError as exc:
+        return f"{exc.message}: {repo.get('id')}"
     registry_path_value = receipt.get("registry_path")
     claim_id = receipt.get("claim_id")
     if not registry_path_value or not claim_id:
         return f"workspace has no durable ownership claim: {repo.get('id')}"
     registry_path = Path(registry_path_value)
+    if not _recorded_path_matches(
+        receipt.get("registry_identity"),
+        registry_path_value,
+        registry_path,
+    ):
+        return f"workspace ownership registry identity changed: {repo.get('id')}"
     try:
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -4620,6 +9259,11 @@ def _workspace_claim_integrity_error(
         or not isinstance(registry.get("claims"), list)
     ):
         return f"workspace ownership registry has an invalid structure: {repo.get('id')}"
+    try:
+        _assert_supported_evidence_versions(registry)
+        _require_current_evidence(registry, "workspace registry")
+    except FlowError as exc:
+        return f"{exc.message}: {repo.get('id')}"
     claim = next(
         (
             item
@@ -4628,20 +9272,50 @@ def _workspace_claim_integrity_error(
         ),
         None,
     )
+    try:
+        _require_current_evidence(claim, "workspace ownership claim")
+    except FlowError as exc:
+        return f"{exc.message}: {repo.get('id')}"
     expected_plan_sha = ((state_value.get("workspace") or {}).get("plan") or {}).get(
         "sha256"
     )
     expected_source = str(Path(repo.get("path", "")).resolve(strict=False))
     expected_common_dir = _source_common_dir_for_claim(repo.get("path"))
+    expected_workspace_path = Path(
+        workspace.get("path", "")
+    ).resolve(strict=False)
+    expected_source_path = Path(expected_source)
+    expected_common_path = Path(expected_common_dir)
+    try:
+        _require_current_evidence(claim, "workspace ownership claim")
+    except FlowError as exc:
+        return f"{exc.message}: {repo.get('id')}"
     if (
         not claim
         or claim.get("task_id") != state_value.get("task_id")
         or claim.get("repository_id") != repo.get("id")
-        or claim.get("source_path") != expected_source
-        or claim.get("source_common_dir") != expected_common_dir
-        or claim.get("path")
-        != str(Path(workspace.get("path", "")).resolve(strict=False))
+        or not _recorded_path_matches(
+            claim.get("source_identity"),
+            claim.get("source_path"),
+            expected_source_path,
+        )
+        or not _recorded_path_matches(
+            claim.get("source_common_dir_identity"),
+            claim.get("source_common_dir"),
+            expected_common_path,
+        )
+        or not _recorded_path_matches(
+            claim.get("path_identity"),
+            claim.get("path"),
+            expected_workspace_path,
+        )
         or claim.get("branch") != workspace.get("branch")
+        or claim.get("branch_ref") != workspace.get("branch_ref")
+        or claim.get("planned_ref_oid") != workspace.get("planned_ref_oid")
+        or claim.get("ref_case_sensitive")
+        != workspace.get("ref_case_sensitive")
+        or claim.get("ref_unicode_normalization_distinct")
+        != workspace.get("ref_unicode_normalization_distinct")
         or claim.get("workspace_generation")
         != int((state_value.get("workspace") or {}).get("generation", 0))
         or claim.get("plan_sha256") != expected_plan_sha
@@ -4655,6 +9329,10 @@ def _workspace_integrity_error(
     state_value: dict[str, Any], repo: dict[str, Any]
 ) -> str | None:
     workspace = repo.get("workspace") or {}
+    try:
+        _require_current_evidence(workspace, "workspace")
+    except FlowError as exc:
+        return f"{exc.message}: {repo.get('id')}"
     if not workspace.get("ready"):
         return f"workspace is not ready: {repo.get('id')}"
     if workspace.get("owner_task_id") != state_value.get("task_id"):
@@ -4668,6 +9346,14 @@ def _workspace_integrity_error(
         return claim_error
     source = Path(repo["path"]).resolve(strict=False)
     path = Path(workspace.get("path", "")).resolve(strict=False)
+    if not _recorded_path_matches(
+        workspace.get("source_identity"), repo.get("path"), source
+    ):
+        return f"workspace source filesystem identity changed: {repo.get('id')}"
+    if not _recorded_path_matches(
+        workspace.get("path_identity"), workspace.get("path"), path
+    ):
+        return f"workspace filesystem identity changed: {repo.get('id')}"
     for configured_repo in state_value.get("repositories", []):
         configured_source = Path(configured_repo["path"]).resolve(strict=False)
         if _is_within(path, configured_source) or _is_within(configured_source, path):
@@ -4678,13 +9364,39 @@ def _workspace_integrity_error(
             if _is_within(path, analysis_path) or _is_within(analysis_path, path):
                 return f"workspace is not independent from analysis worktree: {repo.get('id')}"
     root = _git_optional(path, "rev-parse", "--show-toplevel")
-    if not root or Path(root).resolve(strict=False) != path:
+    if not root or not _same_path(Path(root), path):
         return f"workspace path is not a Git worktree root: {repo.get('id')}"
     try:
-        if _git_common_dir(path) != _git_common_dir(source):
+        if not _same_path(_git_common_dir(path), _git_common_dir(source)):
             return f"workspace belongs to a different Git repository: {repo.get('id')}"
         if not _is_linked_worktree(path):
             return f"workspace is not a linked worktree: {repo.get('id')}"
+        source_profile = _git_capability_profile(source)
+        workspace_profile = _git_capability_profile(path)
+        if source_profile["sha256"] != workspace.get(
+            "source_capability_profile_sha256"
+        ):
+            return f"source capability profile changed: {repo.get('id')}"
+        if workspace_profile["sha256"] != workspace.get(
+            "capability_profile_sha256"
+        ):
+            return f"workspace capability profile changed: {repo.get('id')}"
+        branch_state = _branch_ref_state(
+            source, str(workspace.get("branch")), []
+        )
+        if (
+            branch_state.get("branch_ref")
+            != workspace.get("branch_ref")
+            or branch_state.get("ref_case_sensitive")
+            != workspace.get("ref_case_sensitive")
+            or branch_state.get("ref_unicode_normalization_distinct")
+            != workspace.get("ref_unicode_normalization_distinct")
+            or not _path_identity_equal(
+                branch_state.get("git_common_dir_identity"),
+                workspace.get("source_common_dir_identity"),
+            )
+        ):
+            return f"workspace ref-storage identity changed: {repo.get('id')}"
     except (FlowError, OSError) as exc:
         return f"workspace Git ownership cannot be verified: {repo.get('id')}: {exc}"
     branch = _git_optional(path, "symbolic-ref", "--quiet", "--short", "HEAD")
@@ -4702,12 +9414,20 @@ def _workspace_integrity_error(
         != 0
     ):
         return f"workspace HEAD no longer descends from approved base: {repo.get('id')}"
-    expected_ref = f"refs/heads/{workspace.get('branch')}"
+    expected_ref = workspace.get("branch_ref")
+    if expected_ref != f"refs/heads/{workspace.get('branch')}":
+        return f"workspace full ref identity is invalid: {repo.get('id')}"
+    resolved_ref = _git_optional(
+        source, "rev-parse", "--verify", f"{expected_ref}^{{commit}}"
+    )
+    if resolved_ref != head:
+        return f"workspace ref object changed independently of HEAD: {repo.get('id')}"
     entry = next(
         (
             item
             for item in _worktree_entries(source)
-            if Path(item.get("worktree", "")).resolve(strict=False) == path
+            if item.get("worktree")
+            and _same_path(Path(item["worktree"]), path)
         ),
         None,
     )
@@ -4745,6 +9465,7 @@ def _require_workspace_ready(state_value: dict[str, Any]) -> dict[str, Any]:
             "approved workspace plan cannot be parsed",
             details={"path": artifact.get("path"), "error": str(exc)},
         ) from exc
+    _require_current_evidence(evidence, "workspace plan")
     evidence_repositories = evidence.get("repositories", []) if isinstance(evidence, dict) else []
     evidence_ids = [item.get("repository_id") for item in evidence_repositories]
     if (
@@ -4772,11 +9493,32 @@ def _require_workspace_ready(state_value: dict[str, Any]) -> dict[str, Any]:
             )
         plans.append(
             {
+                "evidence_contract_version": workspace.get(
+                    "evidence_contract_version"
+                ),
                 "repository_id": repo["id"],
                 "source_path": repo["path"],
+                "source_identity": workspace.get("source_identity"),
                 "path": workspace.get("path"),
+                "path_identity": workspace.get("path_identity"),
                 "branch": workspace.get("branch"),
+                "branch_ref": workspace.get("branch_ref"),
+                "planned_ref_oid": workspace.get("planned_ref_oid"),
+                "ref_case_sensitive": workspace.get("ref_case_sensitive"),
+                "ref_unicode_normalization_distinct": workspace.get(
+                    "ref_unicode_normalization_distinct"
+                ),
+                "source_common_dir": workspace.get("source_common_dir"),
+                "source_common_dir_identity": workspace.get(
+                    "source_common_dir_identity"
+                ),
                 "base_sha": workspace.get("base_sha"),
+                "capability_profile_sha256": workspace.get(
+                    "capability_profile_sha256"
+                ),
+                "source_capability_profile_sha256": workspace.get(
+                    "source_capability_profile_sha256"
+                ),
                 "strategy": "worktree",
             }
         )
@@ -4822,6 +9564,13 @@ def _workspace_index_staleness(
     index: dict[str, Any],
 ) -> dict[str, Any] | None:
     repository_id = repo.get("id")
+    try:
+        _require_current_evidence(index, f"workspace-index:{repository_id}")
+    except FlowError as exc:
+        return {
+            "repository_id": repository_id,
+            "reason": exc.message,
+        }
     if index.get("role") != "workspace" or not index.get("index_id"):
         return {
             "repository_id": repository_id,
@@ -4839,6 +9588,15 @@ def _workspace_index_staleness(
                 "repository_id": repository_id,
                 "reason": "workspace index receipt metadata is incomplete",
             }
+        try:
+            _require_current_evidence(
+                receipt, f"workspace-index-receipt:{repository_id}"
+            )
+        except FlowError as exc:
+            return {
+                "repository_id": repository_id,
+                "reason": exc.message,
+            }
         receipt_path = Path(str(receipt["path"]))
         try:
             actual_sha = (
@@ -4853,6 +9611,11 @@ def _workspace_index_staleness(
         if (
             actual_sha != receipt.get("sha256")
             or actual_size != receipt.get("size")
+            or not _recorded_path_matches(
+                receipt.get("path_identity"),
+                receipt.get("path"),
+                receipt_path,
+            )
         ):
             return {
                 "repository_id": repository_id,
@@ -4878,6 +9641,15 @@ def _workspace_index_staleness(
         }
     workspace_path = Path(workspace_path_value).resolve(strict=False)
     recorded_path = Path(recorded_path_value).resolve(strict=False)
+    if not _recorded_path_matches(
+        index.get("repo_path_identity"),
+        recorded_path_value,
+        workspace_path,
+    ):
+        return {
+            "repository_id": repository_id,
+            "reason": "workspace index path identity changed",
+        }
     generation = int(
         (state_value.get("workspace") or {}).get("generation", 0)
     )
@@ -4889,7 +9661,6 @@ def _workspace_index_staleness(
     )
     actual_head = _git_optional(workspace_path, "rev-parse", "HEAD")
     bindings = {
-        "path": (str(recorded_path), str(workspace_path)),
         "workspace_generation": (
             index.get("workspace_generation"),
             generation,
@@ -4920,12 +9691,26 @@ def _workspace_index_staleness(
             "mismatches": mismatches,
         }
     try:
-        current_fingerprint = _fingerprint_repo(workspace_path)["sha256"]
+        fingerprint = _fingerprint_repo(workspace_path)
     except (FlowError, OSError) as exc:
         return {
             "repository_id": repository_id,
             "reason": f"workspace fingerprint cannot be verified: {exc}",
         }
+    if fingerprint["capability_profile_sha256"] != index.get(
+        "capability_profile_sha256"
+    ):
+        return {
+            "repository_id": repository_id,
+            "reason": "workspace capability profile changed after indexing",
+            "recorded_capability_profile_sha256": index.get(
+                "capability_profile_sha256"
+            ),
+            "current_capability_profile_sha256": fingerprint[
+                "capability_profile_sha256"
+            ],
+        }
+    current_fingerprint = fingerprint["sha256"]
     if current_fingerprint != index.get("fingerprint_sha256"):
         return {
             "repository_id": repository_id,
@@ -4979,6 +9764,7 @@ def _current_planning_context(state_value: dict[str, Any]) -> dict[str, Any]:
         raise FlowError("WORKSPACE_REQUIRED", "a current workspace plan is required")
     return {
         "schema_version": SCHEMA_VERSION,
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "task_id": state_value["task_id"],
         "planning_generation": int(state_value.get("planning_generation", 0)),
         "impact_generation": int(state_value.get("impact_generation", 0)),
@@ -5078,7 +9864,12 @@ def _require_current_plan_gate(
 def command_prepare_workspace(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     data_root = resolve_data_dir(args.data_dir)
-    with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+    with _locked_state(
+        task_id,
+        args.data_dir,
+        args.expected_revision,
+        lock_workspace_registry=True,
+    ) as (task_dir, current):
         _assert_flow(current, "full", "prepare-workspace")
         _assert_status(current, {"ROUTE_APPROVED", "WORKSPACE_READY"}, "prepare-workspace")
         selected_current = _repo_by_selector(current, args.repo)
@@ -5136,7 +9927,13 @@ def command_prepare_workspace(args: argparse.Namespace) -> dict[str, Any]:
                     },
                 )
         if not args.execute:
-            _claim_workspace_plan(data_root, current, evidence_sha, plans)
+            _claim_workspace_plan(
+                data_root,
+                current,
+                evidence_sha,
+                plans,
+                registry_locked=True,
+            )
             plan_path = task_dir / "workspace-plans" / f"{evidence_sha}.json"
             latest_plan = _latest_artifact(current, "workspace-plan")
             current_workspace_plan = (current.get("workspace") or {}).get("plan") or {}
@@ -5171,9 +9968,11 @@ def command_prepare_workspace(args: argparse.Namespace) -> dict[str, Any]:
             _atomic_write_bytes(plan_path, evidence_bytes)
             state_value = _copy_state(current)
             plan_artifact = {
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                 "artifact_id": str(uuid.uuid4()),
                 "kind": "workspace-plan",
                 "path": str(plan_path),
+                "path_identity": _serializable_path_identity(plan_path),
                 "sha256": evidence_sha,
                 "artifact_type": "file",
                 "size": len(evidence_bytes),
@@ -5181,8 +9980,15 @@ def command_prepare_workspace(args: argparse.Namespace) -> dict[str, Any]:
                 "total_size": len(evidence_bytes),
                 "recorded_at": utc_now(),
                 "metadata": {
+                    "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                     "repository_ids": [item["repository_id"] for item in evidence["repositories"]],
                     "workspace_generation": evidence["workspace_generation"],
+                    "capability_profile_sha256": {
+                        item["repository_id"]: item[
+                            "capability_profile_sha256"
+                        ]
+                        for item in evidence["repositories"]
+                    },
                 },
             }
             state_value["artifacts"].append(plan_artifact)
@@ -5253,7 +10059,13 @@ def command_prepare_workspace(args: argparse.Namespace) -> dict[str, Any]:
                     "current_workspace_generation": evidence["workspace_generation"],
                 },
             )
-        _claim_workspace_plan(data_root, current, evidence_sha, plans)
+        _claim_workspace_plan(
+            data_root,
+            current,
+            evidence_sha,
+            plans,
+            registry_locked=True,
+        )
         state_value = _copy_state(current)
         by_id = {repo["id"]: repo for repo in state_value["repositories"]}
         source_fingerprints = {
@@ -5330,7 +10142,13 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
     output_record: dict[str, Any] | None = None
     if args.output:
         output_path = Path(args.output).expanduser().resolve(strict=True)
-        output_record = {"path": str(output_path), "sha256": _sha256_file(output_path), "size": output_path.stat().st_size}
+        output_record = {
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+            "path": str(output_path),
+            "path_identity": _serializable_path_identity(output_path),
+            "sha256": _sha256_file(output_path),
+            "size": output_path.stat().st_size,
+        }
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
         _assert_status(current, {"IMPLEMENTING", "VERIFYING"}, "record-test")
         if _flow(current) == "lite":
@@ -5358,6 +10176,7 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
         selected = _repo_by_selector(state_value, args.repo)
         fingerprints = {repo["id"]: _fingerprint_repo(_working_path(repo)) for repo in selected}
         test_record = {
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
             "test_id": str(uuid.uuid4()),
             "name": args.name,
             "command": args.test_command,
@@ -5367,6 +10186,12 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
             "recorded_at": utc_now(),
             "repository_ids": [repo["id"] for repo in selected],
             "fingerprints": fingerprints,
+            "capability_profile_sha256": {
+                repository_id: fingerprint[
+                    "capability_profile_sha256"
+                ]
+                for repository_id, fingerprint in fingerprints.items()
+            },
             **binding,
             "output": output_record,
         }
@@ -5381,45 +10206,83 @@ def _write_review_repo(snapshot_root: Path, repo: dict[str, Any]) -> dict[str, A
     base_sha = (repo.get("baseline") or {}).get("base_sha")
     if not base_sha:
         raise FlowError("BASELINE_REQUIRED", f"repository is missing a baseline: {repo['id']}")
+
+    def capture_sections() -> tuple[
+        str, dict[str, bytes], dict[str, list[str]]
+    ]:
+        captured_head = _git_evidence(working, "rev-parse", "HEAD")
+        captured_sections = {
+            "committed": _git_diff(
+                working,
+                "--binary",
+                "--full-index",
+                f"{base_sha}...HEAD",
+                "--",
+                text=False,
+            ),
+            "cached": _git_diff(
+                working,
+                "--binary",
+                "--full-index",
+                "--cached",
+                "--",
+                text=False,
+            ),
+            "unstaged": _git_diff(
+                working,
+                "--binary",
+                "--full-index",
+                "--",
+                text=False,
+            ),
+        }
+        captured_files = {
+            "committed": _split_lines(
+                _git_diff(
+                    working,
+                    "--name-status",
+                    f"{base_sha}...HEAD",
+                    "--",
+                )
+            ),
+            "cached": _split_lines(
+                _git_diff(
+                    working, "--cached", "--name-status", "--"
+                )
+            ),
+            "unstaged": _split_lines(
+                _git_diff(working, "--name-status", "--")
+            ),
+        }
+        return captured_head, captured_sections, captured_files
+
+    fingerprint = _fingerprint_repo(working)
     repo_dir = snapshot_root / repo["id"]
-    _ensure_dir(repo_dir)
-    head_sha = _git_evidence(working, "rev-parse", "HEAD")
-    sections = {
-        "committed": _git_diff(
-            working,
-            "--binary",
-            "--full-index",
-            f"{base_sha}...HEAD",
-            "--",
-            text=False,
-        ),
-        "cached": _git_diff(
-            working, "--binary", "--full-index", "--cached", "--", text=False
-        ),
-        "unstaged": _git_diff(
-            working, "--binary", "--full-index", "--", text=False
-        ),
-    }
+    _ensure_private_dir(repo_dir)
+    head_sha, sections, section_files = capture_sections()
+    if head_sha != fingerprint.get("head_sha"):
+        raise FlowError(
+            "REVIEW_SNAPSHOT_CHANGED",
+            "repository HEAD changed before review sections were captured",
+            details={
+                "repository_id": repo["id"],
+                "fingerprint_head": fingerprint.get("head_sha"),
+                "section_head": head_sha,
+            },
+        )
     section_records: dict[str, Any] = {}
     for name, content in sections.items():
         path = repo_dir / f"{name}.patch"
         _atomic_write_bytes(path, content)
-        if name == "committed":
-            name_status = _git_diff(
-                working, "--name-status", f"{base_sha}...HEAD", "--"
-            )
-        elif name == "cached":
-            name_status = _git_diff(working, "--cached", "--name-status", "--")
-        else:
-            name_status = _git_diff(working, "--name-status", "--")
         section_records[name] = {
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
             "path": str(path),
+            "path_identity": _serializable_path_identity(path),
             "sha256": _sha256_bytes(content),
             "size": len(content),
-            "files": _split_lines(name_status),
+            "files": section_files[name],
             "range": f"{base_sha}...{head_sha}" if name == "committed" else None,
         }
-    fingerprint = _fingerprint_repo(working)
     untracked_manifest_path = repo_dir / "untracked.json"
     _atomic_write_json(untracked_manifest_path, fingerprint["untracked"])
     tar_path = repo_dir / "untracked.tar"
@@ -5427,23 +10290,58 @@ def _write_review_repo(snapshot_root: Path, repo: dict[str, Any]) -> dict[str, A
         for item in fingerprint["untracked"]:
             relative = _untracked_filesystem_path(item)
             archive.add(working / relative, arcname=relative, recursive=False)
-    try:
-        tar_path.chmod(0o600)
-    except OSError:
-        pass
+    _set_private_permissions(tar_path, 0o600)
+    with tar_path.open("rb") as archive_handle:
+        os.fsync(archive_handle.fileno())
+    _validate_untracked_archive(tar_path, fingerprint["untracked"])
+    middle_fingerprint = _fingerprint_repo(working)
+    verify_head, verify_sections, verify_files = capture_sections()
+    final_fingerprint = _fingerprint_repo(working)
+    if (
+        fingerprint.get("sha256") != middle_fingerprint.get("sha256")
+        or fingerprint.get("sha256") != final_fingerprint.get("sha256")
+        or verify_head != head_sha
+        or verify_sections != sections
+        or verify_files != section_files
+    ):
+        raise FlowError(
+            "REVIEW_SNAPSHOT_CHANGED",
+            "repository changed while the complete review snapshot was being built",
+            details={
+                "repository_id": repo["id"],
+                "before_sha256": fingerprint.get("sha256"),
+                "middle_sha256": middle_fingerprint.get("sha256"),
+                "after_sha256": final_fingerprint.get("sha256"),
+                "before_head": head_sha,
+                "after_head": verify_head,
+            },
+        )
     section_records["untracked"] = {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "manifest_path": str(untracked_manifest_path),
+        "manifest_path_identity": _serializable_path_identity(
+            untracked_manifest_path
+        ),
         "manifest_sha256": _sha256_file(untracked_manifest_path),
         "archive_path": str(tar_path),
+        "archive_path_identity": _serializable_path_identity(tar_path),
         "archive_sha256": _sha256_file(tar_path),
         "size": tar_path.stat().st_size,
         "files": fingerprint["untracked"],
     }
     return {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "repository_id": repo["id"],
         "working_path": str(working),
+        "working_path_identity": _serializable_path_identity(working),
         "base_sha": base_sha,
         "head_sha": head_sha,
+        "capability_profile_sha256": fingerprint[
+            "capability_profile_sha256"
+        ],
+        "tracked_worktree_manifest_sha256": fingerprint[
+            "tracked_worktree_manifest_sha256"
+        ],
         "fingerprint": fingerprint,
         "sections": section_records,
     }
@@ -5500,6 +10398,10 @@ def _latest_passing_test_is_current(state_value: dict[str, Any]) -> tuple[bool, 
         current = _fingerprint_repo(_working_path(repo))
         for latest in latest_by_identity.values():
             label = latest.get("name") or latest.get("test_identity") or "unnamed"
+            try:
+                _require_current_evidence(latest, f"test:{label}")
+            except FlowError as exc:
+                return False, exc.message
             if not latest.get("passed"):
                 return (
                     False,
@@ -5507,6 +10409,12 @@ def _latest_passing_test_is_current(state_value: dict[str, Any]) -> tuple[bool, 
                 )
             output = latest.get("output")
             if output is not None:
+                try:
+                    _require_current_evidence(
+                        output, f"test-output:{label}"
+                    )
+                except FlowError as exc:
+                    return False, exc.message
                 output_path = Path(str((output or {}).get("path", "")))
                 try:
                     output_sha = (
@@ -5525,16 +10433,38 @@ def _latest_passing_test_is_current(state_value: dict[str, Any]) -> tuple[bool, 
                 if (
                     output_sha != (output or {}).get("sha256")
                     or output_size != (output or {}).get("size")
+                    or not _recorded_path_matches(
+                        (output or {}).get("path_identity"),
+                        (output or {}).get("path"),
+                        output_path,
+                    )
                 ):
                     return (
                         False,
                         f"test output for identity {label!r} is missing or changed: {output_path}",
                     )
             recorded = latest.get("fingerprints", {}).get(repo["id"], {})
+            try:
+                _require_current_evidence(
+                    recorded, f"test-fingerprint:{label}:{repo['id']}"
+                )
+            except FlowError as exc:
+                return False, exc.message
             if current.get("sha256") != recorded.get("sha256"):
                 return (
                     False,
                     f"repository changed after test identity {label!r} passed: {repo['id']}",
+                )
+            recorded_profiles = latest.get(
+                "capability_profile_sha256", {}
+            )
+            if (
+                current.get("capability_profile_sha256")
+                != recorded_profiles.get(repo["id"])
+            ):
+                return (
+                    False,
+                    f"repository capability profile changed after test identity {label!r}: {repo['id']}",
                 )
     return True, None
 
@@ -5558,27 +10488,101 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             raise FlowError("INCOMPLETE_REVIEW", "review-snapshot must include every configured repository")
         snapshot_id = f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         snapshot_root = task_dir / "reviews" / snapshot_id
-        repositories = [_write_review_repo(snapshot_root, repo) for repo in selected]
-        snapshot = {
-            "snapshot_id": snapshot_id,
-            "created_at": utc_now(),
-            "repository_ids": [repo["id"] for repo in selected],
-            "repositories": repositories,
-        }
-        manifest_path = snapshot_root / "manifest.json"
-        _atomic_write_json(manifest_path, snapshot)
-        snapshot["manifest_path"] = str(manifest_path)
-        snapshot["sha256"] = _sha256_file(manifest_path)
+        try:
+            repositories = [
+                _write_review_repo(snapshot_root, repo)
+                for repo in selected
+            ]
+            for repository in repositories:
+                current_fingerprint = _fingerprint_repo(
+                    Path(repository["working_path"])
+                )
+                recorded_fingerprint = repository.get(
+                    "fingerprint"
+                ) or {}
+                if current_fingerprint.get(
+                    "sha256"
+                ) != recorded_fingerprint.get("sha256"):
+                    raise FlowError(
+                        "REVIEW_SNAPSHOT_CHANGED",
+                        (
+                            "a repository changed after its section of the "
+                            "multi-repository snapshot was captured"
+                        ),
+                        details={
+                            "repository_id": repository[
+                                "repository_id"
+                            ],
+                            "recorded_sha256": recorded_fingerprint.get(
+                                "sha256"
+                            ),
+                            "current_sha256": current_fingerprint.get(
+                                "sha256"
+                            ),
+                        },
+                    )
+            snapshot = {
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+                "snapshot_id": snapshot_id,
+                "created_at": utc_now(),
+                "repository_ids": [repo["id"] for repo in selected],
+                "repositories": repositories,
+            }
+            manifest_path = snapshot_root / "manifest.json"
+            _atomic_write_json(manifest_path, snapshot)
+            snapshot["manifest_path"] = str(manifest_path)
+            snapshot["manifest_path_identity"] = (
+                _serializable_path_identity(manifest_path)
+            )
+            snapshot["sha256"] = _sha256_file(manifest_path)
+            integrity_error = _review_snapshot_integrity_error(
+                snapshot
+            )
+            if integrity_error:
+                raise FlowError(
+                    "REVIEW_SNAPSHOT_INVALID",
+                    integrity_error,
+                    details={"snapshot_id": snapshot_id},
+                )
+        except BaseException as exc:
+            if snapshot_root.exists():
+                try:
+                    shutil.rmtree(snapshot_root)
+                except OSError as cleanup_error:
+                    raise FlowError(
+                        "REVIEW_SNAPSHOT_CLEANUP_FAILED",
+                        (
+                            "an incomplete review snapshot could not be "
+                            "removed and was not recorded as usable"
+                        ),
+                        details={
+                            "snapshot_root": str(snapshot_root),
+                            "error": str(cleanup_error),
+                            "cause": f"{type(exc).__name__}: {exc}",
+                        },
+                    ) from cleanup_error
+            raise
         state_value["review_snapshots"].append(snapshot)
         state_value["artifacts"].append(
             {
+                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                 "artifact_id": str(uuid.uuid4()),
                 "kind": "review-snapshot",
                 "path": str(manifest_path),
+                "path_identity": _serializable_path_identity(manifest_path),
                 "sha256": snapshot["sha256"],
                 "size": manifest_path.stat().st_size,
                 "recorded_at": utc_now(),
-                "metadata": {"snapshot_id": snapshot_id},
+                "metadata": {
+                    "snapshot_id": snapshot_id,
+                    "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+                    "capability_profile_sha256": {
+                        item["repository_id"]: item[
+                            "capability_profile_sha256"
+                        ]
+                        for item in repositories
+                    },
+                },
             }
         )
         state_value["status"] = "REVIEWING"
@@ -5586,10 +10590,17 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     return _result("review-snapshot", state_value, snapshot=snapshot)
 
 
-def _snapshot_file_error(path_value: Any, expected_sha: Any, label: str) -> str | None:
+def _snapshot_file_error(
+    path_value: Any,
+    expected_sha: Any,
+    label: str,
+    path_identity: Any = None,
+) -> str | None:
     if not isinstance(path_value, str) or not path_value or not isinstance(expected_sha, str):
         return f"review snapshot has incomplete {label} integrity metadata"
     path = Path(path_value)
+    if not _recorded_path_matches(path_identity, path_value, path):
+        return f"review snapshot {label} path identity changed: {path}"
     if not path.is_file():
         return f"review snapshot {label} file is missing: {path}"
     try:
@@ -5602,13 +10613,30 @@ def _snapshot_file_error(path_value: Any, expected_sha: Any, label: str) -> str 
 
 
 def _review_snapshot_integrity_error(snapshot: dict[str, Any]) -> str | None:
+    try:
+        _require_current_evidence(snapshot, "review snapshot")
+    except FlowError as exc:
+        return exc.message
     error = _snapshot_file_error(
-        snapshot.get("manifest_path"), snapshot.get("sha256"), "manifest"
+        snapshot.get("manifest_path"),
+        snapshot.get("sha256"),
+        "manifest",
+        snapshot.get("manifest_path_identity"),
     )
     if error:
         return error
     for repository in snapshot.get("repositories", []):
         repository_id = repository.get("repository_id", "unknown")
+        try:
+            _require_current_evidence(
+                repository, f"review-repository:{repository_id}"
+            )
+            _require_current_evidence(
+                repository.get("fingerprint"),
+                f"review-fingerprint:{repository_id}",
+            )
+        except FlowError as exc:
+            return exc.message
         sections = repository.get("sections") or {}
         for section_name in ("committed", "cached", "unstaged"):
             section = sections.get(section_name) or {}
@@ -5616,6 +10644,7 @@ def _review_snapshot_integrity_error(snapshot: dict[str, Any]) -> str | None:
                 section.get("path"),
                 section.get("sha256"),
                 f"{repository_id}/{section_name}",
+                section.get("path_identity"),
             )
             if error:
                 return error
@@ -5624,6 +10653,7 @@ def _review_snapshot_integrity_error(snapshot: dict[str, Any]) -> str | None:
             untracked.get("manifest_path"),
             untracked.get("manifest_sha256"),
             f"{repository_id}/untracked-manifest",
+            untracked.get("manifest_path_identity"),
         )
         if error:
             return error
@@ -5631,6 +10661,7 @@ def _review_snapshot_integrity_error(snapshot: dict[str, Any]) -> str | None:
             untracked.get("archive_path"),
             untracked.get("archive_sha256"),
             f"{repository_id}/untracked-archive",
+            untracked.get("archive_path_identity"),
         )
         if error:
             return error
@@ -5656,13 +10687,27 @@ def _review_is_current(state_value: dict[str, Any]) -> tuple[bool, str | None]:
         current = _fingerprint_repo(_working_path(repo))
         if current.get("sha256") != (recorded.get("fingerprint") or {}).get("sha256"):
             return False, f"repository changed after review snapshot: {repo['id']}"
+        if current.get("capability_profile_sha256") != recorded.get(
+            "capability_profile_sha256"
+        ):
+            return False, f"repository capability profile changed after review snapshot: {repo['id']}"
     return True, None
 
 
 def _lite_transition_guard(state_value: dict[str, Any], target: str) -> None:
     repositories = state_value.get("repositories", [])
-    if target == "PREFLIGHTED" and not all((repo.get("preflight") or {}).get("ready") for repo in repositories):
-        raise FlowError("PREFLIGHT_REQUIRED", "all repositories must pass preflight")
+    if target == "PREFLIGHTED":
+        if not all(
+            (repo.get("preflight") or {}).get("ready")
+            for repo in repositories
+        ):
+            raise FlowError(
+                "PREFLIGHT_REQUIRED", "all repositories must pass preflight"
+            )
+        for repo in repositories:
+            _require_current_evidence(
+                repo.get("preflight"), f"preflight:{repo.get('id')}"
+            )
     if target == "IMPLEMENTING":
         # Entering implementation from PREFLIGHTED must find the exact approved
         # checkouts untouched; re-entering from rework legitimately finds the
@@ -5684,12 +10729,35 @@ def _transition_guard(state_value: dict[str, Any], target: str) -> None:
         _lite_transition_guard(state_value, target)
         return
     repositories = state_value.get("repositories", [])
-    if target == "PREFLIGHTED" and not all((repo.get("preflight") or {}).get("ready") for repo in repositories):
-        raise FlowError("PREFLIGHT_REQUIRED", "all repositories must pass preflight")
-    if target == "BASELINED" and not all(repo.get("baseline") for repo in repositories):
-        raise FlowError("BASELINE_REQUIRED", "all repositories must have a pinned baseline")
-    if target in {"INDEXED", "IMPACT_REVIEW"} and not all(repo.get("index") for repo in repositories):
-        raise FlowError("INDEX_REQUIRED", "all repositories must have a recorded index")
+    if target == "PREFLIGHTED":
+        if not all(
+            (repo.get("preflight") or {}).get("ready")
+            for repo in repositories
+        ):
+            raise FlowError(
+                "PREFLIGHT_REQUIRED", "all repositories must pass preflight"
+            )
+        for repo in repositories:
+            _require_current_evidence(
+                repo.get("preflight"), f"preflight:{repo.get('id')}"
+            )
+    if target == "BASELINED":
+        if not all(repo.get("baseline") for repo in repositories):
+            raise FlowError(
+                "BASELINE_REQUIRED",
+                "all repositories must have a pinned baseline",
+            )
+        for repo in repositories:
+            _require_current_evidence(
+                repo.get("baseline"), f"baseline:{repo.get('id')}"
+            )
+    if target in {"INDEXED", "IMPACT_REVIEW"}:
+        if not all(repo.get("index") for repo in repositories):
+            raise FlowError(
+                "INDEX_REQUIRED",
+                "all repositories must have a recorded index",
+            )
+        _index_provenance_evidence(state_value)
     if target == "ROUTE_APPROVED":
         _require_route_gate(state_value)
     if target in {"PLANNING", "IMPLEMENTING", "VERIFYING"}:
@@ -5855,6 +10923,32 @@ def _parse_json_object(value: str | None, option: str) -> dict[str, Any]:
         raise FlowError("INVALID_ARGUMENT", f"{option} is not valid JSON", details={"error": str(exc)}) from exc
     if not isinstance(parsed, dict):
         raise FlowError("INVALID_ARGUMENT", f"{option} must contain a JSON object")
+    stack: list[tuple[str, Any]] = [("$", parsed)]
+    while stack:
+        location, candidate = stack.pop()
+        if isinstance(candidate, dict):
+            if "evidence_contract_version" in candidate:
+                raise FlowError(
+                    "RESERVED_METADATA_KEY",
+                    (
+                        f"{option} must not contain the controller-reserved "
+                        "evidence_contract_version key"
+                    ),
+                    details={
+                        "option": option,
+                        "location": location,
+                        "key": "evidence_contract_version",
+                    },
+                )
+            stack.extend(
+                (f"{location}.{key}", nested)
+                for key, nested in candidate.items()
+            )
+        elif isinstance(candidate, list):
+            stack.extend(
+                (f"{location}[{index}]", nested)
+                for index, nested in enumerate(candidate)
+            )
     return parsed
 
 
@@ -5919,6 +11013,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_task(show)
     _add_data_dir(show)
     show.set_defaults(handler=command_show)
+
+    recover_quarantine = subparsers.add_parser(
+        "recover-quarantine",
+        help=(
+            "prove an interrupted child is gone, validate partial "
+            "postconditions, and archive its durable quarantine"
+        ),
+    )
+    _add_mutation(recover_quarantine)
+    recover_quarantine.set_defaults(handler=command_recover_quarantine)
 
     listing = subparsers.add_parser("list", help="list task summaries")
     listing.add_argument("--active-only", action="store_true", help="exclude DONE and CANCELLED tasks")
@@ -6151,20 +11255,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not hasattr(args, "data_dir"):
             args.data_dir = None
         response = args.handler(args)
-        print(json.dumps(response, sort_keys=True, ensure_ascii=False))
+        _write_protocol_response(response)
         return 0
     except FlowError as exc:
         response = {
             "ok": False,
             "error": {"code": exc.code, "message": exc.message, "details": exc.details},
         }
-        print(json.dumps(response, sort_keys=True, ensure_ascii=False))
+        _write_protocol_response(response)
         return exc.exit_code
     except KeyboardInterrupt:
-        print(json.dumps({"ok": False, "error": {"code": "INTERRUPTED", "message": "operation interrupted", "details": {}}}, sort_keys=True))
+        _write_protocol_response(
+            {
+                "ok": False,
+                "error": {
+                    "code": "INTERRUPTED",
+                    "message": "operation interrupted",
+                    "details": {},
+                },
+            }
+        )
         return 130
     except Exception as exc:  # Keep the machine contract even for unexpected failures.
-        print(json.dumps({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": str(exc), "details": {"type": type(exc).__name__}}}, sort_keys=True))
+        _write_protocol_response(
+            {
+                "ok": False,
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": str(exc),
+                    "details": {"type": type(exc).__name__},
+                },
+            }
+        )
         return 1
 
 

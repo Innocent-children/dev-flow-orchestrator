@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import importlib.util
 import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "dev_flow.py"
+SUPPORT = Path(__file__).resolve().with_name("support.py")
 SPEC = importlib.util.spec_from_file_location("dev_flow", SCRIPT)
 assert SPEC and SPEC.loader
 dev_flow = importlib.util.module_from_spec(SPEC)
@@ -31,7 +35,13 @@ def git(repo: Path, *args: str) -> str:
         stderr=subprocess.PIPE,
         text=True,
         check=False,
-        env={**os.environ, "LC_ALL": "C"},
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "LC_ALL": "C",
+        },
     )
     if result.returncode:
         raise AssertionError(f"git {' '.join(args)} failed: {result.stderr}")
@@ -43,14 +53,38 @@ class DevFlowTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.data = self.root / "state"
+        git_home = self.root / "isolated git home"
+        git_home.mkdir()
+        self.environment = mock.patch.dict(
+            os.environ,
+            {
+                "HOME": str(git_home),
+                "USERPROFILE": str(git_home),
+                "XDG_CONFIG_HOME": str(git_home / "xdg"),
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+            },
+        )
+        self.environment.start()
+        self.workspace_plan_fixture_counter = 0
 
     def tearDown(self) -> None:
+        self.environment.stop()
         self.temporary.cleanup()
 
     def make_repo(self, name: str) -> tuple[Path, Path]:
         repo = self.root / name
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(repo)],
+            check=True,
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
+        )
         git(repo, "config", "user.name", "Dev Flow Test")
         git(repo, "config", "user.email", "dev-flow@example.invalid")
         (repo / "tracked.txt").write_text(f"initial {name}\n", encoding="utf-8")
@@ -58,7 +92,13 @@ class DevFlowTest(unittest.TestCase):
         git(repo, "commit", "-q", "-m", "initial")
         remote = self.root / f"{name}.git"
         subprocess.run(
-            ["git", "clone", "-q", "--bare", str(repo), str(remote)], check=True
+            ["git", "clone", "-q", "--bare", str(repo), str(remote)],
+            check=True,
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
         )
         git(repo, "remote", "add", "origin", str(remote))
         git(repo, "fetch", "-q", "origin")
@@ -73,6 +113,137 @@ class DevFlowTest(unittest.TestCase):
         lines = stdout.getvalue().splitlines()
         self.assertEqual(len(lines), 1, stdout.getvalue())
         return json.loads(lines[0])
+
+    def controller_process(
+        self, *arguments: str
+    ) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            [
+                sys.executable,
+                str(SCRIPT),
+                *arguments,
+                "--data-dir",
+                str(self.data),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
+        )
+
+    def process_response(
+        self, process: subprocess.Popen[bytes]
+    ) -> tuple[int, dict]:
+        stdout, stderr = process.communicate(timeout=30)
+        self.assertEqual(stderr, b"")
+        self.assertTrue(stdout.endswith(b"\n"), stdout)
+        self.assertNotIn(b"\r\n", stdout)
+        lines = stdout.splitlines()
+        self.assertEqual(len(lines), 1, stdout)
+        return process.returncode, json.loads(lines[0].decode("utf-8"))
+
+    def wait_for_path(self, path: Path, process: subprocess.Popen[bytes]) -> None:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if path.exists():
+                return
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(
+                    f"helper exited before creating {path}: "
+                    f"stdout={stdout!r}, stderr={stderr!r}"
+                )
+            time.sleep(0.01)
+        self.fail(f"timed out waiting for helper marker: {path}")
+
+    def current_workspace_plan(
+        self,
+        repository_id: str,
+        source: Path,
+        destination: Path,
+        branch: str,
+        base_sha: str,
+        *,
+        previously_recorded: bool = False,
+    ) -> dict:
+        """Build and claim a controller-current low-level worktree plan."""
+
+        self.workspace_plan_fixture_counter += 1
+        source = source.resolve(strict=True)
+        destination = destination.resolve(strict=False)
+        task_id = (
+            f"fixture-plan-{self.workspace_plan_fixture_counter}"
+        )
+        source_profile = dev_flow._git_capability_profile(source)
+        destination_profile = dev_flow._git_capability_profile(
+            source, destination
+        )
+        branch_state = dev_flow._branch_ref_state(source, branch, [])
+        plan = {
+            "evidence_contract_version": (
+                dev_flow.EVIDENCE_CONTRACT_VERSION
+            ),
+            "repository_id": repository_id,
+            "source_path": str(source),
+            "source_identity": dev_flow._serializable_path_identity(
+                source
+            ),
+            "path": str(destination),
+            "path_identity": dev_flow._serializable_path_identity(
+                destination
+            ),
+            "branch": branch,
+            "branch_ref": branch_state["branch_ref"],
+            "planned_ref_oid": branch_state["planned_ref_oid"],
+            "ref_case_sensitive": branch_state[
+                "ref_case_sensitive"
+            ],
+            "ref_unicode_normalization_distinct": branch_state[
+                "ref_unicode_normalization_distinct"
+            ],
+            "source_common_dir": branch_state["git_common_dir"],
+            "source_common_dir_identity": branch_state[
+                "git_common_dir_identity"
+            ],
+            "base_sha": base_sha,
+            "capability_profile": destination_profile,
+            "capability_profile_sha256": destination_profile["sha256"],
+            "source_capability_profile_sha256": source_profile["sha256"],
+            "strategy": "worktree",
+            "owner_task_id": task_id,
+            "workspace_generation": 0,
+            "previously_recorded": previously_recorded,
+        }
+        claim_root = (
+            self.root
+            / "workspace plan claims"
+            / str(self.workspace_plan_fixture_counter)
+        )
+        plan_sha256 = dev_flow._sha256_bytes(
+            dev_flow._json_bytes(
+                {
+                    key: value
+                    for key, value in plan.items()
+                    if key != "capability_profile"
+                }
+            )
+        )
+        dev_flow._claim_workspace_plan(
+            claim_root,
+            {
+                "task_id": task_id,
+                "repositories": [],
+                "workspace": {"generation": 0},
+            },
+            plan_sha256,
+            [plan],
+        )
+        return plan
 
     def canonical(self, *paths: Path) -> list[str]:
         """Scope directories are stored resolved; temp roots may be symlinked."""
@@ -176,6 +347,68 @@ class DevFlowTest(unittest.TestCase):
         )
         task = dev_flow.load_state(task_id, self.data)
         self.mutate("prepare-workspace", task, "--execute")
+        return dev_flow.load_state(task_id, self.data)
+
+    def route_approved_task(
+        self, *repos: Path, task_id: str
+    ) -> dict:
+        """Create a current full-flow task immediately before workspace planning."""
+
+        task = self.start(*repos, task_id=task_id)["task"]
+        self.mutate("preflight", task)
+        task = dev_flow.load_state(task_id, self.data)
+        self.mutate(
+            "approve",
+            task,
+            "--gate",
+            "baseline-fetch",
+            "--note",
+            "fixture baseline approved",
+        )
+        task = dev_flow.load_state(task_id, self.data)
+        self.mutate("baseline", task, "--materialize")
+        task = dev_flow.load_state(task_id, self.data)
+        for repository in task["repositories"]:
+            self.mutate(
+                "record-index",
+                task,
+                "--repo",
+                repository["id"],
+                "--index-id",
+                dev_flow._recommended_index_name(
+                    task, repository, "baseline"
+                ),
+            )
+            task = dev_flow.load_state(task_id, self.data)
+        impact = self.root / f"{task_id} current impact.md"
+        impact.write_text("current impact\n", encoding="utf-8")
+        recorded = self.mutate(
+            "record-artifact",
+            task,
+            "--kind",
+            "impact",
+            "--path",
+            str(impact),
+        )
+        task = dev_flow.load_state(task_id, self.data)
+        self.mutate(
+            "set-route",
+            task,
+            "direct",
+            "--reason",
+            "bounded fixture route",
+        )
+        task = dev_flow.load_state(task_id, self.data)
+        self.mutate(
+            "approve",
+            task,
+            "--gate",
+            "route",
+            "--note",
+            "fixture route approved",
+            "--artifact-sha256",
+            recorded["artifact"]["sha256"],
+        )
         return dev_flow.load_state(task_id, self.data)
 
     def record_workspace_indexes(
@@ -283,6 +516,285 @@ class DevFlowTest(unittest.TestCase):
         loaded = dev_flow.load_state(task["task_id"], self.data)
         self.assertEqual(loaded["revision"], 1)
 
+    def test_data_dir_whitespace_actor_and_platform_defaults(self) -> None:
+        environment = {
+            "DEV_FLOW_DATA_DIR": " \t ",
+            "PLUGIN_DATA": str(self.root / "plugin fallback"),
+            "DEV_FLOW_ACTOR": " ",
+            "USER": " ",
+            "USERNAME": " windows-user ",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            self.assertEqual(
+                dev_flow.resolve_data_dir(" \n "),
+                (self.root / "plugin fallback").resolve(),
+            )
+            self.assertEqual(dev_flow._actor(), "windows-user")
+
+        home = self.root / "home defaults"
+        with mock.patch.object(Path, "home", return_value=home):
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "DEV_FLOW_DATA_DIR": " ",
+                    "PLUGIN_DATA": "\t",
+                    "XDG_STATE_HOME": str(self.root / "xdg state"),
+                },
+                clear=True,
+            ), mock.patch.object(
+                dev_flow, "_platform_family", return_value="linux"
+            ):
+                self.assertEqual(
+                    dev_flow.resolve_data_dir(),
+                    (
+                        self.root
+                        / "xdg state"
+                        / "dev-flow-orchestrator"
+                    ).resolve(),
+                )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "DEV_FLOW_DATA_DIR": " ",
+                    "PLUGIN_DATA": " ",
+                    "XDG_STATE_HOME": " ",
+                },
+                clear=True,
+            ), mock.patch.object(
+                dev_flow, "_platform_family", return_value="linux"
+            ):
+                self.assertEqual(
+                    dev_flow.resolve_data_dir(),
+                    (
+                        home
+                        / ".local"
+                        / "state"
+                        / "dev-flow-orchestrator"
+                    ).resolve(),
+                )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "DEV_FLOW_DATA_DIR": " ",
+                    "PLUGIN_DATA": " ",
+                },
+                clear=True,
+            ), mock.patch.object(
+                dev_flow, "_platform_family", return_value="macos"
+            ):
+                self.assertEqual(
+                    dev_flow.resolve_data_dir(),
+                    (
+                        home
+                        / "Library"
+                        / "Application Support"
+                        / "dev-flow-orchestrator"
+                    ).resolve(),
+                )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "DEV_FLOW_DATA_DIR": " ",
+                    "PLUGIN_DATA": " ",
+                    "LOCALAPPDATA": str(self.root / "Local App Data"),
+                },
+                clear=True,
+            ), mock.patch.object(
+                dev_flow, "_platform_family", return_value="windows"
+            ):
+                self.assertEqual(
+                    dev_flow.resolve_data_dir(),
+                    (
+                        self.root
+                        / "Local App Data"
+                        / "dev-flow-orchestrator"
+                    ).resolve(),
+                )
+
+    def test_task_id_portable_boundaries_and_case_collision(self) -> None:
+        repo, _ = self.make_repo("task-id-repository")
+        for task_id in ("a", "x" * 64):
+            with self.subTest(valid=task_id):
+                response = self.start(repo, task_id=task_id)
+                self.assertEqual(response["task"]["task_id"], task_id)
+
+        invalid_ids = (
+            "x" * 65,
+            "任务",
+            "trailing.",
+            "CON",
+            "con.txt",
+            "Aux.log",
+            "LPT9",
+            "COM1.port",
+            ".",
+        )
+        for task_id in invalid_ids:
+            with self.subTest(invalid=task_id):
+                before = {
+                    path.name
+                    for path in (self.data / "tasks").iterdir()
+                    if path.is_dir()
+                }
+                denied = self.cli(
+                    "start",
+                    "--task-id",
+                    task_id,
+                    "--requirement",
+                    "reject non-portable identifier",
+                    "--repo",
+                    str(repo),
+                    expected_code=2,
+                )
+                self.assertEqual(
+                    denied["error"]["code"], "INVALID_TASK_ID"
+                )
+                self.assertEqual(
+                    {
+                        path.name
+                        for path in (self.data / "tasks").iterdir()
+                        if path.is_dir()
+                    },
+                    before,
+                )
+
+        self.start(repo, task_id="PortableCase")
+        denied = self.cli(
+            "start",
+            "--task-id",
+            "portablecase",
+            "--requirement",
+            "portable namespace collision",
+            "--repo",
+            str(repo),
+            expected_code=2,
+        )
+        self.assertEqual(
+            denied["error"]["code"], "TASK_ID_COLLISION"
+        )
+        self.assertEqual(
+            [
+                path.name
+                for path in (self.data / "tasks").iterdir()
+                if path.is_dir()
+                and path.name.casefold() == "portablecase"
+            ],
+            ["PortableCase"],
+        )
+
+    def test_task_namespace_lock_serializes_concurrent_case_collisions(self) -> None:
+        repo, _ = self.make_repo("parallel namespace repository")
+        common = [
+            "--requirement",
+            "parallel portable task namespace",
+            "--repo",
+            str(repo),
+        ]
+        first = self.controller_process(
+            "start", "--task-id", "ParallelCase", *common
+        )
+        second = self.controller_process(
+            "start", "--task-id", "parallelcase", *common
+        )
+        results = [
+            self.process_response(first),
+            self.process_response(second),
+        ]
+        successes = [
+            response
+            for code, response in results
+            if code == 0 and response.get("ok")
+        ]
+        failures = [
+            response
+            for code, response in results
+            if code != 0 and not response.get("ok")
+        ]
+        self.assertEqual(len(successes), 1, results)
+        self.assertEqual(len(failures), 1, results)
+        self.assertIn(
+            failures[0]["error"]["code"],
+            {"TASK_ID_COLLISION", "TASK_EXISTS"},
+        )
+        task_directories = [
+            path
+            for path in (self.data / "tasks").iterdir()
+            if path.is_dir()
+        ]
+        self.assertEqual(len(task_directories), 1)
+        self.assertEqual(
+            task_directories[0].name.casefold(), "parallelcase"
+        )
+
+    def test_filesystem_identity_and_path_selectors_are_alias_safe(self) -> None:
+        repository = self.root / "unicode repository"
+        repository.mkdir()
+        state = {
+            "repositories": [
+                {
+                    "id": "configured-repository",
+                    "path": str(repository),
+                    "canonical_path": str(repository.resolve()),
+                }
+            ]
+        }
+        alias_spelling = repository.parent / "." / repository.name
+        self.assertEqual(
+            dev_flow._repo_by_selector(
+                state, [str(alias_spelling)]
+            )[0]["id"],
+            "configured-repository",
+        )
+
+        symbolic_alias = self.root / "symbolic repository alias"
+        try:
+            symbolic_alias.symlink_to(repository, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.assertTrue(
+                dev_flow._same_path(repository, repository / ".")
+            )
+        else:
+            self.assertTrue(
+                dev_flow._same_path(repository, symbolic_alias)
+            )
+
+        composed = self.root / "\u00e9"
+        composed.mkdir()
+        decomposed = self.root / "e\u0301"
+        unicode_distinct = dev_flow._probe_filesystem_unicode_distinct(
+            self.root
+        )
+        self.assertEqual(
+            dev_flow._same_path(composed, decomposed),
+            not unicode_distinct,
+        )
+
+        uppercase = self.root / "CaseIdentity"
+        uppercase.mkdir()
+        lowercase = self.root / "caseidentity"
+        with mock.patch.object(
+            dev_flow,
+            "_probe_filesystem_case_sensitive",
+            return_value=False,
+        ):
+            self.assertTrue(
+                dev_flow._same_path(uppercase, lowercase)
+            )
+
+        for selector in (
+            str(self.root / "missing" / repository.name),
+            f"C:\\missing\\{repository.name}",
+            f"\\\\server\\share\\{repository.name}",
+        ):
+            with self.subTest(path_selector=selector):
+                with self.assertRaises(
+                    dev_flow.FlowError
+                ) as captured:
+                    dev_flow._repo_by_selector(state, [selector])
+                self.assertEqual(
+                    captured.exception.code, "REPOSITORY_NOT_FOUND"
+                )
+
     def test_start_multi_repo_atomic_state_events_and_revision_conflict(self) -> None:
         first, _ = self.make_repo("first")
         second, _ = self.make_repo("second")
@@ -342,6 +854,766 @@ class DevFlowTest(unittest.TestCase):
         )
         self.assertFalse(
             (self.data / "tasks" / "duplicate-common-dir" / "state.json").exists()
+        )
+
+    def test_private_permissions_and_atomic_replace_failure(self) -> None:
+        private_directory = self.root / "private state"
+        dev_flow._ensure_private_dir(private_directory)
+        state_path = private_directory / "state.json"
+        dev_flow._atomic_write_bytes(state_path, b"old\n")
+        if os.name == "posix":
+            self.assertEqual(
+                stat.S_IMODE(private_directory.stat().st_mode), 0o700
+            )
+            self.assertEqual(
+                stat.S_IMODE(state_path.stat().st_mode), 0o600
+            )
+
+        with mock.patch.object(
+            dev_flow.os,
+            "replace",
+            side_effect=OSError(errno.EIO, "injected replace failure"),
+        ):
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._atomic_write_bytes(state_path, b"new\n")
+        self.assertEqual(captured.exception.code, "ATOMIC_WRITE_FAILED")
+        self.assertEqual(
+            captured.exception.details["phase"], "replace"
+        )
+        self.assertEqual(state_path.read_bytes(), b"old\n")
+        self.assertEqual(
+            list(private_directory.glob(".state.json.*")), []
+        )
+
+    def test_windows_dacl_policy_is_fail_closed_under_mock_descriptors(self) -> None:
+        path = self.root / "mock windows state"
+        current_user = "S-1-5-21-1000"
+        safe = {
+            "owner": current_user,
+            "current_user": current_user,
+            "null_dacl": False,
+            "aces": [],
+        }
+        with mock.patch.object(
+            dev_flow,
+            "_windows_security_descriptor",
+            return_value=safe,
+        ):
+            dev_flow._verify_windows_private_path(path)
+
+        system_owned = {
+            **safe,
+            "owner": "S-1-5-18",
+            "aces": [
+                {
+                    "type": "allow",
+                    "sid": current_user,
+                    "mask": 0x00000002,
+                    "inherited": False,
+                    "unverifiable": False,
+                }
+            ],
+        }
+        with mock.patch.object(
+            dev_flow,
+            "_windows_security_descriptor",
+            return_value=system_owned,
+        ):
+            dev_flow._verify_windows_private_path(path)
+
+        unsafe_descriptors = (
+            {**safe, "null_dacl": True},
+            {
+                **safe,
+                "aces": [
+                    {
+                        "type": "allow",
+                        "sid": "S-1-1-0",
+                        "mask": 0x40000000,
+                        "inherited": True,
+                        "unverifiable": False,
+                    }
+                ],
+            },
+            {
+                **safe,
+                "aces": [
+                    {
+                        "type": 5,
+                        "sid": None,
+                        "mask": None,
+                        "inherited": False,
+                        "unverifiable": True,
+                    }
+                ],
+            },
+            {**safe, "owner": "S-1-5-21-foreign"},
+        )
+        for descriptor in unsafe_descriptors:
+            with self.subTest(descriptor=descriptor):
+                with mock.patch.object(
+                    dev_flow,
+                    "_windows_security_descriptor",
+                    return_value=descriptor,
+                ):
+                    with self.assertRaises(
+                        dev_flow.FlowError
+                    ) as captured:
+                        dev_flow._verify_windows_private_path(path)
+                self.assertIn(
+                    captured.exception.code,
+                    {"PERMISSIONS_UNSAFE", "PERMISSIONS_UNVERIFIABLE"},
+                )
+
+    @unittest.skipUnless(
+        os.name == "nt", "requires native Windows DACL APIs"
+    )
+    def test_windows_native_dacl_rejects_world_writable_path(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        path = self.root / "native insecure windows state"
+        path.mkdir()
+        current_user = dev_flow._windows_security_descriptor(path)[
+            "current_user"
+        ]
+        self.assertIsInstance(current_user, str)
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = (
+            wintypes.BOOL
+        )
+        advapi32.SetFileSecurityW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        advapi32.SetFileSecurityW.restype = wintypes.BOOL
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel32.LocalFree.restype = ctypes.c_void_p
+
+        def apply_dacl(sddl: str) -> None:
+            descriptor = ctypes.c_void_p()
+            descriptor_size = wintypes.DWORD()
+            if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl,
+                1,
+                ctypes.byref(descriptor),
+                ctypes.byref(descriptor_size),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                if not advapi32.SetFileSecurityW(
+                    str(path),
+                    0x00000004,  # DACL_SECURITY_INFORMATION
+                    descriptor,
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                kernel32.LocalFree(descriptor)
+
+        safe_dacl = f"D:P(A;;GA;;;{current_user})"
+        unsafe_dacl = (
+            f"D:P(A;;GA;;;{current_user})(A;;GW;;;WD)"
+        )
+        apply_dacl(unsafe_dacl)
+        try:
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._verify_windows_private_path(path)
+            self.assertEqual(
+                captured.exception.code, "PERMISSIONS_UNSAFE"
+            )
+        finally:
+            apply_dacl(safe_dacl)
+
+    def test_windows_process_handles_use_pointer_sized_ctypes_signatures(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class Function:
+            def __init__(self, result, callback=None) -> None:
+                self.result = result
+                self.callback = callback
+                self.calls = []
+                self.argtypes = None
+                self.restype = None
+
+            def __call__(self, *arguments):
+                self.calls.append(arguments)
+                if self.callback is not None:
+                    self.callback(*arguments)
+                return self.result
+
+        large_handle = 0x1_0000_1234
+
+        process_kernel = mock.Mock()
+        process_kernel.OpenProcess = Function(large_handle)
+        process_kernel.WaitForSingleObject = Function(258)
+        process_kernel.CloseHandle = Function(True)
+        with mock.patch.object(
+            dev_flow.os, "name", "nt"
+        ), mock.patch.object(
+            ctypes,
+            "WinDLL",
+            return_value=process_kernel,
+            create=True,
+        ), mock.patch.object(
+            ctypes, "get_last_error", return_value=0, create=True
+        ):
+            self.assertTrue(
+                dev_flow._quarantined_process_alive(4242)
+            )
+        self.assertIs(
+            process_kernel.OpenProcess.restype, wintypes.HANDLE
+        )
+        self.assertEqual(
+            process_kernel.WaitForSingleObject.argtypes[0],
+            wintypes.HANDLE,
+        )
+        self.assertEqual(
+            process_kernel.WaitForSingleObject.calls,
+            [(large_handle, 0)],
+        )
+        self.assertEqual(
+            process_kernel.CloseHandle.argtypes,
+            [wintypes.HANDLE],
+        )
+        self.assertEqual(
+            process_kernel.CloseHandle.calls, [(large_handle,)]
+        )
+
+        process_kernel.WaitForSingleObject = Function(0)
+        with mock.patch.object(
+            dev_flow.os, "name", "nt"
+        ), mock.patch.object(
+            ctypes,
+            "WinDLL",
+            return_value=process_kernel,
+            create=True,
+        ), mock.patch.object(
+            ctypes, "get_last_error", return_value=0, create=True
+        ):
+            self.assertFalse(
+                dev_flow._quarantined_process_alive(4242)
+            )
+
+        job_kernel = mock.Mock()
+        job_kernel.CreateJobObjectW = Function(large_handle)
+        job_kernel.SetInformationJobObject = Function(True)
+        job_kernel.AssignProcessToJobObject = Function(False)
+        job_kernel.CloseHandle = Function(True)
+        process = mock.Mock()
+        process.pid = 4343
+        process._handle = large_handle + 1
+        process.wait.return_value = 0
+        with mock.patch.object(
+            dev_flow.os, "name", "nt"
+        ), mock.patch.object(
+            ctypes,
+            "WinDLL",
+            return_value=job_kernel,
+            create=True,
+        ), mock.patch.object(
+            ctypes, "get_last_error", return_value=5, create=True
+        ):
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._windows_kill_on_close_job(
+                    process, ["fixture"]
+                )
+        self.assertEqual(
+            captured.exception.code, "PROCESS_OWNERSHIP_FAILED"
+        )
+        self.assertIs(
+            job_kernel.CreateJobObjectW.restype, wintypes.HANDLE
+        )
+        self.assertEqual(
+            job_kernel.AssignProcessToJobObject.argtypes,
+            [wintypes.HANDLE, wintypes.HANDLE],
+        )
+        assigned_process_handle = (
+            job_kernel.AssignProcessToJobObject.calls[0][1]
+        )
+        self.assertEqual(
+            assigned_process_handle.value, large_handle + 1
+        )
+        self.assertEqual(
+            job_kernel.CloseHandle.calls, [(large_handle,)]
+        )
+
+    @unittest.skipUnless(
+        os.name == "nt", "requires native Windows process handles"
+    )
+    def test_windows_exit_code_259_is_not_treated_as_active(self) -> None:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "raise SystemExit(259)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        process.communicate(timeout=20)
+        self.assertEqual(process.returncode, 259)
+        self.assertFalse(
+            dev_flow._quarantined_process_alive(process.pid)
+        )
+
+    def test_lock_backends_fail_closed_on_acquire_release_and_absence(self) -> None:
+        handle = mock.Mock()
+        handle.fileno.return_value = 17
+        lock_path = self.root / "portable.lock"
+
+        posix_backend = mock.Mock()
+        posix_backend.LOCK_EX = 1
+        posix_backend.LOCK_NB = 2
+        posix_backend.LOCK_UN = 4
+        with mock.patch.object(
+            dev_flow, "fcntl", posix_backend
+        ), mock.patch.object(dev_flow, "msvcrt", None):
+            dev_flow._acquire_exclusive(handle, lock_path)
+            dev_flow._release_exclusive(handle, lock_path)
+        self.assertEqual(posix_backend.lockf.call_count, 2)
+
+        acquire_failure = mock.Mock()
+        acquire_failure.LOCK_EX = 1
+        acquire_failure.LOCK_NB = 2
+        acquire_failure.LOCK_UN = 4
+        acquire_failure.lockf.side_effect = OSError(
+            errno.EIO, "injected acquire failure"
+        )
+        with mock.patch.object(
+            dev_flow, "fcntl", acquire_failure
+        ), mock.patch.object(dev_flow, "msvcrt", None):
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._acquire_exclusive(handle, lock_path)
+        self.assertEqual(captured.exception.code, "LOCK_ACQUIRE_FAILED")
+
+        release_failure = mock.Mock()
+        release_failure.LOCK_EX = 1
+        release_failure.LOCK_NB = 2
+        release_failure.LOCK_UN = 4
+        release_failure.lockf.side_effect = [
+            None,
+            OSError(errno.EIO, "injected release failure"),
+        ]
+        with mock.patch.object(
+            dev_flow, "fcntl", release_failure
+        ), mock.patch.object(dev_flow, "msvcrt", None):
+            dev_flow._acquire_exclusive(handle, lock_path)
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._release_exclusive(handle, lock_path)
+        self.assertEqual(captured.exception.code, "LOCK_RELEASE_FAILED")
+
+        windows_backend = mock.Mock()
+        windows_backend.LK_NBLCK = 10
+        windows_backend.LK_UNLCK = 11
+        with mock.patch.object(
+            dev_flow, "fcntl", None
+        ), mock.patch.object(dev_flow, "msvcrt", windows_backend):
+            dev_flow._acquire_exclusive(handle, lock_path)
+            dev_flow._release_exclusive(handle, lock_path)
+        windows_backend.locking.assert_has_calls(
+            [
+                mock.call(17, 10, 1),
+                mock.call(17, 11, 1),
+            ]
+        )
+
+        with mock.patch.object(
+            dev_flow, "fcntl", None
+        ), mock.patch.object(dev_flow, "msvcrt", None):
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._acquire_exclusive(handle, lock_path)
+        self.assertEqual(captured.exception.code, "LOCK_UNSUPPORTED")
+
+    def test_native_lock_contention_revision_race_and_process_death(self) -> None:
+        lock_directory = self.root / "锁 directory with spaces"
+        ready = self.root / "holder ready"
+        release = self.root / "holder release"
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                str(SUPPORT),
+                "hold-lock",
+                str(SCRIPT),
+                str(lock_directory),
+                str(ready),
+                str(release),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        self.wait_for_path(ready, holder)
+        with mock.patch.object(
+            dev_flow, "LOCK_TIMEOUT_SECONDS", 0.05
+        ), mock.patch.object(dev_flow, "LOCK_POLL_SECONDS", 0.005):
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                with dev_flow._file_lock(
+                    lock_directory, "native.lock"
+                ):
+                    self.fail("contended lock was acquired")
+        self.assertEqual(captured.exception.code, "LOCK_TIMEOUT")
+        release.write_text("release\n", encoding="utf-8")
+        stdout, stderr = holder.communicate(timeout=10)
+        self.assertEqual((holder.returncode, stdout, stderr), (0, b"", b""))
+        with dev_flow._file_lock(lock_directory, "native.lock"):
+            pass
+
+        ready.unlink()
+        release.unlink()
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                str(SUPPORT),
+                "hold-lock",
+                str(SCRIPT),
+                str(lock_directory),
+                str(ready),
+                str(release),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        self.wait_for_path(ready, holder)
+        holder.kill()
+        holder.communicate(timeout=10)
+        self.assertNotEqual(holder.returncode, 0)
+        with dev_flow._file_lock(lock_directory, "native.lock"):
+            pass
+
+        repo, _ = self.make_repo("revision race")
+        task = self.start(repo, task_id="revision-race")["task"]
+        cancellation = [
+            "cancel",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--reason",
+            "concurrent cancellation",
+        ]
+        first = self.controller_process(*cancellation)
+        second = self.controller_process(*cancellation)
+        results = [
+            self.process_response(first),
+            self.process_response(second),
+        ]
+        self.assertEqual(
+            sorted(code for code, _ in results), [0, 3]
+        )
+        self.assertEqual(
+            [
+                response["error"]["code"]
+                for code, response in results
+                if code == 3
+            ],
+            ["REVISION_CONFLICT"],
+        )
+        self.assertEqual(
+            dev_flow.load_state("revision-race", self.data)["revision"],
+            task["revision"] + 1,
+        )
+
+    def test_protocol_child_bytes_and_spawn_exit_diagnostics(self) -> None:
+        unicode_argument = str(
+            self.root / "子 process argument with spaces"
+        )
+        with mock.patch.dict(
+            os.environ, {"DEV_FLOW_CHILD_VALUE": "环境 value"}
+        ):
+            echoed = dev_flow._run(
+                [
+                    sys.executable,
+                    str(SUPPORT),
+                    "echo",
+                    "--environment",
+                    "DEV_FLOW_CHILD_VALUE",
+                    unicode_argument,
+                ],
+                text=False,
+            )
+        self.assertEqual(
+            echoed.stdout,
+            f"{unicode_argument}\0环境 value".encode("utf-8"),
+        )
+
+        invalid = dev_flow._run(
+            [
+                sys.executable,
+                str(SUPPORT),
+                "emit",
+                "--stdout-hex",
+                "ff0d0a",
+                "--stderr-hex",
+                "fe",
+            ]
+        )
+        self.assertEqual(invalid.stdout, "\\xff\r\n")
+        self.assertEqual(invalid.stderr, "\\xfe")
+
+        missing = self.root / "missing executable"
+        with self.assertRaises(dev_flow.FlowError) as spawn_error:
+            dev_flow._run([str(missing)])
+        self.assertEqual(
+            spawn_error.exception.details["failure_kind"], "spawn"
+        )
+
+        with self.assertRaises(dev_flow.FlowError) as exit_error:
+            dev_flow._run(
+                [
+                    sys.executable,
+                    str(SUPPORT),
+                    "emit",
+                    "--stderr-hex",
+                    "ff0d0a",
+                    "--exit-code",
+                    "7",
+                ]
+            )
+        self.assertEqual(
+            exit_error.exception.details["failure_kind"], "exit"
+        )
+        self.assertEqual(exit_error.exception.details["returncode"], 7)
+        self.assertEqual(
+            exit_error.exception.details["stderr_sha256"],
+            dev_flow._sha256_bytes(b"\xff\r\n"),
+        )
+
+        class BinaryStdout:
+            def __init__(self) -> None:
+                self.buffer = io.BytesIO()
+
+            def write(self, value: str) -> int:
+                raise AssertionError("binary protocol output was expected")
+
+            def flush(self) -> None:
+                pass
+
+        output = BinaryStdout()
+        with mock.patch.object(dev_flow.sys, "stdout", output):
+            dev_flow._write_protocol_response({"路径": "值"})
+        payload = output.buffer.getvalue()
+        self.assertEqual(payload.count(b"\n"), 1)
+        self.assertTrue(payload.endswith(b"\n"))
+        self.assertNotIn(b"\r\n", payload)
+        self.assertEqual(
+            json.loads(payload.decode("utf-8")), {"路径": "值"}
+        )
+
+    def test_interrupted_children_are_quiesced_or_durably_quarantined(self) -> None:
+        repo, _ = self.make_repo("quarantine source")
+        task = self.start(repo, task_id="quarantine-task")["task"]
+        task_dir = self.data / "tasks" / task["task_id"]
+
+        class InterruptedProcess:
+            pid = 987654321
+            returncode = None
+
+            def __init__(self, *, quiescent: bool) -> None:
+                self.quiescent = quiescent
+                self.wait_calls = 0
+
+            def communicate(self):
+                raise KeyboardInterrupt()
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if self.quiescent:
+                    self.returncode = -1
+                    return self.returncode
+                raise subprocess.TimeoutExpired("fixture", timeout)
+
+        quiescent = InterruptedProcess(quiescent=True)
+        with dev_flow._task_lock(task_dir):
+            with contextlib.ExitStack() as patches:
+                patches.enter_context(
+                    mock.patch.object(
+                        dev_flow.subprocess,
+                        "Popen",
+                        return_value=quiescent,
+                    )
+                )
+                if os.name == "nt":
+                    fake_job = object()
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow,
+                            "_windows_kill_on_close_job",
+                            return_value=fake_job,
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow, "_terminate_windows_job"
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow, "_quiesce_windows_job"
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow,
+                            "_windows_job_active_processes",
+                            return_value=0,
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow, "_close_windows_job"
+                        )
+                    )
+                else:
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow.os,
+                            "killpg",
+                            return_value=None,
+                            create=True,
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow,
+                            "_posix_process_group_alive",
+                            return_value=False,
+                        )
+                    )
+                with self.assertRaises(KeyboardInterrupt):
+                    dev_flow._run(
+                        [sys.executable, str(SUPPORT), "emit"]
+                    )
+        self.assertFalse(dev_flow._quarantine_path(task_dir).exists())
+
+        stuck = InterruptedProcess(quiescent=False)
+        with dev_flow._task_lock(task_dir):
+            with contextlib.ExitStack() as patches:
+                patches.enter_context(
+                    mock.patch.object(
+                        dev_flow.subprocess,
+                        "Popen",
+                        return_value=stuck,
+                    )
+                )
+                if os.name == "nt":
+                    fake_job = object()
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow,
+                            "_windows_kill_on_close_job",
+                            return_value=fake_job,
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow, "_terminate_windows_job"
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow, "_quiesce_windows_job"
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow,
+                            "_windows_job_active_processes",
+                            return_value=1,
+                        )
+                    )
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow, "_close_windows_job"
+                        )
+                    )
+                else:
+                    patches.enter_context(
+                        mock.patch.object(
+                            dev_flow.os,
+                            "killpg",
+                            side_effect=OSError(
+                                errno.EPERM, "injected"
+                            ),
+                            create=True,
+                        )
+                    )
+                with self.assertRaises(
+                    dev_flow.FlowError
+                ) as captured:
+                    dev_flow._run(
+                        [sys.executable, str(SUPPORT), "emit"]
+                    )
+        self.assertEqual(
+            captured.exception.code, "MUTATION_QUARANTINED"
+        )
+        quarantine_path = dev_flow._quarantine_path(task_dir)
+        quarantine = json.loads(
+            quarantine_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            quarantine["evidence_contract_version"],
+            dev_flow.EVIDENCE_CONTRACT_VERSION,
+        )
+        self.assertEqual(quarantine["state_revision"], task["revision"])
+
+        blocked = self.mutate(
+            "cancel",
+            task,
+            "--reason",
+            "must remain blocked",
+            expected_code=2,
+        )
+        self.assertEqual(
+            blocked["error"]["code"], "MUTATION_QUARANTINED"
+        )
+        with mock.patch.object(
+            dev_flow, "_quarantine_processes_alive", return_value=True
+        ):
+            active = self.mutate(
+                "recover-quarantine",
+                task,
+                expected_code=2,
+            )
+        self.assertEqual(
+            active["error"]["code"], "QUARANTINE_CHILD_ACTIVE"
+        )
+
+        with mock.patch.object(
+            dev_flow, "_quarantine_processes_alive", return_value=False
+        ):
+            recovered = self.mutate(
+                "recover-quarantine",
+                task,
+            )
+        self.assertTrue(recovered["recovered"])
+        self.assertFalse(quarantine_path.exists())
+        state = dev_flow.load_state(task["task_id"], self.data)
+        self.assertEqual(state["revision"], task["revision"] + 1)
+        self.assertEqual(len(state["mutation_recoveries"]), 1)
+        self.assertTrue(
+            list(
+                task_dir.glob(
+                    "mutation-quarantine.recovered-*.json"
+                )
+            )
         )
 
     def test_preflight_records_dirty_state_and_blocks_git_operation(self) -> None:
@@ -471,14 +1743,15 @@ class DevFlowTest(unittest.TestCase):
         git(parent, "commit", "-q", "-m", "add adversarial diff fixtures")
         base_sha = git(parent, "rev-parse", "HEAD")
 
-        true_command = shutil.which("true")
-        self.assertIsNotNone(true_command)
-        git(parent, "config", "diff.external", true_command)
+        inert_python_command = (
+            f'"{sys.executable}" "{SUPPORT}" emit'
+        )
+        git(parent, "config", "diff.external", inert_python_command)
         git(parent, "config", "diff.ignoreSubmodules", "all")
-        git(parent, "config", "diff.evil.command", true_command)
-        git(parent, "config", "diff.evil.textconv", true_command)
+        git(parent, "config", "diff.evil.command", inert_python_command)
+        git(parent, "config", "diff.evil.textconv", inert_python_command)
         adversarial_environment = {
-            "GIT_EXTERNAL_DIFF": str(true_command),
+            "GIT_EXTERNAL_DIFF": inert_python_command,
             "GIT_DIFF_OPTS": "--unified=0",
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_KEY_0": "diff.ignoreSubmodules",
@@ -502,7 +1775,13 @@ class DevFlowTest(unittest.TestCase):
             "id": "evidence-parent",
             "path": str(parent),
             "protected_branches": ["main", "master", "trunk"],
-            "baseline": {"base_branch": "main", "base_sha": base_sha},
+            "baseline": {
+                "evidence_contract_version": (
+                    dev_flow.EVIDENCE_CONTRACT_VERSION
+                ),
+                "base_branch": "main",
+                "base_sha": base_sha,
+            },
             "workspace": None,
         }
         with mock.patch.dict(os.environ, adversarial_environment):
@@ -595,7 +1874,12 @@ class DevFlowTest(unittest.TestCase):
         git(repo, "add", ".gitattributes")
         git(repo, "commit", "-q", "-m", "configure filtered path")
         git(repo, "config", "filter.hide.clean", "git show HEAD:tracked.txt")
-        git(repo, "config", "filter.hide.smudge", "cat")
+        git(
+            repo,
+            "config",
+            "filter.hide.smudge",
+            "forbidden-filter-command",
+        )
         with self.assertRaises(dev_flow.FlowError) as captured:
             dev_flow._fingerprint_repo(repo)
         self.assertEqual(captured.exception.code, "CONTENT_FILTER_UNSUPPORTED")
@@ -616,7 +1900,7 @@ class DevFlowTest(unittest.TestCase):
             f"\tattributesFile = {attributes.as_posix()}\n"
             "[filter \"hide\"]\n"
             "\tclean = git show HEAD:tracked.txt\n"
-            "\tsmudge = cat\n",
+            "\tsmudge = forbidden-filter-command\n",
             encoding="utf-8",
         )
         with mock.patch.dict(os.environ, {"HOME": str(global_home)}):
@@ -661,35 +1945,38 @@ class DevFlowTest(unittest.TestCase):
                 )
         git(repo, "update-index", "--no-skip-worktree", "tracked.txt")
 
-    @unittest.skipUnless(os.name == "posix", "requires byte-preserving POSIX paths")
     def test_untracked_paths_are_nul_safe_and_archived_losslessly(self) -> None:
         repo, _ = self.make_repo("untracked-path-bytes")
         unicode_name = "未跟踪-文件.txt"
         newline_name = "line\nbreak.txt"
         (repo / unicode_name).write_bytes(b"unicode\n")
-        (repo / newline_name).write_bytes(b"newline\n")
-        undecodable_name: bytes | None = b"raw-\xff.bin"
+        expected_names = {os.fsencode(unicode_name)}
         try:
-            descriptor = os.open(
-                os.path.join(os.fsencode(repo), undecodable_name),
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600,
-            )
+            (repo / newline_name).write_bytes(b"newline\n")
         except OSError:
-            # Some sandboxed/macOS volumes reject non-UTF-8 directory entries.
-            undecodable_name = None
+            newline_name = ""
         else:
-            try:
-                os.write(descriptor, b"raw bytes\n")
-            finally:
-                os.close(descriptor)
+            expected_names.add(os.fsencode(newline_name))
 
-        expected_names = {
-            os.fsencode(unicode_name),
-            os.fsencode(newline_name),
-        }
+        undecodable_name: bytes | None = (
+            b"raw-\xff.bin" if os.name == "posix" else None
+        )
         if undecodable_name is not None:
-            expected_names.add(undecodable_name)
+            try:
+                descriptor = os.open(
+                    os.path.join(os.fsencode(repo), undecodable_name),
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600,
+                )
+            except OSError:
+                # Some sandboxed/macOS volumes reject non-UTF-8 entries.
+                undecodable_name = None
+            else:
+                try:
+                    os.write(descriptor, b"raw bytes\n")
+                finally:
+                    os.close(descriptor)
+                expected_names.add(undecodable_name)
         fingerprint = dev_flow._fingerprint_repo(repo)
         items = fingerprint["untracked"]
         self.assertEqual(
@@ -698,7 +1985,11 @@ class DevFlowTest(unittest.TestCase):
         )
         by_hex = {item["path_bytes_hex"]: item for item in items}
         self.assertEqual(by_hex[os.fsencode(unicode_name).hex()]["path"], unicode_name)
-        self.assertEqual(by_hex[os.fsencode(newline_name).hex()]["path"], newline_name)
+        if newline_name:
+            self.assertEqual(
+                by_hex[os.fsencode(newline_name).hex()]["path"],
+                newline_name,
+            )
         if undecodable_name is not None:
             self.assertIn("\ufffd", by_hex[undecodable_name.hex()]["path"])
 
@@ -707,7 +1998,12 @@ class DevFlowTest(unittest.TestCase):
             {
                 "id": "untracked-path-bytes",
                 "path": str(repo),
-                "baseline": {"base_sha": git(repo, "rev-parse", "HEAD")},
+                "baseline": {
+                    "evidence_contract_version": (
+                        dev_flow.EVIDENCE_CONTRACT_VERSION
+                    ),
+                    "base_sha": git(repo, "rev-parse", "HEAD"),
+                },
                 "workspace": None,
             },
         )
@@ -723,20 +2019,42 @@ class DevFlowTest(unittest.TestCase):
             archived_names = {os.fsencode(name) for name in archive.getnames()}
         self.assertEqual(archived_names, expected_names)
 
-    @unittest.skipUnless(os.name == "posix", "requires POSIX mode and symlink semantics")
-    def test_evidence_overrides_stat_mode_and_symlink_hiding_config(self) -> None:
+    def test_evidence_profiles_effective_git_and_preserves_raw_bytes(self) -> None:
         mode_repo, _ = self.make_repo("mode-evidence")
         git(mode_repo, "config", "core.fileMode", "false")
         clean_mode = dev_flow._fingerprint_repo(mode_repo)
-        tracked = mode_repo / "tracked.txt"
-        tracked.chmod(tracked.stat().st_mode | 0o111)
-        executable_mode = dev_flow._fingerprint_repo(mode_repo)
-        self.assertNotEqual(clean_mode["sha256"], executable_mode["sha256"])
-        mode_patch = dev_flow._git_diff(
-            mode_repo, "--binary", "--full-index", "--", text=False
+        self.assertFalse(
+            clean_mode["capability_profile"]["core_file_mode"]
         )
-        self.assertIn(b"old mode 100644", mode_patch)
-        self.assertIn(b"new mode 100755", mode_patch)
+        tracked = mode_repo / "tracked.txt"
+        if clean_mode["capability_profile"]["filesystem"]["file_mode"]:
+            tracked.chmod(tracked.stat().st_mode | stat.S_IXUSR)
+            executable_mode = dev_flow._fingerprint_repo(mode_repo)
+            self.assertNotEqual(
+                clean_mode["tracked_worktree_manifest_sha256"],
+                executable_mode["tracked_worktree_manifest_sha256"],
+            )
+            mode_patch = dev_flow._git_diff(
+                mode_repo, "--binary", "--full-index", "--", text=False
+            )
+            self.assertNotIn(b"old mode 100644", mode_patch)
+
+        tracked.write_bytes(b"line one\r\nline two\r\n")
+        crlf = dev_flow._fingerprint_repo(mode_repo)
+        tracked.write_bytes(b"line one\nline two\n")
+        lf = dev_flow._fingerprint_repo(mode_repo)
+        self.assertNotEqual(
+            crlf["tracked_worktree_manifest_sha256"],
+            lf["tracked_worktree_manifest_sha256"],
+        )
+        self.assertEqual(
+            next(
+                item
+                for item in lf["tracked_worktree"]
+                if item["path"] == "tracked.txt"
+            )["sha256"],
+            dev_flow._sha256_file(tracked),
+        )
 
         stat_repo, _ = self.make_repo("stat-evidence")
         git(stat_repo, "config", "core.trustctime", "false")
@@ -756,23 +2074,29 @@ class DevFlowTest(unittest.TestCase):
         self.assertNotEqual(before["sha256"], after["sha256"])
 
         symlink_repo, _ = self.make_repo("symlink-evidence")
-        link = symlink_repo / "tracked-link"
-        link.symlink_to("tracked.txt")
-        git(symlink_repo, "add", "tracked-link")
-        git(symlink_repo, "commit", "-q", "-m", "add tracked symlink")
-        git(symlink_repo, "config", "core.symlinks", "false")
-        symlink_fingerprint = dev_flow._fingerprint_repo(symlink_repo)
-        link.unlink()
-        link.write_text("tracked.txt", encoding="utf-8")
-        regular_fingerprint = dev_flow._fingerprint_repo(symlink_repo)
-        self.assertNotEqual(
-            symlink_fingerprint["sha256"], regular_fingerprint["sha256"]
-        )
-        type_patch = dev_flow._git_diff(
-            symlink_repo, "--binary", "--full-index", "--", text=False
-        )
-        self.assertIn(b"120000", type_patch)
-        self.assertIn(b"100644", type_patch)
+        symlink_profile = dev_flow._git_capability_profile(symlink_repo)
+        if symlink_profile["filesystem"]["symlinks"]:
+            link = symlink_repo / "tracked-link"
+            link.symlink_to("tracked.txt")
+            git(symlink_repo, "add", "tracked-link")
+            git(symlink_repo, "commit", "-q", "-m", "add tracked symlink")
+            git(symlink_repo, "config", "core.symlinks", "false")
+            symlink_fingerprint = dev_flow._fingerprint_repo(
+                symlink_repo
+            )
+            link.unlink()
+            link.write_text("tracked.txt", encoding="utf-8")
+            regular_fingerprint = dev_flow._fingerprint_repo(
+                symlink_repo
+            )
+            self.assertNotEqual(
+                symlink_fingerprint[
+                    "tracked_worktree_manifest_sha256"
+                ],
+                regular_fingerprint[
+                    "tracked_worktree_manifest_sha256"
+                ],
+            )
 
         ident_repo, _ = self.make_repo("ident-evidence")
         (ident_repo / "tracked.txt").write_text("$Id$\n", encoding="utf-8")
@@ -788,6 +2112,139 @@ class DevFlowTest(unittest.TestCase):
         self.assertEqual(dev_flow._git_diff(ident_repo, "--name-only", "--"), "")
         ident_after = dev_flow._fingerprint_repo(ident_repo)
         self.assertNotEqual(ident_before["sha256"], ident_after["sha256"])
+
+    def test_capability_probe_is_clean_and_case_collisions_fail_closed(self) -> None:
+        repo, _ = self.make_repo("capability-profile")
+        before = git(repo, "status", "--porcelain=v1", "-uall")
+        first = dev_flow._git_capability_profile(repo)
+        second = dev_flow._git_capability_profile(repo)
+        after = git(repo, "status", "--porcelain=v1", "-uall")
+        self.assertEqual(before, after)
+        self.assertFalse(
+            list(repo.glob(".dev-flow-capability-*"))
+        )
+        self.assertEqual(
+            first["evidence_contract_version"],
+            dev_flow.EVIDENCE_CONTRACT_VERSION,
+        )
+        self.assertEqual(first["sha256"], second["sha256"])
+        self.assertIn(first["platform"], {"windows", "macos", "linux"})
+        self.assertIn("core_autocrlf", first)
+        self.assertIn("core_eol", first)
+        self.assertIn("filesystem_identity", first)
+
+        collision = repo / "Case.txt"
+        collision.write_bytes(b"case\n")
+        oid = b"0" * 40
+        records = (
+            b"100644 "
+            + oid
+            + b" 0\tCase.txt\0"
+            + b"100644 "
+            + oid
+            + b" 0\tcase.txt\0"
+        )
+        case_insensitive_profile = {
+            **first,
+            "core_ignore_case": True,
+            "filesystem": {
+                **first["filesystem"],
+                "case_sensitive": False,
+            },
+        }
+        with mock.patch.object(
+            dev_flow, "_git_evidence", return_value=records
+        ):
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._tracked_worktree_manifest(
+                    repo, case_insensitive_profile
+                )
+        self.assertEqual(
+            captured.exception.code, "CASE_COLLISION_UNSUPPORTED"
+        )
+
+        composed_name = "\u00e9.txt"
+        decomposed_name = "e\u0301.txt"
+        (repo / composed_name).write_bytes(b"unicode\n")
+        unicode_records = (
+            b"100644 "
+            + oid
+            + b" 0\t"
+            + composed_name.encode("utf-8")
+            + b"\0"
+            + b"100644 "
+            + oid
+            + b" 0\t"
+            + decomposed_name.encode("utf-8")
+            + b"\0"
+        )
+        normalization_aliasing_profile = {
+            **first,
+            "core_ignore_case": False,
+            "filesystem": {
+                **first["filesystem"],
+                "case_sensitive": True,
+                "unicode_normalization_distinct": False,
+            },
+        }
+        with mock.patch.object(
+            dev_flow, "_git_evidence", return_value=unicode_records
+        ):
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._tracked_worktree_manifest(
+                    repo, normalization_aliasing_profile
+                )
+        self.assertEqual(
+            captured.exception.code,
+            "CASE_COLLISION_UNSUPPORTED",
+        )
+        self.assertFalse(
+            captured.exception.details["case_aliasing"]
+        )
+        self.assertTrue(
+            captured.exception.details["unicode_aliasing"]
+        )
+
+    def test_evidence_contract_legacy_is_readable_but_not_reusable(self) -> None:
+        repo, _ = self.make_repo("evidence-contract")
+        task = self.start(repo, task_id="evidence-contract")["task"]
+        self.mutate("preflight", task)
+        state_path = (
+            self.data / "tasks" / task["task_id"] / "state.json"
+        )
+        current = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy = json.loads(json.dumps(current))
+        legacy.pop("evidence_contract_version", None)
+        legacy["repositories"][0]["preflight"].pop(
+            "evidence_contract_version", None
+        )
+        dev_flow._atomic_write_json(state_path, legacy)
+
+        loaded = dev_flow.load_state(task["task_id"], self.data)
+        self.assertEqual(loaded["schema_version"], dev_flow.SCHEMA_VERSION)
+        denied = self.mutate(
+            "approve",
+            loaded,
+            "--gate",
+            "baseline-fetch",
+            "--note",
+            "legacy evidence must not authorize a mutation",
+            expected_code=2,
+        )
+        self.assertEqual(
+            denied["error"]["code"], "EVIDENCE_REGENERATION_REQUIRED"
+        )
+
+        newer = json.loads(json.dumps(current))
+        newer["repositories"][0]["preflight"][
+            "evidence_contract_version"
+        ] = dev_flow.EVIDENCE_CONTRACT_VERSION + 1
+        dev_flow._atomic_write_json(state_path, newer)
+        with self.assertRaises(dev_flow.FlowError) as captured:
+            dev_flow.load_state(task["task_id"], self.data)
+        self.assertEqual(
+            captured.exception.code, "EVIDENCE_CONTRACT_UNSUPPORTED"
+        )
 
     def test_controller_generated_artifact_kinds_cannot_be_recorded_manually(self) -> None:
         repo, _ = self.make_repo("reserved-artifact")
@@ -1696,7 +3153,15 @@ class DevFlowTest(unittest.TestCase):
     def test_nonstandard_feature_branch_needs_explicit_base(self) -> None:
         repo = self.root / "feature-only"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", "feature", str(repo)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", "feature", str(repo)],
+            check=True,
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
+        )
         git(repo, "config", "user.name", "Dev Flow Test")
         git(repo, "config", "user.email", "dev-flow@example.invalid")
         (repo / "file.txt").write_text("one\n", encoding="utf-8")
@@ -1964,6 +3429,11 @@ class DevFlowTest(unittest.TestCase):
         subprocess.run(
             ["git", "clone", "-q", "--no-local", str(repo), str(analysis)],
             check=True,
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
         )
         git(analysis, "switch", "-q", "--detach", base_sha)
         denied = self.cli(
@@ -1982,14 +3452,30 @@ class DevFlowTest(unittest.TestCase):
     def test_configured_remote_never_falls_back_to_local_base(self) -> None:
         repo = self.root / "missing-remote-ref"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(repo)],
+            check=True,
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
+        )
         git(repo, "config", "user.name", "Dev Flow Test")
         git(repo, "config", "user.email", "dev-flow@example.invalid")
         (repo / "file.txt").write_text("local main\n", encoding="utf-8")
         git(repo, "add", "file.txt")
         git(repo, "commit", "-q", "-m", "local main")
         empty_remote = self.root / "empty.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(empty_remote)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "--bare", str(empty_remote)],
+            check=True,
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
+        )
         git(repo, "remote", "add", "origin", str(empty_remote))
 
         task = self.start(repo, task_id="missing-remote-ref")["task"]
@@ -2035,6 +3521,12 @@ class DevFlowTest(unittest.TestCase):
             "--add",
             "remote.origin.fetch",
             "+refs/heads/other:refs/remotes/origin/other",
+        )
+        git(
+            repo,
+            "config",
+            "remote.origin.uploadpack",
+            "repository-controlled-upload-pack-must-not-run",
         )
 
         task = self.start(repo, task_id="explicit-fetch")["task"]
@@ -2849,7 +4341,7 @@ class DevFlowTest(unittest.TestCase):
             "--name",
             "unit",
             "--command",
-            "true",
+            "recorded-unit-test",
             "--exit-code",
             "0",
         )
@@ -2875,7 +4367,7 @@ class DevFlowTest(unittest.TestCase):
             "--name",
             "unit",
             "--command",
-            "true",
+            "recorded-unit-test",
             "--exit-code",
             "0",
         )
@@ -3294,9 +4786,15 @@ class DevFlowTest(unittest.TestCase):
             "route": {"value": "direct"},
             "artifacts": [
                 {
+                    "evidence_contract_version": (
+                        dev_flow.EVIDENCE_CONTRACT_VERSION
+                    ),
                     "artifact_id": "plan-1",
                     "kind": "direct-contract",
                     "path": str(plan_path),
+                    "path_identity": dev_flow._serializable_path_identity(
+                        plan_path
+                    ),
                     "sha256": plan_sha,
                 }
             ],
@@ -3309,6 +4807,7 @@ class DevFlowTest(unittest.TestCase):
             },
             "tests": [
                 {
+                    "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
                     "name": "integration",
                     "command": "run integration",
                     "passed": True,
@@ -3319,6 +4818,7 @@ class DevFlowTest(unittest.TestCase):
                     "recorded_at": "2026-07-21T00:00:01.000Z",
                 },
                 {
+                    "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
                     "name": "integration",
                     "command": "run integration",
                     "passed": True,
@@ -3340,9 +4840,20 @@ class DevFlowTest(unittest.TestCase):
         )
         plan_gate.start()
         self.addCleanup(plan_gate.stop)
-        self.assertEqual(dev_flow._latest_passing_test_is_current(state), (True, None))
+
+        def latest_test_status() -> tuple[bool, str | None]:
+            for record in state["tests"]:
+                record["capability_profile_sha256"] = {
+                    repository_id: record["fingerprints"][
+                        repository_id
+                    ]["capability_profile_sha256"]
+                    for repository_id in record["repository_ids"]
+                }
+            return dev_flow._latest_passing_test_is_current(state)
+
+        self.assertEqual(latest_test_status(), (True, None))
         state["approvals"]["plan"]["approval_id"] = "plan-approval-2"
-        current, reason = dev_flow._latest_passing_test_is_current(state)
+        current, reason = latest_test_status()
         self.assertFalse(current)
         self.assertIn("current plan approval", reason)
         for repository_id, fingerprint, timestamp in (
@@ -3351,6 +4862,7 @@ class DevFlowTest(unittest.TestCase):
         ):
             state["tests"].append(
                 {
+                    "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
                     "name": "integration",
                     "command": "run integration",
                     "passed": True,
@@ -3361,9 +4873,10 @@ class DevFlowTest(unittest.TestCase):
                     "recorded_at": timestamp,
                 }
             )
-        self.assertEqual(dev_flow._latest_passing_test_is_current(state), (True, None))
+        self.assertEqual(latest_test_status(), (True, None))
         state["tests"].append(
             {
+                "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
                 "name": "integration",
                 "command": "run integration",
                 "passed": False,
@@ -3374,11 +4887,12 @@ class DevFlowTest(unittest.TestCase):
                 "recorded_at": "2026-07-21T00:00:05.000Z",
             }
         )
-        current, reason = dev_flow._latest_passing_test_is_current(state)
+        current, reason = latest_test_status()
         self.assertFalse(current)
         self.assertIn("integration", reason)
         state["tests"].append(
             {
+                "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
                 "name": "lint",
                 "command": "run lint",
                 "passed": True,
@@ -3389,11 +4903,12 @@ class DevFlowTest(unittest.TestCase):
                 "recorded_at": "2026-07-21T00:00:06.000Z",
             }
         )
-        current, reason = dev_flow._latest_passing_test_is_current(state)
+        current, reason = latest_test_status()
         self.assertFalse(current)
         self.assertIn("integration", reason)
         state["tests"].append(
             {
+                "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
                 "name": "integration",
                 "command": "run integration",
                 "passed": True,
@@ -3404,9 +4919,10 @@ class DevFlowTest(unittest.TestCase):
                 "recorded_at": "2026-07-21T00:00:07.000Z",
             }
         )
-        self.assertEqual(dev_flow._latest_passing_test_is_current(state), (True, None))
+        self.assertEqual(latest_test_status(), (True, None))
         state["tests"].append(
             {
+                "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
                 "name": "e2e",
                 "command": "run e2e",
                 "passed": False,
@@ -3417,7 +4933,7 @@ class DevFlowTest(unittest.TestCase):
                 "recorded_at": "2026-07-21T00:00:08.000Z",
             }
         )
-        current, reason = dev_flow._latest_passing_test_is_current(state)
+        current, reason = latest_test_status()
         self.assertFalse(current)
         self.assertIn("second", reason)
 
@@ -3432,44 +4948,30 @@ class DevFlowTest(unittest.TestCase):
         ahead = git(repo, "commit-tree", tree, "-p", base, "-m", "unrelated old work")
         branch = "codex/collision"
         git(repo, "update-ref", f"refs/heads/{branch}", ahead)
-        wrong_base_plan = {
-            "repository_id": "source",
-            "source_path": str(repo),
-            "path": str((self.root / "wrong-base-workspace").resolve()),
-            "branch": branch,
-            "base_sha": base,
-            "strategy": "worktree",
-            "previously_recorded": False,
-        }
+        wrong_base_plan = self.current_workspace_plan(
+            "source",
+            repo,
+            self.root / "wrong-base-workspace",
+            branch,
+            base,
+        )
         with self.assertRaises(dev_flow.FlowError) as captured:
             dev_flow._execute_worktree(wrong_base_plan)
         self.assertEqual(captured.exception.code, "WORKSPACE_BASE_MISMATCH")
         self.assertFalse(Path(wrong_base_plan["path"]).exists())
 
-        source_checkout_plan = {
-            "repository_id": "source",
-            "source_path": str(repo),
-            "path": str(repo),
-            "branch": "main",
-            "base_sha": base,
-            "strategy": "worktree",
-            "previously_recorded": False,
-        }
+        source_checkout_plan = self.current_workspace_plan(
+            "source", repo, repo, "main", base
+        )
         with self.assertRaises(dev_flow.FlowError) as captured:
             dev_flow._execute_worktree(source_checkout_plan)
         self.assertEqual(captured.exception.code, "WORKSPACE_COLLISION")
         self.assertFalse(captured.exception.details["linked_worktree"])
 
         foreign, _ = self.make_repo("workspace-foreign")
-        foreign_plan = {
-            "repository_id": "source",
-            "source_path": str(repo),
-            "path": str(foreign),
-            "branch": "main",
-            "base_sha": base,
-            "strategy": "worktree",
-            "previously_recorded": False,
-        }
+        foreign_plan = self.current_workspace_plan(
+            "source", repo, foreign, "main", base
+        )
         with self.assertRaises(dev_flow.FlowError) as captured:
             dev_flow._execute_worktree(foreign_plan)
         self.assertEqual(captured.exception.code, "WORKSPACE_COLLISION")
@@ -3486,16 +4988,13 @@ class DevFlowTest(unittest.TestCase):
             str(unowned_path),
             base,
         )
-        unowned_plan = {
-            "repository_id": "source",
-            "source_path": str(repo),
-            "path": str(unowned_path),
-            "branch": unowned_branch,
-            "base_sha": base,
-            "strategy": "worktree",
-            "owner_task_id": "recovery-task",
-            "previously_recorded": False,
-        }
+        unowned_plan = self.current_workspace_plan(
+            "source",
+            repo,
+            unowned_path,
+            unowned_branch,
+            base,
+        )
         recovered = dev_flow._execute_worktree(unowned_plan)
         self.assertFalse(recovered["created"])
         self.assertTrue(recovered["recovered_unrecorded"])
@@ -3534,11 +5033,13 @@ class DevFlowTest(unittest.TestCase):
                     (dirty_path / "residual.ignored").write_text(
                         "ignored\n", encoding="utf-8"
                     )
-                dirty_plan = {
-                    **unowned_plan,
-                    "path": str(dirty_path),
-                    "branch": dirty_branch,
-                }
+                dirty_plan = self.current_workspace_plan(
+                    "source",
+                    repo,
+                    dirty_path,
+                    dirty_branch,
+                    base,
+                )
                 with self.assertRaises(dev_flow.FlowError) as captured:
                     dev_flow._execute_worktree(dirty_plan)
                 self.assertEqual(captured.exception.code, "WORKSPACE_COLLISION")
@@ -3553,15 +5054,30 @@ class DevFlowTest(unittest.TestCase):
     def test_workspace_plan_rejects_source_and_analysis_overlap(self) -> None:
         repo, _ = self.make_repo("workspace-overlap")
         analysis_path = self.root / "analysis-owned"
+        capability_profile = dev_flow._git_capability_profile(repo)
         record = {
             "id": "workspace-overlap",
             "path": str(repo),
             "protected_branches": ["main", "master", "trunk"],
             "baseline": {
+                "evidence_contract_version": (
+                    dev_flow.EVIDENCE_CONTRACT_VERSION
+                ),
                 "base_branch": "main",
                 "base_sha": git(repo, "rev-parse", "HEAD"),
+                "capability_profile": capability_profile,
+                "capability_profile_sha256": capability_profile["sha256"],
             },
-            "analysis_workspace": {"path": str(analysis_path), "ready": True},
+            "analysis_workspace": {
+                "evidence_contract_version": (
+                    dev_flow.EVIDENCE_CONTRACT_VERSION
+                ),
+                "path": str(analysis_path),
+                "path_identity": dev_flow._serializable_path_identity(
+                    analysis_path
+                ),
+                "ready": True,
+            },
             "workspace": None,
         }
         state = {
@@ -3652,25 +5168,39 @@ class DevFlowTest(unittest.TestCase):
         git(repo, "commit", "-q", "-m", "ignore generated hook output")
         hook = repo / ".git" / "hooks" / "post-checkout"
         external_marker = self.root / "post-checkout-hook-ran"
-        hook.write_text(
-            "#!/bin/sh\n"
-            "worktree=$(git rev-parse --show-toplevel)\n"
-            ": > \"$worktree/generated.ignored\"\n"
-            f": > \"{external_marker}\"\n",
-            encoding="utf-8",
+        hook.write_bytes(
+            b"this hook is deliberately invalid and must never execute\n"
         )
         hook.chmod(0o755)
-        plan = {
-            "repository_id": "workspace-hook-dirty",
-            "source_path": str(repo),
-            "path": str((self.root / "hook-dirty-workspace").resolve()),
-            "branch": "codex/hook-dirty",
-            "base_sha": git(repo, "rev-parse", "HEAD"),
-            "strategy": "worktree",
-            "owner_task_id": "hook-dirty-task",
-            "previously_recorded": False,
+        plan = self.current_workspace_plan(
+            "workspace-hook-dirty",
+            repo,
+            self.root / "hook-dirty-workspace",
+            "codex/hook-dirty",
+            git(repo, "rev-parse", "HEAD"),
+        )
+        task_dir = self.root / "hook-worktree-task"
+        dev_flow._ensure_private_dir(task_dir)
+        current = {
+            "schema_version": dev_flow.SCHEMA_VERSION,
+            "evidence_contract_version": (
+                dev_flow.EVIDENCE_CONTRACT_VERSION
+            ),
+            "task_id": "hook-worktree-task",
+            "status": "IMPLEMENTING",
+            "revision": 0,
         }
-        outcome = dev_flow._execute_worktree(plan)
+        dev_flow._atomic_write_json(task_dir / "state.json", current)
+        with dev_flow._task_lock(task_dir):
+            outcome = dev_flow._execute_worktree(plan)
+            committed = dict(current)
+            committed["workspace_created"] = True
+            dev_flow._commit_state(
+                current,
+                committed,
+                task_dir,
+                "fixture_workspace_created",
+            )
         self.assertTrue(outcome["ready"])
         self.assertTrue(outcome["created"])
         self.assertFalse(Path(plan["path"], "generated.ignored").exists())
@@ -3684,6 +5214,7 @@ class DevFlowTest(unittest.TestCase):
         impact_sha = dev_flow._sha256_file(impact)
         repositories = []
         for repo_id, path in (("first", first), ("second", second)):
+            capability_profile = dev_flow._git_capability_profile(path)
             repositories.append(
                 {
                     "id": repo_id,
@@ -3691,8 +5222,15 @@ class DevFlowTest(unittest.TestCase):
                     "canonical_path": str(path),
                     "protected_branches": ["main", "master", "trunk"],
                     "baseline": {
+                        "evidence_contract_version": (
+                            dev_flow.EVIDENCE_CONTRACT_VERSION
+                        ),
                         "base_branch": "main",
                         "base_sha": git(path, "rev-parse", "HEAD"),
+                        "capability_profile": capability_profile,
+                        "capability_profile_sha256": (
+                            capability_profile["sha256"]
+                        ),
                     },
                     "workspace": None,
                     "workspace_history": [],
@@ -3701,6 +5239,9 @@ class DevFlowTest(unittest.TestCase):
         task_id = "all-repo-plan"
         state = {
             "schema_version": dev_flow.SCHEMA_VERSION,
+            "evidence_contract_version": (
+                dev_flow.EVIDENCE_CONTRACT_VERSION
+            ),
             "task_id": task_id,
             "requirement": "multi repository plan",
             "status": "ROUTE_APPROVED",
@@ -3711,9 +5252,15 @@ class DevFlowTest(unittest.TestCase):
             "repositories": repositories,
             "artifacts": [
                 {
+                    "evidence_contract_version": (
+                        dev_flow.EVIDENCE_CONTRACT_VERSION
+                    ),
                     "artifact_id": "impact-1",
                     "kind": "impact",
                     "path": str(impact),
+                    "path_identity": dev_flow._serializable_path_identity(
+                        impact
+                    ),
                     "sha256": impact_sha,
                 }
             ],
@@ -3745,96 +5292,16 @@ class DevFlowTest(unittest.TestCase):
     def test_workspace_claims_block_cross_task_path_and_branch_reuse(self) -> None:
         repo, _ = self.make_repo("shared-claim-source")
         repo = repo.resolve()
-        base_sha = git(repo, "rev-parse", "HEAD")
 
         def write_route_approved_state(task_id: str) -> dict:
-            repository_id = "shared-claim-source"
-            state = {
-                "schema_version": dev_flow.SCHEMA_VERSION,
-                "task_id": task_id,
-                "requirement": "claim one isolated workspace",
-                "status": "ROUTE_APPROVED",
-                "revision": 1,
-                "created_at": "2026-07-21T00:00:00.000Z",
-                "updated_at": "2026-07-21T00:00:00.000Z",
-                "route": None,
-                "repositories": [
-                    {
-                        "id": repository_id,
-                        "path": str(repo),
-                        "canonical_path": str(repo),
-                        "protected_branches": ["main", "master", "trunk"],
-                        "preflight": None,
-                        "baseline": {
-                            "base_branch": "main",
-                            "base_sha": base_sha,
-                        },
-                        "analysis_workspace": None,
-                        "index": {
-                            "index_record_id": f"index-{task_id}",
-                            "commit_sha": base_sha,
-                            "index_id": f"memory-{task_id}",
-                            "receipt": None,
-                            "metadata": {},
-                            "impact_degraded_approval_id": None,
-                        },
-                        "workspace": None,
-                        "workspace_history": [],
-                    }
-                ],
-                "artifacts": [],
-                "approvals": {},
-                "tests": [],
-                "review_snapshots": [],
-                "impact_generation": 0,
-                "planning_generation": 0,
-                "workspace": {
-                    "strategy": "worktree",
-                    "ready": False,
-                    "generation": 0,
-                },
-                "blocked": None,
-                "cancelled": None,
-            }
-            index_digest = dev_flow._index_provenance_sha256(state)
-            impact_path = self.root / f"{task_id}-impact.md"
-            impact_path.write_text("shared repository impact\n", encoding="utf-8")
-            impact_sha = dev_flow._sha256_file(impact_path)
-            impact_id = f"impact-{task_id}"
-            state["artifacts"].append(
-                {
-                    "artifact_id": impact_id,
-                    "kind": "impact",
-                    "path": str(impact_path),
-                    "sha256": impact_sha,
-                    "metadata": {
-                        "index_provenance_sha256": index_digest,
-                        "impact_generation": 0,
-                    },
-                }
+            return self.route_approved_task(
+                repo,
+                task_id=task_id,
             )
-            state["route"] = {
-                "value": "direct",
-                "reason": "bounded shared repository change",
-                "impact_artifact_id": impact_id,
-                "impact_sha256": impact_sha,
-                "index_provenance_sha256": index_digest,
-                "impact_generation": 0,
-            }
-            state["approvals"]["route"] = {
-                "approval_id": f"route-{task_id}",
-                "artifact_sha256": impact_sha,
-                "artifact_id": impact_id,
-                "index_provenance_sha256": index_digest,
-                "impact_generation": 0,
-            }
-            dev_flow._atomic_write_json(
-                self.data / "tasks" / task_id / "state.json", state
-            )
-            return state
 
         first = write_route_approved_state("claim-owner")
         second = write_route_approved_state("claim-contender")
+        second_revision = second["revision"]
         claimed_path = (self.root / "claimed-workspace").resolve()
         claimed_branch = "codex/shared-claim"
         first_plan = self.cli(
@@ -3911,7 +5378,10 @@ class DevFlowTest(unittest.TestCase):
         )
         self.assertFalse(prefixed_branch_path.exists())
         self.assertEqual(
-            dev_flow.load_state(second["task_id"], self.data)["revision"], 1
+            dev_flow.load_state(
+                second["task_id"], self.data
+            )["revision"],
+            second_revision,
         )
 
         first = dev_flow.load_state(first["task_id"], self.data)
@@ -4004,89 +5474,17 @@ class DevFlowTest(unittest.TestCase):
         self.assertFalse(Path(plans[1]["path"]).exists())
 
     def test_multi_repo_workspace_overrides_are_exact_and_executable(self) -> None:
-        first, _ = self.make_repo("override-first")
-        second, _ = self.make_repo("override-second")
+        first, _ = self.make_repo("first")
+        second, _ = self.make_repo("second")
         first = first.resolve()
         second = second.resolve()
         task_id = "all-repo-overrides"
-        repositories = []
-        for repo_id, path in (("first", first), ("second", second)):
-            base_sha = git(path, "rev-parse", "HEAD")
-            repositories.append(
-                {
-                    "id": repo_id,
-                    "path": str(path),
-                    "canonical_path": str(path),
-                    "protected_branches": ["main", "master", "trunk"],
-                    "baseline": {"base_branch": "main", "base_sha": base_sha},
-                    "index": {
-                        "index_record_id": f"index-{repo_id}",
-                        "commit_sha": base_sha,
-                        "index_id": f"memory-{repo_id}",
-                        "receipt": None,
-                        "metadata": {},
-                        "impact_degraded_approval_id": None,
-                    },
-                    "workspace": None,
-                    "workspace_history": [],
-                }
-            )
-        state = {
-            "schema_version": dev_flow.SCHEMA_VERSION,
-            "task_id": task_id,
-            "requirement": "multi repository workspace overrides",
-            "status": "ROUTE_APPROVED",
-            "revision": 1,
-            "created_at": "2026-07-21T00:00:00.000Z",
-            "updated_at": "2026-07-21T00:00:00.000Z",
-            "route": None,
-            "repositories": repositories,
-            "artifacts": [],
-            "approvals": {},
-            "tests": [],
-            "review_snapshots": [],
-            "impact_generation": 0,
-            "planning_generation": 0,
-            "workspace": {"strategy": "worktree", "ready": False, "generation": 0},
-            "blocked": None,
-            "cancelled": None,
-        }
-        index_digest = dev_flow._index_provenance_sha256(state)
-        impact_path = self.root / "override-impact.md"
-        impact_path.write_text("all repositories covered\n", encoding="utf-8")
-        impact_sha = dev_flow._sha256_file(impact_path)
-        impact_id = "override-impact"
-        state["artifacts"].append(
-            {
-                "artifact_id": impact_id,
-                "kind": "impact",
-                "path": str(impact_path),
-                "sha256": impact_sha,
-                "metadata": {
-                    "index_provenance_sha256": index_digest,
-                    "impact_generation": 0,
-                },
-            }
+        state = self.route_approved_task(
+            first,
+            second,
+            task_id=task_id,
         )
-        state["route"] = {
-            "value": "direct",
-            "reason": "bounded change",
-            "impact_artifact_id": impact_id,
-            "impact_sha256": impact_sha,
-            "index_provenance_sha256": index_digest,
-            "impact_generation": 0,
-        }
-        state["approvals"]["route"] = {
-            "approval_id": "route-approval",
-            "artifact_sha256": impact_sha,
-            "artifact_id": impact_id,
-            "index_provenance_sha256": index_digest,
-            "impact_generation": 0,
-        }
-        dev_flow._atomic_write_json(
-            self.data / "tasks" / task_id / "state.json", state
-        )
-        revision = "1"
+        revision = str(state["revision"])
         custom_path = (self.root / "custom-first-workspace").resolve()
         other_path = (self.root / "different-first-workspace").resolve()
 

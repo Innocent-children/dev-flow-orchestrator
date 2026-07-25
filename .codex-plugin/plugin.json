@@ -1,7 +1,7 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "0.2.0",
-  "description": "A guarded, resumable development workflow for Codex, OpenSpec, Git, and codebase-memory.",
+  "version": "0.2.0+codex.20260724090918",
+  "description": "A guarded, resumable Windows, macOS, and Linux workflow for Codex, OpenSpec, Git, and codebase-memory.",
   "author": {
     "name": "Local developer"
   },
@@ -9,10 +9,14 @@
   "interface": {
     "displayName": "Dev Flow Orchestrator",
     "shortDescription": "Guard and resume Git-to-OpenSpec development work",
-    "longDescription": "Checks repository baselines, routes explicit baseline/workspace codebase-memory indexes by phase, builds evidence-backed impact reports, guides direct or OpenSpec planning, and verifies the complete change before handoff.",
+    "longDescription": "Runs the same guarded state machine on Windows, macOS, and Linux; checks repository baselines, routes explicit baseline/workspace codebase-memory indexes by phase, guides direct or OpenSpec planning, and verifies the complete change before handoff.",
     "developerName": "Local developer",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Read", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
       "Start this requirement with the guarded development workflow.",
       "Resume the active development workflow from its saved state.",

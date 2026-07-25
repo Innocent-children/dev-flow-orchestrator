@@ -78,6 +78,10 @@ A lite task has no baseline or managed worktree to restore; its recoverable evid
 
 Treat optimistic-lock failure as evidence another invocation advanced the task. Reload and reconcile. Never overwrite state or retry a mutation with a fabricated `--expected-revision`.
 
+### Interrupted child is quarantined
+
+When a Git-changing child cannot be proven quiescent, the controller leaves durable `mutation-quarantine.json` evidence and blocks later mutations. Do not delete or edit that file and do not infer safety from a timeout. Reload the task, inspect the reported child/process-group evidence and external repository state read-only, then call `<ctl> recover-quarantine --task <task-id> --expected-revision <revision>`. The recovery command itself proves that the child is gone, verifies the recorded postconditions and current evidence contract, and archives the quarantine. Treat `QUARANTINE_CHILD_ACTIVE`, revision drift, postcondition drift, or unverifiable process state as a blocker requiring diagnosis; never retry the original mutation until recovery succeeds.
+
 ## Handle controller or tool failure
 
 - Retry once only for an obviously transient read operation.
