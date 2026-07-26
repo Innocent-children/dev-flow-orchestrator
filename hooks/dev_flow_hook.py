@@ -385,6 +385,21 @@ def build_bootstrap_context(data_dir: Path, controller: Path = CONTROLLER) -> st
     )
 
 
+def build_compact_bootstrap_context(
+    data_dir: Path,
+    controller: Path = CONTROLLER,
+) -> str:
+    prefix = _controller_prefix(data_dir, controller)
+    return (
+        "Dev Flow controller bootstrap: no active task | "
+        "启动前必须用中文让用户选择当前分支、新分支或独立工作树；"
+        "未经明确选择不得 start 或改变 Git | "
+        f"Bootstrap command: {prefix} list | "
+        "Every controller call must explicitly include "
+        f"--data-dir {_quote(str(data_dir))}"
+    )
+
+
 def build_context(
     task: Mapping[str, Any],
     data_dir: Path,
@@ -438,6 +453,51 @@ def build_context(
         f"--data-dir {_quote(str(data_dir))}; do not rely on environment fallback."
     )
     return "\n".join(lines)
+
+
+def build_compact_context(
+    task: Mapping[str, Any],
+    data_dir: Path,
+    in_scope: bool = True,
+    controller: Path = CONTROLLER,
+) -> str:
+    stage = _stage(task)
+    flow = _flow(task)
+    strategy = _workspace_strategy(task)
+    task_id = _render(task.get("task_id"), "unknown")
+    revision = _render(task.get("revision"), "unknown")
+    index_role, index_projects = _index_selection_context(task)
+    next_actions = LITE_NEXT_ACTIONS if flow == "lite" else NEXT_ACTIONS
+    scope = "in" if in_scope else "outside"
+    prefix = _controller_prefix(data_dir, controller)
+    return " | ".join(
+        (
+            "Dev Flow active-task checkpoint",
+            f"Active task: {task_id}",
+            f"Revision: {revision}",
+            f"流程名称: {FLOW_NAMES_ZH[flow]}（{flow}）",
+            (
+                "工作方式: "
+                f"{WORKSPACE_STRATEGY_NAMES_ZH[strategy]}（{strategy}）"
+            ),
+            f"当前状态: {STATE_NAMES_ZH.get(stage, stage)}（{stage}）",
+            f"剩余流程: {_remaining_workflow(task)}",
+            f"Pending gate: {_pending_gate(task)}",
+            f"Active index role: {index_role}",
+            f"Active index projects: {index_projects}",
+            (
+                "Next action: "
+                f"{_render(task.get('next_action'), next_actions.get(stage, 'inspect task state'))}"
+            ),
+            f"Scope: {scope}",
+            f"Resume command: {prefix} show --task {_quote(task_id)} --compact",
+            "状态切换确认：每条状态边仍须单独用中文展示并取得明确确认",
+            (
+                "Every controller call must explicitly include "
+                f"--data-dir {_quote(str(data_dir))}"
+            ),
+        )
+    )
 
 
 def _stage_allows_writes(task: Mapping[str, Any]) -> bool:
@@ -1670,7 +1730,7 @@ def handle(
     if task is None and not in_scope:
         return None
 
-    if event in {"SessionStart", "UserPromptSubmit"}:
+    if event == "SessionStart":
         return {
             "hookSpecificOutput": {
                 "hookEventName": event,
@@ -1679,6 +1739,19 @@ def handle(
                 )
                 if task is not None
                 else build_bootstrap_context(data_dir, plugin.controller),
+            }
+        }
+    if event == "UserPromptSubmit":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": build_compact_context(
+                    task, data_dir, in_scope, plugin.controller
+                )
+                if task is not None
+                else build_compact_bootstrap_context(
+                    data_dir, plugin.controller
+                ),
             }
         }
     if event != "PreToolUse":

@@ -9,6 +9,53 @@ def _test_identity(name: Any, command: Any) -> str:
     )
 
 
+def _test_receipt(test: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: test.get(key)
+        for key in (
+            "evidence_contract_version",
+            "test_id",
+            "name",
+            "command",
+            "test_identity",
+            "exit_code",
+            "passed",
+            "recorded_at",
+            "repository_ids",
+            "capability_profile_sha256",
+            "plan_artifact_sha256",
+            "plan_approved_at",
+            "plan_approval_id",
+            "lite_approval_id",
+            "lite_approved_at",
+            "output",
+        )
+        if test.get(key) is not None
+    } | {
+        "fingerprint_sha256": {
+            repository_id: (fingerprint or {}).get("sha256")
+            for repository_id, fingerprint in (
+                test.get("fingerprints") or {}
+            ).items()
+        }
+    }
+
+
+def _review_snapshot_receipt(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: snapshot.get(key)
+        for key in (
+            "evidence_contract_version",
+            "snapshot_id",
+            "created_at",
+            "repository_ids",
+            "manifest_path",
+            "manifest_path_identity",
+            "sha256",
+        )
+    }
+
+
 def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     output_record: dict[str, Any] | None = None
@@ -46,7 +93,18 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
             }
         state_value = _copy_state(current)
         selected = _repo_by_selector(state_value, args.repo)
-        fingerprints = {repo["id"]: _fingerprint_repo(_working_path(repo)) for repo in selected}
+        captured_fingerprints = {
+            repo["id"]: _fingerprint_repo(_working_path(repo))
+            for repo in selected
+        }
+        fingerprints = {
+            repository_id: _store_fingerprint(
+                task_dir,
+                fingerprint,
+                f"test-fingerprint:{args.name}:{repository_id}",
+            )
+            for repository_id, fingerprint in captured_fingerprints.items()
+        }
         test_record = {
             "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
             "test_id": str(uuid.uuid4()),
@@ -62,20 +120,25 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
                 repository_id: fingerprint[
                     "capability_profile_sha256"
                 ]
-                for repository_id, fingerprint in fingerprints.items()
+                for repository_id, fingerprint in captured_fingerprints.items()
             },
             **binding,
             "output": output_record,
         }
         state_value["tests"].append(test_record)
         _commit_state(current, state_value, task_dir, "test_recorded", {"test_id": test_record["test_id"], "passed": test_record["passed"], "repository_ids": test_record["repository_ids"]})
-    return _result("record-test", state_value, test=test_record)
+    return _result(
+        "record-test",
+        state_value,
+        test=_test_receipt(test_record),
+    )
 
 
 def _write_review_repo(
     snapshot_root: Path,
     repo: dict[str, Any],
     *,
+    task_dir: Path | None = None,
     initial_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     working = _working_path(repo)
@@ -211,6 +274,11 @@ def _write_review_repo(
         "size": tar_path.stat().st_size,
         "files": fingerprint["untracked"],
     }
+    fingerprint_reference = _store_fingerprint(
+        task_dir if task_dir is not None else snapshot_root,
+        fingerprint,
+        f"review-fingerprint:{repo['id']}",
+    )
     return {
         "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "repository_id": repo["id"],
@@ -224,7 +292,7 @@ def _write_review_repo(
         "tracked_worktree_manifest_sha256": fingerprint[
             "tracked_worktree_manifest_sha256"
         ],
-        "fingerprint": fingerprint,
+        "fingerprint": fingerprint_reference,
         "sections": section_records,
     }
 
@@ -333,10 +401,10 @@ def _latest_passing_test_is_current(
                         False,
                         f"test output for identity {label!r} is missing or changed: {output_path}",
                     )
-            recorded = latest.get("fingerprints", {}).get(repo["id"], {})
             try:
-                _require_current_evidence(
-                    recorded, f"test-fingerprint:{label}:{repo['id']}"
+                recorded = _load_recorded_fingerprint(
+                    latest.get("fingerprints", {}).get(repo["id"]),
+                    f"test-fingerprint:{label}:{repo['id']}",
                 )
             except FlowError as exc:
                 return False, exc.message
@@ -390,6 +458,7 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
                 _write_review_repo(
                     snapshot_root,
                     repo,
+                    task_dir=task_dir,
                     initial_fingerprint=initial_fingerprints[repo["id"]],
                 )
                 for repo in selected
@@ -488,7 +557,11 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         )
         state_value["status"] = "REVIEWING"
         _commit_state(current, state_value, task_dir, "review_snapshot_recorded", {"snapshot_id": snapshot_id, "sha256": snapshot["sha256"], "repository_ids": snapshot["repository_ids"]})
-    return _result("review-snapshot", state_value, snapshot=snapshot)
+    return _result(
+        "review-snapshot",
+        state_value,
+        snapshot=_review_snapshot_receipt(snapshot),
+    )
 
 
 def _snapshot_file_error(
@@ -532,7 +605,7 @@ def _review_snapshot_integrity_error(snapshot: dict[str, Any]) -> str | None:
             _require_current_evidence(
                 repository, f"review-repository:{repository_id}"
             )
-            _require_current_evidence(
+            _load_recorded_fingerprint(
                 repository.get("fingerprint"),
                 f"review-fingerprint:{repository_id}",
             )
@@ -594,7 +667,9 @@ def _review_is_current(
             if fingerprints is not None and repo["id"] in fingerprints
             else _fingerprint_repo(_working_path(repo))
         )
-        if current.get("sha256") != (recorded.get("fingerprint") or {}).get("sha256"):
+        if current.get("sha256") != (
+            recorded.get("fingerprint") or {}
+        ).get("sha256"):
             return False, f"repository changed after review snapshot: {repo['id']}"
         if current.get("capability_profile_sha256") != recorded.get(
             "capability_profile_sha256"
@@ -855,5 +930,3 @@ def command_cancel(args: argparse.Namespace) -> dict[str, Any]:
         state_value["cancelled"] = {"reason": args.reason, "at": utc_now(), "by": _actor(), "from_status": source}
         _commit_state(current, state_value, task_dir, "task_cancelled", {"from": source, "reason": args.reason})
     return _result("cancel", state_value, cancelled=state_value["cancelled"])
-
-

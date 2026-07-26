@@ -23,6 +23,60 @@ def _result(command: str, state_value: dict[str, Any], **extra: Any) -> dict[str
     return response
 
 
+SHOW_SECTION_FIELDS = {
+    "approvals": "approvals",
+    "artifacts": "artifacts",
+    "blocked": "blocked",
+    "cancelled": "cancelled",
+    "repositories": "repositories",
+    "review-snapshots": "review_snapshots",
+    "route": "route",
+    "tests": "tests",
+    "workspace": "workspace",
+}
+
+
+def _show_summary(state_value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "updated_at": state_value.get("updated_at"),
+        "repository_count": len(state_value.get("repositories") or []),
+        "artifact_count": len(state_value.get("artifacts") or []),
+        "test_count": len(state_value.get("tests") or []),
+        "review_snapshot_count": len(
+            state_value.get("review_snapshots") or []
+        ),
+        "approval_gates": sorted(
+            (state_value.get("approvals") or {}).keys()
+        ),
+        "blocked": state_value.get("blocked"),
+        "cancelled": state_value.get("cancelled"),
+    }
+
+
+def _show_section_projection(
+    state_value: dict[str, Any],
+    sections: Sequence[str],
+) -> dict[str, Any]:
+    projection = {
+        key: state_value.get(key)
+        for key in (
+            "schema_version",
+            "evidence_contract_version",
+            "task_id",
+            "requirement",
+            "status",
+            "revision",
+            "created_at",
+            "updated_at",
+            "flow",
+        )
+    }
+    for section in sections:
+        field = SHOW_SECTION_FIELDS[section]
+        projection[field] = state_value.get(field)
+    return projection
+
+
 def command_start(args: argparse.Namespace) -> dict[str, Any]:
     requirement = (args.requirement_option or args.requirement or "").strip()
     if not requirement:
@@ -355,6 +409,20 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_show(args: argparse.Namespace) -> dict[str, Any]:
     state_value = load_state(_task_arg(args), args.data_dir)
+    if getattr(args, "compact", False):
+        return _result(
+            "show",
+            state_value,
+            summary=_show_summary(state_value),
+        )
+    sections = getattr(args, "section", None)
+    if sections:
+        return _result(
+            "show",
+            state_value,
+            task=_show_section_projection(state_value, sections),
+            sections=list(sections),
+        )
     return _result("show", state_value, task=state_value)
 
 
@@ -1657,5 +1725,4 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
         },
         repositories=repositories,
     )
-
 

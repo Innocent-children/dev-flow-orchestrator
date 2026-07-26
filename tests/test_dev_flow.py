@@ -55,6 +55,39 @@ class DevFlowStateTest(test_case.DevFlowTestCase):
         loaded = dev_flow.load_state(task["task_id"], self.data)
         self.assertEqual(loaded["revision"], 1)
 
+    def test_show_supports_compact_and_section_projections(self) -> None:
+        repo, _ = self.make_repo("show-projections")
+        started = self.start(repo)
+        task_id = started["task_id"]
+
+        compact = self.cli("show", "--task", task_id, "--compact")
+        self.assertNotIn("task", compact)
+        self.assertEqual(compact["summary"]["repository_count"], 1)
+        self.assertEqual(compact["summary"]["test_count"], 0)
+        self.assertTrue(compact["workflow"]["remaining"])
+
+        sectioned = self.cli(
+            "show",
+            "--task",
+            task_id,
+            "--section",
+            "repositories",
+            "--section",
+            "tests",
+        )
+        self.assertEqual(
+            sectioned["sections"],
+            ["repositories", "tests"],
+        )
+        self.assertIn("repositories", sectioned["task"])
+        self.assertIn("tests", sectioned["task"])
+        self.assertNotIn("artifacts", sectioned["task"])
+        self.assertEqual(sectioned["task"]["task_id"], task_id)
+
+        full = self.cli("show", "--task", task_id)
+        self.assertIn("artifacts", full["task"])
+        self.assertIn("review_snapshots", full["task"])
+
     def test_data_dir_whitespace_actor_and_platform_defaults(self) -> None:
         environment = {
             "DEV_FLOW_DATA_DIR": " \t ",

@@ -1602,12 +1602,18 @@ def _fingerprint_repo_once(
         ),
         "untracked": untracked,
     }
-    payload["sha256"] = _sha256_bytes(
+    payload["sha256"] = _fingerprint_payload_sha256(payload)
+    return payload
+
+
+def _fingerprint_payload_sha256(fingerprint: dict[str, Any]) -> str:
+    payload = dict(fingerprint)
+    payload.pop("sha256", None)
+    return _sha256_bytes(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
             "utf-8", "backslashreplace"
         )
     )
-    return payload
 
 
 def _fingerprint_repo(repo: Path) -> dict[str, Any]:
@@ -1638,6 +1644,280 @@ def _fingerprint_repo(repo: Path) -> dict[str, Any]:
             },
         )
     return second
+
+
+_FINGERPRINT_STORAGE_KIND = "task-local-json-v1"
+
+
+def _fingerprint_blob_error(
+    code: str,
+    message: str,
+    *,
+    label: str,
+    path: Path | None = None,
+    **details: Any,
+) -> FlowError:
+    payload = {"label": label, **details}
+    if path is not None:
+        payload["path"] = str(path)
+    return FlowError(code, message, details=payload)
+
+
+def _load_recorded_fingerprint(
+    recorded: Any,
+    label: str,
+) -> dict[str, Any]:
+    """Resolve an inline v2 fingerprint or a validated task-local blob ref."""
+
+    if not isinstance(recorded, dict):
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_EVIDENCE_INVALID",
+            "recorded repository fingerprint is missing or malformed",
+            label=label,
+        )
+    storage = recorded.get("storage")
+    if storage is None:
+        _require_current_evidence(recorded, label)
+        return recorded
+    if storage != _FINGERPRINT_STORAGE_KIND:
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_STORAGE_UNSUPPORTED",
+            "recorded repository fingerprint uses an unsupported storage format",
+            label=label,
+            storage=storage,
+        )
+
+    fingerprint_sha256 = recorded.get("sha256")
+    blob_sha256 = recorded.get("blob_sha256")
+    size = recorded.get("size")
+    path_value = recorded.get("path")
+    path_identity = recorded.get("path_identity")
+    task_root_value = recorded.get("task_root")
+    task_root_identity = recorded.get("task_root_identity")
+    if (
+        not isinstance(fingerprint_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", fingerprint_sha256)
+        or not isinstance(blob_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", blob_sha256)
+        or not isinstance(size, int)
+        or isinstance(size, bool)
+        or size < 0
+        or not isinstance(path_value, str)
+        or not path_value
+        or not isinstance(path_identity, dict)
+        or not isinstance(task_root_value, str)
+        or not task_root_value
+        or not isinstance(task_root_identity, dict)
+    ):
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_EVIDENCE_INVALID",
+            "external repository fingerprint has incomplete integrity metadata",
+            label=label,
+        )
+    path = Path(path_value)
+    task_root = Path(task_root_value)
+    expected_path = (
+        task_root
+        / "artifacts"
+        / "fingerprints"
+        / f"{fingerprint_sha256}.json"
+    )
+    if (
+        not path.is_absolute()
+        or not task_root.is_absolute()
+        or path != expected_path
+        or not _recorded_path_matches(
+            task_root_identity,
+            task_root_value,
+            task_root,
+        )
+    ):
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_EVIDENCE_INVALID",
+            "external repository fingerprint is outside its recorded task store",
+            label=label,
+            path=path,
+            task_root=task_root_value,
+            expected_path=str(expected_path),
+        )
+    if not _recorded_path_matches(
+        path_identity,
+        path_value,
+        path,
+    ):
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_BLOB_CHANGED",
+            "external repository fingerprint path identity changed",
+            label=label,
+            path=path,
+        )
+    unresolved = _rollback_evidence_for(path)
+    if unresolved:
+        raise FlowError(
+            "ATOMIC_RECOVERY_REQUIRED",
+            "external repository fingerprint has unresolved rollback evidence",
+            details={
+                "label": label,
+                "path": str(path),
+                "rollback_candidates": [
+                    str(candidate) for candidate in unresolved
+                ],
+                "recovery_command": _ROLLBACK_RECOVERY_COMMAND,
+            },
+        )
+    try:
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        raw_payload = path.read_bytes()
+        current_size = len(raw_payload)
+        current_blob_sha256 = _sha256_bytes(raw_payload)
+        payload = json.loads(raw_payload.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_BLOB_UNREADABLE",
+            "external repository fingerprint is missing or unreadable",
+            label=label,
+            path=path,
+            error=str(exc),
+        ) from exc
+    if current_size != size or current_blob_sha256 != blob_sha256:
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_BLOB_CHANGED",
+            "external repository fingerprint file changed",
+            label=label,
+            path=path,
+            expected_size=size,
+            actual_size=current_size,
+            expected_blob_sha256=blob_sha256,
+            actual_blob_sha256=current_blob_sha256,
+        )
+    if not isinstance(payload, dict):
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_EVIDENCE_INVALID",
+            "external repository fingerprint payload is not an object",
+            label=label,
+            path=path,
+        )
+    _require_current_evidence(payload, label)
+    actual_fingerprint_sha256 = _fingerprint_payload_sha256(payload)
+    if (
+        payload.get("sha256") != actual_fingerprint_sha256
+        or fingerprint_sha256 != actual_fingerprint_sha256
+        or recorded.get("capability_profile_sha256")
+        != payload.get("capability_profile_sha256")
+        or recorded.get("tracked_worktree_manifest_sha256")
+        != payload.get("tracked_worktree_manifest_sha256")
+    ):
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_EVIDENCE_INVALID",
+            "external repository fingerprint payload does not match its reference",
+            label=label,
+            path=path,
+            expected_fingerprint_sha256=fingerprint_sha256,
+            actual_fingerprint_sha256=actual_fingerprint_sha256,
+        )
+    return payload
+
+
+def _store_fingerprint(
+    task_dir: Path,
+    fingerprint: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    """Persist one immutable task-local fingerprint before state references it."""
+
+    _require_current_evidence(fingerprint, label)
+    fingerprint_sha256 = fingerprint.get("sha256")
+    actual_fingerprint_sha256 = _fingerprint_payload_sha256(fingerprint)
+    if (
+        not isinstance(fingerprint_sha256, str)
+        or fingerprint_sha256 != actual_fingerprint_sha256
+    ):
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_EVIDENCE_INVALID",
+            "repository fingerprint payload hash is invalid",
+            label=label,
+            expected_fingerprint_sha256=fingerprint_sha256,
+            actual_fingerprint_sha256=actual_fingerprint_sha256,
+        )
+
+    task_root = task_dir.resolve(strict=True)
+    path = (
+        task_root
+        / "artifacts"
+        / "fingerprints"
+        / f"{fingerprint_sha256}.json"
+    )
+    if path.exists():
+        unresolved = _rollback_evidence_for(path)
+        if unresolved:
+            raise FlowError(
+                "ATOMIC_RECOVERY_REQUIRED",
+                "task-local fingerprint has unresolved rollback evidence",
+                details={
+                    "label": label,
+                    "path": str(path),
+                    "rollback_candidates": [
+                        str(candidate) for candidate in unresolved
+                    ],
+                    "recovery_command": _ROLLBACK_RECOVERY_COMMAND,
+                },
+            )
+        try:
+            existing_raw = path.read_bytes()
+            existing = json.loads(existing_raw.decode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise _fingerprint_blob_error(
+                "FINGERPRINT_BLOB_UNREADABLE",
+                "existing task-local fingerprint blob is unreadable",
+                label=label,
+                path=path,
+                error=str(exc),
+            ) from exc
+        if (
+            not isinstance(existing, dict)
+            or existing.get("sha256") != fingerprint_sha256
+            or _fingerprint_payload_sha256(existing) != fingerprint_sha256
+            or existing != fingerprint
+        ):
+            raise _fingerprint_blob_error(
+                "FINGERPRINT_BLOB_COLLISION",
+                "task-local fingerprint path contains different evidence",
+                label=label,
+                path=path,
+                fingerprint_sha256=fingerprint_sha256,
+            )
+    else:
+        _atomic_write_json(path, fingerprint)
+
+    try:
+        blob_bytes = path.read_bytes()
+    except OSError as exc:
+        raise _fingerprint_blob_error(
+            "FINGERPRINT_BLOB_UNREADABLE",
+            "task-local fingerprint blob could not be re-read",
+            label=label,
+            path=path,
+            error=str(exc),
+        ) from exc
+    reference = {
+        "storage": _FINGERPRINT_STORAGE_KIND,
+        "task_root": str(task_root),
+        "task_root_identity": _serializable_path_identity(task_root),
+        "path": str(path),
+        "path_identity": _serializable_path_identity(path),
+        "blob_sha256": _sha256_bytes(blob_bytes),
+        "size": len(blob_bytes),
+        "sha256": fingerprint_sha256,
+        "capability_profile_sha256": fingerprint.get(
+            "capability_profile_sha256"
+        ),
+        "tracked_worktree_manifest_sha256": fingerprint.get(
+            "tracked_worktree_manifest_sha256"
+        ),
+    }
+    _load_recorded_fingerprint(reference, label)
+    return reference
 
 
 def _untracked_filesystem_path(item: dict[str, Any]) -> str:
@@ -1843,5 +2123,3 @@ def _index_selection(state_value: dict[str, Any]) -> dict[str, Any]:
         "role": selected_role,
         "repositories": repositories,
     }
-
-

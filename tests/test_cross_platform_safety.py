@@ -652,8 +652,10 @@ class CrossPlatformSafetyTest(unittest.TestCase):
             snapshot_root: Path,
             _repository,
             *,
+            task_dir=None,
             initial_fingerprint=None,
         ):
+            self.assertEqual(task_dir, self.task_dir)
             self.assertIs(initial_fingerprint, fingerprint)
             (snapshot_root / "partial").mkdir(parents=True)
             (snapshot_root / "partial" / "section.patch").write_bytes(

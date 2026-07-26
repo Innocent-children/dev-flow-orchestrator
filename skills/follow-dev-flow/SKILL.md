@@ -17,8 +17,10 @@ Run the controller's `--help` and the selected subcommand's `--help` before the 
 
 Use these resources before advancing:
 
-- [references/state-machine.md](references/state-machine.md) for states, gates, controller usage, and route-neutral execution.
-- [references/index-routing.md](references/index-routing.md) before any codebase-memory indexing or query; it defines the dual-index roles and explicit project selection.
+- [references/state-machine-common.md](references/state-machine-common.md) for controller protocol, flow selection, compact/sectioned state loading, per-edge confirmation, terminal-state rules, and canonical Chinese labels. Read it for every task.
+- After the controller returns the immutable flow, read exactly one of [references/flow-lite.md](references/flow-lite.md) or [references/flow-full.md](references/flow-full.md). Never load both.
+- For lite `INTAKE`/preflight work, additionally read [references/gates/preflight.md](references/gates/preflight.md). For full work, use the current-status routing table in `flow-full.md` and read exactly one gate bundle. Route again after a backward transition; do not preload every gate file.
+- [references/index-routing.md](references/index-routing.md) before any full-flow codebase-memory indexing or query; it defines the dual-index roles and explicit project selection.
 - [references/openspec-route.md](references/openspec-route.md) after the user selects OpenSpec.
 - [references/recovery.md](references/recovery.md) whenever resuming, reconciling drift, or handling a failed side effect.
 - [assets/direct-contract-template.md](assets/direct-contract-template.md) to create the approved direct-route contract.
@@ -26,7 +28,7 @@ Use these resources before advancing:
 ## Select new or resume
 
 1. Query existing tasks before creating state.
-2. Resume when the user supplies a task ID or deliberately selects a matching active task. Load it with `show` and continue from its recorded state and revision.
+2. Resume when the user supplies a task ID or deliberately selects a matching active task. Load it with `show --compact`, select the flow/status references, and request only the task sections required by the next gate. Use full `show` only when a complete snapshot is genuinely necessary.
 3. Start only when the request is new. Before `start` or any branch/worktree mutation, ask in Chinese and wait for the user to choose exactly one user-facing work mode:
    - **使用当前分支（精简流程）**: pass `--workspace-strategy in-place`; the controller derives `lite`.
    - **新建并切换分支（精简流程）**: present the repository, current branch/`HEAD`/status, proposed direct local branch name that is neither protected nor the resolvable remote default/base, and the exact `git switch -c <branch>` operation; create/switch only after explicit approval, then pass `--workspace-strategy branch`, from which the controller derives `lite`. Before the first confirmed all-repository preflight, both that branch and `HEAD` stay exact; afterwards the branch remains immutable, while a new `HEAD` requires a fresh all-repository preflight pair and lite approval. Do not interpret “拉分支” as permission to fetch or pull.
@@ -34,16 +36,16 @@ Use these resources before advancing:
    Recommend one from the request's size and risk, but never infer the choice from a generic request to start or continue. Keep the Chinese name primary and show the stable internal ID in parentheses when useful. Retain the returned task ID and revision.
 4. Never merge a new request into a merely convenient active task. Never replace, rewind, or cancel existing state without the user's explicit direction.
 
-A lite task runs `preflight -> approve --gate lite -> IMPLEMENTING -> VERIFYING -> DONE` directly inside the selected source checkout branch, with no baseline, impact analysis, route, managed worktree, plan artifact, or controller-bound index; the state-machine reference's [Lite flow](references/state-machine.md#lite-flow) section governs it. The rest of this skill's baseline/index/route/workspace requirements apply to full tasks.
+A lite task runs `preflight -> approve --gate lite -> IMPLEMENTING -> VERIFYING -> DONE` directly inside the selected source checkout branch, with no baseline, impact analysis, route, managed worktree, plan artifact, or controller-bound index; [references/flow-lite.md](references/flow-lite.md) governs it. The rest of this skill's baseline/index/route/workspace requirements apply to full tasks.
 
 ## Run one guarded loop
 
-1. Load the latest task JSON and reconcile it with read-only repository evidence.
+1. Start from the latest successful mutation receipt or load `show --compact`; request only the sections needed for the next decision and reconcile them with read-only repository evidence.
 2. Determine the single next legal action from the recorded state.
-3. Before every command that can explicitly or implicitly change `status`, stop and ask for confirmation in Chinese. Show the current Chinese state plus stable ID, the expected target Chinese state plus stable ID, the action that causes it, and the complete remaining main-flow states after the target. A confirmation authorizes exactly one state edge at the displayed revision. 一次确认不得授权后续状态边。 Never treat “continue”, “finish the task”, or an earlier gate approval as blanket authorization for later edges. Follow the complete automatic-transition list in [references/state-machine.md](references/state-machine.md#per-transition-confirmation).
-4. Preflight is two-phase so its target is never guessed: first run `preflight --preview` at the current revision, which commits no task state and performs only a lightweight decision/observation scan; if `transition_preview.changes_status` is true, present that exact reported edge and wait; then apply the token with `preflight --confirm-preview <token>`, which captures the complete fingerprint. A changed status decision fails with `PREFLIGHT_PREVIEW_STALE` and requires a new preview and state-edge confirmation. Observation-only drift returns `PREFLIGHT_EVIDENCE_REFRESH_REQUIRED`; inspect the returned current evidence, obtain explicit acceptance, and retry the same token with `--accept-evidence-refresh`. Selected-repository pairs may record evidence but cannot change status; finish with an all-repository preview/confirm pair, which captures and binds every repository before any preflight status transition.
+3. Before every command that can explicitly or implicitly change `status`, stop and ask for confirmation in Chinese. Show the current Chinese state plus stable ID, the expected target Chinese state plus stable ID, the action that causes it, and the complete remaining main-flow states after the target. A confirmation authorizes exactly one state edge at the displayed revision. 一次确认不得授权后续状态边。 Never treat “continue”, “finish the task”, or an earlier gate approval as blanket authorization for later edges. Follow the common confirmation contract and the automatic-transition list in the currently selected gate bundle.
+4. Preflight is two-phase under [references/gates/preflight.md](references/gates/preflight.md): first run `preflight --preview`, which commits no state and reports the exact decision/edge; confirmed apply captures complete evidence. Handle decision drift and observation-only refresh exactly as that gate specifies.
 5. After confirmation, perform only that action, then record its evidence through the controller using the latest `--expected-revision`.
-6. Reload the task after every successful mutation. Do not infer the next revision or replay a transition blindly.
+6. Replace the in-memory revision, status, workflow, and action result with the successful mutation receipt. Do not issue an immediate duplicate `show` when that receipt contains every field needed next. Reload with `show --compact` or `show --section` on resume, lost/invalid response, revision conflict, or missing gate fields. Never infer the next revision or replay a transition blindly.
 7. Stop at each human gate and present the decision, evidence, risks, and recovery implications. Continue only after an explicit choice. Gate approval and state-transition confirmation are separate decisions when both apply.
 8. Continue until `DONE`, `CANCELLED`, or a genuine blocker requires user input.
 

@@ -569,7 +569,12 @@ class DevFlowHookTests(unittest.TestCase):
         output = json.loads(stdout)
         specific = output["hookSpecificOutput"]
         self.assertEqual(specific["hookEventName"], "UserPromptSubmit")
-        self.assertIn("Next action: write the plan", specific["additionalContext"])
+        context = specific["additionalContext"]
+        self.assertIn("Next action: write the plan", context)
+        self.assertIn("Revision:", context)
+        self.assertIn("show --task TASK-42 --compact", context)
+        self.assertNotIn("\n", context)
+        self.assertLess(len(context.encode("utf-8")), 1800)
 
     def test_context_selects_baseline_index_explicitly_before_workspace(self) -> None:
         self.activate(

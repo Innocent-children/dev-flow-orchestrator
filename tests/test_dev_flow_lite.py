@@ -113,9 +113,133 @@ class DevFlowLiteTest(test_case.DevFlowTestCase):
         )
         self.assertIn("lite_approval_id", recorded["test"])
         self.assertNotIn("plan_artifact_sha256", recorded["test"])
+        self.assertNotIn("fingerprints", recorded["test"])
+        self.assertTrue(recorded["test"]["fingerprint_sha256"])
+        recorded_state = dev_flow.load_state("lite-1", self.data)
+        fingerprint_reference = next(
+            iter(recorded_state["tests"][-1]["fingerprints"].values())
+        )
+        self.assertEqual(
+            fingerprint_reference["storage"],
+            dev_flow._FINGERPRINT_STORAGE_KIND,
+        )
+        self.assertTrue(Path(fingerprint_reference["path"]).is_file())
         task = dev_flow.load_state("lite-1", self.data)
         self.mutate("transition", task, "--to", "DONE")
         self.assertEqual(dev_flow.load_state("lite-1", self.data)["status"], "DONE")
+
+    def test_record_test_reuses_task_local_fingerprint_blob_and_fails_closed(self) -> None:
+        repo, _ = self.make_repo("lite-fingerprint-cas")
+        task = self.approved_lite_task(
+            repo,
+            task_id="lite-fingerprint-cas",
+        )
+        self.mutate("transition", task, "--to", "IMPLEMENTING")
+        task = dev_flow.load_state("lite-fingerprint-cas", self.data)
+        self.mutate("transition", task, "--to", "VERIFYING")
+        task = dev_flow.load_state("lite-fingerprint-cas", self.data)
+
+        first = self.mutate(
+            "record-test",
+            task,
+            "--name",
+            "unit",
+            "--command",
+            "python -m unittest",
+            "--exit-code",
+            "0",
+        )
+        self.assertNotIn("fingerprints", first["test"])
+        task = dev_flow.load_state("lite-fingerprint-cas", self.data)
+        first_reference = next(
+            iter(task["tests"][-1]["fingerprints"].values())
+        )
+        first_path = Path(first_reference["path"])
+        self.assertEqual(
+            first_reference["sha256"],
+            next(iter(first["test"]["fingerprint_sha256"].values())),
+        )
+        self.assertNotIn(
+            "evidence_contract_version",
+            first_reference,
+        )
+        with self.assertRaises(dev_flow.FlowError) as legacy_gate:
+            dev_flow._require_current_evidence(
+                first_reference,
+                "legacy-controller-fingerprint",
+            )
+        self.assertEqual(
+            legacy_gate.exception.code,
+            "EVIDENCE_REGENERATION_REQUIRED",
+        )
+
+        second = self.mutate(
+            "record-test",
+            task,
+            "--name",
+            "integration",
+            "--command",
+            "python -m unittest discover",
+            "--exit-code",
+            "0",
+        )
+        task = dev_flow.load_state("lite-fingerprint-cas", self.data)
+        second_reference = next(
+            iter(task["tests"][-1]["fingerprints"].values())
+        )
+        self.assertEqual(second_reference["path"], str(first_path))
+        self.assertEqual(
+            len(list(first_path.parent.glob("*.json"))),
+            1,
+        )
+        self.assertNotIn("fingerprints", second["test"])
+        state_text = (
+            self.data
+            / "tasks"
+            / "lite-fingerprint-cas"
+            / "state.json"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn('"tracked_worktree":', state_text)
+        self.assertLess(len(json.dumps(second).encode("utf-8")), 5000)
+
+        with self.assertRaises(dev_flow.FlowError) as unsupported:
+            dev_flow._load_recorded_fingerprint(
+                {**first_reference, "storage": "future-format"},
+                "test:future-format",
+            )
+        self.assertEqual(
+            unsupported.exception.code,
+            "FINGERPRINT_STORAGE_UNSUPPORTED",
+        )
+
+        rollback = first_path.parent / (
+            f".{first_path.name}"
+            f"{dev_flow._ROLLBACK_MARKER}test"
+        )
+        rollback.write_bytes(b"")
+        with self.assertRaises(dev_flow.FlowError) as unresolved:
+            dev_flow._load_recorded_fingerprint(
+                first_reference,
+                "test:rollback",
+            )
+        self.assertEqual(
+            unresolved.exception.code,
+            "ATOMIC_RECOVERY_REQUIRED",
+        )
+        rollback.unlink()
+
+        first_path.write_text("{}\n", encoding="utf-8")
+        rejected = self.mutate(
+            "transition",
+            task,
+            "--to",
+            "DONE",
+            expected_code=2,
+        )
+        self.assertEqual(
+            rejected["error"]["code"],
+            "CURRENT_TEST_REQUIRED",
+        )
 
     def test_start_records_an_explicit_branch_strategy_and_chinese_progress(self) -> None:
         repo, _ = self.make_repo("lite-branch")

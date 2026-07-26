@@ -23,7 +23,30 @@ Start from the workflow's recorded implementation worktree and exact base commit
 
 Confirm that the recorded workspace-index generation, path, branch, `HEAD`, workspace-plan hash, and Git fingerprint still match. Use that project only to discover candidate symbols and relationships; the sanitized snapshot and direct source reads remain canonical. For before/after graph comparison, issue separate, explicitly labelled baseline and workspace queries. Never mix project roles or workspace generations in one cross-repository result.
 
-When `review-snapshot` produced a manifest, verify its hash, read all referenced committed/cached/unstaged patches, inspect the untracked manifest and archive without extracting into the reviewed repository, and compare their fingerprints with the live worktree. The controller records the committed patch as `base...HEAD`; also inspect the exact `base..HEAD` commit/diff boundary below. Explain any difference caused by ancestry or merges instead of silently dropping it.
+The `review-snapshot` mutation returns a compact receipt, not the complete
+snapshot object. Use its manifest path and SHA-256, or request only the
+`review-snapshots` task section, instead of issuing an unconditional full
+`show`. Verify the manifest hash, read all referenced
+committed/cached/unstaged patches, inspect the untracked manifest and archive
+without extracting into the reviewed repository, and compare their
+fingerprints with the live worktree.
+
+A repository fingerprint in a current manifest is a
+`task-local-json-v1` reference under the recorded task root's
+`artifacts/fingerprints/` directory. Before using it, require the absolute path
+and recorded path identity to match that content-addressed location, reject
+rollback residue, verify the blob's recorded byte size and `blob_sha256`, parse
+those same bytes as JSON, and confirm that its canonical payload SHA-256,
+evidence contract version, capability-profile SHA-256, and tracked-worktree
+manifest SHA-256 match the reference. Legacy inline v2 fingerprints remain
+readable. The locator itself deliberately carries no evidence-contract version;
+only its validated blob payload is v2 evidence, making older controllers fail
+closed. Missing, changed, malformed, or unsupported fingerprint storage is
+incomplete review evidence, never permission to reconstruct or relabel it.
+
+The controller records the committed patch as `base...HEAD`; also inspect the
+exact `base..HEAD` commit/diff boundary below. Explain any difference caused by
+ancestry or merges instead of silently dropping it.
 
 Let `<evidence-git>` mean `git -c core.fileMode=true -c core.symlinks=true -c core.trustctime=true -c core.checkStat=default -c core.fsmonitor=false -c core.ignoreStat=false -c core.untrackedCache=false -c core.ignoreCase=false -c core.quotePath=true`. Use equivalent read-only evidence commands to capture these distinct layers:
 

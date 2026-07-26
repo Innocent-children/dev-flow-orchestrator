@@ -672,9 +672,18 @@ class DevFlowFullFlowTest(test_case.DevFlowTestCase):
         )
         test_output.write_text("all tests passed\n", encoding="utf-8")
         response = self.mutate("review-snapshot", task)
-        snapshot = response["snapshot"]
+        snapshot_receipt = response["snapshot"]
+        self.assertNotIn("repositories", snapshot_receipt)
         self.assertEqual(response["status"], "REVIEWING")
+        task = dev_flow.load_state(task["task_id"], self.data)
+        snapshot = task["review_snapshots"][-1]
         sections = snapshot["repositories"][0]["sections"]
+        fingerprint_reference = snapshot["repositories"][0]["fingerprint"]
+        self.assertEqual(
+            fingerprint_reference["storage"],
+            dev_flow._FINGERPRINT_STORAGE_KIND,
+        )
+        self.assertTrue(Path(fingerprint_reference["path"]).is_file())
         self.assertIn("committed.txt", "\n".join(sections["committed"]["files"]))
         self.assertIn("cached.txt", "\n".join(sections["cached"]["files"]))
         self.assertIn("tracked.txt", "\n".join(sections["unstaged"]["files"]))
@@ -684,7 +693,6 @@ class DevFlowFullFlowTest(test_case.DevFlowTestCase):
         for name in ("committed", "cached", "unstaged"):
             self.assertTrue(Path(sections[name]["path"]).is_file())
 
-        task = dev_flow.load_state(task["task_id"], self.data)
         review_report = self.root / "review-report.md"
         review_report.write_text(
             "# Review\n\nVerdict: CONDITIONAL\n\nNo findings.\n", encoding="utf-8"

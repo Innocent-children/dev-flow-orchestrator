@@ -47,12 +47,28 @@ class PackageValidationTests(unittest.TestCase):
         skill = (
             PLUGIN_ROOT / "skills" / "follow-dev-flow" / "SKILL.md"
         ).read_text(encoding="utf-8")
-        state_machine = (
+        references = (
             PLUGIN_ROOT
             / "skills"
             / "follow-dev-flow"
             / "references"
-            / "state-machine.md"
+        )
+        common = (references / "state-machine-common.md").read_text(
+            encoding="utf-8"
+        )
+        lite = (references / "flow-lite.md").read_text(encoding="utf-8")
+        full = (references / "flow-full.md").read_text(encoding="utf-8")
+        preflight = (references / "gates" / "preflight.md").read_text(
+            encoding="utf-8"
+        )
+        baseline_impact_route = (
+            references / "gates" / "baseline-impact-route.md"
+        ).read_text(encoding="utf-8")
+        workspace_plan = (
+            references / "gates" / "workspace-plan.md"
+        ).read_text(encoding="utf-8")
+        verification_review = (
+            references / "gates" / "verification-review.md"
         ).read_text(encoding="utf-8")
         openspec_route = (
             PLUGIN_ROOT
@@ -75,25 +91,36 @@ class PackageValidationTests(unittest.TestCase):
             "创建独立工作树（完整流程）",
         ):
             self.assertIn(label, skill)
-            self.assertIn(label, state_machine)
-        for status_changing_command in (
-            "preflight --confirm-preview",
-            "baseline",
-            "record-index --role baseline",
-            "set-route",
-            "approve --gate route",
-            "prepare-workspace --execute",
-            "review-snapshot",
-            "transition",
-            "cancel",
-        ):
-            self.assertIn(status_changing_command, state_machine)
+            self.assertIn(label, common)
+        command_owners = {
+            "preflight --confirm-preview": preflight,
+            "baseline": baseline_impact_route,
+            "record-index --role baseline": baseline_impact_route,
+            "set-route": baseline_impact_route,
+            "approve --gate route": baseline_impact_route,
+            "prepare-workspace --execute": workspace_plan,
+            "review-snapshot": verification_review,
+            "transition": common,
+            "cancel": common,
+        }
+        for status_changing_command, owner in command_owners.items():
+            self.assertIn(status_changing_command, owner)
         self.assertIn("一次确认不得授权后续状态边", skill)
         self.assertIn("git switch -c <branch>", skill)
-        self.assertIn("git switch -c <branch>", state_machine)
+        self.assertIn("git switch -c <branch>", common)
         self.assertIn("preflight --preview", skill)
-        self.assertIn("PREFLIGHT_PREVIEW_STALE", state_machine)
-        self.assertIn("start` rejects a missing `--workspace-strategy", state_machine)
+        self.assertIn("PREFLIGHT_PREVIEW_STALE", preflight)
+        self.assertIn(
+            "`start` rejects a\nmissing `--workspace-strategy",
+            common,
+        )
+        self.assertIn("show --compact", common)
+        self.assertIn("workflow.remaining", common)
+        self.assertIn("DONE` is irreversible", common)
+        self.assertIn("DONE` is irreversible", verification_review)
+        self.assertNotIn("flow-full.md", lite)
+        self.assertIn("gates/preflight.md", lite)
+        self.assertIn("gates/preflight.md", full)
         self.assertIn("language the user explicitly selects", openspec_route)
         self.assertIn("repository's unambiguous dominant language", openspec_route)
         self.assertIn("stop and ask the user", openspec_route)
@@ -108,12 +135,12 @@ class PackageValidationTests(unittest.TestCase):
             "dev_flow_hook_name_sync",
             PLUGIN_ROOT / "hooks" / "dev_flow_hook.py",
         )
-        state_machine = (
+        common = (
             PLUGIN_ROOT
             / "skills"
             / "follow-dev-flow"
             / "references"
-            / "state-machine.md"
+            / "state-machine-common.md"
         ).read_text(encoding="utf-8")
 
         self.assertEqual(controller.FLOW_NAMES_ZH, hook.FLOW_NAMES_ZH)
@@ -133,8 +160,38 @@ class PackageValidationTests(unittest.TestCase):
         }.items():
             self.assertIn(
                 f"| `{stable_id}` | {display_name} |",
-                state_machine,
+                common,
             )
+
+    def test_state_machine_references_are_routed_and_bounded(self) -> None:
+        skill_root = PLUGIN_ROOT / "skills" / "follow-dev-flow"
+        skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+        references = skill_root / "references"
+        router = (references / "state-machine.md").read_text(encoding="utf-8")
+        common = references / "state-machine-common.md"
+        lite = references / "flow-lite.md"
+        preflight = references / "gates" / "preflight.md"
+
+        for required_link in (
+            "references/state-machine-common.md",
+            "references/flow-lite.md",
+            "references/flow-full.md",
+        ):
+            self.assertIn(required_link, skill)
+        self.assertNotIn(
+            "references/state-machine.md#",
+            skill,
+        )
+        self.assertIn("## Per-transition confirmation", router)
+        self.assertIn("## Lite flow", router)
+        self.assertLess(len(router.encode("utf-8")), 2048)
+        self.assertLess(len(lite.read_bytes()), 8192)
+        self.assertLess(
+            len(common.read_bytes())
+            + len(lite.read_bytes())
+            + len(preflight.read_bytes()),
+            24576,
+        )
 
     def test_portable_inventory_rejects_case_and_unicode_aliases(self) -> None:
         errors = validate_package.case_collision_errors(

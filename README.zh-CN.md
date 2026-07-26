@@ -118,7 +118,7 @@
 | `timeout` | Codex 放弃该钩子前等待的秒数 | `10` 足够。钩子按设计是故障时开放的——超时或出错时它不输出任何内容，而不会卡住你的会话 |
 | `statusMessage` | 钩子运行时显示的提示文字 | 纯装饰，可以省略 |
 
-`UserPromptSubmit` 没有 `matcher`——它在每次提交提示词时都会触发。命令守卫会以等价方式识别直接调用的 `git`/`git.exe`、绝对 Git 路径、受支持的 POSIX shell、`cmd.exe /c`、Windows PowerShell 和 `pwsh -Command` 包装；已识别但无法安全解析的包装载荷会带诊断拒绝。随包的 Windows shim 用于插件托管的自动发现；全局注册既拿不到 `PLUGIN_ROOT`，也拿不到 `PLUGIN_DATA`，因此应按上例使用经过验证的绝对解释器。改完这个文件后请开启新任务；Codex 可能还会要求你审查并信任这些钩子，拒绝则等于没有任何守卫。
+`UserPromptSubmit` 没有 `matcher`——它在每次提交提示词时都会触发。`SessionStart` 注入完整的可恢复检查点，而每次提示词只接收一行无状态精简检查点，其中包含任务、revision、流程、状态、剩余流程、索引、下一步动作和精简恢复命令。命令守卫会以等价方式识别直接调用的 `git`/`git.exe`、绝对 Git 路径、受支持的 POSIX shell、`cmd.exe /c`、Windows PowerShell 和 `pwsh -Command` 包装；已识别但无法安全解析的包装载荷会带诊断拒绝。随包的 Windows shim 用于插件托管的自动发现；全局注册既拿不到 `PLUGIN_ROOT`，也拿不到 `PLUGIN_DATA`，因此应按上例使用经过验证的绝对解释器。改完这个文件后请开启新任务；Codex 可能还会要求你审查并信任这些钩子，拒绝则等于没有任何守卫。
 
 ### 4. 指定数据目录
 
@@ -295,7 +295,7 @@ PowerShell（Windows）：
 
 选择 OpenSpec 路线时，用户对人类可读制品语言的明确选择优先。用户未明确指定时，先跟随目标仓库现有 OpenSpec 制品的主导语言，再参考其他人类可读制品；信号冲突或无法判断时，必须先停下来询问。工具要求的标识符和固定语法保持不变。
 
-生命周期钩子会在会话开始和提交提示词时注入确切的解释器、控制器绝对路径和私有数据目录参数。主技能每次调用控制器时都会保留这组有序前缀；它不会把解释器替换成针对平台的猜测，也不会假定 `PLUGIN_DATA` 能传入后续执行工具。
+生命周期钩子会在会话开始时注入完整上下文，并在每次提示词提交时通过精简检查点保留确切的解释器、控制器绝对路径和私有数据目录参数。主技能每次调用控制器时都会保留这组有序前缀；它不会把解释器替换成针对平台的猜测，也不会假定 `PLUGIN_DATA` 能传入后续执行工具。
 
 ### 边界与限制
 
@@ -304,6 +304,8 @@ PowerShell（Windows）：
 当 Git 无法可靠提供完整字节内容时，证据流水线会以失败关闭方式终止：它会拒绝带有 `assume-unchanged`/`skip-worktree` 标记的已跟踪条目（包括稀疏检出）、存在脏状态的已初始化子模块，以及 clean/process 内容过滤器（例如 Git LFS）。这些是当前有意保留的限制，系统不会在覆盖不完整时静默降级；继续操作前，请将检出目录恢复为规范状态，或改用单独治理的仓库或流程。
 
 当前证据契约版本是 `2`（`evidence_contract_version: 2`）。仓库指纹不会强行伪造 `core.fileMode`、`core.symlinks` 或 `core.ignoreCase`，而是由主机能力探测记录真实的 Git/文件系统配置，并为每个已跟踪条目绑定原始路径、index mode/object/stage、工作树类型和磁盘字节摘要。不同平台可以有不同能力表达，但每种配置都必须携带已跟踪字节清单；观察不完整或存在歧义时，关卡会被阻塞，而不会宣称已经完整覆盖。
+
+重复的测试与审查指纹保持完全相同的 v2 语义 payload 和哈希，但在每个任务中只保存一份 `task-local-json-v1` blob。状态中的条目是存储 locator，而非证据记录，因此会刻意省略 `evidence_contract_version`；当前控制器只有在完整校验 blob 后才接受其中的 v2 payload，旧控制器则会故障关闭，而不会信任一个未经校验的 locator。旧的 inline v2 指纹仍可读取。
 
 旧的 schema-v1 任务状态只要任务 ID 可移植就仍可读取；但旧的 v1 证据不满足当前 v2 契约与能力配置摘要，会被下游关卡有意视为过期。任务继续前，必须在同一主机上用兼容的当前版本重新生成所需的预检、基线/工作区索引、计划绑定、测试记录和审查快照。若任务已经越过控制器允许刷新所需证据的状态，就不能原地迁移；应取消并新建任务，不能手工修改证据。缺少启动时 `branch_binding` 的旧 `branch` 工作方式任务仍可查看，但会在预检和精简关卡故障关闭；应取消并新建任务，不能人工伪造批准证据。不要给旧证据重新贴标签，也不要把基线 codebase-memory 项目当作工作区项目复用。反过来，使用不理解当前能力配置的旧版插件指向已经由本版本处理过的数据目录也不安全：应重装支持同一证据契约的版本，再重新生成失效证据。旧状态可读不代表语义兼容，更换平台也不是证据迁移路径。
 
@@ -359,7 +361,7 @@ PowerShell（Windows）：
 ### 任务创建与查看
 
 - `start --repo <path> [--repo <path> ...] --workspace-strategy MODE "<requirement>"` —— 需求也可用 `--requirement` 传入。`--repo` 必填且可重复；`--workspace-strategy` 同样必填，以证明启动前已经明确选择工作方式：`in-place` 和 `branch` 推导 `lite`，`worktree` 推导 `full`。可选的 `--flow` 仅作兼容一致性断言；匹配值可接受，不匹配值会失败而不能覆盖工作方式。仓库集合、需求、推导出的流程和工作方式在创建后不可更改。`branch` 会记录用户批准并在 `start` 前完成切换后得到的确切分支和 `HEAD`，并拒绝符号本地分支、受保护分支以及可解析出的远端默认/基准分支。首次全仓库预检确认前，分支和 `HEAD` 都必须保持不变；此后分支永久锁定，而新的 `HEAD` 只能通过新的全仓库预览/确认对和精简审批采纳。控制器的 `start` 本身不执行 Git 切换。`--task-id` 可指定稳定任务 ID；`--protected-branch` 可重复追加，始终只会扩展而永不替换默认的 `main`、`master`、`trunk` 保护集合。受保护名称禁止 branch 模式绑定和直接提交，但显式选择 `in-place` 时仍可在本地编辑。作用域之外的仓库会被 `OUT_OF_SCOPE` 拒绝。
-- `show <task>` —— 输出完整任务状态，其中 `index_selection` 指明当前阶段所有查询都必须使用的 codebase-memory 项目。
+- `show <task> [--compact | --section SECTION ...]` —— 为兼容保留完整状态作为默认输出。`--compact` 只返回流程进度（含 `workflow.remaining`）与任务计数；可重复的 `--section` 只返回指定任务分区。mutation receipt 已含下一 revision/status/workflow 时直接使用；恢复或冲突时用 compact show，关卡缺字段时用 sectioned show。
 - `recover-quarantine <task> --expected-revision N` —— 子进程静止性检查失败后，证明记录的进程/进程组已经消失，校验变更的平台和仓库后置条件，并归档持久化隔离记录。该命令绝不会终止进程，也不会把超时当作已经恢复。
 - `recover-atomic-write [--path FILE] [--apply] [--resolve keep-current|restore-rollback] [--rollback-sha256 SHA]` —— `ATOMIC_RECOVERY_REQUIRED` 的唯一受支持出路。不带参数时只读列出数据目录下的全部回滚候选，并给出两侧的大小、SHA-256 和 schema 摘要；`--apply` 只清除可证明安全的证据；`--path` 接受被阻塞的目标文件或它的某个回滚文件，与 `--resolve` 搭配时必填。该命令不接受任务 ID，也不需要 `--expected-revision`——残留的回滚文件恰好会阻塞版本检查所需的那次状态写入；它改为持有被中断写入者本应持有的锁。它有意独立于 `recover-quarantine`：后者同样通过原子写入提交任务状态，残留会一并阻塞它，而残留也可能落在不属于任何任务的 `config.json` 或 `workspace-registry.json` 上。
 - `list [--active-only] [--status STATE ...]` —— 按更新时间倒序返回摘要。`--status` 可重复，接受任意状态名。
@@ -371,8 +373,8 @@ PowerShell（Windows）：
 - `baseline [--fetch] [--materialize]` —— 每次调用（包括裸 `baseline`，以及不获取网络内容的 `--materialize`）都要求当前有效的 `baseline-fetch` 审批。`--fetch` 执行受约束且不调用外部 helper 的网络获取，并额外要求该审批带有 `--allow-fetch`；若批准的预检快照存在未提交改动，还必须带有 `--allow-dirty`。`--materialize` 在固定的 `base_sha` 上创建或复用分离式分析工作树。
 - `record-index [--role baseline|workspace] [--repo ...] [--commit SHA] [--index-id ID] [--receipt FILE] [--metadata-json JSON]` —— `--role` 默认为 `baseline`。基线索引可在 `BASELINED`/`INDEXED` 记录；工作区索引可在 `WORKSPACE_READY`/`PLANNING`/`IMPLEMENTING`/`VERIFYING` 记录。`--commit` 对基线索引默认取固定的基准提交，对工作区索引默认取当前 `HEAD`。只有基线角色省略 `--index-id` 时，才可依赖 `impact-degraded` 审批和元数据中的失败来源信息；工作区索引必须提供成功且非空的 `--index-id`，并在元数据中显式写入 `persistence:false`。
 - `record-artifact --path FILE_OR_DIR --kind KIND [--verdict PASS|CONDITIONAL|FAIL] [--metadata-json JSON]` —— `--artifact` 是 `--path` 的等价别名。已识别的制品类型与阶段绑定：`impact`（位于 `INDEXED`/`IMPACT_REVIEW`，记录后会清除已有的路线审批）、`direct-contract`/`openspec-plan`（位于 `PLANNING`）、`review-report`（位于 `REVIEWING`，此时 `--verdict` 必填且必须与报告正文的 `Verdict:` 行一致）。`workspace-plan` 与 `review-snapshot` 由控制器生成，在此处会被 `RESERVED_ARTIFACT_KIND` 拒绝；其他类型作为自由形式的证据记录。
-- `record-test --name NAME --command CMD --exit-code N [--repo ...] [--output FILE]` —— 命令字符串只被记录，绝不执行。该记录绑定当前计划（完整流程）或精简审批，以及记录时刻的仓库指纹，因此之后任何改动都会使其失效。
-- `review-snapshot [--repo ...]` —— `--repo` 必须覆盖任务中的全部仓库。
+- `record-test --name NAME --command CMD --exit-code N [--repo ...] [--output FILE]` —— 命令字符串只被记录，绝不执行。该记录绑定当前计划（完整流程）或精简审批，以及记录时刻的仓库指纹，因此之后任何改动都会使其失效。完整指纹在每个任务内只保存一次，位置为 `artifacts/fingerprints/<fingerprint-sha256>.json`；状态仅保留经过校验的精简引用，响应则是 compact receipt。
+- `review-snapshot [--repo ...]` —— `--repo` 必须覆盖任务中的全部仓库。它复用同一份任务内指纹 blob，并只返回指向 manifest 的 compact receipt，不再内联完整快照。
 
 ### 决策与流转
 

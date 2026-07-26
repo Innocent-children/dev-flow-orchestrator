@@ -115,9 +115,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_data_dir(start)
     start.set_defaults(handler=command_start)
 
-    show = subparsers.add_parser("show", help="show one full task snapshot")
+    show = subparsers.add_parser(
+        "show",
+        help="show a compact, sectioned, or full task snapshot",
+    )
     _add_task(show)
     _add_data_dir(show)
+    show_projection = show.add_mutually_exclusive_group()
+    show_projection.add_argument(
+        "--compact",
+        action="store_true",
+        help="return workflow progress and compact task counts without full state",
+    )
+    show_projection.add_argument(
+        "--section",
+        action="append",
+        choices=sorted(SHOW_SECTION_FIELDS),
+        help="return one named task section; repeat to select multiple sections",
+    )
     show.set_defaults(handler=command_show)
 
     recover_quarantine = subparsers.add_parser(
@@ -496,5 +511,4 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
         return 1
-
 
