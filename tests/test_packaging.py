@@ -5,6 +5,8 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -209,6 +211,41 @@ class PackageValidationTests(unittest.TestCase):
 
     def test_shipped_runtime_imports_and_isolated_startup_validate(self) -> None:
         self.assertEqual(audit_runtime_imports.validate(PLUGIN_ROOT), [])
+
+    def test_controller_loader_names_a_missing_runtime_part(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            shutil.copy2(
+                PLUGIN_ROOT / "scripts" / "dev_flow.py",
+                scripts / "dev_flow.py",
+            )
+            shutil.copytree(
+                PLUGIN_ROOT / "scripts" / "dev_flow_parts",
+                scripts / "dev_flow_parts",
+            )
+            (scripts / "dev_flow_parts" / "cli.py").unlink()
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    str(scripts / "dev_flow.py"),
+                    "--help",
+                ],
+                cwd=root,
+                env=audit_runtime_imports._isolated_environment(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, b"")
+        self.assertIn(
+            b"incomplete dev-flow installation: missing runtime part cli.py",
+            completed.stderr,
+        )
 
     def test_candidate_snapshot_digest_changes_with_file_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

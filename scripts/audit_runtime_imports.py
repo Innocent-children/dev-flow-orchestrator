@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit shipped runtime imports and prove isolated controller/hook startup."""
+"""Audit shipped runtime imports and prove isolated executable startup."""
 
 from __future__ import annotations
 
@@ -15,9 +15,22 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence, Set
 
 
+DEV_FLOW_PART_PATHS = (
+    Path("scripts/dev_flow_parts/core.py"),
+    Path("scripts/dev_flow_parts/mutation.py"),
+    Path("scripts/dev_flow_parts/scope.py"),
+    Path("scripts/dev_flow_parts/process.py"),
+    Path("scripts/dev_flow_parts/git.py"),
+    Path("scripts/dev_flow_parts/commands.py"),
+    Path("scripts/dev_flow_parts/baseline.py"),
+    Path("scripts/dev_flow_parts/workspace.py"),
+    Path("scripts/dev_flow_parts/review.py"),
+    Path("scripts/dev_flow_parts/cli.py"),
+)
 RUNTIME_PATHS = (
     Path("scripts/candidate_identity.py"),
     Path("scripts/dev_flow.py"),
+    *DEV_FLOW_PART_PATHS,
     Path("scripts/__init__.py"),
     Path("scripts/windows_native_validation.py"),
     Path("hooks/dev_flow_hook.py"),
@@ -155,6 +168,57 @@ def audit_imports(
     return errors
 
 
+def controller_part_inventory_errors(plugin_root: Path) -> list[str]:
+    """Keep the executable part manifest and stdlib-only audit in lockstep."""
+
+    expected = tuple(path.name for path in DEV_FLOW_PART_PATHS)
+    parts_directory = plugin_root / "scripts" / "dev_flow_parts"
+    try:
+        actual = tuple(
+            sorted(
+                path.name
+                for path in parts_directory.iterdir()
+                if path.is_file() and path.suffix == ".py"
+            )
+        )
+    except OSError as exc:
+        return [f"controller runtime parts are not readable: {exc}"]
+
+    errors: list[str] = []
+    if set(actual) != set(expected):
+        errors.append(
+            "controller runtime part inventory differs from the audited set: "
+            f"expected={sorted(expected)!r}, actual={list(actual)!r}"
+        )
+
+    loader_path = plugin_root / "scripts" / "dev_flow.py"
+    try:
+        tree = ast.parse(
+            loader_path.read_text(encoding="utf-8"),
+            filename=str(loader_path),
+        )
+        assignment = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "_DEV_FLOW_PART_NAMES"
+                for target in node.targets
+            )
+        )
+        loaded = ast.literal_eval(assignment.value)
+    except (OSError, SyntaxError, StopIteration, TypeError, ValueError) as exc:
+        errors.append(f"controller runtime part manifest is unreadable: {exc}")
+    else:
+        if loaded != expected:
+            errors.append(
+                "controller runtime load order differs from the audited order: "
+                f"expected={expected!r}, loaded={loaded!r}"
+            )
+    return errors
+
+
 def _isolated_environment() -> dict[str, str]:
     environment = os.environ.copy()
     for key in (
@@ -220,14 +284,18 @@ def isolated_startup_errors(plugin_root: Path) -> list[str]:
 
 def validate(plugin_root: Path) -> list[str]:
     paths = [plugin_root / relative for relative in RUNTIME_PATHS]
-    return audit_imports(paths) + isolated_startup_errors(plugin_root)
+    return (
+        audit_imports(paths)
+        + controller_part_inventory_errors(plugin_root)
+        + isolated_startup_errors(plugin_root)
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Reject third-party imports in shipped controller/hook runtime files and "
-            "start both entry points with Python -I -S."
+            "Reject third-party imports in shipped runtime files and start the "
+            "controller, hook, and Windows native runner with Python -I -S."
         )
     )
     parser.add_argument(

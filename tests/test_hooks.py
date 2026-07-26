@@ -314,6 +314,10 @@ class DevFlowHookTests(unittest.TestCase):
             PLUGIN_ROOT / "scripts" / "dev_flow.py",
             special_root / "scripts" / "dev_flow.py",
         )
+        shutil.copytree(
+            PLUGIN_ROOT / "scripts" / "dev_flow_parts",
+            special_root / "scripts" / "dev_flow_parts",
+        )
 
         task_dir = special_data / "tasks" / "PACKAGED-1"
         task_dir.mkdir(parents=True)
@@ -670,7 +674,7 @@ class DevFlowHookTests(unittest.TestCase):
         context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Pending gate: none", context)
 
-    def test_current_core_layout_selects_latest_nonterminal_task_for_cwd(self) -> None:
+    def test_current_core_layout_preserves_nonterminal_task_ambiguity(self) -> None:
         self.write_core_state(
             "TASK-OLD", "PLANNING", updated_at="2026-07-21T10:00:00Z"
         )
@@ -687,8 +691,10 @@ class DevFlowHookTests(unittest.TestCase):
             {"hook_event_name": "SessionStart", "source": "resume"}
         )
         context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Active task: TASK-NEW", context)
-        self.assertIn("当前状态: 实现中（IMPLEMENTING）", context)
+        self.assertIn("Multiple non-terminal tasks match this repository", context)
+        self.assertIn("no task was selected", context)
+        self.assertIn("TASK-OLD", context)
+        self.assertIn("TASK-NEW", context)
         self.assertNotIn("TASK-DONE", context)
 
     def test_current_core_layout_matches_managed_workspace_path(self) -> None:

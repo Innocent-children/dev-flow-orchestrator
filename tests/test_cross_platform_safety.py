@@ -646,7 +646,15 @@ class CrossPlatformSafetyTest(unittest.TestCase):
         def locked(*_args, **_kwargs):
             yield self.task_dir, current
 
-        def fail_after_writing(snapshot_root: Path, _repository):
+        fingerprint = {"sha256": "a" * 64}
+
+        def fail_after_writing(
+            snapshot_root: Path,
+            _repository,
+            *,
+            initial_fingerprint=None,
+        ):
+            self.assertIs(initial_fingerprint, fingerprint)
             (snapshot_root / "partial").mkdir(parents=True)
             (snapshot_root / "partial" / "section.patch").write_bytes(
                 b"partial"
@@ -674,6 +682,8 @@ class CrossPlatformSafetyTest(unittest.TestCase):
             dev_flow, "_require_workspace_ready"
         ), mock.patch.object(
             dev_flow, "_require_current_plan_gate"
+        ), mock.patch.object(
+            dev_flow, "_fingerprint_repo", return_value=fingerprint
         ), mock.patch.object(
             dev_flow,
             "_latest_passing_test_is_current",
