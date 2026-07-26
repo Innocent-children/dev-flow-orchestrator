@@ -831,6 +831,52 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertIn(f"--data-dir {self.data_dir.resolve()}", reason)
         self.assertNotIn("$PLUGIN_ROOT", reason)
 
+    def test_posix_redirections_cannot_bypass_destructive_git_guardrails(self) -> None:
+        self.activate("INTAKE")
+        reset_commands = (
+            "> out.txt git reset --hard HEAD",
+            "2>/dev/null git reset --hard HEAD",
+            "git > out.txt reset --hard HEAD",
+            "git 2>/dev/null reset --hard HEAD",
+            "git 2>&1 reset --hard HEAD",
+            "git <&0 reset --hard HEAD",
+            "git >|out.txt reset --hard HEAD",
+            "git <<< input reset --hard HEAD",
+            "git <<'EOF' reset --hard HEAD\nignored\nEOF",
+            "bash -lc '> out.txt git reset --hard HEAD'",
+            "bash -lc '2>/dev/null git reset --hard HEAD'",
+            "bash -lc 'git > out.txt reset --hard HEAD'",
+        )
+        for command in reset_commands:
+            with self.subTest(command=command):
+                reason = self.assert_denied(command)
+                self.assertIn("git reset --hard", reason)
+        self.assertIn("git clean", self.assert_denied("> out.txt git clean -fd"))
+
+    def test_posix_redirections_preserve_benign_git_commands(self) -> None:
+        self.activate("IMPLEMENTING")
+        commands = (
+            "git status --short > status.txt",
+            "> status.txt git status --short",
+            "2>/dev/null git status --short",
+            "git 2>&1 status --short",
+            "git >|status.txt status --short",
+            "git <<< input status --short",
+            "bash -lc 'git > status.txt status --short'",
+            "cat <<'EOF'\ngit reset --hard HEAD\nEOF",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                stdout, stderr = self.invoke(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": command},
+                    }
+                )
+                self.assertEqual(stdout, "")
+                self.assertEqual(stderr, "")
+
     def test_protected_git_decision_is_equivalent_across_executables_and_wrappers(
         self,
     ) -> None:

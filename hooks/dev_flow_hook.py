@@ -106,7 +106,11 @@ LITE_PENDING_GATES = {
 
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_SEPARATOR_CHARS = set(";&|()<>\n{}")
+_POSIX_CONTROL_CHARS = set(";&|()\n{}")
+_GIT_TOKEN = re.compile(
+    r"(?:^|[^A-Za-z0-9_.-])git(?:\.exe)?(?=$|[^A-Za-z0-9_.-])",
+    re.IGNORECASE,
+)
 _LEADING_WORDS = {"!", "if", "then", "elif", "while", "until", "do"}
 _WRAPPERS = {"call", "command", "env", "exec", "nice", "nohup", "sudo", "time"}
 _SHELLS = {"bash", "dash", "ksh", "sh", "zsh"}
@@ -557,29 +561,230 @@ class _Inspection(NamedTuple):
     diagnostic: Optional[str]
     recognized_wrapper: bool
     parse_failed: bool
+    has_posix_heredoc: bool = False
+
+
+class _PosixParse(NamedTuple):
+    segments: list[list[str]]
+    error: Optional[str]
+    has_heredoc: bool
+
+
+def _skip_posix_heredocs(
+    command: str,
+    index: int,
+    delimiters: Sequence[tuple[str, bool]],
+) -> tuple[int, Optional[str]]:
+    """Skip static here-document bodies after their opening command line."""
+
+    for delimiter, strip_tabs in delimiters:
+        while True:
+            if index >= len(command):
+                return index, "POSIX shell here-document has no closing delimiter"
+            newline = command.find("\n", index)
+            if newline < 0:
+                line = command[index:]
+                index = len(command)
+            else:
+                line = command[index:newline]
+                index = newline + 1
+            if line.endswith("\r"):
+                line = line[:-1]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            if candidate == delimiter:
+                break
+            if newline < 0:
+                return index, "POSIX shell here-document has no closing delimiter"
+    return index, None
+
+
+def _parse_posix_segments(command: str) -> _PosixParse:
+    """Split static POSIX commands without treating redirections as pipelines."""
+
+    result: list[list[str]] = []
+    current: list[str] = []
+    word: list[str] = []
+    quote: Optional[str] = None
+    word_started = False
+    word_protected = False
+    pending_redirection: Optional[str] = None
+    here_docs: list[tuple[str, bool]] = []
+    has_heredoc = False
+    index = 0
+
+    def finish_word() -> None:
+        nonlocal has_heredoc
+        nonlocal pending_redirection
+        nonlocal word_protected
+        nonlocal word_started
+
+        if not word_started:
+            return
+        value = "".join(word)
+        if pending_redirection is not None:
+            if pending_redirection in {"<<", "<<-"}:
+                here_docs.append((value, pending_redirection == "<<-"))
+                has_heredoc = True
+            pending_redirection = None
+        else:
+            current.append(value)
+        word.clear()
+        word_started = False
+        word_protected = False
+
+    def finish_segment() -> None:
+        finish_word()
+        if current:
+            result.append(list(current))
+            current.clear()
+
+    def redirection_operator(start: int) -> tuple[str, int]:
+        if command[start] == "<":
+            if command.startswith("<<<", start):
+                return "<<<", start + 3
+            if command.startswith("<<-", start):
+                return "<<-", start + 3
+            if command.startswith("<<", start):
+                return "<<", start + 2
+            if command.startswith("<&", start):
+                return "<&", start + 2
+            if command.startswith("<>", start):
+                return "<>", start + 2
+            return "<", start + 1
+        if command.startswith(">>", start):
+            return ">>", start + 2
+        if command.startswith(">&", start):
+            return ">&", start + 2
+        if command.startswith(">|", start):
+            return ">|", start + 2
+        return ">", start + 1
+
+    while index < len(command):
+        char = command[index]
+        if quote is not None:
+            if char == quote:
+                quote = None
+                word_started = True
+                word_protected = True
+                index += 1
+                continue
+            if char == "\\" and quote == '"':
+                index += 1
+                if index >= len(command):
+                    return _PosixParse(
+                        [], "POSIX shell payload ends with an incomplete escape", has_heredoc
+                    )
+                escaped = command[index]
+                if escaped != "\n":
+                    word.append(escaped)
+                    word_started = True
+                index += 1
+                continue
+            word.append(char)
+            word_started = True
+            index += 1
+            continue
+
+        if char in " \t\r":
+            finish_word()
+            index += 1
+            continue
+        if char == "#":
+            finish_word()
+            newline = command.find("\n", index)
+            index = len(command) if newline < 0 else newline
+            continue
+        if char == "\\":
+            index += 1
+            if index >= len(command):
+                return _PosixParse(
+                    [], "POSIX shell payload ends with an incomplete escape", has_heredoc
+                )
+            escaped = command[index]
+            if escaped != "\n":
+                word.append(escaped)
+                word_started = True
+                word_protected = True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            word_started = True
+            word_protected = True
+            index += 1
+            continue
+        if char in "<>":
+            if word_started:
+                if not word_protected and "".join(word).isdigit():
+                    word.clear()
+                    word_started = False
+                    word_protected = False
+                else:
+                    finish_word()
+            if pending_redirection is not None:
+                return _PosixParse(
+                    [],
+                    "POSIX shell payload has a redirection without a target",
+                    has_heredoc,
+                )
+            pending_redirection, index = redirection_operator(index)
+            continue
+        if char == "&" and command.startswith("&>", index):
+            finish_word()
+            if pending_redirection is not None:
+                return _PosixParse(
+                    [],
+                    "POSIX shell payload has a redirection without a target",
+                    has_heredoc,
+                )
+            if command.startswith("&>>", index):
+                pending_redirection = "&>>"
+                index += 3
+            else:
+                pending_redirection = "&>"
+                index += 2
+            continue
+        if char in _POSIX_CONTROL_CHARS:
+            finish_segment()
+            if pending_redirection is not None:
+                return _PosixParse(
+                    [],
+                    "POSIX shell payload has a redirection without a target",
+                    has_heredoc,
+                )
+            index += 1
+            if char != "\n":
+                while index < len(command) and command[index] == char:
+                    index += 1
+            if char == "\n" and here_docs:
+                index, error = _skip_posix_heredocs(command, index, here_docs)
+                if error is not None:
+                    return _PosixParse([], error, has_heredoc)
+                here_docs.clear()
+            continue
+        word.append(char)
+        word_started = True
+        index += 1
+
+    if quote is not None:
+        return _PosixParse(
+            [], f"POSIX shell payload has an unmatched {quote} quote", has_heredoc
+        )
+    finish_segment()
+    if pending_redirection is not None:
+        return _PosixParse(
+            [], "POSIX shell payload has a redirection without a target", has_heredoc
+        )
+    if here_docs:
+        return _PosixParse(
+            [], "POSIX shell here-document has no closing delimiter", has_heredoc
+        )
+    return _PosixParse(result, None, has_heredoc)
 
 
 def _posix_segments(command: str) -> tuple[list[list[str]], Optional[str]]:
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>\n{}")
-        lexer.whitespace = " \t\r"
-        lexer.whitespace_split = True
-        lexer.commenters = "#"
-        tokens = list(lexer)
-    except ValueError as exc:
-        return [], f"POSIX shell payload has invalid quoting: {exc}"
-    result: list[list[str]] = []
-    current: list[str] = []
-    for token in tokens:
-        if token and all(char in _SEPARATOR_CHARS for char in token):
-            if current:
-                result.append(current)
-                current = []
-        else:
-            current.append(token)
-    if current:
-        result.append(current)
-    return result, None
+    parsed = _parse_posix_segments(command)
+    return parsed.segments, parsed.error
 
 
 def _cmd_segments(command: str) -> tuple[list[list[str]], Optional[str]]:
@@ -958,16 +1163,28 @@ def _inspect_payload(
             False,
             False,
         )
+    has_posix_heredoc = False
     if dialect == "cmd":
         segments, error = _cmd_segments(command)
     elif dialect == "powershell":
         segments, error = _powershell_segments(command)
     else:
-        segments, error = _posix_segments(command)
+        parsed = _parse_posix_segments(command)
+        segments, error = parsed.segments, parsed.error
+        has_posix_heredoc = parsed.has_heredoc
     if error is not None:
         diagnostic = _inspection_error(dialect, error) if strict else None
         return _Inspection([], diagnostic, False, True)
-    return _inspect_tokens(segments, cwd, dialect, depth, strict)
+    inspection = _inspect_tokens(segments, cwd, dialect, depth, strict)
+    if has_posix_heredoc:
+        return _Inspection(
+            inspection.invocations,
+            inspection.diagnostic,
+            inspection.recognized_wrapper,
+            inspection.parse_failed,
+            has_posix_heredoc=True,
+        )
+    return inspection
 
 
 def _recognized_wrapper_prefix(command: str) -> Optional[str]:
@@ -1033,6 +1250,10 @@ def _parse_git(args: Sequence[str], cwd: Path) -> Optional[tuple[str, list[str],
     return None
 
 
+def _may_contain_git(command: str) -> bool:
+    return _GIT_TOKEN.search(command) is not None
+
+
 def _git_invocations(
     command: str, cwd: Path
 ) -> tuple[list[tuple[str, list[str], Path]], Optional[str]]:
@@ -1049,8 +1270,13 @@ def _git_invocations(
             return inspection.invocations, inspection.diagnostic
 
     primary = _inspect_payload(command, cwd, "posix", 0, False)
+    if primary.parse_failed and _may_contain_git(command):
+        return [], _inspection_error(
+            "POSIX shell",
+            "the command may invoke Git but its POSIX syntax could not be inspected safely",
+        )
     inspections = [primary]
-    if not primary.recognized_wrapper:
+    if not primary.recognized_wrapper and not primary.has_posix_heredoc:
         inspections.append(_inspect_payload(command, cwd, "cmd", 0, False))
     result: list[tuple[str, list[str], Path]] = []
     seen: set[tuple[str, tuple[str, ...], str]] = set()
