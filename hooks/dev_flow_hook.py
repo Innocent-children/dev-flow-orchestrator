@@ -177,11 +177,11 @@ def in_configured_scope(
 def load_active_task(
     data_dir: Path, cwd: Path, plugin_root: Optional[Path] = None
 ) -> Optional[dict[str, Any]]:
-    """Use the controller's read-only lookup and fail open on any mismatch."""
+    """Use the controller's read-only lookup and preserve ownership ambiguity."""
 
     _import_controller(plugin_root)
     try:
-        from dev_flow import find_active_task_for_cwd, load_state
+        from dev_flow import FlowError, find_active_task_for_cwd, load_state
 
         task = find_active_task_for_cwd(cwd=cwd, data_dir=data_dir)
         if task is None:
@@ -190,6 +190,18 @@ def load_active_task(
                 candidate = load_state(relative.parts[0], data_dir=data_dir)
                 if candidate.get("status") not in {"DONE", "CANCELLED"}:
                     task = candidate
+    except FlowError as exc:
+        if exc.code == "ACTIVE_TASK_AMBIGUITY":
+            return {
+                "task_id": "active-task-ambiguity",
+                "status": "BLOCKED",
+                "flow": "full",
+                "workspace": {"strategy": "worktree", "ready": False},
+                "repositories": [],
+                "_active_task_ambiguity": True,
+                "ambiguity": dict(exc.details),
+            }
+        return None
     except Exception:
         return None
     return dict(task) if isinstance(task, Mapping) else None
@@ -1503,6 +1515,24 @@ def _deny(reason: str) -> dict[str, Any]:
     }
 
 
+def _active_task_ambiguity_context(task: Mapping[str, Any]) -> str:
+    details = task.get("ambiguity")
+    task_ids = (
+        details.get("task_ids")
+        if isinstance(details, Mapping)
+        else None
+    )
+    rendered_ids = _render(task_ids, "unknown")
+    return "\n".join(
+        (
+            "Dev Flow active-task ownership conflict:",
+            "- Multiple non-terminal tasks match this repository; no task was selected.",
+            f"- Conflicting task IDs: {rendered_ids}",
+            "- All tool operations are blocked until the conflicting tasks are resolved or cancelled.",
+        )
+    )
+
+
 class _PluginContext(NamedTuple):
     root: Optional[Path]
     data_dir: Optional[Path]
@@ -1616,6 +1646,19 @@ def handle(
     task = load_active_task(data_dir, workdir, plugin.root)
     if task is None and workdir != cwd:
         task = load_active_task(data_dir, cwd, plugin.root)
+
+    if task is not None and task.get("_active_task_ambiguity") is True:
+        message = _active_task_ambiguity_context(task)
+        if event == "PreToolUse":
+            return _deny(message)
+        if event in {"SessionStart", "UserPromptSubmit"}:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": event,
+                    "additionalContext": message,
+                }
+            }
+        return None
 
     candidates = [workdir] if workdir == cwd else [workdir, cwd]
     in_scope = in_configured_scope(

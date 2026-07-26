@@ -860,6 +860,220 @@ class DevFlowTest(unittest.TestCase):
         self.assertEqual(dev_flow.load_state("multi", self.data)["revision"], 1)
         self.assertEqual(len((task_dir / "events.jsonl").read_text().splitlines()), 1)
 
+    def test_sensitive_remote_values_are_redacted_from_state_and_quarantine(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("credential-redaction")
+        token = "very-secret-remote-token"
+        remote_url = (
+            f"https://build-user:{token}@example.invalid/team/repo.git"
+            f"?access_token={token}"
+        )
+        git(repo, "remote", "set-url", "origin", remote_url)
+        task = self.start(repo, task_id="credential-redaction")["task"]
+        self.mutate("preflight", task)
+        state = dev_flow.load_state(task["task_id"], self.data)
+        preflight = state["repositories"][0]["preflight"]
+        self.assertNotIn(token, json.dumps(state, ensure_ascii=False))
+        self.assertNotIn(token, preflight["remote_url"])
+        self.assertEqual(
+            preflight["remote_url_sha256"],
+            dev_flow._sensitive_value_sha256(remote_url),
+        )
+
+        task_dir = self.data / "tasks" / task["task_id"]
+        state_path = task_dir / "state.json"
+        legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy_state["legacy_error"] = f"stderr: token={token}"
+        dev_flow._atomic_write_json(state_path, legacy_state)
+        migrated = dev_flow.load_state(task["task_id"], self.data)
+        self.assertNotIn(token, json.dumps(migrated, ensure_ascii=False))
+        self.assertNotIn(token, state_path.read_text(encoding="utf-8"))
+
+        quarantine_path = task_dir / "mutation-quarantine.json"
+        dev_flow._atomic_write_json(
+            quarantine_path,
+            {
+                "ready": False,
+                "command": ["git", "fetch", remote_url],
+                "stderr": f"password={token}",
+            },
+        )
+        quarantine = dev_flow._read_quarantine(task_dir)
+        self.assertIsNotNone(quarantine)
+        self.assertNotIn(token, json.dumps(quarantine, ensure_ascii=False))
+        self.assertNotIn(token, quarantine_path.read_text(encoding="utf-8"))
+
+    def test_active_repository_claim_rejects_duplicate_start_and_ambiguity(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("repository-claim")
+        first = self.start(repo, task_id="claim-owner")["task"]
+        denied = self.cli(
+            "start",
+            "--task-id",
+            "claim-contender",
+            "--workspace-strategy",
+            "worktree",
+            "--requirement",
+            "must not share an active repository",
+            "--repo",
+            str(repo),
+            expected_code=2,
+        )
+        self.assertEqual(denied["error"]["code"], "REPOSITORY_CLAIM_CONFLICT")
+        claim = first["repositories"][0]["repository_claim"]
+        self.assertIn("canonical_path_identity", claim)
+        self.assertIn("git_common_dir_identity", claim)
+
+        duplicate_dir = self.data / "tasks" / "legacy-conflict"
+        dev_flow._ensure_private_dir(duplicate_dir)
+        duplicate = json.loads(
+            (self.data / "tasks" / first["task_id"] / "state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        duplicate["task_id"] = "legacy-conflict"
+        duplicate["repositories"][0].pop("repository_claim", None)
+        dev_flow._atomic_write_json(duplicate_dir / "state.json", duplicate)
+        with self.assertRaises(dev_flow.FlowError) as captured:
+            dev_flow.find_active_task_for_cwd(repo, self.data)
+        self.assertEqual(captured.exception.code, "ACTIVE_TASK_AMBIGUITY")
+
+    def test_pending_event_recovery_is_idempotent_and_partial_writes_complete(
+        self,
+    ) -> None:
+        repo, _ = self.make_repo("event-outbox")
+        task = self.start(repo, task_id="event-outbox")["task"]
+        task_dir = self.data / "tasks" / task["task_id"]
+        current = dev_flow.load_state(task["task_id"], self.data)
+        replacement = dev_flow._copy_state(current)
+        replacement["requirement"] = "commit after injected event failure"
+        with mock.patch.object(
+            dev_flow,
+            "_append_event",
+            side_effect=dev_flow.FlowError("EVENT_APPEND_FAILED", "injected"),
+        ):
+            with self.assertRaises(dev_flow.FlowError) as captured:
+                dev_flow._commit_state(
+                    current,
+                    replacement,
+                    task_dir,
+                    "injected_event",
+                )
+        self.assertEqual(captured.exception.code, "EVENT_DELIVERY_PENDING")
+        persisted = json.loads((task_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertIn("pending_event", persisted)
+        event_id = persisted["pending_event"]["event_id"]
+
+        recovered = dev_flow.load_state(task["task_id"], self.data)
+        self.assertNotIn("pending_event", recovered)
+        events_path = task_dir / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sum(item["event_id"] == event_id for item in events), 1)
+        dev_flow.load_state(task["task_id"], self.data)
+        events_again = events_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(events_again), len(events))
+
+        partial_path = task_dir / "partial-events.jsonl"
+        partial_event = {"event_id": "partial-event", "payload": {"ok": True}}
+        real_write = os.write
+
+        def partial_write(descriptor: int, data: object) -> int:
+            payload = bytes(data)
+            return real_write(descriptor, payload[: max(1, len(payload) // 2)])
+
+        with mock.patch.object(dev_flow.os, "write", side_effect=partial_write):
+            dev_flow._append_event(partial_path, partial_event)
+        self.assertEqual(
+            json.loads(partial_path.read_text(encoding="utf-8")), partial_event
+        )
+        dev_flow._append_event(partial_path, partial_event)
+        self.assertEqual(
+            len(partial_path.read_text(encoding="utf-8").splitlines()), 1
+        )
+
+    def test_currentness_helpers_accept_a_shared_fingerprint_observation(
+        self,
+    ) -> None:
+        fingerprint = {
+            "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
+            "sha256": "fingerprint",
+            "capability_profile_sha256": "capability",
+        }
+        state = {
+            "flow": "full",
+            "repositories": [{"id": "repo"}],
+            "tests": [
+                {
+                    "evidence_contract_version": dev_flow.EVIDENCE_CONTRACT_VERSION,
+                    "name": "unit",
+                    "command": "run unit",
+                    "passed": True,
+                    "repository_ids": ["repo"],
+                    "fingerprints": {"repo": fingerprint},
+                    "capability_profile_sha256": {"repo": "capability"},
+                    "plan_artifact_sha256": "plan",
+                    "plan_approval_id": "approval",
+                    "recorded_at": "2026-07-21T00:00:01.000Z",
+                }
+            ],
+        }
+        with mock.patch.object(
+            dev_flow,
+            "_require_current_plan_gate",
+            return_value=(
+                {"approval_id": "approval", "approved_at": "2026-07-21T00:00:00.000Z"},
+                {"sha256": "plan"},
+            ),
+        ), mock.patch.object(
+            dev_flow,
+            "_fingerprint_repo",
+            side_effect=AssertionError("shared observation should be reused"),
+        ):
+            self.assertEqual(
+                dev_flow._latest_passing_test_is_current(
+                    state,
+                    fingerprints={"repo": fingerprint},
+                ),
+                (True, None),
+            )
+
+        review_state = {
+            "repositories": [{"id": "repo"}],
+            "review_snapshots": [
+                {
+                    "repositories": [
+                        {
+                            "repository_id": "repo",
+                            "fingerprint": {"sha256": "fingerprint"},
+                            "capability_profile_sha256": "capability",
+                        }
+                    ]
+                }
+            ],
+        }
+        with mock.patch.object(
+            dev_flow,
+            "_review_snapshot_integrity_error",
+            return_value=None,
+        ), mock.patch.object(
+            dev_flow,
+            "_workspace_integrity_error",
+            return_value=None,
+        ), mock.patch.object(
+            dev_flow,
+            "_fingerprint_repo",
+            side_effect=AssertionError("shared observation should be reused"),
+        ):
+            self.assertEqual(
+                dev_flow._review_is_current(
+                    review_state,
+                    fingerprints={"repo": fingerprint},
+                ),
+                (True, None),
+            )
+
     def test_start_rejects_two_worktrees_from_the_same_git_repository(self) -> None:
         repo, _ = self.make_repo("duplicate-common-dir")
         linked = self.root / "duplicate-common-linked"

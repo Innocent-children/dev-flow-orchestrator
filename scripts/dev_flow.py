@@ -30,6 +30,7 @@ import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any, Iterator, Sequence
+from urllib.parse import urlsplit, urlunsplit
 
 try:  # POSIX is the primary Codex environment; Windows uses msvcrt below.
     import fcntl
@@ -43,7 +44,7 @@ except ImportError:  # pragma: no cover - exercised only on POSIX
 
 
 SCHEMA_VERSION = 1
-EVIDENCE_CONTRACT_VERSION = 1
+EVIDENCE_CONTRACT_VERSION = 2
 TERMINAL_STATES = {"DONE", "CANCELLED"}
 ORDERED_STATES = [
     "INTAKE",
@@ -195,6 +196,25 @@ _HELD_LOCK_DIRECTORIES: contextvars.ContextVar[tuple[str, ...]] = (
 _ACTIVE_MUTATION_INTENTS: contextvars.ContextVar[tuple[str, ...]] = (
     contextvars.ContextVar("dev_flow_active_mutation_intents", default=())
 )
+_URL_VALUE_RE = re.compile(r"(?:https?|ssh|git|file)://[^\s'\"<>]+", re.IGNORECASE)
+_SCP_REMOTE_VALUE_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(?P<user>[^/\s@'\"<>]+)@"
+    r"(?P<host>\[[^\]\s]+\]|[A-Za-z0-9._-]+):(?P<path>[^\s'\"<>]+)"
+)
+_AUTHORIZATION_VALUE_RE = re.compile(
+    r"(?i)(\b(?:proxy-)?authorization\s*:\s*(?:bearer|basic|token)\s+)"
+    r"([^\s,;]+)"
+)
+_SENSITIVE_VALUE_RE = re.compile(
+    r"""(?ix)
+    \b
+    (?:access[_-]?token|token|auth(?:orization)?|password|passwd|secret|
+       api[_-]?key|apikey|credential|private[_-]?key|signature|sig)
+    \b
+    (\s*(?:=|:)\s*)
+    (?:"[^"]*"|'[^']*'|[^\s,;]+)
+    """
+)
 
 
 class FlowError(Exception):
@@ -208,10 +228,16 @@ class FlowError(Exception):
         details: dict[str, Any] | None = None,
         exit_code: int = 2,
     ) -> None:
-        super().__init__(message)
+        # Error objects are also consumed directly by the hook and focused
+        # callers, not only by ``main``.  Redact at construction as well as at
+        # the protocol boundary so raw child output has no alternate route to
+        # a user-visible response.
+        safe_message = _redact_sensitive_text(message)
+        safe_details = _redact_sensitive_value(details or {})
+        super().__init__(safe_message)
         self.code = code
-        self.message = message
-        self.details = details or {}
+        self.message = safe_message
+        self.details = safe_details
         self.exit_code = exit_code
 
 
@@ -234,6 +260,84 @@ def _nonempty(value: Any) -> str | None:
     text = os.fspath(value) if isinstance(value, os.PathLike) else str(value)
     text = text.strip()
     return text or None
+
+
+def _redact_url(value: str) -> str:
+    """Return a safe display form without URL credentials or query values."""
+
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "<redacted-url>" if "@" in value or "?" in value else value
+    if not parsed.scheme or not parsed.netloc or host is None:
+        return value
+    host_display = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    netloc = host_display
+    if parsed.username is not None or parsed.password is not None:
+        netloc = f"<redacted>@{netloc}"
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urlunsplit(
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path,
+            "<redacted>" if parsed.query else "",
+            "<redacted>" if parsed.fragment else "",
+        )
+    )
+
+
+def _redact_sensitive_text(value: str) -> str:
+    """Remove credential-like material before it reaches durable or CLI JSON."""
+
+    # Git's scp-like remote syntax (``user:token@host:path``) has no URL
+    # scheme, so scrub it before URL handling.  Deliberately hiding an
+    # ordinary remote account name is preferable to ever exposing a token.
+    redacted = _SCP_REMOTE_VALUE_RE.sub(
+        lambda match: f"<redacted>@{match.group('host')}:{match.group('path')}",
+        value,
+    )
+    redacted = _URL_VALUE_RE.sub(
+        lambda match: _redact_url(match.group(0)), redacted
+    )
+    redacted = _AUTHORIZATION_VALUE_RE.sub(r"\1<redacted>", redacted)
+    return _SENSITIVE_VALUE_RE.sub(lambda match: f"{match.group(1)}<redacted>", redacted)
+
+
+def _redact_sensitive_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _redact_sensitive_value(nested)
+            for key, nested in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_value(item) for item in value)
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    return value
+
+
+def _redact_state_in_place(value: dict[str, Any]) -> None:
+    redacted = _redact_sensitive_value(value)
+    if not isinstance(redacted, dict):  # Defensive: the input contract is dict.
+        raise TypeError("state redaction produced a non-object value")
+    value.clear()
+    value.update(redacted)
+
+
+def _redacted_command(command: Sequence[str]) -> list[str]:
+    return [_redact_sensitive_text(str(argument)) for argument in command]
+
+
+def _sensitive_value_sha256(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(value.encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def _platform_family() -> str:
@@ -948,6 +1052,9 @@ def load_state(
         )
     _validate_task_id(stored_task_id)
     _assert_supported_evidence_versions(value)
+    if value.get("pending_event") is not None:
+        value = _recover_pending_event(path, value)
+    value = _migrate_sensitive_state(path, value)
     # Schema v1 predates implementation-worktree indexes.  Keep the schema
     # number stable and make the additive field visible to old task snapshots
     # without rewriting them merely because they were read.
@@ -1027,7 +1134,7 @@ def find_active_task_for_cwd(
     cwd: str | os.PathLike[str] | None = None,
     data_dir: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Return the newest non-terminal task whose repo/workspace contains cwd."""
+    """Return the sole non-terminal task whose repo/workspace contains cwd."""
 
     current = Path(cwd or os.getcwd()).expanduser().resolve(strict=False)
     tasks_dir = resolve_data_dir(data_dir) / "tasks"
@@ -1057,7 +1164,26 @@ def find_active_task_for_cwd(
                 break
     if not matches:
         return None
-    return max(matches, key=lambda value: (str(value.get("updated_at", "")), int(value.get("revision", 0))))
+    by_task_id = {
+        str(value.get("task_id")): value
+        for value in matches
+        if isinstance(value.get("task_id"), str)
+    }
+    if len(by_task_id) != 1:
+        raise FlowError(
+            "ACTIVE_TASK_AMBIGUITY",
+            "multiple active Dev Flow tasks match the current repository",
+            details={
+                "cwd": str(current),
+                "task_ids": sorted(by_task_id),
+                "match_count": len(matches),
+                "recovery": (
+                    "resolve or cancel the conflicting active tasks before "
+                    "continuing in this repository"
+                ),
+            },
+        )
+    return next(iter(by_task_id.values()))
 
 
 def _ensure_dir(path: Path) -> None:
@@ -1600,6 +1726,40 @@ def _atomic_write_json(path: Path, value: Any) -> None:
     _atomic_write_bytes(path, _json_bytes(value))
 
 
+def _atomic_write_sensitive_json(path: Path, value: Any) -> None:
+    _atomic_write_json(path, _redact_sensitive_value(value))
+
+
+def _event_id_recorded(path: Path, event_id: str) -> bool:
+    if not path.exists():
+        return False
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    recorded = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise FlowError(
+                        "EVENT_LOG_INVALID",
+                        "event log contains an incomplete or invalid record",
+                        details={"path": str(path), "line": line_number},
+                    ) from exc
+                if (
+                    isinstance(recorded, dict)
+                    and recorded.get("event_id") == event_id
+                ):
+                    return True
+    except OSError as exc:
+        raise FlowError(
+            "EVENT_LOG_READ_FAILED",
+            "could not inspect event log before an idempotent append",
+            details={"path": str(path), "error": str(exc)},
+        ) from exc
+    return False
+
+
 def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode(
         "utf-8", "backslashreplace"
@@ -1614,7 +1774,10 @@ def _protocol_json_bytes(value: Any) -> bytes:
 
 
 def _write_protocol_response(value: Any) -> None:
-    payload = _protocol_json_bytes(value)
+    # CLI JSON is an external display surface.  Keep this final guard even
+    # when a lower-level error or future feature accidentally retains raw
+    # command output in memory.
+    payload = _protocol_json_bytes(_redact_sensitive_value(value))
     binary = getattr(sys.stdout, "buffer", None)
     if binary is not None:
         binary.write(payload)
@@ -1625,12 +1788,24 @@ def _write_protocol_response(value: Any) -> None:
 
 
 def _append_event(path: Path, event: dict[str, Any]) -> None:
+    safe_event = _redact_sensitive_value(event)
+    if not isinstance(safe_event, dict):  # Defensive: event callers provide objects.
+        raise TypeError("event redaction produced a non-object value")
+    event_id = safe_event.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        raise FlowError(
+            "EVENT_INVALID",
+            "event records require a stable non-empty event_id",
+            details={"path": str(path)},
+        )
     _ensure_private_dir(path.parent)
     if path.exists():
         _set_private_permissions(path, 0o600)
+    if _event_id_recorded(path, event_id):
+        return
     payload = (
         json.dumps(
-            event,
+            safe_event,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
@@ -1643,11 +1818,131 @@ def _append_event(path: Path, event: dict[str, Any]) -> None:
             os.fchmod(descriptor, 0o600)
         else:  # pragma: no cover - exercised on native Windows
             _verify_windows_private_path(path)
-        os.write(descriptor, payload)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError(errno.EIO, "event append made no progress")
+            remaining = remaining[written:]
         os.fsync(descriptor)
+    except OSError as exc:
+        raise FlowError(
+            "EVENT_APPEND_FAILED",
+            "could not append the durable task event",
+            details={"path": str(path), "event_id": event_id, "error": str(exc)},
+        ) from exc
     finally:
         os.close(descriptor)
     _set_private_permissions(path, 0o600)
+
+
+def _flush_pending_event(task_dir: Path, state_value: dict[str, Any]) -> None:
+    pending = state_value.get("pending_event")
+    if pending is None:
+        return
+    if not isinstance(pending, dict):
+        raise FlowError(
+            "PENDING_EVENT_INVALID",
+            "task state contains an invalid pending event outbox record",
+            details={"path": str(task_dir / "state.json")},
+        )
+    if pending.get("task_id") != state_value.get("task_id"):
+        raise FlowError(
+            "PENDING_EVENT_INVALID",
+            "pending event task identity does not match its state snapshot",
+            details={"path": str(task_dir / "state.json")},
+        )
+    if pending.get("revision") != state_value.get("revision"):
+        raise FlowError(
+            "PENDING_EVENT_INVALID",
+            "pending event revision does not match its state snapshot",
+            details={"path": str(task_dir / "state.json")},
+        )
+    _append_event(task_dir / "events.jsonl", pending)
+    state_value.pop("pending_event", None)
+    _redact_state_in_place(state_value)
+    _atomic_write_json(task_dir / "state.json", state_value)
+
+
+def _recover_pending_event(
+    state_path: Path, state_value: dict[str, Any]
+) -> dict[str, Any]:
+    """Deliver an outboxed event under the task lock, including after a crash."""
+
+    task_dir = state_path.parent.resolve(strict=False)
+    held_directories = set(_HELD_LOCK_DIRECTORIES.get())
+    if str(task_dir) in held_directories:
+        _flush_pending_event(task_dir, state_value)
+        return state_value
+    # Recovery must work even when a mutation quarantine remains: the outbox
+    # itself is sufficient to repair the audit gap and does not authorize a
+    # new mutating child.
+    with _task_lock(task_dir, allow_quarantine=True):
+        try:
+            current = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise FlowError(
+                "STATE_READ_FAILED",
+                "could not reload task state for pending-event recovery",
+                details={"path": str(state_path), "error": str(exc)},
+            ) from exc
+        if not isinstance(current, dict):
+            raise FlowError(
+                "UNSUPPORTED_STATE",
+                "task state is invalid during pending-event recovery",
+                details={"path": str(state_path)},
+            )
+        _flush_pending_event(task_dir, current)
+        return current
+
+
+def _migrate_sensitive_state(
+    state_path: Path, state_value: dict[str, Any]
+) -> dict[str, Any]:
+    """Remove legacy secrets from state without creating a workflow event."""
+
+    redacted = _redact_sensitive_value(state_value)
+    if not isinstance(redacted, dict):  # Defensive: task state is an object.
+        raise TypeError("state redaction produced a non-object value")
+    if redacted == state_value:
+        return state_value
+
+    task_dir = state_path.parent.resolve(strict=False)
+
+    def rewrite(current: dict[str, Any]) -> dict[str, Any]:
+        safe = _redact_sensitive_value(current)
+        if not isinstance(safe, dict):  # Defensive: task state is an object.
+            raise TypeError("state redaction produced a non-object value")
+        if safe != current:
+            _atomic_write_json(state_path, safe)
+        return safe
+
+    # Normal controller commands already own this task's lock.  Re-locking
+    # would deadlock on platforms without reentrant file locks.
+    if str(task_dir) in set(_HELD_LOCK_DIRECTORIES.get()):
+        return rewrite(state_value)
+
+    # A read-only show/list operation may be the first process to encounter a
+    # legacy secret.  Serialize the one-time cleanup with ordinary state
+    # transitions and preserve a pending event before rewriting the snapshot.
+    with _task_lock(task_dir, allow_quarantine=True):
+        try:
+            current = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise FlowError(
+                "STATE_READ_FAILED",
+                "could not reload task state for sensitive-data cleanup",
+                details={"path": str(state_path), "error": str(exc)},
+            ) from exc
+        if not isinstance(current, dict):
+            raise FlowError(
+                "UNSUPPORTED_STATE",
+                "task state is invalid during sensitive-data cleanup",
+                details={"path": str(state_path)},
+            )
+        if current.get("pending_event") is not None:
+            _flush_pending_event(task_dir, current)
+        return rewrite(current)
 
 
 def _quarantine_path(directory: Path) -> Path:
@@ -1672,7 +1967,12 @@ def _read_quarantine(directory: Path) -> dict[str, Any] | None:
             "mutation quarantine evidence is invalid",
             details={"path": str(path)},
         )
-    return value
+    safe_value = _redact_sensitive_value(value)
+    if not isinstance(safe_value, dict):  # Defensive: validated above.
+        raise TypeError("quarantine redaction produced a non-object value")
+    if safe_value != value:
+        _atomic_write_json(path, safe_value)
+    return safe_value
 
 
 def _assert_no_mutation_quarantine(directory: Path) -> None:
@@ -1724,7 +2024,7 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
         operations = list(evidence.get("operations") or [])
         operations.append(
             {
-                "command": list(command),
+                "command": _redacted_command(command),
                 "announced_at": utc_now(),
                 "phase": "spawn_pending",
                 "gate_protocol_version": 1,
@@ -1738,7 +2038,7 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
             }
         )
         evidence["operations"] = operations
-        evidence["command"] = list(command)
+        evidence["command"] = _redacted_command(command)
         evidence["phase"] = "spawn_pending"
         evidence["pid"] = None
         evidence["process_group"] = None
@@ -1750,7 +2050,7 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
             else "posix_process_group"
         )
         evidence["containment_established"] = False
-        _atomic_write_json(path, evidence)
+        _atomic_write_sensitive_json(path, evidence)
         return path
     if path.exists():
         raise FlowError(
@@ -1786,10 +2086,10 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
             else "posix_process_group"
         ),
         "containment_established": False,
-        "command": list(command),
+        "command": _redacted_command(command),
         "operations": [
             {
-                "command": list(command),
+                "command": _redacted_command(command),
                 "announced_at": announced_at,
                 "phase": "spawn_pending",
                 "gate_protocol_version": 1,
@@ -1817,7 +2117,7 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
     }
     # This write is deliberately before Popen.  If it cannot be committed,
     # the target process is never started.
-    _atomic_write_json(path, evidence)
+    _atomic_write_sensitive_json(path, evidence)
     _ACTIVE_MUTATION_INTENTS.set(
         (*_ACTIVE_MUTATION_INTENTS.get(), str(path))
     )
@@ -1851,7 +2151,7 @@ def _update_mutation_intent(
             "process_group": (
                 process.pid if os.name != "nt" else None
             ),
-            "command": list(command),
+            "command": _redacted_command(command),
             "cause": (
                 f"{type(cause).__name__}: {cause}"
                 if cause is not None
@@ -1880,7 +2180,7 @@ def _update_mutation_intent(
         if phase == "child_owned":
             operations[-1]["containment_established"] = True
     evidence["operations"] = operations
-    _atomic_write_json(path, evidence)
+    _atomic_write_sensitive_json(path, evidence)
 
 
 def _forget_active_mutation_intents(directory: Path) -> None:
@@ -1919,7 +2219,7 @@ def _complete_mutation_intent(
             "process_group": None,
         }
     )
-    _atomic_write_json(path, evidence)
+    _atomic_write_sensitive_json(path, evidence)
     try:
         path.unlink()
         if os.name != "nt":
@@ -1932,7 +2232,7 @@ def _complete_mutation_intent(
         if not path.exists():
             try:
                 evidence["phase"] = "clear_durability_uncertain"
-                _atomic_write_json(path, evidence)
+                _atomic_write_sensitive_json(path, evidence)
             except FlowError:
                 pass
         raise FlowError(
@@ -2000,7 +2300,7 @@ def _abandon_unstarted_mutation_intent(path: Path | None) -> None:
                     "cause": None,
                 }
             )
-            _atomic_write_json(path, evidence)
+            _atomic_write_sensitive_json(path, evidence)
             return
         path.unlink()
         forget_active = True
@@ -2070,7 +2370,7 @@ def _persist_mutation_quarantine(
             else "posix_process_group"
         ),
         "containment_established": os.name != "nt",
-        "command": list(command),
+        "command": _redacted_command(command),
         "platform": _platform_family(),
         "state_revision": state_revision,
         "cause": f"{type(error).__name__}: {error}",
@@ -2079,7 +2379,7 @@ def _persist_mutation_quarantine(
             "validate_partial_git_and_filesystem_postconditions",
         ],
     }
-    _atomic_write_json(path, evidence)
+    _atomic_write_sensitive_json(path, evidence)
     return path
 
 
@@ -3075,6 +3375,180 @@ def _state_workspace_claims(data_root: Path) -> list[dict[str, Any]]:
     return claims
 
 
+def _repository_claim(root: Path, git_common_dir: Path) -> dict[str, Any]:
+    """Build the durable exclusive-ownership key for one source checkout."""
+
+    canonical_root = root.resolve(strict=False)
+    canonical_common_dir = git_common_dir.resolve(strict=False)
+    return {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "canonical_path": str(canonical_root),
+        "canonical_path_identity": _serializable_path_identity(
+            canonical_root
+        ),
+        "git_common_dir": str(canonical_common_dir),
+        "git_common_dir_identity": _serializable_path_identity(
+            canonical_common_dir
+        ),
+    }
+
+
+def _recorded_repository_claim(repo: dict[str, Any]) -> dict[str, Any]:
+    """Load a durable repository claim, deriving a safe legacy equivalent."""
+
+    stored = repo.get("repository_claim")
+    if stored is not None and not isinstance(stored, dict):
+        raise FlowError(
+            "REPOSITORY_CLAIM_UNAVAILABLE",
+            "repository ownership claim has an invalid structure",
+            details={"repository_id": repo.get("id")},
+        )
+    stored = stored or {}
+    root_value = (
+        stored.get("canonical_path")
+        or repo.get("canonical_path")
+        or repo.get("path")
+    )
+    if not isinstance(root_value, str) or not root_value:
+        raise FlowError(
+            "REPOSITORY_CLAIM_UNAVAILABLE",
+            "active repository has no canonical source path for ownership verification",
+            details={"repository_id": repo.get("id")},
+        )
+    root = Path(root_value).expanduser().resolve(strict=False)
+    common_value = stored.get("git_common_dir")
+    if isinstance(common_value, str) and common_value:
+        common_dir = Path(common_value).expanduser().resolve(strict=False)
+    else:
+        try:
+            common_dir = _git_evidence_path(root, "--git-common-dir")
+        except (FlowError, OSError, ValueError) as exc:
+            raise FlowError(
+                "REPOSITORY_CLAIM_UNAVAILABLE",
+                "active repository Git common directory cannot be verified",
+                details={
+                    "repository_id": repo.get("id"),
+                    "repository": str(root),
+                    "error": str(exc),
+                },
+            ) from exc
+    claim = _repository_claim(root, common_dir)
+    for key in ("canonical_path_identity", "git_common_dir_identity"):
+        candidate = stored.get(key)
+        if isinstance(candidate, dict):
+            claim[key] = candidate
+    return claim
+
+
+def _repository_claim_path_matches(
+    left: dict[str, Any], right: dict[str, Any], path_key: str, identity_key: str
+) -> bool:
+    left_identity = left.get(identity_key)
+    right_identity = right.get(identity_key)
+    if isinstance(left_identity, dict) and isinstance(right_identity, dict):
+        if _path_identity_equal(left_identity, right_identity):
+            return True
+    left_path = left.get(path_key)
+    right_path = right.get(path_key)
+    if not isinstance(left_path, str) or not isinstance(right_path, str):
+        return False
+    return _same_path(
+        Path(left_path).expanduser().resolve(strict=False),
+        Path(right_path).expanduser().resolve(strict=False),
+    )
+
+
+def _repository_claim_conflict(
+    proposed: dict[str, Any], existing: dict[str, Any]
+) -> str | None:
+    """Return the exclusive resource shared by two active task claims."""
+
+    if _repository_claim_path_matches(
+        proposed,
+        existing,
+        "canonical_path",
+        "canonical_path_identity",
+    ):
+        return "canonical_path"
+    if _repository_claim_path_matches(
+        proposed,
+        existing,
+        "git_common_dir",
+        "git_common_dir_identity",
+    ):
+        return "git_common_dir"
+    return None
+
+
+def _active_repository_claims(data_root: Path) -> list[dict[str, Any]]:
+    """Return every non-terminal task's source checkout ownership claim.
+
+    Claims are intentionally exclusive across tasks.  A separate task cannot
+    safely share either the same canonical checkout or a sibling worktree that
+    resolves to the same Git common directory: both can mutate shared Git
+    metadata and invalidate each other's observations.
+    """
+
+    tasks_dir = data_root / "tasks"
+    if not tasks_dir.is_dir():
+        return []
+    claims: list[dict[str, Any]] = []
+    for state_path in tasks_dir.glob("*/state.json"):
+        try:
+            state_value = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise FlowError(
+                "REPOSITORY_CLAIM_UNAVAILABLE",
+                "an existing task state cannot be read for ownership verification",
+                details={"path": str(state_path), "error": str(exc)},
+            ) from exc
+        if not isinstance(state_value, dict):
+            raise FlowError(
+                "REPOSITORY_CLAIM_UNAVAILABLE",
+                "an existing task state is invalid for ownership verification",
+                details={"path": str(state_path)},
+            )
+        task_id = state_value.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            raise FlowError(
+                "REPOSITORY_CLAIM_UNAVAILABLE",
+                "an existing task has no valid identity for ownership verification",
+                details={"path": str(state_path)},
+            )
+        if state_value.get("status") in TERMINAL_STATES:
+            continue
+        repositories = state_value.get("repositories")
+        if not isinstance(repositories, list):
+            raise FlowError(
+                "REPOSITORY_CLAIM_UNAVAILABLE",
+                "an active task has invalid repository ownership metadata",
+                details={"task_id": task_id, "path": str(state_path)},
+            )
+        for repo in repositories:
+            if not isinstance(repo, dict):
+                raise FlowError(
+                    "REPOSITORY_CLAIM_UNAVAILABLE",
+                    "an active task contains an invalid repository record",
+                    details={"task_id": task_id, "path": str(state_path)},
+                )
+            repository_id = repo.get("id")
+            if not isinstance(repository_id, str) or not repository_id:
+                raise FlowError(
+                    "REPOSITORY_CLAIM_UNAVAILABLE",
+                    "an active task repository has no valid identity",
+                    details={"task_id": task_id, "path": str(state_path)},
+                )
+            claims.append(
+                {
+                    **_recorded_repository_claim(repo),
+                    "task_id": task_id,
+                    "repository_id": repository_id,
+                    "state_path": str(state_path),
+                }
+            )
+    return claims
+
+
 def _claim_workspace_plan(
     data_root: Path,
     state_value: dict[str, Any],
@@ -3385,6 +3859,7 @@ def _commit_state(
     new_state["updated_at"] = now
     event = {
         "event_id": str(uuid.uuid4()),
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "task_id": new_state["task_id"],
         "type": event_type,
         "at": now,
@@ -3394,8 +3869,26 @@ def _commit_state(
         "status": new_state["status"],
         "payload": payload or {},
     }
+    # The state snapshot is the durable outbox.  A crash after this atomic
+    # replacement but before JSONL delivery is recoverable without advancing
+    # state a second time or losing the audit event.
+    new_state["pending_event"] = event
+    _redact_state_in_place(new_state)
+    event = dict(new_state["pending_event"])
     _atomic_write_json(task_dir / "state.json", new_state)
-    _append_event(task_dir / "events.jsonl", event)
+    try:
+        _flush_pending_event(task_dir, new_state)
+    except FlowError as exc:
+        raise FlowError(
+            "EVENT_DELIVERY_PENDING",
+            "state was committed but its audit event is pending durable delivery",
+            details={
+                "task_id": new_state.get("task_id"),
+                "revision": revision,
+                "event_id": event.get("event_id"),
+                "recovery": "reload the task to retry the pending event outbox",
+            },
+        ) from exc
     _complete_mutation_intent(task_dir, revision)
     return event
 
@@ -3479,7 +3972,7 @@ def _quiesce_completed_process_group(
         details={
             "pid": process.pid,
             "process_group": process.pid,
-            "command": list(command),
+            "command": _redacted_command(command),
             "quarantine": str(quarantine) if quarantine else None,
         },
     )
@@ -3712,7 +4205,7 @@ def _quiesce_windows_job(
             "Windows child job could not be proven quiescent",
             details={
                 "pid": process.pid,
-                "command": list(command),
+                "command": _redacted_command(command),
                 "quarantine": (
                     str(quarantine) if quarantine else None
                 ),
@@ -4010,7 +4503,7 @@ def _run(
         raise FlowError(
             "MUTATION_LOCK_REQUIRED",
             "a mutating child cannot start outside a controller lock",
-            details={"command": list(command)},
+            details={"command": _redacted_command(command)},
         )
     mutation_intent = (
         _begin_mutation_intent(command) if mutation else None
@@ -4047,7 +4540,7 @@ def _run(
             "COMMAND_FAILED",
             f"could not execute {command[0]}",
             details={
-                "command": list(command),
+                "command": _redacted_command(command),
                 "cwd": str(cwd) if cwd else None,
                 "error": str(exc),
                 "failure_kind": "spawn",
@@ -4121,7 +4614,7 @@ def _run(
                 ),
                 details={
                     "pid": process.pid,
-                    "command": list(command),
+                    "command": _redacted_command(command),
                     "quarantine": (
                         str(quarantine) if quarantine else None
                     ),
@@ -4175,7 +4668,7 @@ def _run(
                 "protected child failed and could not be proven quiescent",
                 details={
                     "pid": process.pid,
-                    "command": list(command),
+                    "command": _redacted_command(command),
                     "quarantine": str(quarantine) if quarantine else None,
                 },
             ) from exc
@@ -4232,7 +4725,7 @@ def _run(
             "Windows child-process ownership could not be released safely",
             details={
                 "pid": process.pid,
-                "command": list(command),
+                "command": _redacted_command(command),
                 "quarantine": str(quarantine) if quarantine else None,
                 "error": str(exc),
             },
@@ -4256,7 +4749,7 @@ def _run(
                 "mutation gate completion could not be authenticated",
                 details={
                     "pid": process.pid,
-                    "command": list(command),
+                    "command": _redacted_command(command),
                     "quarantine": (
                         str(quarantine) if quarantine else None
                     ),
@@ -4272,7 +4765,7 @@ def _run(
                 "COMMAND_FAILED",
                 f"could not execute {command[0]}",
                 details={
-                    "command": list(command),
+                    "command": _redacted_command(command),
                     "cwd": str(cwd) if cwd else None,
                     "failure_kind": "spawn",
                     **spawn_details,
@@ -4302,7 +4795,7 @@ def _run(
                 "child exited but durable mutation evidence could not be finalized",
                 details={
                     "pid": process.pid,
-                    "command": list(command),
+                    "command": _redacted_command(command),
                     "quarantine": (
                         str(quarantine) if quarantine else None
                     ),
@@ -4330,7 +4823,7 @@ def _run(
             "COMMAND_FAILED",
             f"command failed with exit code {result.returncode}",
             details={
-                "command": list(command),
+                "command": _redacted_command(command),
                 "cwd": str(cwd) if cwd else None,
                 "stderr": rendered_stderr,
                 "stderr_sha256": _sha256_bytes(stderr_bytes),
@@ -5229,6 +5722,40 @@ def _remote_url(repo: Path, remote: str | None) -> str | None:
     return _git_optional(repo, "remote", "get-url", "--", remote)
 
 
+def _remote_url_evidence(value: str | None) -> dict[str, str | None]:
+    return {
+        "remote_url": _redact_sensitive_text(value) if value else None,
+        "remote_url_sha256": _sensitive_value_sha256(value),
+    }
+
+
+def _live_approved_remote_url(
+    repo: Path, repo_id: str, preflight: dict[str, Any]
+) -> str | None:
+    remote = preflight.get("remote")
+    actual_url = _remote_url(repo, remote)
+    recorded_digest = preflight.get("remote_url_sha256")
+    actual_digest = _sensitive_value_sha256(actual_url)
+    if actual_digest != recorded_digest:
+        raise FlowError(
+            "REMOTE_URL_CHANGED",
+            f"remote URL changed after preflight approval: {repo_id}",
+            details={
+                "repository_id": repo_id,
+                "remote": remote,
+                "recorded_url": preflight.get("remote_url"),
+                "actual_url": (
+                    _redact_sensitive_text(actual_url)
+                    if actual_url
+                    else None
+                ),
+                "recorded_url_sha256": recorded_digest,
+                "actual_url_sha256": actual_digest,
+            },
+        )
+    return actual_url
+
+
 def _approved_fetch_refspec(remote: str | None, base_branch: str | None) -> str | None:
     if not remote or not base_branch:
         return None
@@ -5353,6 +5880,7 @@ def _preflight_repo(
         blockers.append("base_branch_unresolved")
     if remote and remote not in _split_lines(_git_optional(repo, "remote")):
         blockers.append("remote_not_found")
+    remote_url = _remote_url(repo, remote)
     evidence: dict[str, Any] = {
         "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "checked_at": utc_now(),
@@ -5370,7 +5898,7 @@ def _preflight_repo(
         "branch": branch,
         "head_sha": head_sha,
         "remote": remote,
-        "remote_url": _remote_url(repo, remote),
+        **_remote_url_evidence(remote_url),
         "base_branch": base_branch,
         "base_candidate_ref": base_candidate_ref,
         "base_candidate_sha": base_candidate_sha,
@@ -6261,6 +6789,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
     for root in roots:
         _assert_path_in_scope(root, "repository", args.data_dir)
     common_dirs: list[tuple[Path, Path]] = []
+    repository_claims: dict[str, dict[str, Any]] = {}
     for root in roots:
         common_dir = _git_evidence_path(root, "--git-common-dir")
         previous = next(
@@ -6282,6 +6811,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 },
             )
         common_dirs.append((common_dir, root))
+        repository_claims[str(root)] = _repository_claim(root, common_dir)
     protected = list(
         dict.fromkeys(
             [*DEFAULT_PROTECTED_BRANCHES, *(args.protected_branch or [])]
@@ -6371,6 +6901,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 "id": repo_id,
                 "path": str(root),
                 "canonical_path": str(root),
+                "repository_claim": repository_claims[str(root)],
                 "protected_branches": protected,
                 "branch_binding": branch_bindings.get(str(root)),
                 "preflight": None,
@@ -6414,6 +6945,41 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                             "portable_identity": identity,
                         },
                     )
+        existing_repository_claims = _active_repository_claims(data_root)
+        for proposed_claim in repository_claims.values():
+            for existing_claim in existing_repository_claims:
+                conflict = _repository_claim_conflict(
+                    proposed_claim, existing_claim
+                )
+                if conflict is None:
+                    continue
+                raise FlowError(
+                    "REPOSITORY_CLAIM_CONFLICT",
+                    (
+                        "repository source checkout is already exclusively "
+                        "claimed by an active task"
+                    ),
+                    details={
+                        "task_id": task_id,
+                        "repository": proposed_claim["canonical_path"],
+                        "git_common_dir": proposed_claim["git_common_dir"],
+                        "owner_task_id": existing_claim.get("task_id"),
+                        "owner_repository_id": existing_claim.get(
+                            "repository_id"
+                        ),
+                        "owner_repository": existing_claim.get(
+                            "canonical_path"
+                        ),
+                        "owner_git_common_dir": existing_claim.get(
+                            "git_common_dir"
+                        ),
+                        "conflict": conflict,
+                        "sharing_rule": (
+                            "active tasks exclusively own canonical source "
+                            "paths and Git common directories"
+                        ),
+                    },
+                )
         with _task_lock(task_dir):
             if (task_dir / "state.json").exists():
                 raise FlowError(
@@ -7012,7 +7578,7 @@ def command_scope(args: argparse.Namespace) -> dict[str, Any]:
     return response
 
 
-PREFLIGHT_PREVIEW_TOKEN_VERSION = "v2"
+PREFLIGHT_PREVIEW_TOKEN_VERSION = "v3"
 PREFLIGHT_DECISION_FIELDS = (
     "evidence_contract_version",
     "repository_root",
@@ -7026,6 +7592,7 @@ PREFLIGHT_DECISION_FIELDS = (
     "head_sha",
     "remote",
     "remote_url",
+    "remote_url_sha256",
     "base_branch",
     "base_candidate_ref",
     "base_candidate_sha",
@@ -7822,6 +8389,7 @@ def _preflight_remote_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
                 "repository_id": repo["id"],
                 "remote": preflight.get("remote"),
                 "remote_url": preflight.get("remote_url"),
+                "remote_url_sha256": preflight.get("remote_url_sha256"),
                 "base_branch": preflight.get("base_branch"),
                 "base_candidate_ref": preflight.get("base_candidate_ref"),
                 "base_candidate_sha": preflight.get("base_candidate_sha"),
@@ -7874,20 +8442,9 @@ def _require_baseline_fetch_approval(state_value: dict[str, Any]) -> dict[str, A
         )
     for repo in state_value.get("repositories", []):
         preflight = repo.get("preflight") or {}
-        remote = preflight.get("remote")
-        recorded_url = preflight.get("remote_url")
-        actual_url = _remote_url(Path(repo["path"]), remote)
-        if actual_url != recorded_url:
-            raise FlowError(
-                "REMOTE_URL_CHANGED",
-                f"remote URL changed after preflight approval: {repo['id']}",
-                details={
-                    "repository_id": repo["id"],
-                    "remote": remote,
-                    "recorded_url": recorded_url,
-                    "actual_url": actual_url,
-                },
-            )
+        _live_approved_remote_url(
+            Path(repo["path"]), repo["id"], preflight
+        )
         actual_fingerprint = _fingerprint_repo(Path(repo["path"]))["sha256"]
         recorded_fingerprint = preflight.get("worktree_fingerprint_sha256")
         if actual_fingerprint != recorded_fingerprint:
@@ -7925,6 +8482,7 @@ def _lite_preflight_evidence(state_value: dict[str, Any]) -> dict[str, Any]:
                 "head_sha": preflight.get("head_sha"),
                 "remote": preflight.get("remote"),
                 "remote_url": preflight.get("remote_url"),
+                "remote_url_sha256": preflight.get("remote_url_sha256"),
                 "dirty": bool(preflight.get("dirty")),
                 "worktree_fingerprint_sha256": preflight.get(
                     "worktree_fingerprint_sha256"
@@ -8385,7 +8943,9 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 if args.fetch and remote:
                     fetch_refspec = preflight.get("fetch_refspec")
-                    remote_url = preflight.get("remote_url")
+                    live_remote_url = _live_approved_remote_url(
+                        path, repo["id"], preflight
+                    )
                     if fetch_refspec != _approved_fetch_refspec(
                         remote, preflight.get("base_branch")
                     ):
@@ -8398,8 +8958,8 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                             },
                         )
                     if (
-                        not isinstance(remote_url, str)
-                        or not remote_url.strip()
+                        not isinstance(live_remote_url, str)
+                        or not live_remote_url.strip()
                     ):
                         raise FlowError(
                             "REMOTE_URL_UNAVAILABLE",
@@ -8450,7 +9010,7 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                         "--no-prune-tags",
                         "--upload-pack=git-upload-pack",
                         "--",
-                        remote_url,
+                        live_remote_url,
                         fetch_refspec,
                     )
                 source_ref, base_sha = _baseline_ref(path, remote, preflight["base_branch"])
@@ -11578,7 +12138,12 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
     return _result("record-test", state_value, test=test_record)
 
 
-def _write_review_repo(snapshot_root: Path, repo: dict[str, Any]) -> dict[str, Any]:
+def _write_review_repo(
+    snapshot_root: Path,
+    repo: dict[str, Any],
+    *,
+    initial_fingerprint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     working = _working_path(repo)
     _assert_evidence_supported(working)
     base_sha = (repo.get("baseline") or {}).get("base_sha")
@@ -11634,7 +12199,11 @@ def _write_review_repo(snapshot_root: Path, repo: dict[str, Any]) -> dict[str, A
         }
         return captured_head, captured_sections, captured_files
 
-    fingerprint = _fingerprint_repo(working)
+    fingerprint = (
+        initial_fingerprint
+        if initial_fingerprint is not None
+        else _fingerprint_repo(working)
+    )
     repo_dir = snapshot_root / repo["id"]
     _ensure_private_dir(repo_dir)
     head_sha, sections, section_files = capture_sections()
@@ -11726,7 +12295,11 @@ def _write_review_repo(snapshot_root: Path, repo: dict[str, Any]) -> dict[str, A
     }
 
 
-def _latest_passing_test_is_current(state_value: dict[str, Any]) -> tuple[bool, str | None]:
+def _latest_passing_test_is_current(
+    state_value: dict[str, Any],
+    *,
+    fingerprints: dict[str, dict[str, Any]] | None = None,
+) -> tuple[bool, str | None]:
     """Require each repo's newest relevant test record to pass and remain current."""
 
     if _flow(state_value) == "lite":
@@ -11774,7 +12347,11 @@ def _latest_passing_test_is_current(state_value: dict[str, Any]) -> tuple[bool, 
                 False,
                 f"{missing_message}: {repo['id']}",
             )
-        current = _fingerprint_repo(_working_path(repo))
+        current = (
+            fingerprints[repo["id"]]
+            if fingerprints is not None and repo["id"] in fingerprints
+            else _fingerprint_repo(_working_path(repo))
+        )
         for latest in latest_by_identity.values():
             label = latest.get("name") or latest.get("test_identity") or "unnamed"
             try:
@@ -11858,18 +12435,29 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         route_value = (current.get("route") or {}).get("value")
         plan_kind = "direct-contract" if route_value == "direct" else "openspec-plan"
         _require_current_plan_gate(current, plan_kind)
-        passing, reason = _latest_passing_test_is_current(current)
-        if not passing:
-            raise FlowError("CURRENT_TEST_REQUIRED", reason or "a current passing test is required")
         state_value = _copy_state(current)
         selected = _repo_by_selector(state_value, args.repo)
         if len(selected) != len(state_value["repositories"]):
             raise FlowError("INCOMPLETE_REVIEW", "review-snapshot must include every configured repository")
+        initial_fingerprints = {
+            repo["id"]: _fingerprint_repo(_working_path(repo))
+            for repo in selected
+        }
+        passing, reason = _latest_passing_test_is_current(
+            current,
+            fingerprints=initial_fingerprints,
+        )
+        if not passing:
+            raise FlowError("CURRENT_TEST_REQUIRED", reason or "a current passing test is required")
         snapshot_id = f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         snapshot_root = task_dir / "reviews" / snapshot_id
         try:
             repositories = [
-                _write_review_repo(snapshot_root, repo)
+                _write_review_repo(
+                    snapshot_root,
+                    repo,
+                    initial_fingerprint=initial_fingerprints[repo["id"]],
+                )
                 for repo in selected
             ]
             for repository in repositories:
@@ -12047,7 +12635,11 @@ def _review_snapshot_integrity_error(snapshot: dict[str, Any]) -> str | None:
     return None
 
 
-def _review_is_current(state_value: dict[str, Any]) -> tuple[bool, str | None]:
+def _review_is_current(
+    state_value: dict[str, Any],
+    *,
+    fingerprints: dict[str, dict[str, Any]] | None = None,
+) -> tuple[bool, str | None]:
     snapshots = state_value.get("review_snapshots", [])
     if not snapshots:
         return False, "no review snapshot has been recorded"
@@ -12063,7 +12655,11 @@ def _review_is_current(state_value: dict[str, Any]) -> tuple[bool, str | None]:
         recorded = by_id.get(repo["id"])
         if not recorded:
             return False, f"review snapshot does not cover repository: {repo['id']}"
-        current = _fingerprint_repo(_working_path(repo))
+        current = (
+            fingerprints[repo["id"]]
+            if fingerprints is not None and repo["id"] in fingerprints
+            else _fingerprint_repo(_working_path(repo))
+        )
         if current.get("sha256") != (recorded.get("fingerprint") or {}).get("sha256"):
             return False, f"repository changed after review snapshot: {repo['id']}"
         if current.get("capability_profile_sha256") != recorded.get(
@@ -12071,6 +12667,17 @@ def _review_is_current(state_value: dict[str, Any]) -> tuple[bool, str | None]:
         ):
             return False, f"repository capability profile changed after review snapshot: {repo['id']}"
     return True, None
+
+
+def _current_repository_fingerprints(
+    state_value: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """Observe each working repository once for equivalent currentness checks."""
+
+    return {
+        repo["id"]: _fingerprint_repo(_working_path(repo))
+        for repo in state_value.get("repositories", [])
+    }
 
 
 def _lite_transition_guard(state_value: dict[str, Any], target: str) -> None:
@@ -12153,17 +12760,20 @@ def _transition_guard(state_value: dict[str, Any], target: str) -> None:
         if not current:
             raise FlowError("CURRENT_REVIEW_REQUIRED", reason or "a current review snapshot is required")
     if target in {"FINALIZING", "DONE"}:
-        review_current, review_reason = _review_is_current(state_value)
+        current_fingerprints = _current_repository_fingerprints(state_value)
+        review_current, review_reason = _review_is_current(
+            state_value,
+            fingerprints=current_fingerprints,
+        )
         if not review_current:
             raise FlowError("CURRENT_REVIEW_REQUIRED", review_reason or "a current review snapshot is required")
-        test_current, test_reason = _latest_passing_test_is_current(state_value)
+        test_current, test_reason = _latest_passing_test_is_current(
+            state_value,
+            fingerprints=current_fingerprints,
+        )
         if not test_current:
             raise FlowError("CURRENT_TEST_REQUIRED", test_reason or "a current passing test is required")
         _require_review_gate(state_value)
-    if target == "DONE":
-        test_current, test_reason = _latest_passing_test_is_current(state_value)
-        if not test_current:
-            raise FlowError("CURRENT_TEST_REQUIRED", test_reason or "a current passing test is required")
 
 
 def command_transition(args: argparse.Namespace) -> dict[str, Any]:

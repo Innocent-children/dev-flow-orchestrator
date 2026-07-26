@@ -124,6 +124,14 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertTrue(specific["permissionDecisionReason"])
         return specific["permissionDecisionReason"]
 
+    def test_multiple_active_tasks_are_denied_without_newest_selection(self) -> None:
+        self.write_core_state("TASK-42", "INTAKE")
+        self.write_core_state("TASK-43", "IMPLEMENTING")
+        reason = self.assert_denied("echo must-not-run")
+        self.assertIn("Multiple non-terminal tasks", reason)
+        self.assertIn("TASK-42", reason)
+        self.assertIn("TASK-43", reason)
+
     def test_default_plugin_hook_discovery_and_commands(self) -> None:
         document = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
         hooks = document["hooks"]
