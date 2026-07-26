@@ -268,6 +268,77 @@ class DevFlowTestCase(unittest.TestCase):
     def mutate(
         self, command: str, task: dict, *arguments: str, expected_code: int = 0
     ) -> dict:
+        if (
+            command == "record-artifact"
+            and "--kind" in arguments
+            and arguments[arguments.index("--kind") + 1] == "impact"
+            and "--metadata-json" not in arguments
+        ):
+            repositories = []
+            degraded = False
+            for repository in task.get("repositories", []):
+                index = repository.get("index") or {}
+                index_id = index.get("index_id")
+                if not index_id:
+                    degraded = True
+                checks = {
+                    name: {"status": "complete"}
+                    for name in dev_flow.IMPACT_CHECKS
+                }
+                unknowns = []
+                if not index_id:
+                    checks["source_confirmation"] = {
+                        "status": "degraded",
+                        "reason": "baseline index unavailable in test fixture",
+                    }
+                    unknowns.append("baseline index unavailable")
+                receipt = index.get("receipt") or {}
+                metadata = index.get("metadata") or {}
+                repositories.append(
+                    {
+                        "repository_id": repository["id"],
+                        "index_id": index_id,
+                        "index_mode": (
+                            receipt.get("mode")
+                            or metadata.get("mode")
+                            or "fast"
+                        ),
+                        "checks": checks,
+                        "queries": {
+                            name: 0
+                            for name in dev_flow.IMPACT_QUERY_KEYS
+                        },
+                        "unresolved_truncations": [],
+                        "material_unknowns": unknowns,
+                    }
+                )
+            cross_status = (
+                "complete"
+                if len(repositories) > 1 and not degraded
+                else "degraded"
+                if len(repositories) > 1
+                else "not_applicable"
+            )
+            cross = {"status": cross_status}
+            if cross_status != "complete":
+                cross["reason"] = (
+                    "baseline index unavailable in test fixture"
+                    if degraded
+                    else "single repository test fixture"
+                )
+            contract = {
+                "schema": "dev-flow-impact-analysis/v1",
+                "strategy": "funnel",
+                "coverage": "degraded" if degraded else "complete",
+                "budget_profile": "seed-v1",
+                "repositories": repositories,
+                "cross_repository": cross,
+            }
+            arguments = (
+                *arguments,
+                "--metadata-json",
+                json.dumps(contract, sort_keys=True),
+            )
         if command == "preflight":
             preview = self.cli(
                 command,
@@ -289,6 +360,56 @@ class DevFlowTestCase(unittest.TestCase):
                 "--confirm-preview",
                 preview["transition_preview"]["token"],
             )
+        if (
+            command in {"transition", "cancel"}
+            and expected_code == 0
+            and int(task.get("schema_version", 1))
+            >= dev_flow.TASK_SCHEMA_VERSION
+            and "--preview" not in arguments
+            and "--confirm-intent" not in arguments
+        ):
+            target = "CANCELLED"
+            if command == "transition":
+                if "--to" in arguments:
+                    target = arguments[arguments.index("--to") + 1]
+                else:
+                    target = next(
+                        (
+                            value
+                            for value in arguments
+                            if value in dev_flow.ALL_STATES
+                        ),
+                        None,
+                    )
+            needs_preview = command == "cancel" or (
+                target is not None
+                and dev_flow._transition_confirmation_mode(
+                    task, task["status"], target
+                )
+                == "explicit"
+            )
+            if needs_preview:
+                preview = self.cli(
+                    command,
+                    task["task_id"],
+                    "--expected-revision",
+                    str(task["revision"]),
+                    *arguments,
+                    "--preview",
+                )
+                intent = preview.get("preview")
+                if isinstance(intent, dict) and intent.get(
+                    "requires_confirmation"
+                ):
+                    return self.cli(
+                        command,
+                        task["task_id"],
+                        "--expected-revision",
+                        str(task["revision"]),
+                        *arguments,
+                        "--confirm-intent",
+                        intent["intent_id"],
+                    )
         return self.cli(
             command,
             task["task_id"],
@@ -515,4 +636,3 @@ class DevFlowTestCase(unittest.TestCase):
         task = dev_flow.load_state(task["task_id"], self.data)
         self.mutate("prepare-workspace", task, "--execute")
         return dev_flow.load_state(task["task_id"], self.data)
-

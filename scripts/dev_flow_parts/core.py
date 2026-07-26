@@ -38,8 +38,18 @@ except ImportError:  # pragma: no cover - exercised only on POSIX
     msvcrt = None  # type: ignore[assignment]
 
 
+# Auxiliary records (workspace registry, quarantine, and similar containers)
+# keep their existing schema.  Task and plugin configuration schemas evolve
+# independently so an older controller cannot silently ignore v2 safety
+# fields.
 SCHEMA_VERSION = 1
+TASK_SCHEMA_VERSION = 2
+SUPPORTED_TASK_SCHEMA_VERSIONS = {1, TASK_SCHEMA_VERSION}
+CONFIG_SCHEMA_VERSION = 2
+SUPPORTED_CONFIG_SCHEMA_VERSIONS = {1, CONFIG_SCHEMA_VERSION}
 EVIDENCE_CONTRACT_VERSION = 2
+CONFIRMATION_CONTRACT_VERSION = 1
+IMPACT_ANALYSIS_CONTRACT_VERSION = 1
 TERMINAL_STATES = {"DONE", "CANCELLED"}
 ORDERED_STATES = [
     "INTAKE",
@@ -81,6 +91,84 @@ for _reassess_source in IMPACT_REASSESS_SOURCES:
     REWORK_EDGES.setdefault(_reassess_source, set()).add("INDEXED")
 FLOW_MODES = ("full", "lite")
 DEFAULT_FLOW = "full"
+LOW_RISK_CHANGE_CATEGORIES = ("docs", "internal", "tests")
+FULL_FLOW_CHANGE_CATEGORIES = (
+    "auth",
+    "cross-repo",
+    "infrastructure",
+    "migration",
+    "public-api",
+    "schema",
+)
+CHANGE_CATEGORIES = (
+    *LOW_RISK_CHANGE_CATEGORIES,
+    *FULL_FLOW_CHANGE_CATEGORIES,
+)
+DEFAULT_PROTECTED_PATH_GLOBS = (
+    ".github/workflows/**",
+    ".gitmodules",
+    "**/alembic/**",
+    "**/api/**",
+    "**/auth/**",
+    "**/migrations/**",
+    "**/schema/**",
+    "**/schemas/**",
+    "**/security/**",
+    "**/*.graphql",
+    "**/*.proto",
+    "**/*.sql",
+    "**/*.tf",
+    "deploy/**",
+    "docker-compose*.yml",
+    "docker-compose*.yaml",
+    "Dockerfile*",
+    "infra/**",
+    "infrastructure/**",
+    "k8s/**",
+    "terraform/**",
+)
+
+
+def _declared_risk_reasons(
+    repository_count: int,
+    categories: Sequence[str],
+    target_paths: Sequence[str],
+    policy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return the canonical reasons for the immutable start declaration."""
+
+    reasons: list[dict[str, Any]] = []
+    if repository_count > 1:
+        reasons.append(
+            {
+                "code": "cross_repository",
+                "repository_count": repository_count,
+            }
+        )
+    if not categories:
+        reasons.append({"code": "change_category_unknown"})
+    for category in categories:
+        if category in FULL_FLOW_CHANGE_CATEGORIES:
+            reasons.append(
+                {"code": "full_only_category", "category": category}
+            )
+        elif category not in LOW_RISK_CHANGE_CATEGORIES:
+            reasons.append(
+                {"code": "change_category_unknown", "category": category}
+            )
+    if not target_paths:
+        reasons.append({"code": "target_paths_unknown"})
+    for relative_path in target_paths:
+        pattern = _protected_path_match(relative_path, policy)
+        if pattern is not None:
+            reasons.append(
+                {
+                    "code": "protected_path",
+                    "path": relative_path,
+                    "pattern": pattern,
+                }
+            )
+    return reasons
 FLOW_NAMES_ZH = {
     "full": "完整流程",
     "lite": "精简流程",
@@ -148,6 +236,39 @@ LITE_REWORK_EDGES = {
     "IMPLEMENTING": {"PREFLIGHTED"},
     "VERIFYING": {"IMPLEMENTING", "PREFLIGHTED"},
 }
+# V2 is fail-closed: only these exact reversible controller edges may advance
+# without a separate confirmation intent.  DONE/CANCELLED are intentionally
+# impossible to express here.
+AUTOMATIC_TRANSITION_EDGES = frozenset(
+    {
+        ("full", "WORKSPACE_READY", "PLANNING"),
+        ("full", "IMPLEMENTING", "VERIFYING"),
+        ("lite", "IMPLEMENTING", "VERIFYING"),
+    }
+)
+AUTOMATIC_ACTION_EDGES = frozenset(
+    {
+        ("full", "record-index", "BASELINED", "INDEXED"),
+        ("full", "review-snapshot", "VERIFYING", "REVIEWING"),
+    }
+)
+
+
+def _require_automatic_action(
+    flow: str, action: str, source: str, target: str
+) -> None:
+    edge = (flow, action, source, target)
+    if edge not in AUTOMATIC_ACTION_EDGES:
+        raise FlowError(
+            "AUTOMATIC_ACTION_NOT_ALLOWED",
+            "the controller action is not on the exact automatic whitelist",
+            details={
+                "flow": flow,
+                "action": action,
+                "source_status": source,
+                "target_status": target,
+            },
+        )
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 WINDOWS_RESERVED_TASK_STEMS = {
     "con",
@@ -1163,6 +1284,173 @@ def _require_current_evidence(record: Any, label: str) -> dict[str, Any]:
     return record
 
 
+def _validate_v2_task_contract(path: Path, value: dict[str, Any]) -> None:
+    if (
+        value.get("confirmation_contract_version")
+        != CONFIRMATION_CONTRACT_VERSION
+        or not isinstance(value.get("risk_assessment"), dict)
+    ):
+        raise FlowError(
+            "UNSUPPORTED_STATE",
+            "task state is missing its v2 confirmation or risk contract",
+            details={
+                "path": str(path),
+                "schema_version": value.get("schema_version"),
+                "confirmation_contract_version": value.get(
+                    "confirmation_contract_version"
+                ),
+            },
+        )
+
+    risk = value["risk_assessment"]
+    raw_categories = risk.get("categories")
+    raw_targets = risk.get("target_paths")
+    repositories = value.get("repositories")
+    try:
+        if (
+            not isinstance(raw_categories, list)
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in raw_categories
+            )
+            or not isinstance(raw_targets, list)
+            or not isinstance(repositories, list)
+        ):
+            raise FlowError(
+                "STATE_INVARIANT_VIOLATION",
+                "task risk declaration fields have invalid types",
+            )
+        normalized_policy = _normalize_risk_policy(risk.get("policy"))
+        normalized_categories = sorted(set(raw_categories))
+        normalized_targets = sorted(
+            {
+                _normalize_repo_relative_path(
+                    item,
+                    "risk_assessment.target_paths",
+                    code="STATE_INVARIANT_VIOLATION",
+                )
+                for item in raw_targets
+            }
+        )
+    except FlowError as exc:
+        raise FlowError(
+            "STATE_INVARIANT_VIOLATION",
+            "task risk assessment is invalid",
+            details={"path": str(path), "cause": exc.code},
+        ) from exc
+
+    repository_count = risk.get("repository_count")
+    if (
+        not isinstance(repository_count, int)
+        or isinstance(repository_count, bool)
+        or repository_count != len(repositories)
+    ):
+        raise FlowError(
+            "STATE_INVARIANT_VIOLATION",
+            "task risk assessment repository count is invalid",
+            details={
+                "path": str(path),
+                "recorded_repository_count": repository_count,
+                "actual_repository_count": len(repositories),
+            },
+        )
+
+    expected_reasons = _declared_risk_reasons(
+        repository_count,
+        normalized_categories,
+        normalized_targets,
+        normalized_policy,
+    )
+    expected_decision = "requires_full" if expected_reasons else "safe"
+    stored_assessment_sha = risk.get("sha256")
+    assessment_payload = dict(risk)
+    assessment_payload.pop("sha256", None)
+    if (
+        risk.get("schema") != "dev-flow-risk-assessment/v1"
+        or normalized_policy != risk.get("policy")
+        or risk.get("policy_sha256")
+        != _sha256_bytes(_json_bytes(normalized_policy))
+        or stored_assessment_sha
+        != _sha256_bytes(_json_bytes(assessment_payload))
+        or normalized_categories != raw_categories
+        or normalized_targets != raw_targets
+        or risk.get("decision") != expected_decision
+        or risk.get("reasons") != expected_reasons
+        or not isinstance(risk.get("evaluated_at"), str)
+        or not risk.get("evaluated_at")
+    ):
+        raise FlowError(
+            "STATE_INVARIANT_VIOLATION",
+            "task risk assessment integrity check failed",
+            details={"path": str(path)},
+        )
+
+    flow = value.get("flow")
+    workspace = value.get("workspace")
+    strategy = (
+        workspace.get("strategy") if isinstance(workspace, dict) else None
+    )
+    if (
+        flow not in FLOW_MODES
+        or strategy not in FLOW_BY_WORKSPACE_STRATEGY
+        or FLOW_BY_WORKSPACE_STRATEGY.get(strategy) != flow
+    ):
+        raise FlowError(
+            "STATE_INVARIANT_VIOLATION",
+            "task flow does not match its immutable workspace strategy",
+            details={
+                "path": str(path),
+                "flow": flow,
+                "workspace_strategy": strategy,
+            },
+        )
+    if flow == "lite" and (
+        expected_decision != "safe"
+        or repository_count != 1
+        or not normalized_targets
+        or not normalized_categories
+    ):
+        raise FlowError(
+            "STATE_INVARIANT_VIOLATION",
+            "lite task no longer satisfies its immutable start risk declaration",
+            details={"path": str(path)},
+        )
+
+
+def _validate_task_state_snapshot(path: Path, value: Any) -> int:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in SUPPORTED_TASK_SCHEMA_VERSIONS
+    ):
+        raise FlowError(
+            "UNSUPPORTED_STATE",
+            f"unsupported or invalid task state: {path}",
+            details={
+                "path": str(path),
+                "schema_version": schema_version,
+                "supported_schema_versions": sorted(
+                    SUPPORTED_TASK_SCHEMA_VERSIONS
+                ),
+            },
+        )
+    stored_task_id = value.get("task_id")
+    if not isinstance(stored_task_id, str):
+        raise FlowError(
+            "UNSUPPORTED_STATE",
+            f"task state does not contain a valid task identifier: {path}",
+            details={"path": str(path), "task_id": stored_task_id},
+        )
+    _validate_task_id(stored_task_id)
+    _assert_supported_evidence_versions(value)
+    if schema_version == TASK_SCHEMA_VERSION:
+        _validate_v2_task_contract(path, value)
+    _validate_pending_event_outbox(path.parent, value)
+    return schema_version
+
+
 def load_state(
     task_id: str | os.PathLike[str],
     data_dir: str | os.PathLike[str] | None = None,
@@ -1189,22 +1477,11 @@ def load_state(
             f"could not read task state: {path}",
             details={"path": str(path), "error": str(exc)},
         ) from exc
-    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
-        raise FlowError(
-            "UNSUPPORTED_STATE",
-            f"unsupported or invalid task state: {path}",
-            details={"path": str(path), "schema_version": value.get("schema_version") if isinstance(value, dict) else None},
-        )
-    stored_task_id = value.get("task_id")
-    if not isinstance(stored_task_id, str):
-        raise FlowError(
-            "UNSUPPORTED_STATE",
-            f"task state does not contain a valid task identifier: {path}",
-            details={"path": str(path), "task_id": stored_task_id},
-        )
-    _validate_task_id(stored_task_id)
-    _assert_supported_evidence_versions(value)
-    if value.get("pending_event") is not None:
+    _validate_task_state_snapshot(path, value)
+    if (
+        value.get("pending_event") is not None
+        or value.get("pending_events") is not None
+    ):
         value = _recover_pending_event(path, value)
     value = _migrate_sensitive_state(path, value)
     # Schema v1 predates implementation-worktree indexes.  Keep the schema
@@ -1988,30 +2265,161 @@ def _append_event(path: Path, event: dict[str, Any]) -> None:
     _set_private_permissions(path, 0o600)
 
 
+def _validate_pending_event_outbox(
+    task_dir: Path, state_value: dict[str, Any]
+) -> list[dict[str, Any]]:
+    pending_single = state_value.get("pending_event")
+    pending_batch = state_value.get("pending_events")
+    if pending_single is not None and pending_batch is not None:
+        raise FlowError(
+            "PENDING_EVENT_INVALID",
+            "task state cannot contain both a single and batched event outbox",
+            details={"path": str(task_dir / "state.json")},
+        )
+    if pending_batch is not None:
+        if state_value.get("schema_version") != TASK_SCHEMA_VERSION:
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "batched event outboxes require task schema v2",
+                details={
+                    "path": str(task_dir / "state.json"),
+                    "schema_version": state_value.get("schema_version"),
+                },
+            )
+        if (
+            not isinstance(pending_batch, list)
+            or not pending_batch
+            or not all(isinstance(item, dict) for item in pending_batch)
+        ):
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "task state contains an invalid pending event batch",
+                details={"path": str(task_dir / "state.json")},
+            )
+        pending_events = pending_batch
+    elif pending_single is not None:
+        if not isinstance(pending_single, dict):
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "task state contains an invalid pending event outbox record",
+                details={"path": str(task_dir / "state.json")},
+            )
+        pending_events = [pending_single]
+    else:
+        return []
+
+    state_revision = state_value.get("revision")
+    if (
+        not isinstance(state_revision, int)
+        or isinstance(state_revision, bool)
+        or state_revision < 1
+    ):
+        raise FlowError(
+            "PENDING_EVENT_INVALID",
+            "pending event state revision is invalid",
+            details={"path": str(task_dir / "state.json")},
+        )
+
+    event_ids: set[str] = set()
+    transaction_ids: set[str] = set()
+    event_times: set[str] = set()
+    event_actors: set[str] = set()
+    for pending in pending_events:
+        if pending.get("task_id") != state_value.get("task_id"):
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "pending event task identity does not match its state snapshot",
+                details={"path": str(task_dir / "state.json")},
+            )
+        if pending.get("revision") != state_value.get("revision"):
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "pending event revision does not match its state snapshot",
+                details={"path": str(task_dir / "state.json")},
+            )
+        if pending.get("previous_revision") != state_revision - 1:
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "pending event previous revision does not match its state snapshot",
+                details={"path": str(task_dir / "state.json")},
+            )
+        if pending.get("status") != state_value.get("status"):
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "pending event status does not match its state snapshot",
+                details={"path": str(task_dir / "state.json")},
+            )
+        if (
+            not isinstance(pending.get("type"), str)
+            or not pending.get("type")
+            or not isinstance(pending.get("payload"), dict)
+        ):
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "pending event type or payload is invalid",
+                details={"path": str(task_dir / "state.json")},
+            )
+        event_id = pending.get("event_id")
+        if not isinstance(event_id, str) or not event_id or event_id in event_ids:
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "pending event batch contains a missing or duplicate event id",
+                details={"path": str(task_dir / "state.json")},
+            )
+        event_ids.add(event_id)
+        event_at = pending.get("at")
+        event_actor = pending.get("actor")
+        if (
+            not isinstance(event_at, str)
+            or not event_at
+            or not isinstance(event_actor, str)
+            or not event_actor
+        ):
+            raise FlowError(
+                "PENDING_EVENT_INVALID",
+                "pending event timestamp or actor is invalid",
+                details={"path": str(task_dir / "state.json")},
+            )
+        event_times.add(event_at)
+        event_actors.add(event_actor)
+        transaction_id = pending.get("transaction_id")
+        if len(pending_events) > 1:
+            if not isinstance(transaction_id, str) or not transaction_id:
+                raise FlowError(
+                    "PENDING_EVENT_INVALID",
+                    "every event in a batch requires a transaction id",
+                    details={"path": str(task_dir / "state.json")},
+                )
+            transaction_ids.add(transaction_id)
+        elif transaction_id is not None:
+            if not isinstance(transaction_id, str) or not transaction_id:
+                raise FlowError(
+                    "PENDING_EVENT_INVALID",
+                    "pending event transaction id is invalid",
+                    details={"path": str(task_dir / "state.json")},
+                )
+            transaction_ids.add(transaction_id)
+    if len(pending_events) > 1 and (
+        len(transaction_ids) != 1
+        or len(event_times) != 1
+        or len(event_actors) != 1
+    ):
+        raise FlowError(
+            "PENDING_EVENT_INVALID",
+            "all events in a pending batch must share transaction metadata",
+            details={"path": str(task_dir / "state.json")},
+        )
+    return pending_events
+
+
 def _flush_pending_event(task_dir: Path, state_value: dict[str, Any]) -> None:
-    pending = state_value.get("pending_event")
-    if pending is None:
+    pending_events = _validate_pending_event_outbox(task_dir, state_value)
+    if not pending_events:
         return
-    if not isinstance(pending, dict):
-        raise FlowError(
-            "PENDING_EVENT_INVALID",
-            "task state contains an invalid pending event outbox record",
-            details={"path": str(task_dir / "state.json")},
-        )
-    if pending.get("task_id") != state_value.get("task_id"):
-        raise FlowError(
-            "PENDING_EVENT_INVALID",
-            "pending event task identity does not match its state snapshot",
-            details={"path": str(task_dir / "state.json")},
-        )
-    if pending.get("revision") != state_value.get("revision"):
-        raise FlowError(
-            "PENDING_EVENT_INVALID",
-            "pending event revision does not match its state snapshot",
-            details={"path": str(task_dir / "state.json")},
-        )
-    _append_event(task_dir / "events.jsonl", pending)
+    for pending in pending_events:
+        _append_event(task_dir / "events.jsonl", pending)
     state_value.pop("pending_event", None)
+    state_value.pop("pending_events", None)
     _redact_state_in_place(state_value)
     _atomic_write_json(task_dir / "state.json", state_value)
 
@@ -2044,6 +2452,7 @@ def _recover_pending_event(
                 "task state is invalid during pending-event recovery",
                 details={"path": str(state_path)},
             )
+        _validate_task_state_snapshot(state_path, current)
         _flush_pending_event(task_dir, current)
         return current
 
@@ -2092,8 +2501,10 @@ def _migrate_sensitive_state(
                 "task state is invalid during sensitive-data cleanup",
                 details={"path": str(state_path)},
             )
-        if current.get("pending_event") is not None:
+        _validate_task_state_snapshot(state_path, current)
+        if (
+            current.get("pending_event") is not None
+            or current.get("pending_events") is not None
+        ):
             _flush_pending_event(task_dir, current)
         return rewrite(current)
-
-

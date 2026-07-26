@@ -48,7 +48,12 @@ before `PLANNING`; never substitute its baseline project.
 
 ## Planning gate
 
-Confirm `WORKSPACE_READY -> PLANNING`.
+Call the exact whitelisted automatic transition
+`WORKSPACE_READY -> PLANNING` without a separate state-edge prompt:
+
+```text
+<ctl> transition --task <task-id> --expected-revision <revision> --to PLANNING
+```
 
 For `direct`, create the linked direct-contract template with goal, observable
 acceptance criteria, per-repository scope/non-goals, intended components,
@@ -69,8 +74,10 @@ Present the complete plan and obtain explicit approval:
 <ctl> approve --task <task-id> --expected-revision <revision> --gate plan --note <note> --artifact-sha256 <plan-sha256>
 ```
 
-Refresh and record all workspace indexes after planning bytes change and before
-confirming `PLANNING -> IMPLEMENTING`.
+Refresh and record all workspace indexes after planning bytes change. Then
+preview `PLANNING -> IMPLEMENTING`, show the returned intent and remaining
+workflow, and apply `--confirm-intent <intent-id>` only after explicit
+confirmation.
 
 If implementation or review changes the approved plan, use the replanning path
 in [../flow-full.md](../flow-full.md). Revise only after returning to

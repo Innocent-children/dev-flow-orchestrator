@@ -112,6 +112,22 @@ def build_parser() -> argparse.ArgumentParser:
             "replace, the default main/master/trunk set"
         ),
     )
+    start.add_argument(
+        "--change-category",
+        action="append",
+        help=(
+            "declared change category; repeatable; known values are "
+            + ", ".join(sorted(CHANGE_CATEGORIES))
+        ),
+    )
+    start.add_argument(
+        "--target-path",
+        action="append",
+        help=(
+            "exact repository-relative path approved for a lite task; "
+            "repeatable"
+        ),
+    )
     _add_data_dir(start)
     start.set_defaults(handler=command_start)
 
@@ -231,7 +247,27 @@ def build_parser() -> argparse.ArgumentParser:
     scope.add_argument(
         "--clear",
         action="store_true",
-        help="reset to the default scope: active in every directory",
+        help="reset scope and protected paths to their defaults",
+    )
+    scope.add_argument(
+        "--add-protected-path",
+        action="append",
+        metavar="GLOB",
+        help=(
+            "add a repository-relative POSIX glob that forces full flow; "
+            "repeatable"
+        ),
+    )
+    scope.add_argument(
+        "--remove-protected-path",
+        action="append",
+        metavar="GLOB",
+        help="remove an exact configured protected-path glob; repeatable",
+    )
+    scope.add_argument(
+        "--reset-protected-paths",
+        action="store_true",
+        help="restore the built-in protected-path globs without changing scope",
     )
     scope.add_argument(
         "--check",
@@ -397,6 +433,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="target state as a stable ID; responses also include a display name",
     )
     transition.add_argument("--note", help="transition note; required for BLOCKED or CANCELLED")
+    transition_mode = transition.add_mutually_exclusive_group()
+    transition_mode.add_argument(
+        "--preview",
+        action="store_true",
+        help="validate the edge and return its confirmation intent without mutating",
+    )
+    transition_mode.add_argument(
+        "--confirm-intent",
+        help="apply the exact live intent returned by --preview",
+    )
     transition.set_defaults(handler=command_transition)
 
     workspace = subparsers.add_parser(
@@ -447,6 +493,16 @@ def build_parser() -> argparse.ArgumentParser:
     cancel = subparsers.add_parser("cancel", help="cancel a non-terminal task with a reason")
     _add_mutation(cancel)
     cancel.add_argument("--reason", required=True, help="cancellation reason")
+    cancel_mode = cancel.add_mutually_exclusive_group()
+    cancel_mode.add_argument(
+        "--preview",
+        action="store_true",
+        help="return a cancellation intent without mutating",
+    )
+    cancel_mode.add_argument(
+        "--confirm-intent",
+        help="cancel using the exact live intent returned by --preview",
+    )
     cancel.set_defaults(handler=command_cancel)
     return parser
 
@@ -511,4 +567,3 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
         return 1
-

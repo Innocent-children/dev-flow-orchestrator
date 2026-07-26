@@ -1173,8 +1173,32 @@ class DevFlowFullFlowTest(test_case.DevFlowTestCase):
         self.assertEqual(response["status"], "CANCELLED")
         state = dev_flow.load_state(task["task_id"], self.data)
         self.assertEqual(state["cancelled"]["reason"], "requirement withdrawn")
-        events = (self.data / "tasks" / task["task_id"] / "events.jsonl").read_text().splitlines()
-        self.assertEqual(json.loads(events[-1])["type"], "task_cancelled")
+        events = [
+            json.loads(line)
+            for line in (
+                self.data / "tasks" / task["task_id"] / "events.jsonl"
+            )
+            .read_text()
+            .splitlines()
+        ]
+        cancellation_facts = [
+            event
+            for event in events
+            if event["revision"] == response["revision"]
+        ]
+        self.assertEqual(
+            {event["type"] for event in cancellation_facts},
+            {"task_cancelled", "state_transitioned"},
+        )
+        self.assertEqual(
+            len(
+                {
+                    event["transaction_id"]
+                    for event in cancellation_facts
+                }
+            ),
+            1,
+        )
 
     def test_nonstandard_feature_branch_needs_explicit_base(self) -> None:
         repo = self.root / "feature-only"

@@ -20,19 +20,21 @@ INTAKE
   -> DONE
 ```
 
-Every arrow needs its own Chinese confirmation from the common rules.
-Automatic domain transitions are:
+Schema-v2 is default-explicit. Its exact full-flow automatic whitelist is:
 
-- confirmed all-repository preflight -> `PREFLIGHTED`;
-- any successful `baseline` -> `BASELINED`;
-- final required `record-index --role baseline` -> `INDEXED`;
-- `set-route` -> `IMPACT_REVIEW`;
-- `approve --gate route` -> `ROUTE_APPROVED`;
-- all-repository `prepare-workspace --execute` -> `WORKSPACE_READY`;
-- `review-snapshot` -> `REVIEWING`.
+- final required `record-index --role baseline`:
+  `BASELINED -> INDEXED`;
+- `transition`: `WORKSPACE_READY -> PLANNING`;
+- `transition`: `IMPLEMENTING -> VERIFYING`;
+- `review-snapshot`: `VERIFYING -> REVIEWING`.
 
-Use `transition` for the remaining forward edges and supported rework, not to
-duplicate those domain commands.
+No other full-flow edge is automatic. Confirmed all-repository preflight,
+`baseline`, `set-route`, route approval, and
+`prepare-workspace --execute` use their documented explicit action/gate
+decisions. Every other `transition`, including all rework and `DONE`, uses
+`--preview` followed by the confirmed `--confirm-intent`. Use `transition` for
+the remaining forward edges and supported rework, not to duplicate domain
+commands.
 
 ## Load one gate bundle
 
@@ -81,4 +83,7 @@ the task if they do.
 Require explicit decisions for baseline scope/fetch/materialization, degraded
 impact evidence, direct versus OpenSpec route, workspace plan execution,
 direct/OpenSpec plan approval, material impact/plan corrections, and
-independent review acceptance. These do not authorize later state edges.
+independent review acceptance. These do not authorize later explicit state
+edges. When route approval advances to `ROUTE_APPROVED`, approval and movement
+remain separate durable audit facts even though one explicit approved action
+records both.

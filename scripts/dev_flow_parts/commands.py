@@ -30,6 +30,7 @@ SHOW_SECTION_FIELDS = {
     "cancelled": "cancelled",
     "repositories": "repositories",
     "review-snapshots": "review_snapshots",
+    "risk": "risk_assessment",
     "route": "route",
     "tests": "tests",
     "workspace": "workspace",
@@ -50,6 +51,9 @@ def _show_summary(state_value: dict[str, Any]) -> dict[str, Any]:
         ),
         "blocked": state_value.get("blocked"),
         "cancelled": state_value.get("cancelled"),
+        "risk_decision": (
+            (state_value.get("risk_assessment") or {}).get("decision")
+        ),
     }
 
 
@@ -75,6 +79,54 @@ def _show_section_projection(
         field = SHOW_SECTION_FIELDS[section]
         projection[field] = state_value.get(field)
     return projection
+
+
+def _start_risk_assessment(
+    flow: str,
+    roots: Sequence[Path],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    policy = load_config(args.data_dir)["risk_policy"]
+    policy_sha256 = _sha256_bytes(_json_bytes(policy))
+    categories = sorted(
+        {
+            str(item)
+            for item in (getattr(args, "change_category", None) or [])
+        }
+    )
+    target_paths = sorted(
+        {
+            _normalize_repo_relative_path(item, "--target-path")
+            for item in (getattr(args, "target_path", None) or [])
+        }
+    )
+    reasons = _declared_risk_reasons(
+        len(roots), categories, target_paths, policy
+    )
+    decision = "requires_full" if reasons else "safe"
+    assessment = {
+        "schema": "dev-flow-risk-assessment/v1",
+        "decision": decision,
+        "categories": categories,
+        "target_paths": target_paths,
+        "repository_count": len(roots),
+        "policy": policy,
+        "policy_sha256": policy_sha256,
+        "reasons": reasons,
+        "evaluated_at": utc_now(),
+    }
+    assessment["sha256"] = _sha256_bytes(_json_bytes(assessment))
+    if flow == "lite" and decision != "safe":
+        raise FlowError(
+            "LITE_REQUIRES_FULL",
+            "the declared change cannot safely use the lite flow",
+            details={
+                "required_flow": "full",
+                "required_workspace_strategy": "worktree",
+                "assessment": assessment,
+            },
+        )
+    return assessment
 
 
 def command_start(args: argparse.Namespace) -> dict[str, Any]:
@@ -272,6 +324,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 "head_sha": head_sha,
                 "initial_preflight_confirmed": False,
             }
+    risk_assessment = _start_risk_assessment(flow, roots, args)
     repositories: list[dict[str, Any]] = []
     ids: set[str] = set()
     for root in roots:
@@ -371,8 +424,11 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
             _ensure_private_dir(task_dir / "artifacts")
             created = utc_now()
             state_value: dict[str, Any] = {
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": TASK_SCHEMA_VERSION,
                 "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+                "confirmation_contract_version": (
+                    CONFIRMATION_CONTRACT_VERSION
+                ),
                 "task_id": task_id,
                 "requirement": requirement,
                 "status": "INTAKE",
@@ -380,6 +436,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 "created_at": created,
                 "updated_at": created,
                 "flow": flow,
+                "risk_assessment": risk_assessment,
                 "route": None,
                 "repositories": repositories,
                 "artifacts": [],
@@ -402,7 +459,10 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 state_value,
                 task_dir,
                 "task_started",
-                {"repository_ids": sorted(ids)},
+                {
+                    "repository_ids": sorted(ids),
+                    "risk_assessment_sha256": risk_assessment["sha256"],
+                },
             )
     return _result("start", state_value, task=state_value)
 
@@ -919,6 +979,33 @@ def _apply_scope_changes(scope: dict[str, Any], args: argparse.Namespace) -> Non
         scope["mode"] = "allowlist"
 
 
+def _apply_risk_policy_changes(
+    risk_policy: dict[str, Any], args: argparse.Namespace
+) -> None:
+    if getattr(args, "reset_protected_paths", False):
+        risk_policy["protected_paths"] = list(
+            DEFAULT_PROTECTED_PATH_GLOBS
+        )
+    for supplied in getattr(args, "remove_protected_path", None) or []:
+        pattern = _normalize_risk_glob(
+            supplied, "--remove-protected-path"
+        )
+        if pattern not in risk_policy["protected_paths"]:
+            raise FlowError(
+                "RISK_GLOB_NOT_CONFIGURED",
+                "--remove-protected-path does not match a configured glob",
+                details={
+                    "glob": pattern,
+                    "configured": list(risk_policy["protected_paths"]),
+                },
+            )
+        risk_policy["protected_paths"].remove(pattern)
+    for supplied in getattr(args, "add_protected_path", None) or []:
+        pattern = _normalize_risk_glob(supplied, "--add-protected-path")
+        if pattern not in risk_policy["protected_paths"]:
+            risk_policy["protected_paths"].append(pattern)
+
+
 def command_scope(args: argparse.Namespace) -> dict[str, Any]:
     path = config_path(args.data_dir)
     edits = (
@@ -928,14 +1015,15 @@ def command_scope(args: argparse.Namespace) -> dict[str, Any]:
         or args.remove
         or args.add_exclude
         or args.remove_exclude
+        or getattr(args, "add_protected_path", None)
+        or getattr(args, "remove_protected_path", None)
+        or getattr(args, "reset_protected_paths", False)
     )
     if edits:
         with _config_lock(resolve_data_dir(args.data_dir)):
             try:
                 config = load_config(args.data_dir)
-                # load_config already normalized; repeat it for an independent
-                # snapshot the edits below cannot mutate through shared lists.
-                before = _normalize_scope(config["scope"])
+                before = _copy_state(config)
             except FlowError:
                 # An unusable configuration must still be resettable.
                 if not args.clear:
@@ -944,11 +1032,16 @@ def command_scope(args: argparse.Namespace) -> dict[str, Any]:
             if args.clear:
                 config = _default_config()
             _apply_scope_changes(config["scope"], args)
+            _apply_risk_policy_changes(config["risk_policy"], args)
+            config["schema_version"] = CONFIG_SCHEMA_VERSION
             config["scope"] = _normalize_scope(config["scope"])
+            config["risk_policy"] = _normalize_risk_policy(
+                config["risk_policy"]
+            )
             _atomic_write_json(path, config)
-            stored = config["scope"]
+            stored = config
     else:
-        before = stored = load_config(args.data_dir)["scope"]
+        before = stored = load_config(args.data_dir)
     effective = resolve_scope(args.data_dir)
     overrides = effective.pop("overrides", {})
     response = {
@@ -956,7 +1049,8 @@ def command_scope(args: argparse.Namespace) -> dict[str, Any]:
         "command": "scope",
         "config_path": str(path),
         "changed": stored != before,
-        "scope": stored,
+        "scope": stored["scope"],
+        "risk_policy": stored["risk_policy"],
         "effective": effective,
         "overrides": overrides,
         "summary": _scope_summary(effective),
@@ -1725,4 +1819,3 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
         },
         repositories=repositories,
     )
-

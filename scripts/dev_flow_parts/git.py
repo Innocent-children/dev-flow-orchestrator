@@ -1368,8 +1368,50 @@ def _require_current_impact(state_value: dict[str, Any]) -> dict[str, Any]:
             details={"artifact_kind": "impact"},
         )
     _assert_artifact_unchanged(artifact)
-    expected = _index_provenance_sha256(state_value)
     metadata = artifact.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise FlowError(
+            "IMPACT_ANALYSIS_INVALID",
+            "latest impact artifact metadata must be an object",
+            details={"artifact_id": artifact.get("artifact_id")},
+        )
+    if _uses_confirmation_contract(state_value):
+        contract_version = metadata.get(
+            "impact_analysis_contract_version"
+        )
+        if contract_version != IMPACT_ANALYSIS_CONTRACT_VERSION:
+            raise FlowError(
+                "IMPACT_ANALYSIS_INVALID",
+                "latest impact artifact has no supported controller contract",
+                details={
+                    "artifact_id": artifact.get("artifact_id"),
+                    "expected_contract_version": (
+                        IMPACT_ANALYSIS_CONTRACT_VERSION
+                    ),
+                    "recorded_contract_version": contract_version,
+                },
+            )
+        canonical = _impact_analysis_canonical_projection(
+            metadata,
+            allow_controller_fields=True,
+        )
+        validated = _validate_impact_analysis_contract(
+            state_value,
+            canonical,
+        )
+        recorded_digest = metadata.get("impact_analysis_sha256")
+        current_digest = validated["impact_analysis_sha256"]
+        if recorded_digest != current_digest:
+            raise FlowError(
+                "STALE_IMPACT",
+                "latest impact analysis metadata digest is stale",
+                details={
+                    "artifact_id": artifact.get("artifact_id"),
+                    "recorded_impact_analysis_sha256": recorded_digest,
+                    "current_impact_analysis_sha256": current_digest,
+                },
+            )
+    expected = _index_provenance_sha256(state_value)
     recorded = metadata.get("index_provenance_sha256")
     expected_generation = int(state_value.get("impact_generation", 0))
     recorded_generation = metadata.get("impact_generation")
@@ -1395,6 +1437,11 @@ def _require_current_route_selection(
     route = state_value.get("route")
     if not isinstance(route, dict) or route.get("value") not in {"direct", "openspec"}:
         raise FlowError("ROUTE_REQUIRED", "a route must be selected for the current impact")
+    impact_contract_matches = (
+        not _uses_confirmation_contract(state_value)
+        or route.get("impact_analysis_sha256")
+        == (impact.get("metadata") or {}).get("impact_analysis_sha256")
+    )
     if (
         route.get("impact_artifact_id") != impact.get("artifact_id")
         or route.get("impact_sha256") != impact.get("sha256")
@@ -1402,6 +1449,7 @@ def _require_current_route_selection(
         != (impact.get("metadata") or {}).get("index_provenance_sha256")
         or route.get("impact_generation")
         != (impact.get("metadata") or {}).get("impact_generation")
+        or not impact_contract_matches
     ):
         raise FlowError(
             "STALE_ROUTE_SELECTION",
@@ -1417,12 +1465,18 @@ def _require_route_gate(
     approval, approved_impact = _require_gate_for_latest_artifact(
         state_value, "route", "impact"
     )
+    impact_contract_matches = (
+        not _uses_confirmation_contract(state_value)
+        or approval.get("impact_analysis_sha256")
+        == (impact.get("metadata") or {}).get("impact_analysis_sha256")
+    )
     if (
         approval.get("artifact_id") != impact.get("artifact_id")
         or approval.get("index_provenance_sha256")
         != (impact.get("metadata") or {}).get("index_provenance_sha256")
         or approval.get("impact_generation")
         != (impact.get("metadata") or {}).get("impact_generation")
+        or not impact_contract_matches
     ):
         raise FlowError(
             "STALE_APPROVAL",
@@ -1644,6 +1698,292 @@ def _fingerprint_repo(repo: Path) -> dict[str, Any]:
             },
         )
     return second
+
+
+def _decode_risk_paths(raw: bytes, *, source: str) -> list[str]:
+    paths: list[str] = []
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        try:
+            decoded = item.decode("utf-8", "strict")
+        except UnicodeDecodeError as exc:
+            raise FlowError(
+                "RISK_EVIDENCE_INVALID",
+                "a changed Git path is not valid UTF-8",
+                details={"source": source, "path_bytes_hex": item.hex()},
+            ) from exc
+        paths.append(
+            _normalize_git_evidence_path(
+                decoded, f"{source} changed path", code="RISK_EVIDENCE_INVALID"
+            )
+        )
+    return paths
+
+
+def _decode_gitlink_paths(raw: bytes, *, source: str) -> set[str]:
+    paths: set[str] = set()
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        header, separator, path_bytes = record.partition(b"\t")
+        if not separator or not header.startswith(b"160000 "):
+            continue
+        try:
+            decoded = path_bytes.decode("utf-8", "strict")
+        except UnicodeDecodeError as exc:
+            raise FlowError(
+                "RISK_EVIDENCE_INVALID",
+                "a Git link path is not valid UTF-8",
+                details={
+                    "source": source,
+                    "path_bytes_hex": path_bytes.hex(),
+                },
+            ) from exc
+        paths.add(
+            _normalize_git_evidence_path(
+                decoded,
+                f"{source} Git link path",
+                code="RISK_EVIDENCE_INVALID",
+            )
+        )
+    return paths
+
+
+def _capture_lite_change_assessment(
+    state_value: dict[str, Any],
+    data_dir: str | os.PathLike[str] | None,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Classify the live lite diff against its immutable start declaration."""
+
+    evaluated_at = utc_now()
+    reasons: list[dict[str, Any]] = []
+    changed_paths: list[str] = []
+    fingerprint_sha256: str | None = None
+    current_head_sha: str | None = None
+    preflight_head_sha: str | None = None
+    current_policy: dict[str, Any] | None = None
+    captured_fingerprints: dict[str, dict[str, Any]] = {}
+    risk = state_value.get("risk_assessment")
+    repositories = state_value.get("repositories")
+    try:
+        if (
+            int(state_value.get("schema_version", 1)) < TASK_SCHEMA_VERSION
+            or not isinstance(risk, dict)
+        ):
+            raise FlowError(
+                "RISK_CONTRACT_MISSING",
+                "lite task does not contain a v2 risk contract",
+            )
+        if not isinstance(repositories, list) or len(repositories) != 1:
+            raise FlowError(
+                "RISK_EVIDENCE_INVALID",
+                "lite risk assessment requires exactly one repository",
+            )
+        repo_record = repositories[0]
+        preflight = repo_record.get("preflight")
+        if not isinstance(preflight, dict):
+            raise FlowError(
+                "RISK_EVIDENCE_INVALID",
+                "lite risk assessment requires current preflight evidence",
+            )
+        _require_current_evidence(
+            preflight, f"preflight:{repo_record.get('id')}"
+        )
+        preflight_head_sha = preflight.get("head_sha")
+        if not isinstance(preflight_head_sha, str):
+            raise FlowError(
+                "RISK_EVIDENCE_INVALID",
+                "preflight evidence has no HEAD anchor",
+            )
+        repo = Path(repo_record["path"])
+        filesystem_capabilities = _probe_worktree_capabilities(
+            repo.resolve(strict=True)
+        )
+        first = _fingerprint_repo_once(
+            repo,
+            filesystem_capabilities=filesystem_capabilities,
+        )
+        committed_raw = _git_diff(
+            repo,
+            "--no-renames",
+            "--name-only",
+            "-z",
+            preflight_head_sha,
+            "HEAD",
+            "--",
+            text=False,
+        )
+        staged_raw = _git_diff(
+            repo,
+            "--cached",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--",
+            text=False,
+        )
+        unstaged_raw = _git_diff(
+            repo, "--no-renames", "--name-only", "-z", "--", text=False
+        )
+        untracked_raw = _git_evidence(
+            repo,
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--",
+            text=False,
+        )
+        provisional_paths = sorted(
+            {
+                *(_decode_risk_paths(committed_raw, source="committed")),
+                *(_decode_risk_paths(staged_raw, source="staged")),
+                *(_decode_risk_paths(unstaged_raw, source="unstaged")),
+                *(_decode_risk_paths(untracked_raw, source="untracked")),
+            }
+        )
+        current_gitlinks_raw = (
+            _git_evidence(
+                repo,
+                "ls-files",
+                "--stage",
+                "-z",
+                "--",
+                *provisional_paths,
+                text=False,
+            )
+            if provisional_paths
+            else b""
+        )
+        baseline_gitlinks_raw = (
+            _git_evidence(
+                repo,
+                "ls-tree",
+                "-z",
+                preflight_head_sha,
+                "--",
+                *provisional_paths,
+                text=False,
+            )
+            if provisional_paths
+            else b""
+        )
+        second = _fingerprint_repo_once(
+            repo,
+            filesystem_capabilities=filesystem_capabilities,
+        )
+        if first.get("sha256") != second.get("sha256"):
+            raise FlowError(
+                "WORKTREE_CHANGED",
+                "repository changed while lite risk evidence was captured",
+                details={
+                    "first_sha256": first.get("sha256"),
+                    "second_sha256": second.get("sha256"),
+                },
+            )
+        fingerprint_sha256 = second.get("sha256")
+        captured_fingerprints[repo_record["id"]] = second
+        current_head_sha = second.get("head_sha")
+        changed_paths = provisional_paths
+        gitlink_paths = (
+            _decode_gitlink_paths(
+                current_gitlinks_raw, source="current-index"
+            )
+            | _decode_gitlink_paths(
+                baseline_gitlinks_raw, source="preflight-tree"
+            )
+        )
+        stored_policy = _normalize_risk_policy(risk.get("policy"))
+        live_policy = load_config(data_dir)["risk_policy"]
+        current_policy = _normalize_risk_policy(
+            {
+                "schema": "dev-flow-risk-policy/v1",
+                "protected_paths": [
+                    *stored_policy["protected_paths"],
+                    *live_policy["protected_paths"],
+                ],
+            }
+        )
+        declared = set(risk.get("target_paths") or [])
+        for relative_path in changed_paths:
+            if relative_path in gitlink_paths:
+                reasons.append(
+                    {
+                        "code": "gitlink_or_submodule",
+                        "path": relative_path,
+                    }
+                )
+            pattern = _protected_path_match(relative_path, current_policy)
+            if pattern is not None:
+                reasons.append(
+                    {
+                        "code": "protected_path",
+                        "path": relative_path,
+                        "pattern": pattern,
+                    }
+                )
+            if relative_path not in declared:
+                reasons.append(
+                    {
+                        "code": "undeclared_changed_path",
+                        "path": relative_path,
+                    }
+                )
+    except (FlowError, OSError, UnicodeError, ValueError) as exc:
+        code = exc.code if isinstance(exc, FlowError) else type(exc).__name__
+        safe_message = _redact_sensitive_value(str(exc))
+        reasons.append(
+            {
+                "code": "risk_evidence_unknown",
+                "cause": code,
+                "message": (
+                    safe_message
+                    if isinstance(safe_message, str)
+                    else "risk evidence unavailable"
+                ),
+            }
+        )
+    decision = "requires_full" if reasons else "safe"
+    assessment = {
+        "schema": "dev-flow-live-risk-assessment/v1",
+        "decision": decision,
+        "repository_id": (
+            repositories[0].get("id")
+            if isinstance(repositories, list)
+            and len(repositories) == 1
+            and isinstance(repositories[0], dict)
+            else None
+        ),
+        "preflight_head_sha": preflight_head_sha,
+        "current_head_sha": current_head_sha,
+        "fingerprint_sha256": fingerprint_sha256,
+        "changed_paths": changed_paths,
+        "changed_paths_sha256": _sha256_bytes(_json_bytes(changed_paths)),
+        "policy_sha256": (
+            _sha256_bytes(_json_bytes(current_policy))
+            if current_policy is not None
+            else None
+        ),
+        "reasons": reasons,
+        "evaluated_at": evaluated_at,
+    }
+    stable_assessment = dict(assessment)
+    stable_assessment.pop("evaluated_at", None)
+    assessment["sha256"] = _sha256_bytes(
+        _json_bytes(stable_assessment)
+    )
+    return assessment, captured_fingerprints
+
+
+def _lite_change_assessment(
+    state_value: dict[str, Any],
+    data_dir: str | os.PathLike[str] | None,
+) -> dict[str, Any]:
+    assessment, _ = _capture_lite_change_assessment(
+        state_value, data_dir
+    )
+    return assessment
 
 
 _FINGERPRINT_STORAGE_KIND = "task-local-json-v1"
@@ -2069,14 +2409,31 @@ def _index_role_summary(
 ) -> dict[str, Any]:
     record = repo.get("index" if role == "baseline" else "workspace_index")
     record = record if isinstance(record, dict) else {}
+    receipt = record.get("receipt")
+    receipt = receipt if isinstance(receipt, dict) else {}
+    metadata = record.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    degraded = bool(record) and (
+        not record.get("index_id")
+        or metadata.get("status") == "failed"
+    )
     summary: dict[str, Any] = {
         "role": role,
+        "index_record_id": record.get("index_record_id"),
         "recorded_project": record.get("index_id"),
         "recommended_project": _recommended_index_name(
             state_value, repo, role
         ),
         "recorded": bool(record),
         "repo_path": record.get("repo_path"),
+        "mode": receipt.get("mode") or metadata.get("mode"),
+        "persistence": (
+            receipt.get("persistence")
+            if "persistence" in receipt
+            else metadata.get("persistence")
+        ),
+        "usable": bool(record.get("index_id")) and not degraded,
+        "degraded": degraded,
     }
     if role == "workspace":
         summary["workspace_generation"] = record.get(
@@ -2110,6 +2467,17 @@ def _index_selection(state_value: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "recommended_project": (
                     selected.get("recommended_project") if selected else None
+                ),
+                "index_record_id": (
+                    selected.get("index_record_id") if selected else None
+                ),
+                "mode": selected.get("mode") if selected else None,
+                "persistence": (
+                    selected.get("persistence") if selected else None
+                ),
+                "usable": selected.get("usable") if selected else False,
+                "degraded": (
+                    selected.get("degraded") if selected else False
                 ),
                 "baseline": baseline,
                 "workspace": workspace,

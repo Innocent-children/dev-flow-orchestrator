@@ -10,8 +10,9 @@ plan. Requirement or repository-set changes require explicit cancel/replace;
 impact or plan corrections for the same immutable requirement use the backward
 paths in [../flow-full.md](../flow-full.md).
 
-After implementation, refresh and record every workspace index, then confirm
-`IMPLEMENTING -> VERIFYING`. Run approved checks yourself and record exactly
+After implementation, refresh and record every workspace index, then call the
+exact whitelisted automatic `IMPLEMENTING -> VERIFYING` transition without a
+separate state-edge prompt. Run approved checks yourself and record exactly
 what ran:
 
 ```text
@@ -36,7 +37,8 @@ all checks and before snapshot generation.
 
 ## Independent review
 
-With every repository currently passing, confirm and run:
+With every repository currently passing, run the exact whitelisted automatic
+snapshot edge without a separate state-edge prompt:
 
 ```text
 <ctl> review-snapshot --task <task-id> --expected-revision <revision>
@@ -58,14 +60,16 @@ of `Verdict: PASS`, `Verdict: CONDITIONAL`, or `Verdict: FAIL`, then record:
 <ctl> record-artifact --task <task-id> --expected-revision <revision> --kind review-report --path <report> --verdict <PASS|CONDITIONAL|FAIL>
 ```
 
-- `FAIL`: report findings and confirm rework to `IMPLEMENTING`.
+- `FAIL`: report findings, preview rework to `IMPLEMENTING`, and apply only the
+  confirmed intent.
 - `CONDITIONAL`: satisfy and re-review, or obtain explicit acceptance where
   policy permits; approve with `--accept-conditional`.
 - `PASS`: obtain explicit acceptance, then approve without that flag.
 
 ```text
 <ctl> approve --task <task-id> --expected-revision <revision> --gate review --note <note> --artifact-sha256 <report-sha256> [--accept-conditional]
-<ctl> transition --task <task-id> --expected-revision <revision> --to FINALIZING
+<ctl> transition --task <task-id> --expected-revision <revision> --to FINALIZING --preview
+<ctl> transition --task <task-id> --expected-revision <revision> --to FINALIZING --confirm-intent <intent-id>
 ```
 
 Snapshot, report, verdict, and approval are one immutable set. The controller
@@ -77,7 +81,8 @@ invalidates the set.
 
 At `FINALIZING`, present scope, artifacts, repositories/worktrees, tests,
 review verdict, residual risks, and requested handoff. `DONE` is irreversible
-and must never be automatic. Ask for the single `FINALIZING -> DONE` edge only
-when required evidence is current and user-required handoff is complete.
+and must never be automatic. Preview the single `FINALIZING -> DONE` intent
+only when required evidence is current and user-required handoff is complete;
+apply it only after explicit confirmation.
 Commit, push, PR creation, merge, OpenSpec archive, and worktree removal remain
 separate explicitly authorized actions.

@@ -4,17 +4,41 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple, Optional, Sequence
 
 
 CONTROLLER = Path(__file__).resolve().parents[1] / "scripts" / "dev_flow.py"
+CHECKPOINT_MARKER_SCHEMA = "dev-flow-hook-checkpoint/v1"
+CHECKPOINT_MARKER_DIRECTORY = "hook-checkpoints"
+
+
+class _PendingCheckpoint(NamedTuple):
+    path: Path
+    session_sha256: str
+    context_sha256: str
+
+
+class _HookOutput(dict[str, Any]):
+    """Protocol output with process-local post-flush work attached."""
+
+    pending_checkpoint: Optional[_PendingCheckpoint]
+
+    def __init__(
+        self,
+        value: Mapping[str, Any],
+        pending_checkpoint: Optional[_PendingCheckpoint] = None,
+    ) -> None:
+        super().__init__(value)
+        self.pending_checkpoint = pending_checkpoint
 
 
 STAGES = (
@@ -400,6 +424,37 @@ def build_compact_bootstrap_context(
     )
 
 
+def _uses_v2_confirmation_contract(task: Mapping[str, Any]) -> bool:
+    schema_version = task.get("schema_version")
+    return (
+        isinstance(schema_version, int)
+        and not isinstance(schema_version, bool)
+        and schema_version >= 2
+        and task.get("confirmation_contract_version") == 1
+    )
+
+
+def _confirmation_checkpoint(task: Mapping[str, Any]) -> str:
+    if not _uses_v2_confirmation_contract(task):
+        return (
+            "状态切换确认（schema v1）：每条状态边仍须单独用中文展示并取得"
+            "明确确认；transition/cancel 使用旧的直接调用"
+        )
+    automatic = (
+        "record-index BASELINED→INDEXED、"
+        "transition WORKSPACE_READY→PLANNING、"
+        "transition IMPLEMENTING→VERIFYING、"
+        "review-snapshot VERIFYING→REVIEWING"
+        if _flow(task) == "full"
+        else "transition IMPLEMENTING→VERIFYING"
+    )
+    return (
+        f"状态切换确认（schema v2）：自动边仅 {automatic}；其他 "
+        "transition/cancel 必须先 --preview，再用同一 revision 的 "
+        "--confirm-intent；DONE/CANCELLED 永远显式确认"
+    )
+
+
 def build_context(
     task: Mapping[str, Any],
     data_dir: Path,
@@ -413,9 +468,13 @@ def build_context(
     index_role, index_projects = _index_selection_context(task)
     next_actions = LITE_NEXT_ACTIONS if flow == "lite" else NEXT_ACTIONS
     strategy = _workspace_strategy(task)
+    revision = _render(task.get("revision"), "unknown")
+    scope = "in" if in_scope else "outside"
+    confirmation = _confirmation_checkpoint(task)
     lines = [
         "Dev Flow active-task checkpoint:",
         f"- Active task: {task_id}",
+        f"- Revision: {revision}",
         f"- 流程名称: {FLOW_NAMES_ZH[flow]}（{flow}）",
         f"- 工作方式: {WORKSPACE_STRATEGY_NAMES_ZH[strategy]}（{strategy}）",
         f"- 当前状态: {STATE_NAMES_ZH.get(stage, stage)}（{stage}）",
@@ -427,13 +486,12 @@ def build_context(
         f"- Active index projects: {index_projects}",
         f"- Next action: "
         f"{_render(task.get('next_action'), next_actions.get(stage, 'inspect task state'))}",
+        f"- Scope: {scope}",
         f"- Interpreter: {sys.executable}",
         f"- Controller: {controller}",
         f"- Data directory: {data_dir}",
-        f"- Resume command: {prefix} show --task {_quote(task_id)}",
-        "- 状态切换确认：执行任何可能显式或隐式改变任务状态的命令前，"
-        "必须先用中文展示“当前状态 → 目标状态”和完成后的剩余流程，"
-        "并取得用户对这一条状态边的明确确认；一次确认不得授权后续状态边。",
+        f"- Resume command: {prefix} show --task {_quote(task_id)} --compact",
+        f"- {confirmation}",
         "- 预检必须先执行不提交任务状态的 preflight --preview；确认其返回的"
         "唯一 transition_preview 后，用 preflight --confirm-preview <token>"
         " 确认这一条状态边。只有决策输入或状态边漂移才必须重新 preview。",
@@ -470,6 +528,7 @@ def build_compact_context(
     next_actions = LITE_NEXT_ACTIONS if flow == "lite" else NEXT_ACTIONS
     scope = "in" if in_scope else "outside"
     prefix = _controller_prefix(data_dir, controller)
+    confirmation = _confirmation_checkpoint(task)
     return " | ".join(
         (
             "Dev Flow active-task checkpoint",
@@ -491,7 +550,7 @@ def build_compact_context(
             ),
             f"Scope: {scope}",
             f"Resume command: {prefix} show --task {_quote(task_id)} --compact",
-            "状态切换确认：每条状态边仍须单独用中文展示并取得明确确认",
+            confirmation,
             (
                 "Every controller call must explicitly include "
                 f"--data-dir {_quote(str(data_dir))}"
@@ -1674,6 +1733,121 @@ def _environment_diagnostic(event: str, detail: str) -> dict[str, Any]:
     }
 
 
+def _pending_checkpoint(
+    payload: Mapping[str, Any],
+    data_dir: Path,
+    context: str,
+) -> Optional[_PendingCheckpoint]:
+    raw_session_id = payload.get("session_id")
+    if not isinstance(raw_session_id, str) or not raw_session_id.strip():
+        return None
+    try:
+        session_bytes = raw_session_id.encode("utf-8")
+        context_bytes = context.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    session_sha256 = hashlib.sha256(session_bytes).hexdigest()
+    return _PendingCheckpoint(
+        data_dir / CHECKPOINT_MARKER_DIRECTORY / f"{session_sha256}.json",
+        session_sha256,
+        hashlib.sha256(context_bytes).hexdigest(),
+    )
+
+
+def _checkpoint_matches(checkpoint: _PendingCheckpoint) -> bool:
+    try:
+        with checkpoint.path.open("rb") as stream:
+            encoded = stream.read(4097)
+        if len(encoded) > 4096:
+            return False
+        document = json.loads(encoded.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    return (
+        isinstance(document, Mapping)
+        and set(document) == {"schema", "session_sha256", "context_sha256"}
+        and document.get("schema") == CHECKPOINT_MARKER_SCHEMA
+        and document.get("session_sha256") == checkpoint.session_sha256
+        and document.get("context_sha256") == checkpoint.context_sha256
+    )
+
+
+def _checkpointed_context_output(
+    event: str,
+    context: str,
+    checkpoint_context: str,
+    payload: Mapping[str, Any],
+    data_dir: Path,
+) -> Optional[dict[str, Any]]:
+    # UserPromptSubmit is the main-session user-prompt lifecycle event.  Codex
+    # gives subagents their own SubagentStart/Stop events (with agent_id) while
+    # reusing the parent session_id, so those events must never share this
+    # prompt checkpoint marker.
+    checkpoint = _pending_checkpoint(payload, data_dir, checkpoint_context)
+    if (
+        event == "UserPromptSubmit"
+        and checkpoint is not None
+        and _checkpoint_matches(checkpoint)
+    ):
+        return None
+    return _HookOutput(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": context,
+            }
+        },
+        checkpoint,
+    )
+
+
+def _write_checkpoint(checkpoint: _PendingCheckpoint) -> None:
+    directory = checkpoint.path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.chmod(0o700)
+    except OSError:
+        pass
+    encoded = json.dumps(
+        {
+            "schema": CHECKPOINT_MARKER_SCHEMA,
+            "session_sha256": checkpoint.session_sha256,
+            "context_sha256": checkpoint.context_sha256,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{checkpoint.path.name}.",
+        suffix=".tmp",
+        dir=directory,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        try:
+            os.chmod(temporary_path, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, checkpoint.path)
+        try:
+            checkpoint.path.chmod(0o600)
+        except OSError:
+            pass
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def handle(
     payload: Mapping[str, Any],
     environ: Mapping[str, str],
@@ -1712,12 +1886,9 @@ def handle(
         if event == "PreToolUse":
             return _deny(message)
         if event in {"SessionStart", "UserPromptSubmit"}:
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": event,
-                    "additionalContext": message,
-                }
-            }
+            return _checkpointed_context_output(
+                event, message, message, payload, data_dir
+            )
         return None
 
     candidates = [workdir] if workdir == cwd else [workdir, cwd]
@@ -1731,29 +1902,28 @@ def handle(
         return None
 
     if event == "SessionStart":
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": event,
-                "additionalContext": build_context(
-                    task, data_dir, in_scope, plugin.controller
-                )
-                if task is not None
-                else build_bootstrap_context(data_dir, plugin.controller),
-            }
-        }
+        context = (
+            build_context(task, data_dir, in_scope, plugin.controller)
+            if task is not None
+            else build_bootstrap_context(data_dir, plugin.controller)
+        )
+        checkpoint_context = (
+            build_compact_context(task, data_dir, in_scope, plugin.controller)
+            if task is not None
+            else build_compact_bootstrap_context(data_dir, plugin.controller)
+        )
+        return _checkpointed_context_output(
+            event, context, checkpoint_context, payload, data_dir
+        )
     if event == "UserPromptSubmit":
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": event,
-                "additionalContext": build_compact_context(
-                    task, data_dir, in_scope, plugin.controller
-                )
-                if task is not None
-                else build_compact_bootstrap_context(
-                    data_dir, plugin.controller
-                ),
-            }
-        }
+        context = (
+            build_compact_context(task, data_dir, in_scope, plugin.controller)
+            if task is not None
+            else build_compact_bootstrap_context(data_dir, plugin.controller)
+        )
+        return _checkpointed_context_output(
+            event, context, context, payload, data_dir
+        )
     if event != "PreToolUse":
         return None
 
@@ -1826,12 +1996,22 @@ def main() -> int:
         if output is not None:
             encoded = json.dumps(
                 output, ensure_ascii=False, separators=(",", ":")
-            ).encode("utf-8")
-            sys.stdout.buffer.write(encoded + b"\n")
+            ).encode("utf-8") + b"\n"
+            written = sys.stdout.buffer.write(encoded)
+            if written is not None and written != len(encoded):
+                raise OSError("incomplete hook protocol write")
+            sys.stdout.buffer.flush()
     except Exception:
         # A hook protocol/stream failure must remain advisory and must never
         # emit a partial denial after an internal exception.
         return 0
+    if isinstance(output, _HookOutput) and output.pending_checkpoint is not None:
+        try:
+            _write_checkpoint(output.pending_checkpoint)
+        except Exception:
+            # Checkpoint persistence is a token optimization only.  A failure
+            # must never alter hook output or block the Codex session.
+            pass
     return 0
 
 

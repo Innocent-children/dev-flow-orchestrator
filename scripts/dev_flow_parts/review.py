@@ -432,6 +432,17 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
         _assert_flow(current, "full", "review-snapshot")
         _assert_status(current, {"VERIFYING", "REVIEWING"}, "review-snapshot")
+        automatic_state_transition = (
+            _uses_confirmation_contract(current)
+            and current.get("status") == "VERIFYING"
+        )
+        if automatic_state_transition:
+            _require_automatic_action(
+                _flow(current),
+                "review-snapshot",
+                "VERIFYING",
+                "REVIEWING",
+            )
         _require_current_workspace_indexes(current)
         _require_workspace_ready(current)
         route_value = (current.get("route") or {}).get("value")
@@ -556,7 +567,41 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
         state_value["status"] = "REVIEWING"
-        _commit_state(current, state_value, task_dir, "review_snapshot_recorded", {"snapshot_id": snapshot_id, "sha256": snapshot["sha256"], "repository_ids": snapshot["repository_ids"]})
+        _commit_state(
+            current,
+            state_value,
+            task_dir,
+            "review_snapshot_recorded",
+            {
+                "snapshot_id": snapshot_id,
+                "sha256": snapshot["sha256"],
+                "repository_ids": snapshot["repository_ids"],
+                "confirmation_mode": (
+                    "automatic"
+                    if automatic_state_transition
+                    else (
+                        "not-applicable"
+                        if _uses_confirmation_contract(current)
+                        else "legacy"
+                    )
+                ),
+            },
+            additional_events=(
+                [
+                    (
+                        "state_transitioned",
+                        {
+                            "from": "VERIFYING",
+                            "to": "REVIEWING",
+                            "action": "review-snapshot",
+                            "confirmation_mode": "automatic",
+                        },
+                    )
+                ]
+                if automatic_state_transition
+                else None
+            ),
+        )
     return _result(
         "review-snapshot",
         state_value,
@@ -689,7 +734,184 @@ def _current_repository_fingerprints(
     }
 
 
-def _lite_transition_guard(state_value: dict[str, Any], target: str) -> None:
+TRANSITION_INTENT_NAMESPACE = "transition-intent-v1"
+
+
+def _uses_confirmation_contract(state_value: dict[str, Any]) -> bool:
+    return (
+        int(state_value.get("schema_version", 1)) >= TASK_SCHEMA_VERSION
+        and state_value.get("confirmation_contract_version")
+        == CONFIRMATION_CONTRACT_VERSION
+    )
+
+
+def _transition_confirmation_mode(
+    state_value: dict[str, Any],
+    source: str,
+    target: str,
+    *,
+    action: str = "transition",
+) -> str:
+    if not _uses_confirmation_contract(state_value):
+        return "legacy"
+    if target in TERMINAL_STATES:
+        return "explicit"
+    if (
+        action == "transition"
+        and (_flow(state_value), source, target)
+        in AUTOMATIC_TRANSITION_EDGES
+    ):
+        return "automatic"
+    return "explicit"
+
+
+def _transition_side_effects(
+    source: str, target: str, *, action: str
+) -> list[str]:
+    effects = ["task-state"]
+    if target in TERMINAL_STATES:
+        effects.append("irreversible-terminal-state")
+    if target in {"PLANNING", "IMPLEMENTING", "INDEXED"} and source != target:
+        effects.append("evidence-or-approval-invalidation")
+    if target in TERMINAL_STATES or action == "cancel":
+        effects.append("repository-claim-release")
+    return effects
+
+
+def _transition_intent_preview(
+    state_value: dict[str, Any],
+    source: str,
+    target: str,
+    *,
+    action: str,
+    action_parameters: dict[str, Any],
+    live_risk_assessment: dict[str, Any] | None = None,
+    fingerprints: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    observed: dict[str, dict[str, Any]] | None
+    if fingerprints is not None:
+        observed = fingerprints
+    elif target == "CANCELLED":
+        try:
+            observed = _current_repository_fingerprints(state_value)
+        except (FlowError, OSError):
+            observed = None
+    else:
+        observed = _current_repository_fingerprints(state_value)
+    compact_fingerprints: dict[str, Any]
+    if observed is None:
+        compact_fingerprints = {
+            "status": "fingerprint-evidence-unavailable",
+            "repository_ids": sorted(
+                repo["id"]
+                for repo in state_value.get("repositories", [])
+            ),
+        }
+    else:
+        compact_fingerprints = {
+            repository_id: {
+                "sha256": fingerprint.get("sha256"),
+                "head_sha": fingerprint.get("head_sha"),
+                "capability_profile_sha256": fingerprint.get(
+                    "capability_profile_sha256"
+                ),
+            }
+            for repository_id, fingerprint in observed.items()
+        }
+    latest_impact = _latest_artifact(state_value, "impact") or {}
+    latest_impact_metadata = latest_impact.get("metadata") or {}
+    evidence_projection = {
+        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+        "repository_fingerprints": compact_fingerprints,
+        "impact_analysis_sha256": latest_impact_metadata.get(
+            "impact_analysis_sha256"
+        ),
+        "route": state_value.get("route"),
+        "approval_ids": {
+            gate: approval.get("approval_id")
+            for gate, approval in (state_value.get("approvals") or {}).items()
+            if isinstance(approval, dict)
+        },
+        "latest_test_id": (
+            (state_value.get("tests") or [{}])[-1].get("test_id")
+        ),
+        "latest_review_snapshot_id": (
+            (state_value.get("review_snapshots") or [{}])[-1].get(
+                "snapshot_id"
+            )
+        ),
+        "risk_assessment_sha256": (
+            live_risk_assessment.get("sha256")
+            if isinstance(live_risk_assessment, dict)
+            else (state_value.get("risk_assessment") or {}).get("sha256")
+        ),
+    }
+    evidence_sha256 = _sha256_bytes(_json_bytes(evidence_projection))
+    confirmation_mode = _transition_confirmation_mode(
+        state_value, source, target, action=action
+    )
+    side_effects = _transition_side_effects(
+        source, target, action=action
+    )
+    payload = {
+        "task_id": state_value.get("task_id"),
+        "base_revision": int(state_value.get("revision", 0)),
+        "flow": _flow(state_value),
+        "source_status": source,
+        "target_status": target,
+        "action": action,
+        "action_parameters": action_parameters,
+        "evidence_sha256": evidence_sha256,
+        "side_effects": side_effects,
+        "confirmation_mode": confirmation_mode,
+    }
+    digest = _sha256_bytes(
+        (
+            TRANSITION_INTENT_NAMESPACE
+            + "\n"
+        ).encode("utf-8")
+        + _json_bytes(payload)
+    )
+    return {
+        "intent_id": f"{TRANSITION_INTENT_NAMESPACE}:{digest}",
+        "base_revision": payload["base_revision"],
+        "from": source,
+        "to": target,
+        "action": action,
+        "evidence_sha256": evidence_sha256,
+        "side_effects": side_effects,
+        "confirmation_mode": confirmation_mode,
+        "requires_confirmation": confirmation_mode == "explicit",
+    }
+
+
+def _assert_confirmation_intent(
+    preview: dict[str, Any], supplied: str | None
+) -> None:
+    expected = preview["intent_id"]
+    if not isinstance(supplied, str) or not supplied:
+        raise FlowError(
+            "TRANSITION_INTENT_REQUIRED",
+            "this state edge requires a preview and explicit confirmation",
+            details={"preview": preview},
+        )
+    if not secrets.compare_digest(expected, supplied):
+        raise FlowError(
+            "INTENT_STALE",
+            "the confirmed transition intent no longer matches live evidence",
+            details={
+                "received_intent_id": supplied,
+                "current_preview": preview,
+            },
+        )
+
+
+def _lite_transition_guard(
+    state_value: dict[str, Any],
+    target: str,
+    *,
+    fingerprints: dict[str, dict[str, Any]] | None = None,
+) -> None:
     repositories = state_value.get("repositories", [])
     if target == "PREFLIGHTED":
         if not all(
@@ -710,18 +932,28 @@ def _lite_transition_guard(state_value: dict[str, Any], target: str) -> None:
         _require_lite_gate(
             state_value,
             verify_worktree=state_value.get("status") == "PREFLIGHTED",
+            fingerprints=fingerprints,
         )
     if target in {"VERIFYING", "DONE"}:
-        _require_lite_gate(state_value)
+        _require_lite_gate(state_value, fingerprints=fingerprints)
     if target == "DONE":
-        test_current, test_reason = _latest_passing_test_is_current(state_value)
+        test_current, test_reason = _latest_passing_test_is_current(
+            state_value, fingerprints=fingerprints
+        )
         if not test_current:
             raise FlowError("CURRENT_TEST_REQUIRED", test_reason or "a current passing test is required")
 
 
-def _transition_guard(state_value: dict[str, Any], target: str) -> None:
+def _transition_guard(
+    state_value: dict[str, Any],
+    target: str,
+    *,
+    fingerprints: dict[str, dict[str, Any]] | None = None,
+) -> None:
     if _flow(state_value) == "lite":
-        _lite_transition_guard(state_value, target)
+        _lite_transition_guard(
+            state_value, target, fingerprints=fingerprints
+        )
         return
     repositories = state_value.get("repositories", [])
     if target == "PREFLIGHTED":
@@ -769,7 +1001,11 @@ def _transition_guard(state_value: dict[str, Any], target: str) -> None:
         if not current:
             raise FlowError("CURRENT_REVIEW_REQUIRED", reason or "a current review snapshot is required")
     if target in {"FINALIZING", "DONE"}:
-        current_fingerprints = _current_repository_fingerprints(state_value)
+        current_fingerprints = (
+            fingerprints
+            if fingerprints is not None
+            else _current_repository_fingerprints(state_value)
+        )
         review_current, review_reason = _review_is_current(
             state_value,
             fingerprints=current_fingerprints,
@@ -788,6 +1024,8 @@ def _transition_guard(state_value: dict[str, Any], target: str) -> None:
 def command_transition(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     target = args.to_option or args.to
+    preview_only = bool(getattr(args, "preview", False))
+    supplied_intent = getattr(args, "confirm_intent", None)
     if target not in ALL_STATES:
         raise FlowError("INVALID_ARGUMENT", f"unknown target state: {target}", details={"allowed": sorted(ALL_STATES)})
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
@@ -823,6 +1061,18 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
             if not args.note:
                 raise FlowError("INVALID_ARGUMENT", "transition to BLOCKED requires --note")
         elif source == "BLOCKED":
+            if (current.get("blocked") or {}).get("phase") == "lite-risk":
+                raise FlowError(
+                    "LITE_REPLACEMENT_REQUIRED",
+                    (
+                        "a lite task blocked by live risk cannot resume; "
+                        "cancel it and start a full-flow replacement"
+                    ),
+                    details={
+                        "required_flow": "full",
+                        "allowed": ["CANCELLED"],
+                    },
+                )
             expected = (current.get("blocked") or {}).get("from_status")
             if target != expected:
                 raise FlowError("INVALID_TRANSITION", f"blocked task can only resume to {expected}", details={"from": source, "to": target, "allowed": [expected]})
@@ -860,7 +1110,136 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
                     "reopening lite scope evidence requires --note",
                     details={"from": source, "to": target},
                 )
-        _transition_guard(current, target)
+        live_risk_assessment: dict[str, Any] | None = None
+        transition_fingerprints: dict[str, dict[str, Any]] | None = None
+        if (
+            _uses_confirmation_contract(current)
+            and _flow(current) == "lite"
+            and target in {"VERIFYING", "DONE"}
+        ):
+            (
+                live_risk_assessment,
+                transition_fingerprints,
+            ) = _capture_lite_change_assessment(
+                current, args.data_dir
+            )
+            if live_risk_assessment["decision"] != "safe":
+                if preview_only:
+                    return _result(
+                        "transition",
+                        current,
+                        transition_applied=False,
+                        required_flow="full",
+                        assessment=live_risk_assessment,
+                        transition={"from": source, "to": target},
+                    )
+                state_value = _copy_state(current)
+                state_value["status"] = "BLOCKED"
+                state_value["blocked"] = {
+                    "phase": "lite-risk",
+                    "from_status": source,
+                    "required_flow": "full",
+                    "reason": (
+                        "live change risk requires replacement with full flow"
+                    ),
+                    "details": live_risk_assessment["reasons"],
+                    "assessment": live_risk_assessment,
+                    "at": utc_now(),
+                }
+                risk_payload = {
+                    "from": source,
+                    "attempted_target": target,
+                    "required_flow": "full",
+                    "assessment_sha256": live_risk_assessment["sha256"],
+                }
+                _commit_state(
+                    current,
+                    state_value,
+                    task_dir,
+                    "lite_risk_escalation_required",
+                    risk_payload,
+                    additional_events=[
+                        (
+                            "state_transitioned",
+                            {
+                                "from": source,
+                                "to": "BLOCKED",
+                                "reason": "lite-risk",
+                                "required_flow": "full",
+                            },
+                        )
+                    ],
+                )
+                return _result(
+                    "transition",
+                    state_value,
+                    transition_applied=False,
+                    required_flow="full",
+                    assessment=live_risk_assessment,
+                    transition={"from": source, "to": target},
+                )
+        confirmation_mode = _transition_confirmation_mode(
+            current, source, target, action="transition"
+        )
+        if (
+            _uses_confirmation_contract(current)
+            and transition_fingerprints is None
+            and target != "CANCELLED"
+            and (
+                confirmation_mode == "explicit"
+                or preview_only
+                or supplied_intent is not None
+            )
+        ):
+            transition_fingerprints = (
+                _current_repository_fingerprints(current)
+            )
+        _transition_guard(
+            current, target, fingerprints=transition_fingerprints
+        )
+        intent_preview: dict[str, Any] | None = None
+        if _uses_confirmation_contract(current):
+            if (
+                confirmation_mode == "explicit"
+                or preview_only
+                or supplied_intent is not None
+            ):
+                intent_preview = _transition_intent_preview(
+                    current,
+                    source,
+                    target,
+                    action="transition",
+                    action_parameters={"note": args.note},
+                    live_risk_assessment=live_risk_assessment,
+                    fingerprints=transition_fingerprints,
+                )
+                if preview_only:
+                    return _result(
+                        "transition",
+                        current,
+                        preview=intent_preview,
+                        transition={"from": source, "to": target},
+                    )
+            if (
+                intent_preview is not None
+                and intent_preview["requires_confirmation"]
+            ):
+                _assert_confirmation_intent(
+                    intent_preview, supplied_intent
+                )
+            elif (
+                intent_preview is not None
+                and supplied_intent is not None
+            ):
+                _assert_confirmation_intent(
+                    intent_preview, supplied_intent
+                )
+        elif preview_only or supplied_intent is not None:
+            raise FlowError(
+                "CONFIRMATION_CONTRACT_UNAVAILABLE",
+                "schema-v1 tasks keep their legacy direct-transition behavior",
+                details={"schema_version": current.get("schema_version")},
+            )
         state_value = _copy_state(current)
         state_value["status"] = target
         if target == "PLANNING" and source != "BLOCKED":
@@ -913,20 +1292,110 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
                 "plan": None,
                 "reassessed_at": reassessed_at,
             }
-        _commit_state(current, state_value, task_dir, "state_transitioned", {"from": source, "to": target, "note": args.note})
-    return _result("transition", state_value, transition={"from": source, "to": target, "note": args.note})
+        confirmation = (
+            {
+                "intent_id": intent_preview["intent_id"],
+                "confirmation_mode": intent_preview[
+                    "confirmation_mode"
+                ],
+                "evidence_sha256": intent_preview["evidence_sha256"],
+            }
+            if intent_preview is not None
+            else {"confirmation_mode": confirmation_mode}
+        )
+        _commit_state(
+            current,
+            state_value,
+            task_dir,
+            "state_transitioned",
+            {
+                "from": source,
+                "to": target,
+                "note": args.note,
+                **confirmation,
+            },
+        )
+    return _result(
+        "transition",
+        state_value,
+        transition={
+            "from": source,
+            "to": target,
+            "note": args.note,
+            **confirmation,
+        },
+    )
 
 
 def command_cancel(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
+    preview_only = bool(getattr(args, "preview", False))
+    supplied_intent = getattr(args, "confirm_intent", None)
     with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
         if current.get("status") == "CANCELLED":
             return _result("cancel", current, unchanged=True, cancelled=current.get("cancelled"))
         if current.get("status") == "DONE":
             raise FlowError("INVALID_STATE", "completed task cannot be cancelled")
+        source = current["status"]
+        intent_preview: dict[str, Any] | None = None
+        if _uses_confirmation_contract(current):
+            intent_preview = _transition_intent_preview(
+                current,
+                source,
+                "CANCELLED",
+                action="cancel",
+                action_parameters={"reason": args.reason},
+            )
+            if preview_only:
+                return _result(
+                    "cancel",
+                    current,
+                    preview=intent_preview,
+                    cancelled=None,
+                )
+            _assert_confirmation_intent(intent_preview, supplied_intent)
+        elif preview_only or supplied_intent is not None:
+            raise FlowError(
+                "CONFIRMATION_CONTRACT_UNAVAILABLE",
+                "schema-v1 tasks keep their legacy direct-cancel behavior",
+                details={"schema_version": current.get("schema_version")},
+            )
         state_value = _copy_state(current)
-        source = state_value["status"]
         state_value["status"] = "CANCELLED"
         state_value["cancelled"] = {"reason": args.reason, "at": utc_now(), "by": _actor(), "from_status": source}
-        _commit_state(current, state_value, task_dir, "task_cancelled", {"from": source, "reason": args.reason})
-    return _result("cancel", state_value, cancelled=state_value["cancelled"])
+        confirmation = (
+            {
+                "intent_id": intent_preview["intent_id"],
+                "confirmation_mode": "explicit",
+                "evidence_sha256": intent_preview["evidence_sha256"],
+            }
+            if intent_preview is not None
+            else {"confirmation_mode": "legacy"}
+        )
+        _commit_state(
+            current,
+            state_value,
+            task_dir,
+            "task_cancelled",
+            {"from": source, "reason": args.reason, **confirmation},
+            additional_events=(
+                [
+                    (
+                        "state_transitioned",
+                        {
+                            "from": source,
+                            "to": "CANCELLED",
+                            **confirmation,
+                        },
+                    )
+                ]
+                if intent_preview is not None
+                else None
+            ),
+        )
+    return _result(
+        "cancel",
+        state_value,
+        cancelled=state_value["cancelled"],
+        confirmation=confirmation,
+    )

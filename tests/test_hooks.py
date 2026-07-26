@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import io
 import json
 import os
 import shutil
@@ -8,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -124,6 +128,61 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertTrue(specific["permissionDecisionReason"])
         return specific["permissionDecisionReason"]
 
+    def checkpoint_marker(self, session_id: str) -> Path:
+        digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        return self.data_dir / "hook-checkpoints" / f"{digest}.json"
+
+    def upgrade_state_to_v2(self, state_file: Path, *, revision: int = 7) -> None:
+        policy = {
+            "schema": "dev-flow-risk-policy/v1",
+            "protected_paths": [],
+        }
+
+        def controller_sha256(value: object) -> str:
+            encoded = (
+                json.dumps(
+                    value,
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+                + "\n"
+            ).encode("utf-8", "backslashreplace")
+            return hashlib.sha256(encoded).hexdigest()
+
+        risk = {
+            "schema": "dev-flow-risk-assessment/v1",
+            "decision": "requires_full",
+            "categories": [],
+            "target_paths": [],
+            "repository_count": 1,
+            "policy": policy,
+            "policy_sha256": controller_sha256(policy),
+            "reasons": [
+                {"code": "change_category_unknown"},
+                {"code": "target_paths_unknown"},
+            ],
+            "evaluated_at": "2026-07-26T00:00:00Z",
+        }
+        risk["sha256"] = controller_sha256(risk)
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state.update(
+            {
+                "schema_version": 2,
+                "evidence_contract_version": 2,
+                "confirmation_contract_version": 1,
+                "revision": revision,
+                "flow": "full",
+                "risk_assessment": risk,
+                "workspace": {
+                    "strategy": "worktree",
+                    "ready": False,
+                    "generation": 0,
+                },
+            }
+        )
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+
     def test_multiple_active_tasks_are_denied_without_newest_selection(self) -> None:
         self.write_core_state("TASK-42", "INTAKE")
         self.write_core_state("TASK-43", "IMPLEMENTING")
@@ -174,6 +233,7 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertEqual(specific["hookEventName"], "SessionStart")
         context = specific["additionalContext"]
         self.assertIn("Active task: TASK-42", context)
+        self.assertIn("Revision: unknown", context)
         self.assertIn("流程名称: 完整流程（full）", context)
         self.assertIn("工作方式: 创建独立工作树（worktree）", context)
         self.assertIn("当前状态: 路线已批准（ROUTE_APPROVED）", context)
@@ -190,9 +250,10 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertIn(f"Controller: {PLUGIN_ROOT / 'scripts' / 'dev_flow.py'}", context)
         self.assertIn(f"Interpreter: {sys.executable}", context)
         self.assertIn(f"--data-dir {self.data_dir.resolve()}", context)
-        self.assertIn("show --task TASK-42", context)
+        self.assertIn("show --task TASK-42 --compact", context)
         self.assertIn("Every controller call must explicitly include", context)
-        self.assertIn("状态切换确认：", context)
+        self.assertIn("状态切换确认（schema v1）", context)
+        self.assertIn("每条状态边仍须单独", context)
         self.assertIn("preflight --preview", context)
         self.assertIn("preflight --confirm-preview", context)
         self.assertIn("只有决策输入或状态边漂移才必须重新 preview", context)
@@ -575,6 +636,309 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertIn("show --task TASK-42 --compact", context)
         self.assertNotIn("\n", context)
         self.assertLess(len(context.encode("utf-8")), 1800)
+
+    def test_user_prompt_submit_suppresses_same_session_and_exact_context(self) -> None:
+        self.activate("PLANNING", pending_gate=None, next_action="write the plan")
+        session_id = "session/private id/42"
+        first, _ = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": session_id,
+                "turn_id": "turn-1",
+                "prompt": "continue",
+            }
+        )
+        context = json.loads(first)["hookSpecificOutput"]["additionalContext"]
+        second, second_stderr = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": session_id,
+                "turn_id": "turn-2",
+                "prompt": "different prompt text",
+            }
+        )
+        self.assertEqual(second, "")
+        self.assertEqual(second_stderr, "")
+
+        marker = self.checkpoint_marker(session_id)
+        self.assertTrue(marker.is_file())
+        self.assertNotIn(session_id, str(marker))
+        document = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(document["schema"], "dev-flow-hook-checkpoint/v1")
+        self.assertEqual(
+            document["session_sha256"],
+            hashlib.sha256(session_id.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(
+            document["context_sha256"],
+            hashlib.sha256(context.encode("utf-8")).hexdigest(),
+        )
+        self.assertNotIn(session_id, marker.read_text(encoding="utf-8"))
+
+    def test_session_start_always_emits_and_primes_compact_checkpoint(self) -> None:
+        self.activate("IMPLEMENTING", pending_gate=None, next_action="run tests")
+        session_id = "session-start-prime"
+        payload = {
+            "hook_event_name": "SessionStart",
+            "session_id": session_id,
+            "source": "resume",
+        }
+        first, _ = self.invoke(payload)
+        second, _ = self.invoke(payload)
+        self.assertEqual(
+            json.loads(first)["hookSpecificOutput"]["hookEventName"],
+            "SessionStart",
+        )
+        self.assertEqual(
+            json.loads(second)["hookSpecificOutput"]["hookEventName"],
+            "SessionStart",
+        )
+
+        prompt, prompt_stderr = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": session_id,
+                "turn_id": "turn-after-start",
+                "prompt": "continue",
+            }
+        )
+        self.assertEqual(prompt, "")
+        self.assertEqual(prompt_stderr, "")
+
+    def test_schema_v2_session_start_primes_equivalent_compact_checkpoint(
+        self,
+    ) -> None:
+        state_file = self.activate(
+            "PLANNING",
+            pending_gate=None,
+            next_action="write the approved plan",
+        )
+        self.upgrade_state_to_v2(state_file)
+        session_id = "schema-v2-session"
+
+        started, started_stderr = self.invoke(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": session_id,
+                "source": "resume",
+            }
+        )
+        self.assertEqual(started_stderr, "")
+        context = json.loads(started)["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        self.assertIn("Revision: 7", context)
+        self.assertIn("show --task TASK-42 --compact", context)
+        self.assertIn("状态切换确认（schema v2）", context)
+        self.assertIn("record-index BASELINED→INDEXED", context)
+        self.assertIn("WORKSPACE_READY→PLANNING", context)
+        self.assertIn("IMPLEMENTING→VERIFYING", context)
+        self.assertIn("review-snapshot VERIFYING→REVIEWING", context)
+        self.assertIn("--preview", context)
+        self.assertIn("--confirm-intent", context)
+        self.assertIn("DONE/CANCELLED 永远显式确认", context)
+        self.assertNotIn("每条状态边仍须单独", context)
+
+        prompt, prompt_stderr = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": session_id,
+                "turn_id": "turn-after-schema-v2-start",
+                "prompt": "continue",
+            }
+        )
+        self.assertEqual(prompt, "")
+        self.assertEqual(prompt_stderr, "")
+
+    def test_subagent_start_never_uses_user_prompt_checkpoint_marker(self) -> None:
+        self.activate(
+            "PLANNING",
+            pending_gate=None,
+            next_action="write the plan",
+        )
+        session_id = "parent-session-shared-with-subagent"
+        subagent, subagent_stderr = self.invoke(
+            {
+                "hook_event_name": "SubagentStart",
+                "session_id": session_id,
+                "turn_id": "turn-1",
+                "agent_id": "agent-1",
+                "agent_type": "reviewer",
+            }
+        )
+        self.assertEqual(subagent, "")
+        self.assertEqual(subagent_stderr, "")
+        self.assertFalse(self.checkpoint_marker(session_id).exists())
+
+        prompt, prompt_stderr = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": session_id,
+                "turn_id": "turn-1",
+                "prompt": "continue",
+            }
+        )
+        self.assertTrue(prompt)
+        self.assertEqual(prompt_stderr, "")
+        self.assertTrue(self.checkpoint_marker(session_id).is_file())
+
+    def test_checkpoint_is_scoped_by_session_and_compact_context(self) -> None:
+        state_file = self.activate(
+            "IMPLEMENTING", pending_gate=None, next_action="run tests"
+        )
+        first_session, _ = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-a",
+                "prompt": "continue",
+            }
+        )
+        second_session, _ = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-b",
+                "prompt": "continue",
+            }
+        )
+        self.assertTrue(first_session)
+        self.assertTrue(second_session)
+
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["next_action"] = "record focused test evidence"
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+        changed, _ = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-a",
+                "prompt": "continue",
+            }
+        )
+        changed_context = json.loads(changed)["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        self.assertIn("record focused test evidence", changed_context)
+        repeated, _ = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-a",
+                "prompt": "continue again",
+            }
+        )
+        self.assertEqual(repeated, "")
+
+    def test_missing_or_invalid_session_id_fails_open_without_marker(self) -> None:
+        self.activate("PLANNING", pending_gate=None, next_action="write the plan")
+        for session_value in (None, "", "   ", ["not", "a", "string"]):
+            with self.subTest(session_id=session_value):
+                payload = {
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": "continue",
+                }
+                if session_value is not None:
+                    payload["session_id"] = session_value
+                first, _ = self.invoke(payload)
+                second, _ = self.invoke(payload)
+                self.assertTrue(first)
+                self.assertTrue(second)
+        self.assertFalse((self.data_dir / "hook-checkpoints").exists())
+
+    def test_corrupt_or_unreadable_checkpoint_fails_open(self) -> None:
+        self.activate("PLANNING", pending_gate=None, next_action="write the plan")
+        session_id = "session-corrupt"
+        marker = self.checkpoint_marker(session_id)
+        marker.parent.mkdir()
+        marker.write_text("{not-json", encoding="utf-8")
+
+        emitted, _ = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": session_id,
+                "prompt": "continue",
+            }
+        )
+        self.assertTrue(emitted)
+        healed = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(healed["schema"], "dev-flow-hook-checkpoint/v1")
+
+        unreadable_session = "session-marker-is-directory"
+        unreadable = self.checkpoint_marker(unreadable_session)
+        unreadable.mkdir()
+        first, _ = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": unreadable_session,
+                "prompt": "continue",
+            }
+        )
+        second, _ = self.invoke(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": unreadable_session,
+                "prompt": "continue",
+            }
+        )
+        self.assertTrue(first)
+        self.assertTrue(second)
+
+    def test_checkpoint_write_failure_fails_open(self) -> None:
+        self.activate("PLANNING", pending_gate=None, next_action="write the plan")
+        (self.data_dir / "hook-checkpoints").write_text(
+            "directory unavailable", encoding="utf-8"
+        )
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-write-failure",
+            "prompt": "continue",
+        }
+        first, first_stderr = self.invoke(payload)
+        second, second_stderr = self.invoke(payload)
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(first_stderr, "")
+        self.assertEqual(second_stderr, "")
+
+    def test_checkpoint_is_not_written_when_stdout_flush_fails(self) -> None:
+        self.activate("PLANNING", pending_gate=None, next_action="write the plan")
+        spec = importlib.util.spec_from_file_location(
+            "_dev_flow_hook_flush_failure", HOOK
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        session_id = "session-flush-failure"
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session_id,
+            "prompt": "continue",
+            "cwd": str(self.cwd),
+        }
+
+        class Input:
+            buffer = io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+        class FlushFailureBuffer:
+            def write(self, value: bytes) -> int:
+                return len(value)
+
+            def flush(self) -> None:
+                raise OSError("simulated stdout flush failure")
+
+        class Output:
+            buffer = FlushFailureBuffer()
+
+        with mock.patch.object(module.sys, "stdin", Input()):
+            with mock.patch.object(module.sys, "stdout", Output()):
+                with mock.patch.object(module.sys, "argv", [str(HOOK)]):
+                    with mock.patch.dict(
+                        module.os.environ,
+                        {
+                            "PLUGIN_ROOT": str(PLUGIN_ROOT),
+                            "PLUGIN_DATA": str(self.data_dir),
+                        },
+                    ):
+                        self.assertEqual(module.main(), 0)
+        self.assertFalse(self.checkpoint_marker(session_id).exists())
 
     def test_context_selects_baseline_index_explicitly_before_workspace(self) -> None:
         self.activate(

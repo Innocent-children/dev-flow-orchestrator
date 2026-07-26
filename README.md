@@ -118,7 +118,7 @@ Field by field:
 | `timeout` | seconds before Codex abandons the hook | `10` is enough. The hook is fail-open by design — on timeout or error it emits nothing rather than blocking your session |
 | `statusMessage` | text shown while the hook runs | cosmetic; omit freely |
 
-`UserPromptSubmit` takes no `matcher` — it fires on every prompt. `SessionStart` injects the complete resumable checkpoint, while each prompt receives a stateless single-line checkpoint containing task/revision/flow/status/remaining-workflow/index/next-action data and a compact resume command. The command guard recognizes direct `git`/`git.exe`, absolute Git paths, supported POSIX shells, `cmd.exe /c`, Windows PowerShell, and `pwsh -Command` wrappers equivalently; a recognized wrapper payload that cannot be parsed safely is rejected with a diagnostic. The bundled Windows shim is for plugin-managed discovery; global registrations should use a verified absolute interpreter as shown above because they receive neither `PLUGIN_ROOT` nor `PLUGIN_DATA`. After editing this file, start a new task; Codex may also ask you to review and trust the hooks, and declining leaves you with no guardrails.
+`UserPromptSubmit` takes no `matcher` — it fires on every prompt. `SessionStart` always injects the complete resumable checkpoint. A prompt receives the single-line compact checkpoint containing task/revision/flow/status/remaining-workflow/index/next-action data and a compact resume command only when that content changed within the current Codex session. The best-effort marker is keyed by `sha256(session_id)` and stores only the compact-content digest; a missing session ID or any marker read/write/corruption failure emits instead of suppressing, preserving fail-open behavior. The command guard recognizes direct `git`/`git.exe`, absolute Git paths, supported POSIX shells, `cmd.exe /c`, Windows PowerShell, and `pwsh -Command` wrappers equivalently; a recognized wrapper payload that cannot be parsed safely is rejected with a diagnostic. The bundled Windows shim is for plugin-managed discovery; global registrations should use a verified absolute interpreter as shown above because they receive neither `PLUGIN_ROOT` nor `PLUGIN_DATA`. After editing this file, start a new task; Codex may also ask you to review and trust the hooks, and declining leaves you with no guardrails.
 
 ### 4. Point the controller at a data directory
 
@@ -183,11 +183,36 @@ The resulting file:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "scope": {
     "mode": "allowlist",
     "include": ["/home/me/work"],
     "exclude": []
+  },
+  "risk_policy": {
+    "schema": "dev-flow-risk-policy/v1",
+    "protected_paths": [
+      ".github/workflows/**",
+      "**/alembic/**",
+      "**/api/**",
+      "**/auth/**",
+      "**/migrations/**",
+      "**/schema/**",
+      "**/schemas/**",
+      "**/security/**",
+      "**/*.graphql",
+      "**/*.proto",
+      "**/*.sql",
+      "**/*.tf",
+      "deploy/**",
+      "docker-compose*.yml",
+      "docker-compose*.yaml",
+      "Dockerfile*",
+      "infra/**",
+      "infrastructure/**",
+      "k8s/**",
+      "terraform/**"
+    ]
   }
 }
 ```
@@ -197,6 +222,7 @@ The resulting file:
 | `scope.mode` | `all`, `allowlist` | `all` | `all` is active everywhere except the excludes; `allowlist` is active only inside the includes |
 | `scope.include` | absolute directories | `[]` | Each entry covers the directory and its subdirectories |
 | `scope.exclude` | absolute directories | `[]` | Same, but negative. Applies in **both** modes |
+| `risk_policy.protected_paths` | repository-relative POSIX globs | built-in public-contract/auth/schema/migration/infrastructure set shown above | Any declared or live changed path matching one of these globs requires full flow |
 
 Every flag, with an example:
 
@@ -207,10 +233,15 @@ Every flag, with an example:
 | `--remove DIR` | `--remove ~/work` | Drop an include. Fails loudly if the directory was never configured, so a typo is not swallowed |
 | `--remove-exclude DIR` | `--remove-exclude ~/work/vendor` | Drop an exclude |
 | `--mode all\|allowlist` | `--mode allowlist` | Set the mode directly |
-| `--clear` | `--clear` | Reset to active-everywhere. Also the only way to recover from a corrupted `config.json` |
+| `--clear` | `--clear` | Reset scope to active-everywhere and protected paths to the built-in defaults. Also the only way to recover from a corrupted `config.json` |
+| `--add-protected-path GLOB` | `--add-protected-path "config/security/**"` | Add a protected repository-relative pattern; repeatable |
+| `--remove-protected-path GLOB` | `--remove-protected-path "Dockerfile*"` | Remove one exact configured pattern; repeatable and typo-safe |
+| `--reset-protected-paths` | `--reset-protected-paths` | Restore only the built-in protected-path set without changing directory scope |
 | `--check [DIR]` | `--check .` | Read-only: report the decision for one directory, defaulting to the current one |
 
 All four `DIR` flags are repeatable. Paths are expanded and made absolute when stored, so `~` and relative paths are fine on input.
+
+Protected patterns are normalized POSIX repository-relative globs. They support literal characters, `*`, `?`, and whole-segment `**`. Absolute or drive-qualified paths, NUL bytes, empty/`.`/`..` segments, bracket classes, and `**` embedded inside another segment are rejected.
 
 **The deepest configured directory wins.** Include `~/work`, exclude `~/work/vendor`, include `~/work/vendor/mine`, and the plugin is active in the first and third only. An exactly equal include/exclude pair resolves to the exclusion.
 
@@ -246,7 +277,7 @@ Finally, ask Codex to start a task. The lite flow is the cheapest end-to-end che
 Platform-neutral argv form; in actual workflow execution, use the absolute interpreter, controller, and `--data-dir` prefix injected by the hook:
 
 ```text
-<python> <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --workspace-strategy in-place --requirement "fix the typo in the login banner" --repo <repo-path>
+<python> <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --workspace-strategy in-place --change-category docs --target-path docs/login-banner.md --requirement "fix the typo in the login banner" --repo <repo-path>
 ```
 
 ## Configuration reference
@@ -262,9 +293,12 @@ Every setting the plugin has, in one place.
 | `PLUGIN_DATA` | environment, injected by Codex | unset for global hooks | one process | [step 4](#4-point-the-controller-at-a-data-directory) |
 | `scope.mode` | `<PLUGIN_DATA>/config.json` | `all` | machine | [step 5](#5-limit-where-the-plugin-is-active) |
 | `scope.include` / `scope.exclude` | `<PLUGIN_DATA>/config.json` | `[]` | machine | [step 5](#5-limit-where-the-plugin-is-active) |
+| `risk_policy.protected_paths` | `<PLUGIN_DATA>/config.json` | built-in full-flow path set | machine; snapshotted per task | [step 5](#5-limit-where-the-plugin-is-active) |
 | `DEV_FLOW_SCOPE` / `DEV_FLOW_SCOPE_EXCLUDE` | environment | unset | one process | [step 5](#5-limit-where-the-plugin-is-active) |
 | `--flow full\|lite` | `start` | inferred from `--workspace-strategy`; optional compatibility assertion | one `start` call | [Lite flow](#lite-flow) |
 | `--workspace-strategy in-place\|branch\|worktree` | `start` | — (required) | one task, immutable | [How it works](#how-it-works) |
+| `--change-category` | `start` | required for lite | one task, immutable declaration | [Lite flow](#lite-flow) |
+| `--target-path` | `start` | required for lite | one task, immutable declaration | [Lite flow](#lite-flow) |
 | `--protected-branch` | `start` | always includes `main`, `master`, `trunk`; repeated values extend it | one task, immutable | [Controller commands](#controller-commands) |
 | `--repo` | `start` | — (required) | one task, immutable | [Controller commands](#controller-commands) |
 | `--task-id` | `start` | generated | one task | [Controller commands](#controller-commands) |
@@ -283,11 +317,13 @@ Before `start` or any branch/worktree operation, the workflow asks in Chinese fo
 
 New calls pass only `--workspace-strategy`. `--flow` remains an optional compatibility consistency assertion for old callers: a matching value is accepted, while a mismatch fails and cannot override the derived flow. The stable internal IDs remain `full`/`lite`, displayed to the user as **完整流程** and **精简流程**.
 
-The lite flow covers ordinary bounded work without paying for the full pipeline. It runs `preflight -> lite approval -> implement -> verify -> done` directly in the selected source-checkout branch, with no baseline worktree, impact analysis, OpenSpec, managed implementation worktree, or independent-review machinery. It retains fail-closed preflight evidence, a human gate bound to the exact branch/`HEAD`/working-tree snapshot, migration guards, and test currency.
+The lite flow covers ordinary bounded work without paying for the full pipeline. It runs `preflight -> lite approval -> implement -> verify -> done` directly in the selected source-checkout branch, with no baseline worktree, impact analysis, OpenSpec, managed implementation worktree, or independent-review machinery. A schema-v2 lite task requires exactly one repository, at least one low-risk `--change-category` (`internal`, `tests`, or `docs`), and one or more exact repository-relative `--target-path` values outside the protected policy. `public-api`, `schema`, `auth`, `migration`, `infrastructure`, `cross-repo`, multiple repositories, or missing/unknown declarations fail closed with `LITE_REQUIRES_FULL`.
 
-Every explicit or automatic status change requires a separate Chinese confirmation. Immediately before the action, show `current state -> target state`, the action, and every remaining main-flow state after the target; one confirmation authorizes exactly one state edge at the displayed revision. Preflight is two-phase: `--preview` performs no complete fingerprint and binds the exact status decision plus a lightweight observation; `--confirm-preview` captures complete evidence. Decision drift makes the token stale. Observation-only drift returns `PREFLIGHT_EVIDENCE_REFRESH_REQUIRED`; after inspecting and explicitly accepting the refreshed evidence, the same token can be retried with `--accept-evidence-refresh`.
+Schema-v2 status confirmation is default-explicit with one exact automatic whitelist: the final required full baseline `record-index` (`BASELINED -> INDEXED`), full `WORKSPACE_READY -> PLANNING`, full and lite `IMPLEMENTING -> VERIFYING`, and full `review-snapshot` (`VERIFYING -> REVIEWING`). No other edge is inferred from its command or perceived safety. `DONE` and `CANCELLED` are always explicit.
 
-The operations that can change status are a successful `baseline` in any supported form (bare, `--fetch`, and/or `--materialize`), the final required baseline `record-index`, `set-route`, route approval, `prepare-workspace --execute`, `review-snapshot`, `transition`, and `cancel`, plus a `preflight --confirm-preview` whose preview reports `changes_status: true`. Each requires that per-edge confirmation before execution.
+For every other `transition` or `cancel`, first call `--preview`, show the Chinese `current state -> target state`, action, side effects, and all remaining main-flow states, then pass the exact returned `intent_id` to `--confirm-intent` after approval. The intent binds task/revision/flow/edge/action/live evidence; drift returns `INTENT_STALE` and requires a new preview. Preflight keeps its separate two-phase protocol: `--preview` performs no complete fingerprint and binds the exact status decision plus a lightweight observation; `--confirm-preview` captures complete evidence. Decision drift makes that token stale. Observation-only drift returns `PREFLIGHT_EVIDENCE_REFRESH_REQUIRED`; after inspecting and explicitly accepting the refreshed evidence, the same token can be retried with `--accept-evidence-refresh`.
+
+Successful `baseline`, `set-route`, route approval, and `prepare-workspace --execute` remain explicit domain actions when they advance status. A route approval that also advances the task records independent `gate_approved` and `state_transitioned` audit facts with separate event IDs and a shared transaction/revision/intent; one fact never substitutes for the other.
 
 It uses a dual-index model per repository. A baseline project indexes the immutable detached analysis worktree for impact analysis and route decisions; a workspace project indexes the current-generation implementation worktree for planning, implementation, verification, and review discovery. Codebase-memory does not choose between them automatically: every query must pass the phase-selected project's exact returned ID. The controller exposes that choice in `show.index_selection`, archives every superseded index record for audit/ID isolation, and blocks downstream gates when a required workspace index is missing or stale.
 
@@ -295,7 +331,7 @@ The controller itself does not switch or pull the developer's current checkout. 
 
 When the OpenSpec route is selected, an explicit user choice determines the language of human-readable artifacts. Otherwise the workflow follows the dominant language of the target repository's existing OpenSpec artifacts, then its other human-readable artifacts. Conflicting or unclear signals require a question before writing; machine-required identifiers and fixed syntax remain unchanged.
 
-The lifecycle hooks inject the exact interpreter, absolute controller, and private data-directory arguments at session start and in the compact prompt checkpoint. The main skill preserves that ordered prefix on every controller call; it does not replace the interpreter with a platform-specific guess, and it does not assume `PLUGIN_DATA` reaches later execution tools.
+The lifecycle hooks inject the exact interpreter, absolute controller, and private data-directory arguments at session start and in each changed compact prompt checkpoint; identical content is suppressed only within the same session. The main skill preserves that ordered prefix on every controller call; it does not replace the interpreter with a platform-specific guess, and it does not assume `PLUGIN_DATA` reaches later execution tools.
 
 ### Boundaries and limitations
 
@@ -307,7 +343,9 @@ The current evidence contract version is `2` (`evidence_contract_version: 2`). R
 
 Repeated test and review fingerprints keep the same v2 semantic payload and hash but are stored once per task as `task-local-json-v1` blobs. Their state entries are storage locators, not evidence records, and deliberately omit `evidence_contract_version`; the current controller validates the blob before accepting its v2 payload, while an older controller fails closed instead of trusting an unvalidated locator. Legacy inline v2 fingerprints remain readable.
 
-Schema-v1 task state remains readable when its task ID is portable, but legacy v1 evidence does not satisfy the current v2 contract/profile digest; it is deliberately stale for downstream gates. Regenerate the required preflight, baseline/workspace indexes, plan binding, tests, and review snapshot with a compatible current version on the same host before the task can advance. A task already beyond a state where the controller permits the required evidence refresh cannot be migrated in place; cancel and replace it instead of editing evidence. A legacy `branch`-strategy task without a start-time `branch_binding` remains inspectable but fails closed at preflight and lite gates; cancel and replace it instead of inventing approval evidence. Do not relabel legacy evidence or reuse a baseline codebase-memory project as a workspace project. Pointing an older plugin that does not understand the current capability profile at a data directory already handled by this version is also unsafe: reinstall a version that supports the same evidence contract and regenerate stale evidence. Readable old state does not imply semantic compatibility, and a platform change is not an evidence migration path.
+New tasks use task-state schema v2, which makes the confirmation contract and risk assessment mandatory. The current controller can still read and finish schema-v1 tasks with their legacy direct `transition`/`cancel` behavior and per-edge human prompts; v2 `--preview`/`--confirm-intent` is unavailable for them. Do not rewrite a v1 state into v2 or invent an intent/risk snapshot. Conversely, an older controller that understands only schema v1 rejects a schema-v2 task instead of silently dropping its safety fields.
+
+Legacy v1 evidence does not satisfy the current v2 evidence contract/profile digest; it is deliberately stale for downstream gates. Regenerate the required preflight, baseline/workspace indexes, plan binding, tests, and review snapshot with a compatible current version on the same host before the task can advance. A task already beyond a state where the controller permits the required evidence refresh cannot be migrated in place; cancel and replace it instead of editing evidence. A legacy `branch`-strategy task without a start-time `branch_binding` remains inspectable but fails closed at preflight and lite gates; cancel and replace it instead of inventing approval evidence. Do not relabel legacy evidence or reuse a baseline codebase-memory project as a workspace project. Pointing an older plugin that does not understand the current capability profile at a data directory already handled by this version is also unsafe: reinstall a version that supports the same evidence contract and regenerate stale evidence. Readable old state does not imply semantic compatibility, and a platform change is not an evidence migration path.
 
 Before task state, event records, mutation/quarantine evidence, predictable errors, or CLI JSON are written or emitted, the controller applies structured redaction to recognized credential-bearing URLs, sensitive-named fields and command-line options, authorization values, and credential-like diagnostic text. Operational paths, branch names, requirements, and controller-issued preview tokens retain their required exact values. Loading a legacy state that still contains recognized sensitive material performs a locked, one-time cleanup rewrite, even when the first reader is `show` or `list`; this cleanup adds no workflow event and is not permission to hand-edit state.
 
@@ -337,7 +375,7 @@ Platform-neutral argv form:
 | Command | Flow | Valid states | Purpose |
 | --- | --- | --- | --- |
 | `start` | both | creates a task | Create an `INTAKE` task over one or more repositories |
-| `show` | both | any | Print one full task snapshot |
+| `show` | both | any | Print a compact, sectioned, or full task snapshot |
 | `recover-quarantine` | both | quarantined task | Prove an interrupted child is gone, verify postconditions, and archive its durable quarantine |
 | `recover-atomic-write` | both | no task | Report and clear rollback evidence left by an interrupted atomic state write |
 | `list` | both | no task | List task summaries |
@@ -360,12 +398,12 @@ Three of these seventeen do not target one task: `scope` is the sole writer of `
 
 ### Task setup and inspection
 
-- `start --repo <path> [--repo <path> ...] --workspace-strategy MODE "<requirement>"` — `--repo` is required and repeatable; the requirement may also be given as `--requirement`. `--workspace-strategy` is required, proving a work mode was selected before creation: `in-place` and `branch` derive `lite`, while `worktree` derives `full`. The optional `--flow` is only a compatibility consistency assertion; a matching value is accepted and a mismatch fails instead of overriding the strategy. The repository set, requirement, derived flow, and workspace strategy are immutable afterwards. `branch` records the exact branch and `HEAD` reached by a user-approved switch already completed before `start`, and rejects symbolic local branches plus protected or resolvable remote-default/base branches. Both branch and `HEAD` must remain exact until the first confirmed all-repository preflight; afterwards the branch stays immutable, while a new `HEAD` requires another all-repository preflight pair and lite approval. `start` never performs the Git switch. `--task-id` may supply a stable task ID. Repeatable `--protected-branch` values always extend and never replace the default `main`/`master`/`trunk` set. Protected names prevent branch-mode binding and direct commits, but do not prohibit local edits under an explicitly selected `in-place` task. A repository outside the effective directory scope is rejected with `OUT_OF_SCOPE`.
+- `start --repo <path> [--repo <path> ...] --workspace-strategy MODE [--change-category CATEGORY ...] [--target-path PATH ...] "<requirement>"` — `--repo` is required and repeatable; the requirement may also be given as `--requirement`. `--workspace-strategy` is required, proving a work mode was selected before creation: `in-place` and `branch` derive `lite`, while `worktree` derives `full`. Schema-v2 lite creation additionally requires exactly one repository, repeatable categories drawn only from `internal`/`tests`/`docs`, and repeatable exact repository-relative target paths that do not match the configured protected globs. Full-only categories are `public-api`, `schema`, `auth`, `migration`, `infrastructure`, and `cross-repo`; missing or unknown declarations fail closed to full. Full tasks may record the same declaration without being rejected. The task stores the normalized values plus its exact risk-policy snapshot and digest. The optional `--flow` is only a compatibility consistency assertion; a matching value is accepted and a mismatch fails instead of overriding the strategy. The repository set, requirement, derived flow, workspace strategy, and risk declaration are immutable afterwards. `branch` records the exact branch and `HEAD` reached by a user-approved switch already completed before `start`, and rejects symbolic local branches plus protected or resolvable remote-default/base branches. Both branch and `HEAD` must remain exact until the first confirmed all-repository preflight; afterwards the branch stays immutable, while a new `HEAD` requires another all-repository preflight pair and lite approval. `start` never performs the Git switch. `--task-id` may supply a stable task ID. Repeatable `--protected-branch` values always extend and never replace the default `main`/`master`/`trunk` set. Protected names prevent branch-mode binding and direct commits, but do not prohibit local edits under an explicitly selected `in-place` task. A repository outside the effective directory scope is rejected with `OUT_OF_SCOPE`.
 - `show <task> [--compact | --section SECTION ...]` — full state remains the compatibility default. `--compact` returns workflow progress (including `workflow.remaining`) and task counts without the complete state; repeatable `--section` returns only selected task sections. Use the mutation receipt when it already contains the next revision/status/workflow, compact show for resume/conflict recovery, and sectioned show for gate-specific detail.
 - `recover-quarantine <task> --expected-revision N` — after a child-quiescence failure, prove the recorded process/process group is gone, verify the mutation's platform and repository postconditions, and archive its durable quarantine. It never kills a process or treats a timeout as recovery.
 - `recover-atomic-write [--path FILE] [--apply] [--resolve keep-current|restore-rollback] [--rollback-sha256 SHA]` — the only supported answer to `ATOMIC_RECOVERY_REQUIRED`. With no flags it reports every rollback candidate under the data directory read-only, with both sides' size, SHA-256, and schema summary. `--apply` removes only provably safe evidence. `--path` accepts the blocked destination or one of its rollback files, and is required with `--resolve`. It takes no task and no `--expected-revision`, because a stranded rollback file can block the very state write a revision check would need; it takes the interrupted writer's own lock instead. It is deliberately separate from `recover-quarantine`, which cannot help here — that command commits task state through the same atomic write, so residue would block it too, and residue can equally sit on `config.json` or `workspace-registry.json`, which belong to no task.
 - `list [--active-only] [--status STATE ...]` — summaries sorted newest first. `--status` is repeatable and accepts any state name.
-- `scope [...]` — see [step 5](#5-limit-where-the-plugin-is-active) for every flag, and [Directory scope](#directory-scope) for the resolution rules.
+- `scope [...]` — see [step 5](#5-limit-where-the-plugin-is-active) for directory-scope and protected-path flags, and [Directory scope](#directory-scope) for the activation rules. It is the sole writer of configuration schema v2.
 
 ### Evidence
 
@@ -380,9 +418,9 @@ Three of these seventeen do not target one task: `scope` is the sole writer of `
 
 - `set-route direct|openspec --reason "..."` — the route may also be given as `--route`.
 - `approve --gate GATE --note "..." [--artifact-sha256 SHA] [--accept-conditional] [--allow-fetch] [--allow-dirty]` — gates are `baseline-fetch`, `impact-degraded`, `route`, `workspace`, `plan` and `review` on a full task, and `lite` on a lite task. Evidence-bound gates require `--artifact-sha256` naming an artifact already recorded on the task. `--accept-conditional` applies only to `review`, `--allow-fetch` only to `baseline-fetch`, and `--allow-dirty` only to `baseline-fetch` and `lite`; using one elsewhere is an `INVALID_ARGUMENT`. A `FAIL` review verdict cannot be approved at all.
-- `transition STATE [--note "..."]` — the target may also be given as `--to`. Allowed edges are the flow's next state, its rework edges (back to `PLANNING`, `IMPLEMENTING`, or `INDEXED` for a full task; back to `IMPLEMENTING` or `PREFLIGHTED` for a lite one), and `BLOCKED`/`CANCELLED`. `--note` is required for `BLOCKED`, `CANCELLED`, replanning and impact reassessment. A blocked task may only resume to the state it was blocked from. Each transition re-verifies the guards for its target, so drifted worktrees, missing workspace indexes, stale reviews and non-current test records all fail closed here.
+- `transition STATE [--note "..."] [--preview | --confirm-intent INTENT]` — the target may also be given as `--to`. Allowed edges are the flow's next state, its rework edges (back to `PLANNING`, `IMPLEMENTING`, or `INDEXED` for a full task; back to `IMPLEMENTING` or `PREFLIGHTED` for a lite one), and `BLOCKED`/`CANCELLED`. `--note` is required for `BLOCKED`, `CANCELLED`, replanning and impact reassessment. On schema-v2 tasks, every edge outside the exact automatic whitelist first uses `--preview`, then applies the unchanged returned intent with `--confirm-intent`; `DONE` and `CANCELLED` are always explicit. A blocked task may only resume to the state it was blocked from, except that a `lite-risk` block must be cancelled/replaced rather than resumed. Each transition re-verifies the guards and live evidence for its target, so drifted worktrees, missing workspace indexes, stale reviews and non-current test records all fail closed here.
 - `prepare-workspace [--repo ...] [--branch B] [--path P] [--workspace-path REPO=PATH ...] [--workspace-branch REPO=BRANCH ...] [--dry-run | --execute]` — `--dry-run` is the default and records a deterministic `workspace-plan` artifact; `--execute` performs exactly the latest plan that carries a `workspace` approval. `--path` is only valid with a single selected repository; use the repeatable `REPO=...` overrides otherwise. Branches default to `codex/<task-id>`.
-- `cancel --reason "..."` — the preferred way to end a non-terminal task. A `DONE` task cannot be cancelled.
+- `cancel --reason "..." [--preview | --confirm-intent INTENT]` — the preferred way to end a non-terminal task. Schema-v2 cancellation always uses preview followed by the exact confirmed intent; schema-v1 tasks retain the legacy direct command after a human prompt. A `DONE` task cannot be cancelled.
 
 ## Lite flow
 
@@ -391,13 +429,15 @@ The directory scope decides *where* the plugin is active; the flow decides *how 
 Platform-neutral argv form:
 
 ```text
-<python> <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --workspace-strategy in-place --requirement "fix ..." --repo <path>
+<python> <plugin-root>/scripts/dev_flow.py start --data-dir <PLUGIN_DATA> --workspace-strategy in-place --change-category internal --target-path src/component.py --requirement "fix ..." --repo <path>
 ```
 
-- The workspace strategy is chosen at `start`, uniquely derives the immutable flow, and is itself immutable like the requirement and repository set. Lite records either the current branch (`in-place`) or a branch explicitly created/switched before start (`branch`); neither may switch branches after the task begins. If a lite change stops being bounded and low-risk, cancel it and replace it with a full task after explicit user direction; there is no in-place upgrade.
+- The workspace strategy is chosen at `start`, uniquely derives the immutable flow, and is itself immutable like the requirement and repository set. Lite records either the current branch (`in-place`) or a branch explicitly created/switched before start (`branch`); neither may switch branches after the task begins. It also stores the normalized low-risk category/target declaration and the exact protected-policy snapshot.
 - The lite gate (`approve --gate lite`) replaces all six full-flow gates (`baseline-fetch`, `impact-degraded`, `route`, `workspace`, `plan`, and `review`) with one explicit decision: work in place on the exact recorded checkouts. It binds each repository's branch, `HEAD`, and working-tree fingerprint; every new `preflight` clears it, and entering implementation re-verifies all three live.
 - Full-only commands (`baseline`, `record-index`, `set-route`, `prepare-workspace`, and `review-snapshot`) and all six full-flow gates fail with `FLOW_MISMATCH` on a lite task, and the lite gate fails the same way on a full task.
 - Test records bind the current lite approval instead of a plan hash. Each repository still needs a current passing result whose fingerprint matches the final tree before `DONE`.
+- Before entering `VERIFYING` or `DONE`, schema-v2 reclassifies every live path changed since the approved preflight `HEAD`, including committed, staged, unstaged, and untracked paths. A protected path, a change outside the declared targets, or unreadable/ambiguous evidence makes read-only `--preview` report `required_flow: full`; any actual attempt to apply that advance persists `BLOCKED` with `blocked.phase: lite-risk` and `required_flow: full`. The checkout is left untouched. Explicitly preview/confirm cancellation and create a replacement worktree/full task; the flow is never changed in place.
+- Lite `IMPLEMENTING -> VERIFYING` is the only automatic lite transition. `PREFLIGHTED -> IMPLEMENTING`, rework, `DONE`, and `CANCELLED` require the schema-v2 intent protocol.
 - The hooks allow file writes into the source checkouts only while a lite task is `IMPLEMENTING` or `VERIFYING`; the command guardrails (no `git reset --hard`, `clean`, `pull`, branch switching, or protected-branch commits) apply unchanged. Commit and push remain separate explicitly authorized actions.
 - Lite tasks record no controller-bound codebase-memory indexes; `show.index_selection.selected_role` is `none`, and ad-hoc queries stay outside the evidence chain.
 

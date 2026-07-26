@@ -40,15 +40,15 @@ Reload the task and verify the immutable `base_sha` plus the recorded `baseline-
 Let the controller re-hash the recorded path; do not alter state to match new bytes. On `ARTIFACT_CHANGED`, explain the delta and stop using the old approval.
 
 - For a changed workspace proposal, run `prepare-workspace` again without `--execute`, approve the new `workspace-plan` hash, and execute the identical options.
-- For a changed direct/OpenSpec plan after `PLANNING`, transition back with `transition --to PLANNING --note <reason>`, then record and approve the new plan. This clears plan/review approvals and review snapshots.
+- For a changed direct/OpenSpec plan after `PLANNING`, use the explicit `transition --to PLANNING --note <reason> --preview` / `--confirm-intent <intent-id>` pair, then record and approve the new plan. This clears plan/review approvals and review snapshots.
 - For a changed review report while still in `REVIEWING`, record it again and obtain a new review approval bound to its hash and latest snapshot.
-- For a changed impact report before route approval, record the corrected `impact` in `INDEXED` or `IMPACT_REVIEW` and approve the latest hash. After `ROUTE_APPROVED`, restore the exact approved content when mutation was accidental. For a legitimate reassessment, call `transition --to INDEXED --note <reason>`, then record a new impact and repeat route, workspace, plan, test, and review gates.
+- For a changed impact report before route approval, record the corrected `impact` in `INDEXED` or `IMPACT_REVIEW` and approve the latest hash. After `ROUTE_APPROVED`, restore the exact approved content when mutation was accidental. For a legitimate reassessment, use the explicit `transition --to INDEXED --note <reason> --preview` / `--confirm-intent <intent-id>` pair, then record a new impact and repeat route, workspace, plan, test, and review gates.
 
 ### Baseline or workspace index is stale or incomplete
 
 First read `show.index_selection`; codebase-memory never chooses the correct project automatically.
 
-- For baseline staleness, resolve freshness before calling `set-route`. While still `BASELINED` or `INDEXED`, refresh the affected detached analysis workspace under its baseline-specific project name with `persistence=false`, record the exact returned project identifier with `record-index --role baseline`, rerun dependent cross-repository intelligence, and record a new impact report in `INDEXED`. If material baseline staleness is discovered after entering `IMPACT_REVIEW`, correct the report before approval when existing index provenance remains valid; otherwise restart the task. After route approval, use `transition --to INDEXED --note <reason>` for a supported impact reassessment and repeat every downstream gate.
+- For baseline staleness, resolve freshness before calling `set-route`. While still `BASELINED` or `INDEXED`, refresh the affected detached analysis workspace under its baseline-specific project name with `persistence=false`, record the exact returned project identifier with `record-index --role baseline`, rerun dependent cross-repository intelligence, and record a new impact report in `INDEXED`. If material baseline staleness is discovered after entering `IMPACT_REVIEW`, correct the report before approval when existing index provenance remains valid; otherwise restart the task. After route approval, use the explicit `transition --to INDEXED --note <reason> --preview` / `--confirm-intent <intent-id>` pair for a supported impact reassessment and repeat every downstream gate.
 - For workspace staleness, index the current recorded implementation path under the current generation's workspace-specific name with `persistence=false`, then call `record-index --role workspace`. Refresh after staged, unstaged, untracked, committed, OpenSpec, generated, or test-created changes before crossing the next workspace-index gate. A missing or stale workspace project is not permission to query the baseline project.
 - For multi-repository queries, refresh every member of the same role/generation first. Never combine baseline and workspace projects, or current and retired workspace generations, in one claimed-complete cross-repository result.
 
@@ -62,7 +62,7 @@ Preserve the OpenSpec route and planning evidence. Diagnose availability, projec
 
 ### Implementation requires replanning
 
-From `IMPLEMENTING`, `VERIFYING`, `REVIEWING`, or `FINALIZING`, call `transition --to PLANNING --note <reason>`. Expect the controller to clear plan/review approvals and review snapshots. Update the direct contract under the task evidence root or the OpenSpec `changeRoot` in the managed implementation workspace, record the new plan only while in `PLANNING`, bind a new plan approval, refresh every workspace index, and return through implementation and verification. Record a new passing result for every repository after the new approval because tests are tied to the current plan SHA-256 and unique approval ID; refresh the workspace indexes again after implementation/testing changes, then create and review a fresh snapshot. Keep prior evidence in history.
+From `IMPLEMENTING`, `VERIFYING`, `REVIEWING`, or `FINALIZING`, use the explicit `transition --to PLANNING --note <reason> --preview` / `--confirm-intent <intent-id>` pair. Expect the controller to clear plan/review approvals and review snapshots. Update the direct contract under the task evidence root or the OpenSpec `changeRoot` in the managed implementation workspace, record the new plan only while in `PLANNING`, bind a new plan approval, refresh every workspace index, and return through implementation and verification. Record a new passing result for every repository after the new approval because tests are tied to the current plan SHA-256 and unique approval ID; refresh the workspace indexes again after implementation/testing changes, then create and review a fresh snapshot. Keep prior evidence in history.
 
 ### Tests or review fail
 
@@ -72,7 +72,17 @@ After any new `review-snapshot`, treat every older `review-report` and review ap
 
 ### Lite task drifted or outgrew its approval
 
-A lite task has no baseline or managed worktree to restore; its recoverable evidence is the preflight snapshot, the lite approval, and the test records. On `CHECKOUT_DRIFT` or `PREFLIGHT_WORKTREE_CHANGED`, show the recorded and observed branch/`HEAD`/fingerprint values and ask how to proceed; returning the checkout to the approved snapshot is the user's action, never an automatic reset. To continue with the changed reality, transition back to `PREFLIGHTED` with a note only when the current state is `IMPLEMENTING` or `VERIFYING`, then run a new all-repository `preflight --preview` / `preflight --confirm-preview <token>` pair and obtain a new `approve --gate lite` decision (`--allow-dirty` for the now-dirty tree); older test records become historical because they bind the superseded approval ID. From any other state, including `INTAKE` or `BLOCKED`, do not attempt this transition; reload the task and use only a controller-supported recovery path, or stop and ask the user. Before the first successful all-repository preflight, a `branch` strategy task must restore its start-time approved branch and `HEAD`. After that checkpoint, the approved branch remains immutable, while a new `HEAD` may be adopted only through a fresh all-repository preview/confirm pair and lite approval; adopting another branch requires cancelling and replacing the task. If the change no longer fits a bounded in-place fix, stop and ask the user to cancel/replace the task as a full task — the flow is immutable.
+A lite task has no baseline or managed worktree to restore; its recoverable evidence is the preflight snapshot, the lite approval, and the test records. On `CHECKOUT_DRIFT` or `PREFLIGHT_WORKTREE_CHANGED`, show the recorded and observed branch/`HEAD`/fingerprint values and ask how to proceed; returning the checkout to the approved snapshot is the user's action, never an automatic reset. To continue with the changed reality, use a `transition --to PREFLIGHTED --note <reason> --preview` / `--confirm-intent <intent-id>` pair only when the current state is `IMPLEMENTING` or `VERIFYING`, then run a new all-repository `preflight --preview` / `preflight --confirm-preview <token>` pair and obtain a new `approve --gate lite` decision (`--allow-dirty` for the now-dirty tree); older test records become historical because they bind the superseded approval ID. From any other state, including `INTAKE` or `BLOCKED`, do not attempt this transition; reload the task and use only a controller-supported recovery path, or stop and ask the user. Before the first successful all-repository preflight, a `branch` strategy task must restore its start-time approved branch and `HEAD`. After that checkpoint, the approved branch remains immutable, while a new `HEAD` may be adopted only through a fresh all-repository preview/confirm pair and lite approval; adopting another branch requires cancelling and replacing the task.
+
+For schema-v2 lite tasks, entering `VERIFYING` or `DONE` reclassifies all live
+changed paths against the declared targets and current/stored protected policy.
+A protected, undeclared, unreadable, or ambiguous change makes a read-only
+transition preview report `required_flow: full`; any actual attempt to apply
+that advance persists `BLOCKED` with `blocked.phase: lite-risk` and
+`required_flow: full`. This is a terminal decision for the lite workflow: do
+not resume, edit the state, or convert it in place. Leave the checkout
+untouched, preview and explicitly confirm `cancel`, then start a replacement
+task with `--workspace-strategy worktree`.
 
 ### Revision conflict
 
@@ -104,4 +114,10 @@ After recovery, reload the task before any mutation: the revision may be the one
 
 ## Cancel safely
 
-Call `cancel` only after explicit user confirmation. Cancellation records intent; it does not authorize deleting worktrees, branches, artifacts, or uncommitted changes. Report all retained paths and explain that cleanup needs a separate explicit decision.
+For schema-v2 tasks, call `cancel --reason <reason> --preview`, show the exact
+source, terminal target, side effects, and retained paths, then use
+`--confirm-intent <intent-id>` only after explicit user confirmation.
+Schema-v1 tasks retain the legacy direct `cancel` call after the same human
+prompt. Cancellation records intent; it does not authorize deleting worktrees,
+branches, artifacts, or uncommitted changes. Report all retained paths and
+explain that cleanup needs a separate explicit decision.

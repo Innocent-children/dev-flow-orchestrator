@@ -11,8 +11,12 @@ def _default_config() -> dict[str, Any]:
     """The absent-configuration default keeps the plugin active everywhere."""
 
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": CONFIG_SCHEMA_VERSION,
         "scope": {"mode": "all", "include": [], "exclude": []},
+        "risk_policy": {
+            "schema": "dev-flow-risk-policy/v1",
+            "protected_paths": sorted(DEFAULT_PROTECTED_PATH_GLOBS),
+        },
     }
 
 
@@ -66,6 +70,166 @@ def _normalize_scope(value: Any) -> dict[str, Any]:
     return scope
 
 
+def _normalize_risk_glob(
+    value: Any, option: str, *, code: str = "INVALID_ARGUMENT"
+) -> str:
+    if not isinstance(value, str):
+        raise FlowError(
+            code,
+            f"{option} requires a repository-relative POSIX glob",
+            details={"glob_type": type(value).__name__},
+        )
+    text = value.strip().replace("\\", "/")
+    if (
+        not text
+        or "\x00" in text
+        or text.startswith("/")
+        or re.match(r"^[A-Za-z]:", text)
+    ):
+        raise FlowError(
+            code,
+            f"{option} requires a repository-relative POSIX glob",
+            details={"glob": text},
+        )
+    parts = text.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise FlowError(
+            code,
+            f"{option} contains an invalid path segment",
+            details={"glob": text},
+        )
+    if any(
+        "[" in part
+        or "]" in part
+        or ("**" in part and part != "**")
+        for part in parts
+    ):
+        raise FlowError(
+            code,
+            f"{option} supports literal characters, *, ?, and whole-segment **",
+            details={"glob": text},
+        )
+    return text
+
+
+def _normalize_risk_policy(value: Any) -> dict[str, Any]:
+    supplied = value if isinstance(value, dict) else {}
+    schema = supplied.get("schema", "dev-flow-risk-policy/v1")
+    if schema != "dev-flow-risk-policy/v1":
+        raise FlowError(
+            "CONFIG_INVALID",
+            "risk_policy.schema is unsupported",
+            details={"schema": schema},
+        )
+    raw_patterns = supplied.get(
+        "protected_paths", list(DEFAULT_PROTECTED_PATH_GLOBS)
+    )
+    if not isinstance(raw_patterns, list):
+        raise FlowError(
+            "CONFIG_INVALID",
+            "risk_policy.protected_paths must be a list",
+        )
+    patterns = {
+        _normalize_risk_glob(
+            item, "risk_policy.protected_paths", code="CONFIG_INVALID"
+        )
+        for item in raw_patterns
+    }
+    return {
+        "schema": "dev-flow-risk-policy/v1",
+        "protected_paths": sorted(patterns),
+    }
+
+
+def _risk_glob_regex(pattern: str) -> re.Pattern[str]:
+    segments = pattern.split("/")
+    expression = "^"
+    for index, segment in enumerate(segments):
+        if segment == "**":
+            if index == len(segments) - 1:
+                expression += ".*"
+            else:
+                expression += "(?:[^/]+/)*"
+            continue
+        translated = ""
+        cursor = 0
+        while cursor < len(segment):
+            char = segment[cursor]
+            if char == "*":
+                if cursor + 1 < len(segment) and segment[cursor + 1] == "*":
+                    translated += ".*"
+                    cursor += 2
+                    continue
+                translated += "[^/]*"
+            elif char == "?":
+                translated += "[^/]"
+            else:
+                translated += re.escape(char)
+            cursor += 1
+        expression += translated
+        if index < len(segments) - 1:
+            expression += "/"
+    return re.compile(expression + "$")
+
+
+def _normalize_repo_relative_path(
+    value: Any, option: str, *, code: str = "INVALID_ARGUMENT"
+) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if (
+        not text
+        or "\x00" in text
+        or text.startswith("/")
+        or re.match(r"^[A-Za-z]:", text)
+    ):
+        raise FlowError(
+            code,
+            f"{option} requires a repository-relative path",
+            details={"path": text},
+        )
+    parts = text.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise FlowError(
+            code,
+            f"{option} contains an invalid path segment",
+            details={"path": text},
+        )
+    return "/".join(parts)
+
+
+def _normalize_git_evidence_path(
+    value: Any, option: str, *, code: str = "RISK_EVIDENCE_INVALID"
+) -> str:
+    """Preserve Git path identity and reject cross-platform ambiguities."""
+
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or "\\" in value
+    ):
+        raise FlowError(
+            code,
+            f"{option} is ambiguous across supported filesystems",
+            details={
+                "path": value if isinstance(value, str) else None,
+                "path_type": type(value).__name__,
+            },
+        )
+    return _normalize_repo_relative_path(value, option, code=code)
+
+
+def _protected_path_match(
+    relative_path: str, risk_policy: dict[str, Any]
+) -> str | None:
+    normalized = _normalize_repo_relative_path(
+        relative_path, "changed path", code="RISK_EVIDENCE_INVALID"
+    )
+    for pattern in risk_policy.get("protected_paths", []):
+        if _risk_glob_regex(pattern).fullmatch(normalized):
+            return pattern
+    return None
+
+
 def load_config(data_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     """Return the stored plugin configuration, or the defaults when absent."""
 
@@ -80,7 +244,13 @@ def load_config(data_dir: str | os.PathLike[str] | None = None) -> dict[str, Any
             "plugin configuration is unreadable",
             details={"path": str(path), "error": str(exc)},
         ) from exc
-    if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
+    schema_version = value.get("schema_version") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in SUPPORTED_CONFIG_SCHEMA_VERSIONS
+    ):
         raise FlowError(
             "CONFIG_INVALID",
             "plugin configuration has an unsupported structure",
@@ -91,9 +261,21 @@ def load_config(data_dir: str | os.PathLike[str] | None = None) -> dict[str, Any
                 else None,
             },
         )
+    raw_risk_policy = value.get("risk_policy")
+    if schema_version == CONFIG_SCHEMA_VERSION and (
+        not isinstance(raw_risk_policy, dict)
+        or raw_risk_policy.get("schema") != "dev-flow-risk-policy/v1"
+        or not isinstance(raw_risk_policy.get("protected_paths"), list)
+    ):
+        raise FlowError(
+            "CONFIG_INVALID",
+            "schema-v2 configuration requires a complete risk_policy",
+            details={"path": str(path)},
+        )
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": CONFIG_SCHEMA_VERSION,
         "scope": _normalize_scope(value.get("scope")),
+        "risk_policy": _normalize_risk_policy(raw_risk_policy),
     }
 
 
@@ -537,6 +719,17 @@ def _active_repository_claims(data_root: Path) -> list[dict[str, Any]]:
                 "an existing task state is invalid for ownership verification",
                 details={"path": str(state_path)},
             )
+        try:
+            _validate_task_state_snapshot(state_path, state_value)
+        except FlowError as exc:
+            raise FlowError(
+                "REPOSITORY_CLAIM_UNAVAILABLE",
+                "an existing task state failed ownership contract validation",
+                details={
+                    "path": str(state_path),
+                    "cause": exc.code,
+                },
+            ) from exc
         task_id = state_value.get("task_id")
         if not isinstance(task_id, str) or not task_id:
             raise FlowError(
@@ -863,5 +1056,3 @@ def _claim_workspace_plan(
                 ),
             }
         return selected_claims
-
-

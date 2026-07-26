@@ -18,30 +18,56 @@ def _commit_state(
     task_dir: Path,
     event_type: str,
     payload: dict[str, Any] | None = None,
+    *,
+    additional_events: Sequence[tuple[str, dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     previous_revision = int(old_state.get("revision", 0)) if old_state else 0
     revision = previous_revision + 1
     now = utc_now()
     new_state["revision"] = revision
     new_state["updated_at"] = now
-    event = {
-        "event_id": str(uuid.uuid4()),
-        "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
-        "task_id": new_state["task_id"],
-        "type": event_type,
-        "at": now,
-        "actor": _actor(),
-        "previous_revision": previous_revision,
-        "revision": revision,
-        "status": new_state["status"],
-        "payload": payload or {},
-    }
+    event_specs = [(event_type, payload or {}), *(additional_events or ())]
+    transaction_id = str(uuid.uuid4()) if len(event_specs) > 1 else None
+    events: list[dict[str, Any]] = []
+    for recorded_type, recorded_payload in event_specs:
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
+            "task_id": new_state["task_id"],
+            "type": recorded_type,
+            "at": now,
+            "actor": _actor(),
+            "previous_revision": previous_revision,
+            "revision": revision,
+            "status": new_state["status"],
+            "payload": recorded_payload,
+        }
+        if transaction_id is not None:
+            event["transaction_id"] = transaction_id
+        events.append(event)
     # The state snapshot is the durable outbox.  A crash after this atomic
     # replacement but before JSONL delivery is recoverable without advancing
     # state a second time or losing the audit event.
-    new_state["pending_event"] = event
+    if len(events) == 1:
+        new_state["pending_event"] = events[0]
+    else:
+        if int(new_state.get("schema_version", 1)) < TASK_SCHEMA_VERSION:
+            raise FlowError(
+                "UNSUPPORTED_STATE",
+                "batched audit facts require task schema v2",
+                details={
+                    "task_id": new_state.get("task_id"),
+                    "schema_version": new_state.get("schema_version"),
+                },
+            )
+        new_state["pending_events"] = events
     _redact_state_in_place(new_state)
-    event = dict(new_state["pending_event"])
+    stored_events = (
+        new_state.get("pending_events")
+        if len(events) > 1
+        else [new_state.get("pending_event")]
+    )
+    event = dict(stored_events[0])
     _atomic_write_json(task_dir / "state.json", new_state)
     try:
         _flush_pending_event(task_dir, new_state)
@@ -52,7 +78,7 @@ def _commit_state(
             details={
                 "task_id": new_state.get("task_id"),
                 "revision": revision,
-                "event_id": event.get("event_id"),
+                "event_ids": [item.get("event_id") for item in events],
                 "recovery": "reload the task to retry the pending event outbox",
             },
         ) from exc
@@ -999,5 +1025,3 @@ def _run(
             },
         )
     return result
-
-

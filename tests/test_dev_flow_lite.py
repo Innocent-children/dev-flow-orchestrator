@@ -40,6 +40,10 @@ class DevFlowLiteTest(test_case.DevFlowTestCase):
             "in-place",
             "--requirement",
             "Fix a bounded bug in place",
+            "--change-category",
+            "internal",
+            "--target-path",
+            "tracked.txt",
         ]
         for repo in repos:
             arguments.extend(["--repo", str(repo)])
@@ -268,6 +272,10 @@ class DevFlowLiteTest(test_case.DevFlowTestCase):
             "branch",
             "--requirement",
             "Fix a bounded bug on a new branch",
+            "--change-category",
+            "internal",
+            "--target-path",
+            "tracked.txt",
             "--repo",
             str(repo),
             expected_code=2,
@@ -287,6 +295,10 @@ class DevFlowLiteTest(test_case.DevFlowTestCase):
             "branch",
             "--requirement",
             "Fix a bounded bug on a new branch",
+            "--change-category",
+            "internal",
+            "--target-path",
+            "tracked.txt",
             "--repo",
             str(repo),
         )
@@ -368,6 +380,10 @@ class DevFlowLiteTest(test_case.DevFlowTestCase):
                     "branch",
                     "--requirement",
                     "Reject checkout identity drift before preflight",
+                    "--change-category",
+                    "internal",
+                    "--target-path",
+                    "tracked.txt",
                     "--repo",
                     str(repo),
                 )
@@ -448,6 +464,10 @@ class DevFlowLiteTest(test_case.DevFlowTestCase):
             "branch",
             "--requirement",
             "Allow a new HEAD only after the initial checkout is confirmed",
+            "--change-category",
+            "internal",
+            "--target-path",
+            "tracked.txt",
             "--repo",
             str(repo),
         )

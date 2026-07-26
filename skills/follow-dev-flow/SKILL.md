@@ -1,6 +1,6 @@
 ---
 name: follow-dev-flow
-description: Start or resume the guarded, persistent development workflow for changes to code, configuration, tests, generated files, or OpenSpec artifacts across one or more Git repositories. Use as the sole workflow entry point to ask the user whether to use the current branch, create and switch to a new branch, or create an isolated worktree; confirm every status transition with the remaining Chinese-labelled workflow; preflight repositories; record evidence; implement and test; run review; and recover safely.
+description: Start or resume the guarded, persistent development workflow for changes to code, configuration, tests, generated files, or OpenSpec artifacts across one or more Git repositories. Use as the sole workflow entry point to classify lite/full risk, ask the user whether to use the current branch, create and switch to a new branch, or create an isolated worktree; confirm risk-gated status transitions with the remaining Chinese-labelled workflow; preflight repositories; record evidence; implement and test; run review; and recover safely.
 ---
 
 # Follow Dev Flow
@@ -33,7 +33,17 @@ Use these resources before advancing:
    - **使用当前分支（精简流程）**: pass `--workspace-strategy in-place`; the controller derives `lite`.
    - **新建并切换分支（精简流程）**: present the repository, current branch/`HEAD`/status, proposed direct local branch name that is neither protected nor the resolvable remote default/base, and the exact `git switch -c <branch>` operation; create/switch only after explicit approval, then pass `--workspace-strategy branch`, from which the controller derives `lite`. Before the first confirmed all-repository preflight, both that branch and `HEAD` stay exact; afterwards the branch remains immutable, while a new `HEAD` requires a fresh all-repository preflight pair and lite approval. Do not interpret “拉分支” as permission to fetch or pull.
    - **创建独立工作树（完整流程）**: pass `--workspace-strategy worktree`; the controller derives `full`, and the later workspace plan and approval still govern actual creation.
-   Recommend one from the request's size and risk, but never infer the choice from a generic request to start or continue. Keep the Chinese name primary and show the stable internal ID in parentheses when useful. Retain the returned task ID and revision.
+   Before offering either lite mode, classify the request with one or more
+   `--change-category` values and exact repository-relative `--target-path`
+   values. Lite accepts only `internal`, `tests`, and `docs`, exactly one
+   repository, and paths outside the configured protected globs. The
+   full-only categories are `public-api`, `schema`, `auth`, `migration`,
+   `infrastructure`, and `cross-repo`; an absent/unknown classification also
+   requires full. Pass the declaration on `start`; never omit it to force a
+   lite task through. Recommend one mode from the request's size and risk, but
+   never infer the choice from a generic request to start or continue. Keep
+   the Chinese name primary and show the stable internal ID in parentheses
+   when useful. Retain the returned task ID and revision.
 4. Never merge a new request into a merely convenient active task. Never replace, rewind, or cancel existing state without the user's explicit direction.
 
 A lite task runs `preflight -> approve --gate lite -> IMPLEMENTING -> VERIFYING -> DONE` directly inside the selected source checkout branch, with no baseline, impact analysis, route, managed worktree, plan artifact, or controller-bound index; [references/flow-lite.md](references/flow-lite.md) governs it. The rest of this skill's baseline/index/route/workspace requirements apply to full tasks.
@@ -42,11 +52,19 @@ A lite task runs `preflight -> approve --gate lite -> IMPLEMENTING -> VERIFYING 
 
 1. Start from the latest successful mutation receipt or load `show --compact`; request only the sections needed for the next decision and reconcile them with read-only repository evidence.
 2. Determine the single next legal action from the recorded state.
-3. Before every command that can explicitly or implicitly change `status`, stop and ask for confirmation in Chinese. Show the current Chinese state plus stable ID, the expected target Chinese state plus stable ID, the action that causes it, and the complete remaining main-flow states after the target. A confirmation authorizes exactly one state edge at the displayed revision. 一次确认不得授权后续状态边。 Never treat “continue”, “finish the task”, or an earlier gate approval as blanket authorization for later edges. Follow the common confirmation contract and the automatic-transition list in the currently selected gate bundle.
+3. Apply the schema-v2 risk-gated confirmation contract in the common rules.
+   For an explicit `transition` or `cancel`, first call `--preview`, present the
+   returned Chinese source/target and complete remaining workflow, ask for
+   confirmation, then apply only that exact `intent_id` with
+   `--confirm-intent`. Any changed revision or live evidence requires a new
+   preview. Execute only the five exact automatic edges listed in the common
+   rules without a separate state-edge prompt. `DONE` and `CANCELLED` are
+   always explicit. Schema-v1 tasks retain their legacy direct-command and
+   per-edge-prompt behavior; never invent a v2 intent for them. 一次确认不得授权后续状态边。 Never treat “continue”, “finish the task”, or an earlier gate approval as blanket authorization for later explicit edges.
 4. Preflight is two-phase under [references/gates/preflight.md](references/gates/preflight.md): first run `preflight --preview`, which commits no state and reports the exact decision/edge; confirmed apply captures complete evidence. Handle decision drift and observation-only refresh exactly as that gate specifies.
 5. After confirmation, perform only that action, then record its evidence through the controller using the latest `--expected-revision`.
 6. Replace the in-memory revision, status, workflow, and action result with the successful mutation receipt. Do not issue an immediate duplicate `show` when that receipt contains every field needed next. Reload with `show --compact` or `show --section` on resume, lost/invalid response, revision conflict, or missing gate fields. Never infer the next revision or replay a transition blindly.
-7. Stop at each human gate and present the decision, evidence, risks, and recovery implications. Continue only after an explicit choice. Gate approval and state-transition confirmation are separate decisions when both apply.
+7. Stop at each human gate and present the decision, evidence, risks, and recovery implications. Continue only after an explicit choice. When one approved action also advances status, its durable audit record must still contain separate `gate_approved` and `state_transitioned` facts; never collapse approval and movement into one fact.
 8. Continue until `DONE`, `CANCELLED`, or a genuine blocker requires user input.
 
 Always preflight and baseline every repository before impact analysis. Always run impact analysis before route selection. Require an isolated task branch/worktree for both direct and OpenSpec routes. Require approved planning before implementation and independent full-snapshot review before final handoff. When OpenSpec is selected, honor an explicit artifact-language choice from the user; otherwise follow the dominant language of the target repository's existing OpenSpec artifacts, then its other human-readable artifacts. Stop and ask when repository signals conflict or remain unclear. Preserve machine-required identifiers and fixed syntax under the exact rules in [references/openspec-route.md](references/openspec-route.md).

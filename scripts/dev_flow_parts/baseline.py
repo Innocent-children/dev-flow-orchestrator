@@ -177,7 +177,10 @@ def _lite_preflight_evidence_sha256(state_value: dict[str, Any]) -> str:
 
 
 def _require_lite_gate(
-    state_value: dict[str, Any], *, verify_worktree: bool = False
+    state_value: dict[str, Any],
+    *,
+    verify_worktree: bool = False,
+    fingerprints: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Require a lite approval bound to the current preflight evidence.
 
@@ -189,6 +192,24 @@ def _require_lite_gate(
     """
 
     approval = _require_gate(state_value, LITE_GATE)
+    if _uses_confirmation_contract(state_value):
+        risk = state_value.get("risk_assessment") or {}
+        if (
+            approval.get("lite_policy_sha256")
+            != risk.get("policy_sha256")
+        ):
+            raise FlowError(
+                "STALE_APPROVAL",
+                "lite approval does not bind the task risk policy",
+                details={
+                    "expected_lite_policy_sha256": risk.get(
+                        "policy_sha256"
+                    ),
+                    "approved_lite_policy_sha256": approval.get(
+                        "lite_policy_sha256"
+                    ),
+                },
+            )
     current_evidence_sha = _lite_preflight_evidence_sha256(state_value)
     if approval.get("preflight_evidence_sha256") != current_evidence_sha:
         raise FlowError(
@@ -242,7 +263,14 @@ def _require_lite_gate(
                     "actual_head_sha": actual_head,
                 },
             )
-        actual_fingerprint = _fingerprint_repo(path)["sha256"]
+        fingerprint = (
+            fingerprints.get(repo["id"])
+            if fingerprints is not None
+            else None
+        )
+        if fingerprint is None:
+            fingerprint = _fingerprint_repo(path)
+        actual_fingerprint = fingerprint["sha256"]
         if actual_fingerprint != preflight.get("worktree_fingerprint_sha256"):
             raise FlowError(
                 "PREFLIGHT_WORKTREE_CHANGED",
@@ -1393,6 +1421,17 @@ def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
                 repo.get("workspace_index")
                 for repo in state_value["repositories"]
             )
+        automatic_state_transition = (
+            _uses_confirmation_contract(current)
+            and current.get("status") != state_value.get("status")
+        )
+        if automatic_state_transition:
+            _require_automatic_action(
+                _flow(current),
+                "record-index",
+                str(current.get("status")),
+                str(state_value.get("status")),
+            )
         _commit_state(
             current,
             state_value,
@@ -1403,7 +1442,27 @@ def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
                 "repository_ids": [repo["id"] for repo in selected],
                 "complete": all_indexed,
                 "index_records": index_changes,
+                "confirmation_mode": (
+                    "automatic"
+                    if automatic_state_transition
+                    else "not-applicable"
+                ),
             },
+            additional_events=(
+                [
+                    (
+                        "state_transitioned",
+                        {
+                            "from": "BASELINED",
+                            "to": "INDEXED",
+                            "action": "record-index",
+                            "confirmation_mode": "automatic",
+                        },
+                    )
+                ]
+                if automatic_state_transition
+                else None
+            ),
         )
     return _result(
         "record-index",
@@ -1433,6 +1492,337 @@ def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
             for repo in selected
         ],
     )
+
+
+IMPACT_CHECKS = (
+    "orientation",
+    "candidates",
+    "paths",
+    "contracts",
+    "tests",
+    "source_confirmation",
+)
+IMPACT_QUERY_KEYS = (
+    "architecture",
+    "search_graph",
+    "trace",
+    "search_code",
+    "snippet",
+)
+IMPACT_QUERY_BUDGETS = {
+    "seed-v1": {
+        "architecture": 1,
+        "search_graph": 5,
+        "trace": 4,
+        "search_code": 3,
+        "snippet": 4,
+    },
+    "expanded-v1": {
+        "architecture": 1,
+        "search_graph": 9,
+        "trace": 8,
+        "search_code": 6,
+        "snippet": 8,
+    },
+}
+IMPACT_ANALYSIS_CANONICAL_FIELDS = (
+    "schema",
+    "strategy",
+    "coverage",
+    "budget_profile",
+    "expansion_reason",
+    "repositories",
+    "cross_repository",
+)
+IMPACT_ANALYSIS_CONTROLLER_FIELDS = frozenset(
+    {
+        "impact_analysis_contract_version",
+        "impact_analysis_sha256",
+        "index_provenance_sha256",
+        "impact_generation",
+    }
+)
+
+
+def _impact_contract_error(
+    message: str, *, details: dict[str, Any] | None = None
+) -> None:
+    raise FlowError(
+        "IMPACT_ANALYSIS_INVALID",
+        message,
+        details=details or {},
+    )
+
+
+def _impact_analysis_canonical_projection(
+    metadata: dict[str, Any],
+    *,
+    allow_controller_fields: bool = False,
+) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        _impact_contract_error("impact metadata must be an object")
+    allowed = set(IMPACT_ANALYSIS_CANONICAL_FIELDS)
+    if allow_controller_fields:
+        allowed.update(IMPACT_ANALYSIS_CONTROLLER_FIELDS)
+    invalid_keys = [
+        key
+        for key in metadata
+        if not isinstance(key, str) or key not in allowed
+    ]
+    if invalid_keys:
+        _impact_contract_error(
+            (
+                "impact metadata contains controller-owned, reserved, "
+                "or unsupported fields"
+            ),
+            details={
+                "fields": sorted(str(key) for key in invalid_keys),
+            },
+        )
+    return {
+        field: _copy_state(metadata[field])
+        for field in IMPACT_ANALYSIS_CANONICAL_FIELDS
+        if field in metadata
+    }
+
+
+def _impact_analysis_contract_sha256(
+    metadata: dict[str, Any],
+    *,
+    allow_controller_fields: bool = False,
+) -> str:
+    projection = _impact_analysis_canonical_projection(
+        metadata,
+        allow_controller_fields=allow_controller_fields,
+    )
+    return _sha256_bytes(_json_bytes(projection))
+
+
+def _validate_impact_analysis_contract(
+    state_value: dict[str, Any], metadata: dict[str, Any]
+) -> dict[str, Any]:
+    metadata = _impact_analysis_canonical_projection(metadata)
+    if metadata.get("schema") != "dev-flow-impact-analysis/v1":
+        _impact_contract_error(
+            "schema-v2 tasks require dev-flow-impact-analysis/v1 metadata"
+        )
+    if metadata.get("strategy") != "funnel":
+        _impact_contract_error("impact strategy must be funnel")
+    coverage = metadata.get("coverage")
+    if coverage not in {"complete", "degraded"}:
+        _impact_contract_error(
+            "impact coverage must be complete or degraded"
+        )
+    profile = metadata.get("budget_profile")
+    budget = IMPACT_QUERY_BUDGETS.get(profile)
+    if budget is None:
+        _impact_contract_error(
+            "impact budget_profile must be seed-v1 or expanded-v1"
+        )
+    if profile == "expanded-v1" and not _nonempty(
+        metadata.get("expansion_reason")
+    ):
+        _impact_contract_error(
+            "expanded-v1 requires a non-empty expansion_reason"
+        )
+    repositories = metadata.get("repositories")
+    if not isinstance(repositories, list):
+        _impact_contract_error("impact repositories must be a list")
+    expected = {
+        repo["id"]: repo for repo in state_value.get("repositories", [])
+    }
+    supplied_ids: list[str] = []
+    for item in repositories:
+        if not isinstance(item, dict):
+            _impact_contract_error(
+                "each impact repository must be an object"
+            )
+        repository_id = item.get("repository_id")
+        if not isinstance(repository_id, str) or not repository_id.strip():
+            _impact_contract_error(
+                "impact repository_id must be a non-empty string",
+                details={"repository_id": repository_id},
+            )
+        supplied_ids.append(repository_id)
+    if (
+        len(set(supplied_ids)) != len(supplied_ids)
+        or set(supplied_ids) != set(expected)
+    ):
+        _impact_contract_error(
+            "impact repositories must exactly cover the task repositories",
+            details={
+                "expected_repository_ids": sorted(expected),
+                "provided_repository_ids": supplied_ids,
+            },
+        )
+    degraded_signal = False
+    for item in repositories:
+        repository_id = item["repository_id"]
+        current_index = expected[repository_id].get("index") or {}
+        index_id = item.get("index_id")
+        if index_id is not None and (
+            not isinstance(index_id, str) or not index_id.strip()
+        ):
+            _impact_contract_error(
+                "impact index_id must be a non-empty string or null",
+                details={"repository_id": repository_id},
+            )
+        if index_id is not None and index_id != current_index.get("index_id"):
+            _impact_contract_error(
+                "impact index_id does not match current index provenance",
+                details={
+                    "repository_id": repository_id,
+                    "expected_index_id": current_index.get("index_id"),
+                    "provided_index_id": index_id,
+                },
+            )
+        index_mode = item.get("index_mode")
+        if index_mode not in {"fast", "moderate", "full"}:
+            _impact_contract_error(
+                "impact index_mode must be fast, moderate, or full",
+                details={"repository_id": repository_id},
+            )
+        index_receipt = current_index.get("receipt")
+        index_receipt = (
+            index_receipt if isinstance(index_receipt, dict) else {}
+        )
+        index_metadata = current_index.get("metadata")
+        index_metadata = (
+            index_metadata if isinstance(index_metadata, dict) else {}
+        )
+        recorded_mode = index_receipt.get("mode") or index_metadata.get(
+            "mode"
+        )
+        if recorded_mode is not None and index_mode != recorded_mode:
+            _impact_contract_error(
+                "impact index_mode does not match current index provenance",
+                details={
+                    "repository_id": repository_id,
+                    "expected_index_mode": recorded_mode,
+                    "provided_index_mode": index_mode,
+                },
+            )
+        checks = item.get("checks")
+        if not isinstance(checks, dict) or set(checks) != set(
+            IMPACT_CHECKS
+        ):
+            _impact_contract_error(
+                "impact checks must contain the exact completeness fields",
+                details={"repository_id": repository_id},
+            )
+        for check_name in IMPACT_CHECKS:
+            check = checks[check_name]
+            if not isinstance(check, dict) or check.get("status") not in {
+                "complete",
+                "not_applicable",
+                "degraded",
+            }:
+                _impact_contract_error(
+                    "impact check has an invalid status",
+                    details={
+                        "repository_id": repository_id,
+                        "check": check_name,
+                    },
+                )
+            if check["status"] != "complete" and not _nonempty(
+                check.get("reason")
+            ):
+                _impact_contract_error(
+                    "non-complete impact checks require a reason",
+                    details={
+                        "repository_id": repository_id,
+                        "check": check_name,
+                    },
+                )
+            if check["status"] == "degraded":
+                degraded_signal = True
+        queries = item.get("queries")
+        if not isinstance(queries, dict) or set(queries) != set(
+            IMPACT_QUERY_KEYS
+        ):
+            _impact_contract_error(
+                "impact queries must contain the exact canonical counters",
+                details={"repository_id": repository_id},
+            )
+        for query_name, limit in budget.items():
+            count = queries[query_name]
+            if (
+                isinstance(count, bool)
+                or not isinstance(count, int)
+                or count < 0
+                or count > limit
+            ):
+                _impact_contract_error(
+                    "impact query count exceeds its declared budget",
+                    details={
+                        "repository_id": repository_id,
+                        "query": query_name,
+                        "count": count,
+                        "limit": limit,
+                        "budget_profile": profile,
+                    },
+                )
+        for field in ("unresolved_truncations", "material_unknowns"):
+            entries = item.get(field)
+            if not isinstance(entries, list):
+                _impact_contract_error(
+                    f"impact {field} must be a list",
+                    details={"repository_id": repository_id},
+                )
+            if entries:
+                degraded_signal = True
+        if index_id is None:
+            degraded_signal = True
+        if coverage == "complete" and (
+            index_id is None
+            or any(
+                checks[name]["status"] == "degraded"
+                for name in IMPACT_CHECKS
+            )
+            or item["unresolved_truncations"]
+            or item["material_unknowns"]
+        ):
+            _impact_contract_error(
+                "complete coverage conflicts with degraded repository evidence",
+                details={"repository_id": repository_id},
+            )
+    cross = metadata.get("cross_repository")
+    if not isinstance(cross, dict) or cross.get("status") not in {
+        "complete",
+        "not_applicable",
+        "degraded",
+    }:
+        _impact_contract_error(
+            "cross_repository has an invalid status"
+        )
+    if cross["status"] != "complete" and not _nonempty(
+        cross.get("reason")
+    ):
+        _impact_contract_error(
+            "non-complete cross_repository status requires a reason"
+        )
+    if len(expected) > 1 and cross["status"] == "not_applicable":
+        _impact_contract_error(
+            "multi-repository impact cannot mark cross_repository not applicable"
+        )
+    if cross["status"] == "degraded":
+        degraded_signal = True
+    if coverage == "complete" and cross["status"] == "degraded":
+        _impact_contract_error(
+            "complete coverage conflicts with degraded cross-repository evidence"
+        )
+    if coverage == "degraded" and not degraded_signal:
+        _impact_contract_error(
+            "degraded coverage must identify a degraded or unresolved signal"
+        )
+    normalized = _copy_state(metadata)
+    normalized["impact_analysis_contract_version"] = (
+        IMPACT_ANALYSIS_CONTRACT_VERSION
+    )
+    normalized["impact_analysis_sha256"] = (
+        _impact_analysis_contract_sha256(metadata)
+    )
+    return normalized
 
 
 def command_record_artifact(args: argparse.Namespace) -> dict[str, Any]:
@@ -1503,6 +1893,10 @@ def command_record_artifact(args: argparse.Namespace) -> dict[str, Any]:
             metadata["verdict"] = args.verdict
         elif args.kind == "impact":
             _assert_status(current, {"INDEXED", "IMPACT_REVIEW"}, "record-artifact --kind impact")
+            if _uses_confirmation_contract(current):
+                metadata = _validate_impact_analysis_contract(
+                    current, metadata
+                )
             index_provenance_sha = _index_provenance_sha256(current)
             impact_generation = int(current.get("impact_generation", 0))
             supplied_binding = metadata.get("index_provenance_sha256")
@@ -1598,6 +1992,7 @@ def command_set_route(args: argparse.Namespace) -> dict[str, Any]:
         _assert_flow(current, "full", "set-route")
         _assert_status(current, {"INDEXED", "IMPACT_REVIEW"}, "set-route")
         impact = _require_current_impact(current)
+        impact_metadata = impact.get("metadata") or {}
         state_value = _copy_state(current)
         state_value["route"] = {
             "value": route,
@@ -1605,13 +2000,18 @@ def command_set_route(args: argparse.Namespace) -> dict[str, Any]:
             "set_at": utc_now(),
             "impact_artifact_id": impact["artifact_id"],
             "impact_sha256": impact["sha256"],
-            "index_provenance_sha256": (impact.get("metadata") or {})[
+            "index_provenance_sha256": impact_metadata[
                 "index_provenance_sha256"
             ],
-            "impact_generation": (impact.get("metadata") or {})[
-                "impact_generation"
-            ],
+            "impact_generation": impact_metadata["impact_generation"],
         }
+        if (
+            _uses_confirmation_contract(current)
+            and impact_metadata.get("impact_analysis_sha256") is not None
+        ):
+            state_value["route"]["impact_analysis_sha256"] = (
+                impact_metadata["impact_analysis_sha256"]
+            )
         state_value["status"] = "IMPACT_REVIEW"
         state_value["approvals"].pop("route", None)
         _commit_state(current, state_value, task_dir, "route_set", {"route": route, "reason": args.reason})
@@ -1658,6 +2058,7 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
         plan_artifact: dict[str, Any] | None = None
         plan_context: dict[str, Any] | None = None
         lite_evidence: dict[str, Any] | None = None
+        lite_risk_assessment: dict[str, Any] | None = None
         if args.gate in FULL_GATES:
             _assert_flow(current, "full", f"approve --gate {args.gate}")
         if args.gate == "route":
@@ -1725,6 +2126,19 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
             _assert_flow(current, "lite", "approve --gate lite")
             _assert_status(current, {"PREFLIGHTED"}, "approve --gate lite")
             lite_evidence = _lite_preflight_evidence(current)
+            if _uses_confirmation_contract(current):
+                lite_risk_assessment = _lite_change_assessment(
+                    current, args.data_dir
+                )
+                if lite_risk_assessment["decision"] != "safe":
+                    raise FlowError(
+                        "LITE_REQUIRES_FULL",
+                        "live preflight changes require the full flow",
+                        details={
+                            "required_flow": "full",
+                            "assessment": lite_risk_assessment,
+                        },
+                    )
             dirty_repositories = [
                 repo["id"]
                 for repo in current.get("repositories", [])
@@ -1778,6 +2192,22 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
                         "STALE_WORKSPACE_PLAN",
                         "workspace plan is not current for this workspace generation",
                     )
+        route_intent: dict[str, Any] | None = None
+        if args.gate == "route" and _uses_confirmation_contract(current):
+            route_intent = _transition_intent_preview(
+                current,
+                "IMPACT_REVIEW",
+                "ROUTE_APPROVED",
+                action="approve-route",
+                action_parameters={
+                    "gate": "route",
+                    "note": args.note,
+                    "artifact_sha256": artifact_sha,
+                    "impact_analysis_sha256": (
+                        route_impact.get("metadata") or {}
+                    ).get("impact_analysis_sha256"),
+                },
+            )
         state_value = _copy_state(current)
         approval = {
             "approval_id": str(uuid.uuid4()),
@@ -1806,6 +2236,13 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
             )
             approval["preflight_repositories"] = lite_evidence["repositories"]
             approval["dirty_allowed"] = bool(args.allow_dirty)
+            if lite_risk_assessment is not None:
+                approval["lite_policy_sha256"] = (
+                    current["risk_assessment"]["policy_sha256"]
+                )
+                approval["risk_assessment_sha256"] = (
+                    lite_risk_assessment["sha256"]
+                )
         if args.gate == "route":
             approval["artifact_id"] = route_impact["artifact_id"]
             approval["index_provenance_sha256"] = (
@@ -1814,6 +2251,17 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
             approval["impact_generation"] = (
                 route_impact.get("metadata") or {}
             )["impact_generation"]
+            impact_analysis_sha = (
+                route_impact.get("metadata") or {}
+            ).get("impact_analysis_sha256")
+            if (
+                _uses_confirmation_contract(current)
+                and impact_analysis_sha is not None
+            ):
+                approval["impact_analysis_sha256"] = impact_analysis_sha
+            if route_intent is not None:
+                approval["intent_id"] = route_intent["intent_id"]
+                approval["confirmation_mode"] = "explicit-action"
         if args.gate == "workspace":
             approval["artifact_id"] = latest["artifact_id"]
             approval["workspace_generation"] = (
@@ -1836,8 +2284,27 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
                 "gate": args.gate,
                 "artifact_sha256": artifact_sha,
                 "approval": approval,
+                "intent_id": (
+                    route_intent["intent_id"]
+                    if route_intent is not None
+                    else None
+                ),
             },
+            additional_events=(
+                [
+                    (
+                        "state_transitioned",
+                        {
+                            "from": "IMPACT_REVIEW",
+                            "to": "ROUTE_APPROVED",
+                            "intent_id": route_intent["intent_id"],
+                            "approval_id": approval["approval_id"],
+                            "confirmation_mode": "explicit-action",
+                        },
+                    )
+                ]
+                if route_intent is not None
+                else None
+            ),
         )
     return _result("approve", state_value, approval=approval)
-
-

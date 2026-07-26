@@ -57,8 +57,8 @@ format therefore rejects it as stale instead of accepting an unvalidated hash.
 
 `recover-atomic-write` takes neither task ID nor expected revision. It is the
 only supported response to `ATOMIC_RECOVERY_REQUIRED`; see
-[recovery.md](recovery.md). `scope` governs plugin configuration rather than a
-task and also takes no task ID.
+[recovery.md](recovery.md). `scope` governs plugin scope and the protected-path
+risk policy rather than a task and also takes no task ID.
 
 ## Flow and work-mode selection
 
@@ -78,17 +78,59 @@ missing `--workspace-strategy`. Never treat branch-mode selection as
 authorization to fetch, pull, stash, reset, clean, or switch anything beyond
 the displayed local branch creation.
 
-Use `full` for cross-repository, public-contract, migration, security,
+Before `start`, declare one or more repeatable `--change-category` values and
+exact repository-relative `--target-path` values. Lite is allowed only for one
+repository, categories drawn exclusively from `internal`, `tests`, and `docs`,
+and targets outside the configured protected-path globs. The full-only
+categories are `public-api`, `schema`, `auth`, `migration`, `infrastructure`,
+and `cross-repo`. Missing/unknown categories or target paths, multiple
+repositories, and protected paths fail closed with `LITE_REQUIRES_FULL`.
+
+Configure protected globs only through `scope --add-protected-path <glob>`,
+`--remove-protected-path <glob>`, or `--reset-protected-paths`. They use
+normalized POSIX repository-relative syntax with literal characters, `*`, `?`,
+and whole-segment `**`; absolute/drive-qualified paths, empty/`.`/`..`
+segments, NUL bytes, and bracket classes are invalid. Each new task stores the
+declaration plus the exact risk-policy snapshot and digest.
+
+Use `full` for cross-repository, public-contract, migration, auth/security,
 infrastructure, architecture-sensitive, materially ambiguous, or
 isolation-sensitive work. Use `lite` only for bounded, low-risk,
-well-understood work. If a lite task outgrows that boundary, ask to
-cancel/replace it with a full task; there is no in-place upgrade.
+well-understood work. Before a schema-v2 lite task enters `VERIFYING` or
+`DONE`, the controller checks the live diff from the approved preflight
+`HEAD`, including committed, staged, unstaged, and untracked paths. A
+protected, undeclared, unreadable, or otherwise unclassifiable change makes a
+read-only `--preview` report `required_flow: full` without changing status; any
+actual attempt to apply that advance instead commits the task as `BLOCKED`
+with `blocked.phase: lite-risk` and `required_flow: full`. Leave the checkout
+untouched and explicitly cancel/replace the task with a full one; flow and
+strategy are never converted in place.
 
 ## Per-transition confirmation
 
-Every explicit or automatic `status` change remains a separate human decision.
-Immediately before the command, use the latest receipt at the displayed
-revision or reload with `show --compact`, then ask:
+New tasks use task schema v2 and a default-explicit confirmation policy. Only
+these exact edges are automatic and need no separate state-edge prompt:
+
+| Flow | Command/action | Edge |
+|---|---|---|
+| `full` | final required baseline `record-index` | `BASELINED -> INDEXED` |
+| `full` | `transition` | `WORKSPACE_READY -> PLANNING` |
+| `full` | `transition` | `IMPLEMENTING -> VERIFYING` |
+| `full` | `review-snapshot` | `VERIFYING -> REVIEWING` |
+| `lite` | `transition` | `IMPLEMENTING -> VERIFYING` |
+
+The whitelist is exact: do not generalize it by command name, source, target,
+or perceived reversibility. Every other status edge is explicit, and
+`DONE`/`CANCELLED` can never be automatic.
+
+For an explicit `transition`, first validate and preview without mutation:
+
+```text
+<ctl> transition --task <task-id> --expected-revision <revision> --to <state> [--note <note>] --preview
+```
+
+Use its `preview.intent_id`, source/target, side effects, and the latest
+receipt/workflow to ask:
 
 ```text
 即将切换：<当前中文状态>（<ID>） → <目标中文状态>（<ID>）
@@ -97,27 +139,51 @@ revision or reload with `show --compact`, then ask:
 是否执行这一次状态切换？
 ```
 
-Bind the answer to task ID, revision, source, target, and one action. Any
-revision or source-state change invalidates it. 一次确认不得授权后续状态边。
-“继续”“完成任务”、a gate approval, or an earlier implementation request is
-not blanket authorization for later edges.
+After approval, apply that same live intent:
 
-Common state-changing commands are:
+```text
+<ctl> transition --task <task-id> --expected-revision <revision> --to <state> [--note <note>] --confirm-intent <intent-id>
+```
+
+The canonical intent binds task ID, revision, flow, source/target, action
+parameters, live evidence, side effects, and confirmation mode. Any change
+returns `INTENT_STALE`; preview again instead of retrying or fabricating an
+intent. 一次确认不得授权后续状态边。“继续”“完成任务”、a gate approval, or an
+earlier implementation request is not blanket authorization for later edges.
+
+Cancellation uses the same two-step protocol:
+
+```text
+<ctl> cancel --task <task-id> --expected-revision <revision> --reason <reason> --preview
+<ctl> cancel --task <task-id> --expected-revision <revision> --reason <reason> --confirm-intent <intent-id>
+```
+
+Other state-changing domain commands keep their own confirmation/gate
+protocols:
 
 - `preflight --confirm-preview <token>` when its preview reports a status
   change; follow [gates/preflight.md](gates/preflight.md);
-- `transition --to <state>`, including supported rework and `BLOCKED`;
-- `cancel --reason <reason>` to enter `CANCELLED`.
+- `baseline`, `set-route`, route approval, and
+  `prepare-workspace --execute` require their documented explicit action/gate
+  decisions when they advance status;
+- the final baseline `record-index` and `review-snapshot` are automatic only
+  at the exact whitelisted edges above.
 
-Full-only automatic transitions are owned by the corresponding gate bundle.
-Do not use `transition` to imitate a domain command. Gate approval and
-state-edge confirmation remain separate decisions even when presented
-together.
+Do not use `transition` to imitate a domain command. When a gate approval also
+advances status, the durable outbox records distinct `gate_approved` and
+`state_transitioned` facts with different event IDs but the same transaction,
+revision, and intent.
+
+Schema-v1 tasks remain readable and retain their legacy confirmation behavior:
+show the Chinese edge and obtain one explicit human confirmation, then call
+`transition` or `cancel` directly. They reject v2 `--preview` and
+`--confirm-intent`; never migrate them by hand or invent an intent.
 
 `BLOCKED` retains the last good evidence and may resume only to the recorded
 origin through supported recovery. `DONE` and `CANCELLED` are terminal.
-`DONE` is irreversible and cannot be cancelled; never advance it
-automatically.
+`DONE` is irreversible and cannot be cancelled. Both terminal states always
+require a schema-v2 preview/intent confirmation (or the schema-v1 legacy
+prompt); never advance either automatically.
 
 ## Canonical display names
 

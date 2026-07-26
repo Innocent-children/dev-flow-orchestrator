@@ -179,3 +179,15 @@ v2 不与 v1 性能改造混合发布。
 - protected path、变更类别和实际 diff 均能触发 lite → full；
 - 影响分析预算耗尽时 fail closed，而不是返回不完整结论；
 - 两个并发 session 的 checkpoint 状态互不影响。
+
+## v2 实施状态
+
+- [x] task schema v2 与 config schema v2 分离，schema-v1 任务保持兼容；
+- [x] 默认显式确认、精确自动白名单及 transition/cancel intent；
+- [x] approval/transition 双事实 durable event batch；
+- [x] 变更类别、protected glob、目标路径和实时 diff 风险判定；
+- [x] lite 风险命中后阻塞且只能 cancel/replace full；
+- [x] 漏斗式影响分析、查询预算和完整性元数据校验；
+- [x] `UserPromptSubmit` 按可靠 session id 去重并保持 fail-open；
+- [x] v2 定向契约、Hook、配置、打包和关键兼容测试通过；
+- [ ] 合入前由维护者运行完整回归套件。
