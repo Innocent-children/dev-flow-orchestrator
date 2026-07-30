@@ -158,7 +158,7 @@ The first `--add` changes the scope from active everywhere to allowlist mode. Ve
 
 ### Update an installed local copy
 
-Do not hand-edit a marketplace entry to defeat caching, and do not stack cachebuster suffixes. After replacing the complete source at the marketplace's confirmed local plugin location, use the bundled `plugin-creator` helpers from their own skill root. The helper preserves the manifest's current base version (`0.3.0` for this candidate) and replaces any old `+codex.<token>` with one UTC timestamp.
+Do not hand-edit a marketplace entry to defeat caching, and do not stack cachebuster suffixes. After replacing the complete source at the marketplace's confirmed local plugin location, use the bundled `plugin-creator` helpers from their own skill root. The helper preserves the manifest's current base version (`1.0.0` for this candidate) and replaces any old `+codex.<token>` with one UTC timestamp.
 
 macOS/Linux Bash:
 

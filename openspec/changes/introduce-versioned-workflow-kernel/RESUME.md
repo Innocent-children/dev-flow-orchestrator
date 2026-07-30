@@ -23,12 +23,12 @@ The V3 prefix, V4 introduction epoch, bundle identities, handler identities,
 and result ledger remain unchanged.
 
 - Plugin version/cachebuster:
-  `0.3.0+codex.20260729234414`.
+  `1.0.0+codex.20260730005631`.
 - Active-source canonical candidate:
-  `a545159ca8d4423ff078ac0d695dc8d3da51f92e8cfcb26e0d13e622bab90fc9`
+  `016b1acd6152bab9588c99243f0129872b7e72a1dc0fc8319374c286a9d1a62b`
   over 237 paths.
 - Active-source host-local snapshot:
-  `d04ace7b6649f4677df45dedf84cd77e2f44f3e32f75d0178559edcc5590f38f`
+  `e3e8b33032634963039de5f9ac7918253e943b753e505c9ba95d647179e2b1d4`
   over 368 paths.
 
 Smallest directly relevant macOS validation passed:
