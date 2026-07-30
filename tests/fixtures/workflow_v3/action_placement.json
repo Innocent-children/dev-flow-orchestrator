@@ -1,0 +1,128 @@
+{
+  "schema": "dev-flow-v3-action-placement/v1",
+  "flows": {
+    "full": {
+      "INTAKE": [
+        ["full.intake.preflight.v1", "full.action.intake.preflight.v1", "preflight", "mode", ["initial"], []],
+        ["manager.capability.authorize.v1", "full.action.intake.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.intake.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "PREFLIGHTED": [
+        ["full.preflighted.preflight-refresh.v1", "full.action.preflighted.preflight-refresh.v1", "preflight", "mode", ["refresh"], []],
+        ["full.preflighted.approve-baseline-fetch.v1", "full.action.preflighted.approve-baseline-fetch.v1", "approve", "gate", ["baseline-fetch"], []],
+        ["full.preflighted.baseline.v1", "full.action.preflighted.baseline.v1", "baseline", null, [], []],
+        ["manager.capability.authorize.v1", "full.action.preflighted.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.preflighted.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "BASELINED": [
+        ["full.baselined.approve-impact-degraded.v1", "full.action.baselined.approve-impact-degraded.v1", "approve", "gate", ["impact-degraded"], []],
+        ["full.baselined.record-baseline-index.v1", "full.action.baselined.record-baseline-index.v1", "record-index", "role", ["baseline"], []],
+        ["full.baselined.approve-baseline-fetch.v1", "full.action.baselined.approve-baseline-fetch.v1", "approve", "gate", ["baseline-fetch"], []],
+        ["manager.capability.authorize.v1", "full.action.baselined.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.baselined.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "INDEXED": [
+        ["full.indexed.record-impact.v1", "full.action.indexed.record-impact.v1", "record-artifact", "kind", ["impact"], ["impact"]],
+        ["full.indexed.set-route.v1", "full.action.indexed.set-route.v1", "set-route", null, [], []],
+        ["full.indexed.approve-impact-degraded.v1", "full.action.indexed.approve-impact-degraded.v1", "approve", "gate", ["impact-degraded"], []],
+        ["manager.capability.authorize.v1", "full.action.indexed.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.indexed.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "IMPACT_REVIEW": [
+        ["full.impact-review.record-impact-correction.v1", "full.action.impact-review.record-impact-correction.v1", "record-artifact", "kind", ["impact"], ["impact"]],
+        ["full.impact-review.approve-route.v1", "full.action.impact-review.approve-route.v1", "approve", "gate", ["route"], []],
+        ["manager.capability.authorize.v1", "full.action.impact-review.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.impact-review.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "ROUTE_APPROVED": [
+        ["full.route-approved.plan-workspace.v1", "full.action.route-approved.plan-workspace.v1", "prepare-workspace", "mode", ["plan"], []],
+        ["full.route-approved.approve-workspace.v1", "full.action.route-approved.approve-workspace.v1", "approve", "gate", ["workspace"], []],
+        ["full.route-approved.prepare-workspace.v1", "full.action.route-approved.prepare-workspace.v1", "prepare-workspace", "mode", ["execute"], []],
+        ["manager.capability.authorize.v1", "full.action.route-approved.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.route-approved.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "WORKSPACE_READY": [
+        ["full.workspace-ready.record-workspace-index.v1", "full.action.workspace-ready.record-workspace-index.v1", "record-index", "role", ["workspace"], []],
+        ["full.workspace-ready.approve-workspace.v1", "full.action.workspace-ready.approve-workspace.v1", "approve", "gate", ["workspace"], []],
+        ["manager.capability.authorize.v1", "full.action.workspace-ready.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.workspace-ready.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "PLANNING": [
+        ["full.planning.record-plan.v1", "full.action.planning.record-plan.v1", "record-artifact", "kind", ["direct-contract", "openspec-plan"], ["direct-contract", "openspec-plan"]],
+        ["full.planning.approve-plan.v1", "full.action.planning.approve-plan.v1", "approve", "gate", ["plan"], []],
+        ["full.planning.record-workspace-index.v1", "full.action.planning.record-workspace-index.v1", "record-index", "role", ["workspace"], []],
+        ["manager.capability.authorize.v1", "full.action.planning.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.planning.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "IMPLEMENTING": [
+        ["full.implementing.record-test.v1", "full.action.implementing.record-test.v1", "record-test", "phase", ["implementing"], []],
+        ["full.implementing.record-workspace-index.v1", "full.action.implementing.record-workspace-index.v1", "record-index", "role", ["workspace"], []],
+        ["manager.capability.authorize.v1", "full.action.implementing.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.implementing.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "VERIFYING": [
+        ["full.verifying.record-test.v1", "full.action.verifying.record-test.v1", "record-test", "phase", ["verifying"], []],
+        ["full.verifying.record-workspace-index.v1", "full.action.verifying.record-workspace-index.v1", "record-index", "role", ["workspace"], []],
+        ["full.verifying.review-snapshot.v1", "full.action.verifying.review-snapshot.v1", "review-snapshot", null, [], []],
+        ["manager.capability.authorize.v1", "full.action.verifying.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.verifying.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "REVIEWING": [
+        ["full.reviewing.record-review-report.v1", "full.action.reviewing.record-review-report.v1", "record-artifact", "kind", ["review-report"], ["review-report"]],
+        ["full.reviewing.approve-review.v1", "full.action.reviewing.approve-review.v1", "approve", "gate", ["review"], []],
+        ["manager.capability.authorize.v1", "full.action.reviewing.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.reviewing.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "FINALIZING": [
+        ["manager.capability.authorize.v1", "full.action.finalizing.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.finalizing.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "DONE": [],
+      "BLOCKED": [
+        ["manager.capability.authorize.v1", "full.action.blocked.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "full.action.blocked.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "CANCELLED": []
+    },
+    "lite": {
+      "INTAKE": [
+        ["lite.intake.preflight.v1", "lite.action.intake.preflight.v1", "preflight", "mode", ["initial"], []],
+        ["manager.capability.authorize.v1", "lite.action.intake.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "lite.action.intake.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "PREFLIGHTED": [
+        ["lite.preflighted.preflight-refresh.v1", "lite.action.preflighted.preflight-refresh.v1", "preflight", "mode", ["refresh"], []],
+        ["lite.preflighted.approve-lite.v1", "lite.action.preflighted.approve-lite.v1", "approve", "gate", ["lite"], []],
+        ["manager.capability.authorize.v1", "lite.action.preflighted.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "lite.action.preflighted.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "IMPLEMENTING": [
+        ["lite.implementing.record-test.v1", "lite.action.implementing.record-test.v1", "record-test", "phase", ["implementing"], []],
+        ["manager.capability.authorize.v1", "lite.action.implementing.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "lite.action.implementing.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "VERIFYING": [
+        ["lite.verifying.record-test.v1", "lite.action.verifying.record-test.v1", "record-test", "phase", ["verifying"], []],
+        ["manager.capability.authorize.v1", "lite.action.verifying.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "lite.action.verifying.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "DONE": [],
+      "BLOCKED": [
+        ["manager.capability.authorize.v1", "lite.action.blocked.manager-authorize.v1", "manager-authorize", "authority", ["operator"], []],
+        ["manager.capability.revoke.v1", "lite.action.blocked.manager-revoke.v1", "manager-revoke", "authority", ["operator"], []]
+      ],
+      "CANCELLED": []
+    }
+  },
+  "rejections": [
+    ["full", "BASELINED", "baseline", null, "WORKFLOW_ACTION_PLACEMENT_INVALID"],
+    ["full", "INDEXED", "record-index", "baseline", "WORKFLOW_ACTION_PLACEMENT_INVALID"],
+    ["full", "IMPACT_REVIEW", "set-route", null, "WORKFLOW_ACTION_PLACEMENT_INVALID"],
+    ["full", "WORKSPACE_READY", "prepare-workspace", "plan", "WORKFLOW_ACTION_PLACEMENT_INVALID"],
+    ["full", "WORKSPACE_READY", "prepare-workspace", "execute", "WORKFLOW_ACTION_PLACEMENT_INVALID"],
+    ["full", "REVIEWING", "review-snapshot", null, "WORKFLOW_ACTION_PLACEMENT_INVALID"],
+    ["full", "INDEXED", "transition", null, "WORKFLOW_ACTION_PLACEMENT_INVALID"],
+    ["full", "CANCELLED", "cancel", null, "WORKFLOW_ACTION_PLACEMENT_INVALID"],
+    ["full", "INDEXED", "record-artifact", "free-form", "WORKFLOW_ACTION_SELECTOR_UNDECLARED"]
+  ]
+}

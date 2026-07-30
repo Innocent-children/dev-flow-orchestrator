@@ -591,17 +591,21 @@ class DevFlowArtifactsWorkspaceTest(test_case.DevFlowTestCase):
         self.assertEqual(response["error"]["code"], "INCOMPLETE_WORKSPACE_PLAN")
 
     def test_workspace_claims_block_cross_task_path_and_branch_reuse(self) -> None:
-        repo, _ = self.make_repo("shared-claim-source")
-        repo = repo.resolve()
+        owner_repo, _ = self.make_repo("claim-owner-source")
+        contender_repo, _ = self.make_repo("claim-contender-source")
+        owner_repo = owner_repo.resolve()
+        contender_repo = contender_repo.resolve()
 
-        def write_route_approved_state(task_id: str) -> dict:
+        def write_route_approved_state(repo: Path, task_id: str) -> dict:
             return self.route_approved_task(
                 repo,
                 task_id=task_id,
             )
 
-        first = write_route_approved_state("claim-owner")
-        second = write_route_approved_state("claim-contender")
+        first = write_route_approved_state(owner_repo, "claim-owner")
+        second = write_route_approved_state(
+            contender_repo, "claim-contender"
+        )
         second_revision = second["revision"]
         claimed_path = (self.root / "claimed-workspace").resolve()
         claimed_branch = "codex/shared-claim"
@@ -642,42 +646,6 @@ class DevFlowArtifactsWorkspaceTest(test_case.DevFlowTestCase):
         self.assertEqual(same_path["error"]["details"]["conflict"], "path")
         self.assertFalse(claimed_path.exists())
 
-        same_branch_path = (self.root / "different-claim-path").resolve()
-        same_branch = self.cli(
-            "prepare-workspace",
-            second["task_id"],
-            "--expected-revision",
-            str(second["revision"]),
-            "--path",
-            str(same_branch_path),
-            "--branch",
-            claimed_branch,
-            expected_code=2,
-        )
-        self.assertEqual(
-            same_branch["error"]["code"], "WORKSPACE_OWNERSHIP_CONFLICT"
-        )
-        self.assertEqual(same_branch["error"]["details"]["conflict"], "branch")
-        self.assertFalse(same_branch_path.exists())
-        prefixed_branch_path = (self.root / "prefixed-claim-path").resolve()
-        prefixed_branch = self.cli(
-            "prepare-workspace",
-            second["task_id"],
-            "--expected-revision",
-            str(second["revision"]),
-            "--path",
-            str(prefixed_branch_path),
-            "--branch",
-            f"{claimed_branch}/nested",
-            expected_code=2,
-        )
-        self.assertEqual(
-            prefixed_branch["error"]["code"], "WORKSPACE_OWNERSHIP_CONFLICT"
-        )
-        self.assertEqual(
-            prefixed_branch["error"]["details"]["conflict"], "branch"
-        )
-        self.assertFalse(prefixed_branch_path.exists())
         self.assertEqual(
             dev_flow.load_state(
                 second["task_id"], self.data

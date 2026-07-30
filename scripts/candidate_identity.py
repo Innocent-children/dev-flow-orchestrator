@@ -37,10 +37,13 @@ _ALLOWED_TOP_LEVEL_DIRECTORIES = {
     "skills",
     "templates",
     "tests",
+    "workflows",
 }
 _ALLOWED_ROOT_FILES = {
     ".gitattributes",
     ".gitignore",
+    ".mcp.json",
+    "CONTRIBUTING.md",
     "INSTALL.md",
     "LICENSE",
     "README.md",
@@ -51,12 +54,21 @@ _EXCLUDED_TOP_LEVEL = {
     ".git",
     ".idea",
     ".pytest_cache",
+    ".venv",
+    "docs",
     "htmlcov",
     "openspec",
     "work",
 }
 _EXCLUDED_ANYWHERE = {"__pycache__", ".DS_Store", ".coverage"}
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", ".pyd")
+_HOST_LOCAL_EXCLUDED_FILES = {
+    ".claude/settings.local.json",
+    "AGENTS.md",
+    "pyproject.toml",
+    "uv.lock",
+}
+_HOST_LOCAL_CONTAINER_DIRECTORIES = {".claude"}
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
@@ -165,6 +177,8 @@ def _excluded(relative: Path) -> bool:
     parts = relative.parts
     if not parts:
         return False
+    if relative.as_posix() in _HOST_LOCAL_EXCLUDED_FILES:
+        return True
     if parts[0] in _EXCLUDED_TOP_LEVEL:
         return True
     if any(part in _EXCLUDED_ANYWHERE for part in parts):
@@ -175,6 +189,7 @@ def _excluded(relative: Path) -> bool:
 def _allowed(relative: Path) -> bool:
     return (
         relative.parts[0] in _ALLOWED_TOP_LEVEL_DIRECTORIES
+        or relative.as_posix() in _HOST_LOCAL_CONTAINER_DIRECTORIES
         or relative.as_posix() in _ALLOWED_ROOT_FILES
     )
 

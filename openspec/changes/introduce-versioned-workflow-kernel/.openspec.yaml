@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-07-27
+goal: Make workflow nodes easy to add and compose, reduce orchestration token
+  overhead, enable deterministic multi-repository fan-out/fan-in, and keep the
+  standard-library controller as the sole state and evidence authority.

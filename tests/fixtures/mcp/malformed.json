@@ -1,0 +1,5 @@
+{
+  "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":",
+  "expectedRpcCode": -32700,
+  "expectedStableCode": "JSON_PARSE_ERROR"
+}

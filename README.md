@@ -2,9 +2,16 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A guarded development workflow for Codex across Git repositories, `codebase-memory-mcp`, and OpenSpec. It keeps the same state-machine, approval, and evidence semantics on native Windows, macOS, and Linux; persists machine-readable task state; keeps human approvals explicit; and reviews committed, staged, unstaged, and untracked changes before handoff.
+A guarded development workflow for Codex across Git repositories,
+`codebase-memory-mcp`, and OpenSpec. It persists machine-readable task state,
+keeps human approvals explicit, and reviews committed, staged, unstaged, and
+untracked changes before handoff.
 
-The supported runtime contract is native Windows, macOS, and Linux with Python 3.9 through 3.14 and a real Git installation with `git worktree` support. The controller and hook runtime use only the Python standard library; no POSIX compatibility layer is required on Windows.
+The current V4 delivery is validated and supported on native macOS only, using
+the installed Python runtime and a real Git installation with `git worktree`
+support. The controller and hook runtime use only the Python standard library.
+Retained Windows and Linux launchers are unvalidated compatibility artifacts
+for this delivery and are not a support claim.
 
 **New here?** Work through [Setup](#setup) top to bottom — six steps, a few minutes. [Configuration reference](#configuration-reference) is the one-screen summary of every setting. Everything after that explains how the workflow behaves and why.
 
@@ -16,9 +23,9 @@ These placeholders appear throughout. Substitute your own values; nothing expand
 
 | Placeholder | Meaning | Typical value |
 | --- | --- | --- |
-| `<python>` | Supported Python 3.9–3.14 interpreter, absolute path | `/usr/bin/python3`, `C:\Users\me\AppData\Local\Programs\Python\Python314\python.exe` |
-| `<plugin-root>` | Where the installed plugin lives | `~/plugins/dev-flow-orchestrator`, `%USERPROFILE%\.codex\plugins\cache\personal\dev-flow-orchestrator\0.3.0` |
-| `<PLUGIN_DATA>` | The plugin's private state directory | `~/.codex/plugin-data/dev-flow-orchestrator`, `%USERPROFILE%\.codex\plugin-data\dev-flow-orchestrator` |
+| `<python>` | Installed macOS Python interpreter, absolute path | `/usr/bin/python3` |
+| `<plugin-root>` | Where the installed plugin lives | `~/plugins/dev-flow-orchestrator` |
+| `<PLUGIN_DATA>` | The plugin's private state directory | `~/.codex/plugin-data/dev-flow-orchestrator` |
 
 Use absolute interpreter, handler, and data-directory paths for manual controller calls and global hooks. A hook's working directory is unpredictable and its environment is intentionally sparse, so relative paths and bare interpreter names that depend on `PATH` are common causes of a silent-looking setup failure. Bundled hooks are the exception: they use the `PLUGIN_ROOT`/`PLUGIN_DATA` injected by Codex and the packaged cross-platform launch commands; workflow skills then preserve the injected interpreter, controller, and data-directory arguments instead of reconstructing a launcher.
 
@@ -31,7 +38,13 @@ Use absolute interpreter, handler, and data-directory paths for manual controlle
 | `codebase-memory-mcp`, enabled | the full flow only (impact analysis, workspace discovery) | the MCP server appears in your Codex tool list |
 | OpenSpec on `PATH` | the OpenSpec route only | `openspec --version` |
 
-The lite flow needs only a supported Python and Git. The full flow additionally needs codebase-memory, and only the OpenSpec route needs OpenSpec. The plugin intentionally bundles no Python, Git, OpenSpec, POSIX compatibility layer, or machine-specific `.mcp.json`; install the first two yourself and keep using your existing user- or project-scoped MCP configuration. Python 3.9 and 3.14 run the complete validation suite on Windows, macOS, and Linux, while 3.10–3.13 run it at least on Linux; a new Python minor version is not declared supported until it enters that native matrix.
+The lite flow needs only the installed Python and Git. The full flow
+additionally needs codebase-memory, and only the OpenSpec route needs OpenSpec.
+The plugin intentionally bundles no Python, Git, OpenSpec, optional Agent SDK,
+or machine-specific codebase-memory configuration. Its `.mcp.json` retains two
+disabled host profiles, but this V4 delivery validates and enables only the
+POSIX profile on macOS. Keep using existing user- or project-scoped
+configuration for other MCP servers.
 
 ### 2. Place the plugin
 
@@ -45,13 +58,52 @@ Copy the complete plugin directory to `<plugin-root>` — never individual files
 
 If `~/.agents/plugins/marketplace.json` does not exist, copy `templates/personal-marketplace.example.json` to it. If it does exist, merge only the object from `templates/marketplace-entry.json` into its `plugins` array and leave the rest of the file alone. Restart the desktop app, install the plugin from that marketplace, and start a new task. [`INSTALL.md`](INSTALL.md) has the complete package placement map and the update/cachebuster procedure.
 
+The typed controller MCP is optional. To use it, enable exactly one profile in
+your Codex `config.toml`, replacing `@personal` if the installed marketplace
+name differs.
+Official Skill dependency metadata has no `optional/OR` expression, so this
+optional transport is not declared as a hard Skill dependency.
+
+macOS/Linux:
+
+```toml
+[plugins."dev-flow-orchestrator@personal".mcp_servers.dev-flow-posix]
+enabled = true
+```
+
+Native Windows:
+
+```toml
+[plugins."dev-flow-orchestrator@personal".mcp_servers.dev-flow-windows]
+enabled = true
+```
+
+Never enable both profiles: they expose the same tool names and the current
+official MCP schema has one `command` but no OS-specific command override. The
+POSIX profile explicitly invokes `/bin/sh`; the Windows profile explicitly
+invokes `cmd.exe` and the `.cmd` path, with no `PATHEXT` assumption. Both use
+`cwd = "."` and package-relative arguments, matching Codex's own bundled MCP
+convention in which `.` is the installed plugin root. `${PLUGIN_ROOT}` is not
+used here because Codex documents that injection for plugin hooks, not bundled
+MCP commands. If the selected profile is unavailable, continue through the
+hook-provided CLI locator.
+
+The retained, unvalidated Windows self-test artifact performs an MCP
+`tools/list` exchange and names its compact-hook observation
+`native-windows-compact-hook-lifecycle`; neither token is macOS release
+evidence or a Windows support claim.
+
 ### 3. Register the hooks
 
 The hooks are what make the workflow resumable: they re-inject the active task at session start, and they block writes and dangerous Git commands that would bypass the controller. Without them the controller still works, but nothing reminds Codex to use it.
 
 **First try the bundled registration.** Codex discovers `hooks/hooks.json` at its default plugin location; the plugin manifest intentionally has no unsupported `hooks` field. Every handler has a POSIX `command` and a Windows `commandWindows`, and both invoke `hooks/dev_flow_hook.py`:
 
-- On macOS/Linux, `command` runs `python3 "$PLUGIN_ROOT/hooks/dev_flow_hook.py"`.
+- On macOS/Linux, `command` runs the packaged
+  `"$PLUGIN_ROOT/scripts/dev_flow_python_launcher"` for
+  `"$PLUGIN_ROOT/hooks/dev_flow_hook.py"`. The launcher accepts Python
+  3.9–3.14, falls through unsupported versions, and has conventional absolute
+  path fallbacks for sparse hook environments.
 - On Windows, `commandWindows` invokes the bundled `hooks/dev_flow_hook.cmd`. The shim probes a supported `py -3`, then explicit `py -3.14` through `py -3.9`, and finally `python`, while preserving stdin, stdout, and the exit code.
 - Both paths ultimately run the same `hooks/dev_flow_hook.py` with the real `PLUGIN_ROOT` and `PLUGIN_DATA` injected by Codex, so their handler semantics are identical.
 
@@ -118,7 +170,7 @@ Field by field:
 | `timeout` | seconds before Codex abandons the hook | `10` is enough. The hook is fail-open by design — on timeout or error it emits nothing rather than blocking your session |
 | `statusMessage` | text shown while the hook runs | cosmetic; omit freely |
 
-`UserPromptSubmit` takes no `matcher` — it fires on every prompt. `SessionStart` always injects the complete resumable checkpoint. A prompt receives the single-line compact checkpoint containing task/revision/flow/status/remaining-workflow/index/next-action data and a compact resume command only when that content changed within the current Codex session. The best-effort marker is keyed by `sha256(session_id)` and stores only the compact-content digest; a missing session ID or any marker read/write/corruption failure emits instead of suppressing, preserving fail-open behavior. The command guard recognizes direct `git`/`git.exe`, absolute Git paths, supported POSIX shells, `cmd.exe /c`, Windows PowerShell, and `pwsh -Command` wrappers equivalently; a recognized wrapper payload that cannot be parsed safely is rejected with a diagnostic. The bundled Windows shim is for plugin-managed discovery; global registrations should use a verified absolute interpreter as shown above because they receive neither `PLUGIN_ROOT` nor `PLUGIN_DATA`. After editing this file, start a new task; Codex may also ask you to review and trust the hooks, and declining leaves you with no guardrails.
+`UserPromptSubmit` takes no `matcher` — it fires on every prompt. `SessionStart` always injects the complete resumable checkpoint. `PostCompact` intentionally exits successfully with no output because its current host wire contract has no `additionalContext`; the following `SessionStart` with `source = "compact"` performs the actual restoration. A prompt receives the single-line compact checkpoint containing task/revision/flow/status/remaining-workflow/index/next-action data and a compact resume command only when that content changed within the current Codex session. The best-effort marker is keyed by `sha256(session_id)` and stores only the compact-content digest; a missing session ID or any marker read/write/corruption failure emits instead of suppressing, preserving fail-open behavior. The command guard recognizes direct `git`/`git.exe`, absolute Git paths, supported POSIX shells, `cmd.exe /c`, Windows PowerShell, and `pwsh -Command` wrappers equivalently; a recognized wrapper payload that cannot be parsed safely is rejected with a diagnostic. The bundled Windows shim is for plugin-managed discovery; global registrations should use a verified absolute interpreter as shown above because they receive neither `PLUGIN_ROOT` nor `PLUGIN_DATA`. After editing this file, start a new task; Codex may also ask you to review and trust the hooks, and declining leaves you with no guardrails.
 
 ### 4. Point the controller at a data directory
 
@@ -333,6 +385,157 @@ When the OpenSpec route is selected, an explicit user choice determines the lang
 
 The lifecycle hooks inject the exact interpreter, absolute controller, and private data-directory arguments at session start and in each changed compact prompt checkpoint; identical content is suppressed only within the same session. The main skill preserves that ordered prefix on every controller call; it does not replace the interpreter with a platform-specific guess, and it does not assume `PLUGIN_DATA` reaches later execution tools.
 
+### Versioned workflow kernel and Codex execution
+
+The controller is a deterministic workflow kernel, not an LLM-owned state
+machine. Package-owned immutable bundles under `workflows/bundles/` define
+nodes, edges, guards, reducers, gates, executors, schemas, localized labels,
+context projections, and bounded playbooks. The sealed catalog validates the
+complete graph and exact handler file set before reading a task. Schema-v3
+tasks pin the graph and bundle SHA-256 identities for their lifetime;
+schema-v1 and schema-v2 tasks continue through frozen legacy adapters and are
+never silently migrated.
+
+The package-owned activation manifest is a fail-closed creation gate. It can
+enable single-repository and multi-repository profiles independently only
+after their complete transition and recovery suites pass. Turning a profile
+off affects future creation only; an existing v3 task continues through its
+pinned bundle.
+
+The package activation manifest enables all supported V4 creation profiles:
+`lite@4` single-repository plus `full@4` single-repository and
+multi-repository. New `start` calls therefore create schema-v3 tasks pinned to
+the exact V4 bundle selected from the requested work mode and repository
+count. Existing schema-v1/schema-v2 tasks remain on their frozen legacy
+adapters and are never migrated in place.
+
+Task state, executor state, and model context are deliberately separate:
+
+- the controller owns revisions, locks, approvals, evidence, transitions,
+  leases, results, barriers, recovery, and the durable event outbox;
+- a runtime handle identifies a resumable Codex thread, external job, or
+  Agents session, but is never workflow truth;
+- model context may be compacted or replaced because required facts live in
+  task-scoped state and content-addressed artifacts.
+
+Known repository dependencies use deterministic fan-out/fan-in. The approved
+`dev-flow-repository-plan/v1` DAG computes the ready frontier; each writable
+worker receives one repository, one controller-owned worktree, exact paths,
+one attempt, a non-mutating lease credential, and a bounded playbook. Workers
+cannot call controller mutations. The manager serializes authoritative
+`dev-flow-node-result/v1` acceptance through task lock, expected-revision CAS,
+evidence checks, and the durable outbox. Parallel writes are allowed only
+when the host proves the manager secret, controller data, state files, and
+mutation tools are outside every worker boundary; otherwise execution falls
+back to the manager-owned serial path.
+
+The official Codex surfaces are adapters around that kernel:
+
+| Surface | Intended use | Authority |
+| --- | --- | --- |
+| Codex Skills | Progressive-disclosure routing and exact current-node playbooks | Read projections; controller calls remain explicit |
+| Native Codex subagents | Default interactive parallel exploration, implementation, test, and review workers | Scoped assignment only |
+| `codex exec --json` | Lowest-overhead headless or CI node with JSONL usage and schema-bound output | Candidate result only |
+| Codex SDK thread | Resumable repository-focused coding worker | Runtime handle only |
+| `codex mcp-server` plus Agents SDK | Optional dynamic handoff, HITL, tracing, or cross-system orchestration | External executor; never state authority |
+
+The integration boundaries follow the official
+[Skills](https://learn.chatgpt.com/docs/build-skills),
+[subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents),
+[Hooks](https://learn.chatgpt.com/docs/hooks),
+[`codex exec`](https://learn.chatgpt.com/docs/non-interactive-mode),
+[Codex SDK](https://learn.chatgpt.com/docs/codex-sdk), and
+[Codex MCP server](https://learn.chatgpt.com/docs/mcp-server) contracts.
+Dynamic external orchestration follows the
+[Agents SDK orchestration guidance](https://developers.openai.com/api/docs/guides/agents/orchestration);
+it does not replace the package-owned workflow graph or commit authority.
+
+The base plugin imports only the Python standard library. Optional SDKs stay
+outside the controller process. A wholesale Agents Runtime migration is
+therefore intentionally not used: a fixed graph is cheaper and more
+replayable when the controller schedules it directly, while Agents Runtime
+remains available for genuinely dynamic orchestration.
+
+The bundled stdio MCP server exposes only six typed tools:
+`task-next`, `node-description`, `evidence-read`, `action-preview`,
+`action-apply`, and `worker-result`. Read/write/destructive annotations are
+explicit. MCP host approval is additive: write tools still require the same
+revision, intent, gate, manager-capability, replay, and evidence checks as the
+CLI. If MCP is disabled or unavailable, `scripts/dev_flow.py` remains the
+complete inspection, mutation, and recovery surface.
+Supplying `known_revision` to `task-next` returns a tiny unchanged receipt at
+the same revision; an older checkpoint receives the current projection plus a
+bounded digest of the intervening durable events. An event-log gap sets
+`reset_required` instead of fabricating a complete delta.
+
+Model-visible payloads are bounded by portable UTF-8 byte contracts:
+
+| Payload | Common-case maximum |
+| --- | ---: |
+| Hook checkpoint | 600 bytes |
+| `task-next` | 1 KiB |
+| Mutation receipt | 1 KiB plus action-required fields |
+| Selected node playbook | 4 KiB |
+| Authoritative manager-visible `NodeResult` | 2,048 bytes |
+| Inline result summary | 512 bytes |
+| V4 operator-intervention packet | 4,096 bytes |
+
+Required detail is never silently truncated. Oversized task projections are
+stored as task-scoped content-addressed artifacts and replaced by verified
+locators; an authoritative `NodeResult` that exceeds its contract is rejected.
+Stable invariant instructions, bundle identities, and per-node playbook
+selection keep repeated prompt prefixes cache-friendly when the active Codex
+or API surface provides prompt caching. The controller records reported
+cached-input usage but never assumes a cache hit for correctness. Compaction
+is likewise safe because hooks restore only the current locator and all
+authoritative facts remain outside model context.
+
+The committed current-size fixture replays one representative implementation
+node using canonical UTF-8 serialization:
+
+| Representative payload | Measured bytes | Planning estimate | Contract budget |
+| --- | ---: | ---: | ---: |
+| Hook checkpoint | 349 | 88 tokens | 600 bytes |
+| `task-next` | 687 | 172 tokens | 1,024 bytes |
+| Common mutation receipt | 236 | 59 tokens | 1,024 bytes |
+| Selected IMPLEMENTING playbook section | 189 | 48 tokens | 4,096 bytes |
+| Authoritative `NodeResult` with one artifact and evidence reference | 1,677 | 420 tokens | 2,048 bytes |
+| Inline `NodeResult` summary | 10 | 3 tokens | 512 bytes |
+| V4 operator-intervention packet | 603 | 151 tokens | 4,096 bytes |
+
+The planning estimate is deliberately tokenizer-independent
+`ceil(UTF-8 bytes / 4)`, so it is useful only for stable regression planning;
+it is neither a model tokenizer result nor API-reported usage. Against the
+pristine byte inventory, the comparable compact surfaces reduce bytes by
+66.4% for the Hook checkpoint, 62.5% for `task-next`, and 86.3% for the common
+mutation receipt. Loading only the selected IMPLEMENTING section instead of
+the complete full-v4 playbook reduces that input by 92.2%. These are protocol
+byte comparisons, not claims of identical token savings or task quality.
+
+Node telemetry records input, cached-input, output, and reasoning-output
+counts when the executor reports them, plus retry waste, orchestration
+overhead, parallel multiplier, wall time, and quality aggregates. Telemetry
+is observational and can never satisfy an evidence gate.
+
+The committed deterministic telemetry fixture provides two regression
+baselines; it is not a production benchmark and its token counts are accepted
+exactly as an adapter would report them:
+
+| Representative fixture | Total tokens | Cached input | Retry waste | Manager overhead | Token multiplier | Wall-time speedup | Quality |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Single-repository full | 535 | 61.3% | 0% | 9.3% | 0.955x | 1.204x | 100% |
+| Multi-repository parallel | 1,595 | 67.9% | 26.3% | 8.1% | 1.139x | 2.130x | 75% |
+
+The report preserves both observed and single-agent baseline milliseconds,
+elapsed-time ratio, speedup, and signed time saved. This makes the central
+trade-off visible: parallel work may reduce wall time while increasing total
+model tokens, especially when a worker retries.
+
+To add a declarative node or a versioned executable contract, follow
+[CONTRIBUTING.md](CONTRIBUTING.md). New runtime behavior must be package-owned,
+statically inventoried, capability-audited, and referenced by a new immutable
+bundle identity; target repositories cannot inject controller code.
+
 ### Boundaries and limitations
 
 The hooks provide task-scoped guardrails, not a security boundary. They protect recognized file-write tools and common dangerous Git commands only while a matching task is active; shell scripts, nested tooling, hosted tools, or disabled/untrusted hooks can bypass them. The controller's state, artifact hashes, explicit approvals, and final independent review remain the source of truth. Installing this plugin does not globally restrict unrelated Codex tasks.
@@ -343,7 +546,13 @@ The current evidence contract version is `2` (`evidence_contract_version: 2`). R
 
 Repeated test and review fingerprints keep the same v2 semantic payload and hash but are stored once per task as `task-local-json-v1` blobs. Their state entries are storage locators, not evidence records, and deliberately omit `evidence_contract_version`; the current controller validates the blob before accepting its v2 payload, while an older controller fails closed instead of trusting an unvalidated locator. Legacy inline v2 fingerprints remain readable.
 
-New tasks use task-state schema v2, which makes the confirmation contract and risk assessment mandatory. The current controller can still read and finish schema-v1 tasks with their legacy direct `transition`/`cancel` behavior and per-edge human prompts; v2 `--preview`/`--confirm-intent` is unavailable for them. Do not rewrite a v1 state into v2 or invent an intent/risk snapshot. Conversely, an older controller that understands only schema v1 rejects a schema-v2 task instead of silently dropping its safety fields.
+New tasks use the active task-state schema v3 workflow selected from
+`lite@4` or `full@4`. Existing schema-v2 tasks retain their confirmation and
+risk contracts through the frozen legacy adapter, and schema-v1 tasks retain
+their legacy direct `transition`/`cancel` behavior and per-edge human prompts.
+Do not rewrite a v1/v2 task into v3 or invent an intent, risk snapshot, or
+workflow reference. An older controller rejects an unsupported newer task
+schema instead of silently dropping fields.
 
 Legacy v1 evidence does not satisfy the current v2 evidence contract/profile digest; it is deliberately stale for downstream gates. Regenerate the required preflight, baseline/workspace indexes, plan binding, tests, and review snapshot with a compatible current version on the same host before the task can advance. A task already beyond a state where the controller permits the required evidence refresh cannot be migrated in place; cancel and replace it instead of editing evidence. A legacy `branch`-strategy task without a start-time `branch_binding` remains inspectable but fails closed at preflight and lite gates; cancel and replace it instead of inventing approval evidence. Do not relabel legacy evidence or reuse a baseline codebase-memory project as a workspace project. Pointing an older plugin that does not understand the current capability profile at a data directory already handled by this version is also unsafe: reinstall a version that supports the same evidence contract and regenerate stale evidence. Readable old state does not imply semantic compatibility, and a platform change is not an evidence migration path.
 
@@ -352,6 +561,18 @@ Before task state, event records, mutation/quarantine evidence, predictable erro
 Workspace and repository ownership checks normalize `/` and `\`, drive and UNC spellings, case behavior, Unicode normalization, and symlink/junction aliases. An uncreated destination binds to its nearest existing ancestor so the filesystem behavior can be probed. A capability that cannot be measured safely, or an ambiguous/colliding identity, fails closed before ownership is assigned; avoid paths and branch overrides that differ only by case or rely on platform-specific aliases.
 
 During a protected mutation, the controller owns the child process it starts. On interruption it first requests platform-appropriate termination, escalates if necessary, waits for reaping, and releases the lock only after proving quiescence. If a Git-changing child times out or cannot be proven quiescent, the controller persists `mutation-quarantine.json` while still holding the lock and blocks every later state mutation. Do not delete or edit the file, and do not retry blindly. After read-only inspection of the reported repository and process evidence, run `recover-quarantine --task <task-id> --expected-revision <revision>`; that command proves the child is gone, validates the recorded Git/filesystem postconditions and current evidence contract, and archives the quarantine. A live or unverifiable child, revision drift, or postcondition drift remains blocked.
+
+For V4 action recovery, an ambiguous claimed effect returns `UNRESOLVED` with
+a bounded `operator_intervention` packet. Codex must show the exact execution,
+effect IDs, affected scopes, reason, and resume conditions, then stop and ask
+the user to inspect or operate. The controller never redispatches, compensates,
+or unblocks automatically in this state, and a user or model statement alone
+is not recovery proof. Resume only after a fresh controller read verifies an
+authenticated original runtime, a verifiable stored receipt, or a future
+trusted host recovery authority; otherwise leave the affected scope blocked.
+The complete intervention projection is capped at 4,096 semantic-JSON bytes
+without truncation. Overflow or corrupt durable input remains blocked and
+returns an `action-recovery-inspect` locator for read-only diagnosis.
 
 Every controller state file is written through a rollback-protected atomic replacement. If that write is interrupted before its cleanup — `SIGKILL`, power loss, or a hook killed at its timeout — a `.<name>.rollback-<suffix>` file survives next to the destination, and every later write to that exact file fails closed with `ATOMIC_RECOVERY_REQUIRED`, naming `details.rollback_candidates`. This is deliberate: the controller will not write over a destination whose last replacement it cannot account for. It is also not a dead end, and clearing it by hand is still not the way out. Run `recover-atomic-write` to report every candidate, then `--apply` to remove only the evidence that provably matches the committed destination, or the empty placeholder of a write that never committed a new file. Content that differs from the destination is a decision about committed state, so it stays blocked with both digests and schema summaries until you choose `--resolve keep-current` or `--resolve restore-rollback` for one `--path`, proving inspection with `--rollback-sha256`. The command never picks a side for you.
 
@@ -378,8 +599,13 @@ Platform-neutral argv form:
 | `show` | both | any | Print a compact, sectioned, or full task snapshot |
 | `recover-quarantine` | both | quarantined task | Prove an interrupted child is gone, verify postconditions, and archive its durable quarantine |
 | `recover-atomic-write` | both | no task | Report and clear rollback evidence left by an interrupted atomic state write |
+| `action-recovery-inspect` | schema-v3/V4 | quarantined action | Inspect the exact durable journal, bindings, and safe recovery locators without mutation |
+| `action-recovery-preview` | schema-v3/V4 | quarantined action | Reconcile read-only and return the exact bounded decision or operator-intervention packet |
+| `action-recovery-apply` | schema-v3/V4 | quarantined action | Apply only a controller-verified recovery result under the required manager authority |
 | `list` | both | no task | List task summaries |
 | `scope` | both | no task | Show or change the directories where the plugin is active |
+| `manager-authorize` | schema-v3 | any active state | Preview, then issue one short-lived task/session/action-scoped manager capability |
+| `manager-revoke` | schema-v3 | any active state | Preview, then revoke one persisted manager capability verifier |
 | `preflight` | both | `INTAKE`, `PREFLIGHTED` | Preview one exact status edge, then record Git identity, remote/base and a fingerprint with the confirmed token |
 | `baseline` | full | `PREFLIGHTED`, `BASELINED` | Pin each repository's remote base commit; optionally materialize the analysis worktree |
 | `record-index` | full | `BASELINED`, `INDEXED` (baseline); `WORKSPACE_READY`, `PLANNING`, `IMPLEMENTING`, `VERIFYING` (workspace) | Record codebase-memory indexing provenance for the baseline or workspace role |
@@ -394,7 +620,43 @@ Platform-neutral argv form:
 
 "Any active state" means any state that is neither terminal (`DONE`, `CANCELLED`) nor `BLOCKED`; individual artifact kinds and gates narrow that further, as listed below. Full-only commands fail with `FLOW_MISMATCH` on a lite task, and `approve --gate lite` fails the same way on a full one. `preflight` is additionally accepted from `BLOCKED` when the task was blocked during preflight.
 
-Three of these seventeen do not target one task: `scope` is the sole writer of `config.json`; `recover-atomic-write` resolves interrupted writes to controller-owned files; and `list` enumerates summaries across tasks. The other fourteen target one task's state. While loading a legacy state, `show` or `list` may also perform the one-time sensitive-data cleanup described above.
+Three of these twenty-two do not target one task: `scope` is the sole writer of `config.json`; `recover-atomic-write` resolves interrupted writes to controller-owned files; and `list` enumerates summaries across tasks. The other nineteen target one task's state. While loading a legacy state, `show` or `list` may also perform the one-time sensitive-data cleanup described above.
+
+### Schema-v3 manager capability channel
+
+Schema-v3 writes require two independent inputs: a public
+`dev-flow-manager-capability-request/v1` identity and one binary proof read
+from an inherited manager-only pipe or connected local socket. Secret bytes
+must never appear in argv, JSON, environment values, stdout, logs, task state,
+or worker context. The environment variable
+`DEV_FLOW_MANAGER_SECRET_FD`, when used by the MCP process, contains only a
+decimal file-descriptor number.
+
+Authorization and revocation are both explicit two-phase operations:
+
+```text
+<controller> manager-authorize <task> --expected-revision N --manager-session-id SESSION --preview
+<controller> manager-authorize <task> --expected-revision N --manager-session-id SESSION --confirm-intent INTENT --manager-secret-fd WRITE_FD
+<controller> manager-revoke <task> --expected-revision N --capability-id ID --reason AUDIT_REASON --preview
+<controller> manager-revoke <task> --expected-revision N --capability-id ID --reason AUDIT_REASON --confirm-intent INTENT
+```
+
+The host or a manager-owned broker creates the channel outside every writable
+worker boundary. Authorization publishes one bounded frame and persists only
+verifier material. A one-shot pipe can supply one apply operation; a
+long-lived MCP server needs a manager-owned local broker that supplies a fresh
+frame on the inherited connected socket for each authorized write. Each apply
+also passes its public request through `--manager-request-json` (CLI) or the
+typed MCP request. Nonces are consumed durably, and retrying a response lost
+after commit returns the exact prior receipt; the same nonce with different
+canonical input fails as a replay conflict.
+
+The selected optional `.mcp.json` host profile deliberately does not create or own this
+host-specific secret channel. Without `DEV_FLOW_MANAGER_SECRET_FD`,
+`task-next`, `node-description`, `evidence-read`, and `action-preview` remain
+available, while `action-apply` and `worker-result` fail closed before state
+or events change. The explicit controller CLI remains the fallback; it does
+not weaken the same revision, intent, capability, replay, and evidence gates.
 
 ### Task setup and inspection
 
@@ -460,9 +722,11 @@ Keep the files in these locations relative to the plugin root:
 ```text
 dev-flow-orchestrator/
 ├── .gitattributes                    # Canonical LF checkout policy
+├── .mcp.json                         # Disabled explicit POSIX/Windows MCP profiles
 ├── .github/workflows/
 │   └── cross-platform.yml            # Native Windows/macOS/Linux validation matrix
 ├── .codex-plugin/plugin.json        # Required plugin manifest
+├── CONTRIBUTING.md                   # Declarative node/handler extension guide
 ├── INSTALL.md                        # Exact personal/repository placement map
 ├── hooks/
 │   ├── hooks.json                   # Paired POSIX/Windows hook registration
@@ -470,7 +734,12 @@ dev-flow-orchestrator/
 │   └── dev_flow_hook.py             # Shared state injection and guardrails
 ├── scripts/
 │   ├── dev_flow.py                  # Stable CLI facade and ordered runtime loader
-│   ├── dev_flow_parts/              # Ten inseparable controller implementation parts
+│   ├── dev_flow_mcp.py              # Thin typed standard-library MCP adapter
+│   ├── dev_flow_python_launcher     # Shared POSIX Python 3.9–3.14 selector
+│   ├── dev_flow_mcp_launcher        # POSIX MCP launcher
+│   ├── dev_flow_mcp_launcher.cmd    # Explicit cmd.exe Windows MCP launcher
+│   ├── workflow_bundle_identity.py  # Exact graph/handler/bundle identity contract
+│   ├── dev_flow_parts/              # Controller, kernel, adapters, and services
 │   ├── audit_runtime_imports.py      # Standard-library/isolated-startup audit
 │   ├── candidate_identity.py         # canonical-v1 identity + deterministic handoff
 │   ├── validate_package.py           # Manifest/default-hook/inventory checks
@@ -483,6 +752,7 @@ dev-flow-orchestrator/
 │   └── review-dev-flow-change/      # Independent full-change review
 ├── templates/marketplace-entry.json # Entry to merge into a local marketplace
 ├── templates/personal-marketplace.example.json # Complete first-marketplace example
+├── workflows/                        # Sealed registries and immutable bundles
 └── tests/                            # Portable offline unit tests
 ```
 
@@ -490,17 +760,24 @@ Do not copy the hook or helper scripts into each business repository. Install th
 
 ## Development validation
 
-Run these from the plugin source root. Each is a single argv sequence suitable for Bash, PowerShell, or Command Prompt; replace `<python>` with the actual command or absolute path of a supported interpreter:
+Run these from the plugin source root on macOS. Replace `<direct-test-target>`
+with only the directly affected unittest class or method. Test discovery, the
+full suite, and broad unrelated aggregation are prohibited:
 
 ```text
-<python> -m unittest discover -s tests -v
+<python> -m unittest <direct-test-target> -v
 <python> scripts/audit_runtime_imports.py
 <python> scripts/validate_package.py
 <python> scripts/run_bundled_validators.py --require-available
-openspec validate complete-cross-platform-support --strict
+openspec validate introduce-versioned-workflow-kernel --type change --strict
 ```
 
-These checks cover, in order, the complete unit suite; standard-library-only runtime and isolated startup; the plugin manifest, official default `hooks/hooks.json` discovery, and package references; the official validators for all three bundled skills and the plugin manifest; and strict OpenSpec change validation. `scripts/audit_runtime_imports.py` parses every shipped runtime import and starts the controller, hook, and Windows native runner with isolated `-I -S`. `scripts/validate_package.py` independently validates the default hooks because `.codex-plugin/plugin.json` must omit the unsupported `hooks` field.
+Record every exact focused test command and result. The remaining checks cover
+the standard-library-only runtime and isolated macOS startup; the plugin
+manifest, default `hooks/hooks.json` discovery, and package references; the
+official bundled Skill/plugin validators; and strict OpenSpec validation.
+`scripts/validate_package.py` independently validates the default hooks because
+`.codex-plugin/plugin.json` must omit the unsupported `hooks` field.
 
 `scripts/run_bundled_validators.py` records candidate digests before and after the validation and tries to discover the official skill/plugin validators from Codex home. Required CI materializes both official scripts from a pinned `openai/codex` commit, verifies their Git blob IDs and SHA-256 digests, and fails closed with `--require-available`. If the scripts or their dependencies are unavailable locally, a diagnostic run without the strict flag emits JSON `status: "unavailable"` so the other checks can continue, but that is **not** an official-validator pass. Final handoff must run where the validators are actually available:
 
@@ -510,46 +787,15 @@ These checks cover, in order, the complete unit suite; standard-library-only run
 
 Use `DEV_FLOW_SKILL_VALIDATOR`, `DEV_FLOW_PLUGIN_VALIDATOR`, and, when needed, `DEV_FLOW_VALIDATOR_PYTHON` to locate them explicitly. `--require-available` turns every `unavailable` result into a failure, so a handoff cannot substitute the default soft diagnostic for a real pass.
 
-Every required CI job runs the same complete suite with real Git on its exact checked-out `github.sha`: Python 3.9 and 3.14 on native Windows, macOS, and Linux, plus 3.10–3.13 on Linux. Simulating Windows branches or merely launching `commandWindows` is not enough to claim complete Windows plugin support. Before release, install the candidate from a confirmed local marketplace on an actual Windows Codex host and start a new task. The source/install path must cover spaces, Unicode, `&`, and parentheses; record default `hooks/hooks.json` discovery, `commandWindows` selection, real `PLUGIN_ROOT`/`PLUGIN_DATA` injection, bootstrap/checkpoint pickup, a benign command allowed, and a protected Git mutation rejected. Without that smoke evidence, Windows support is not fully validated.
+Authorized CI for this delivery runs only directly relevant selections on
+native macOS and binds the exact candidate digest. It does not run a full
+suite and establishes no Windows or Linux result.
 
-### Cross-host Windows native self-test
+### Retained non-macOS artifacts
 
-The cross-host subject is `dev-flow-canonical-v1`, not the host-local snapshot digest. Canonical v1 hashes the explicit package allowlist by exact UTF-8 POSIX path and raw file bytes, ignores timestamps/ownership/executable modes, excludes OpenSpec progress only, rejects unexpected paths and links/reparse points, and asserts the published two-file golden vector. `scripts/run_bundled_validators.py` reports both `canonical_candidate_sha256` and the separate mode-sensitive `host_local_snapshot_sha256`; only the canonical value is compared across hosts.
-
-After implementation, documentation, workflow, and cachebuster inputs are frozen, create the byte-preserving handoff from the exact candidate. Both output paths must be new, their parent must already exist, and they must be outside the candidate root.
-
-macOS/Linux Bash:
-
-```bash
-mkdir -p "$HOME/dev-flow-windows-handoff"
-"<python>" scripts/windows_native_validation.py prepare --candidate-root . --archive "$HOME/dev-flow-windows-handoff/dev-flow-candidate.zip" --manifest "$HOME/dev-flow-windows-handoff/dev-flow-candidate.json"
-```
-
-The command prints `candidate_sha256`; preserve that exact lowercase 64-hex value as `<canonical-sha256-from-prepare>`. Transfer the ZIP and JSON without extraction or text conversion. The ZIP is deterministic `ZIP_STORED`; the external manifest binds the archive, exact member set, member hashes, and canonical digest.
-
-On Windows, make one ordinary writable test directory available through both a local path and an already-existing UNC share. The two arguments must identify the same directory, but neither may be a drive root or share root. For example, an administrator may already have shared `C:\dev-flow-share-parent` as `DevFlowNative`; then create/use `C:\dev-flow-share-parent\test-root` and `\\localhost\DevFlowNative\test-root`. The runner never creates or removes the share.
-
-Windows PowerShell:
-
-```powershell
-New-Item -ItemType Directory -Force "C:\dev-flow-share-parent\test-root" | Out-Null
-New-Item -ItemType Directory -Force "C:\dev-flow-windows-handoff" | Out-Null
-& ".\scripts\windows_native_validation.cmd" run --archive "C:\dev-flow-windows-handoff\dev-flow-candidate.zip" --manifest "C:\dev-flow-windows-handoff\dev-flow-candidate.json" --expected-canonical "<canonical-sha256-from-prepare>" --local-root "C:\dev-flow-share-parent\test-root" --unc-root "\\localhost\DevFlowNative\test-root" --code-page 936 --report "C:\dev-flow-windows-handoff\windows-native-report.json"
-```
-
-Windows Command Prompt:
-
-```bat
-scripts\windows_native_validation.cmd run --archive "C:\dev-flow-windows-handoff\dev-flow-candidate.zip" --manifest "C:\dev-flow-windows-handoff\dev-flow-candidate.json" --expected-canonical "<canonical-sha256-from-prepare>" --local-root "C:\dev-flow-share-parent\test-root" --unc-root "\\localhost\DevFlowNative\test-root" --code-page 936 --report "C:\dev-flow-windows-handoff\windows-native-report.json"
-```
-
-Code page `936` is the documented legacy default; choose another installed non-UTF-8 page when appropriate. The report path must be new, its parent must already exist, and it must be outside the handoff candidate and both test roots. Before native mutation, the runner verifies the manifest/archive/member paths and bytes, extracts without `extractall`, proves local/UNC identity, and creates only one unpredictable sentinel-owned child. It uses isolated controller state and repository-local Git configuration, scopes `chcp` to child `cmd.exe`, and safely removes only the matching child. It does not install the plugin, reuse live `<PLUGIN_DATA>`, change machine/global Git configuration, publish, push, create/remove a share, or overwrite a report. `--keep-owned-fixture-on-failure` deliberately retains only that sentinel-owned child and forces an `incomplete` report.
-
-Return the new `windows-native-report.json` unchanged for review. A valid report must bind the expected and observed canonical digest, show legacy-code-page and UNC/long-path/worktree checks as `passed`, and show cleanup `passed`. macOS/Linux can test preparation and fail-closed logic but can never emit native `passed`.
-
-This project-local self-test is distinct from the real Windows Codex-host pickup smoke below. Running it authorizes neither publication/native CI dispatch nor marketplace installation. Those remain separate explicit approvals. For an authorized release dispatch, `.github/workflows/cross-platform.yml` requires the reviewed canonical digest and every Windows/macOS/Linux matrix job validates its lowercase format, asserts the golden vector, and fails on a local digest mismatch; ordinary push/pull-request checks are not release authorization.
-
-Command execution in CI is not enough to claim Codex integration on Windows. Before publishing Windows support, install the cache-busted candidate from the confirmed local marketplace on an actual Windows Codex host, start a new task, prove default `hooks/hooks.json` discovery and `commandWindows` selection, observe real `PLUGIN_ROOT`/`PLUGIN_DATA`, and round-trip an installed path containing spaces, Unicode, `&`, and parentheses. Record bootstrap/checkpoint pickup, a benign command allowed, and a protected Git mutation rejected against the same candidate digest. Without this real-host smoke evidence, do not claim that Windows support has completed validation.
+Windows launchers and native-validation helpers remain in the package for
+historical compatibility, but they are not executed, accepted as evidence, or
+advertised as supported by this macOS-only V4 delivery.
 
 ## Installation placement
 

@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"019fa12c-2afd-72b2-a336-cace019c13f3"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item-reasoning","type":"reasoning","text":"bounded internal progress"}}
+{"type":"item.completed","item":{"id":"item-final","type":"agent_message","text":"{\"artifact_refs\":[],\"attempt\":1,\"blockers\":[],\"changed_files\":[\"src/example.py\"],\"evidence_refs\":[],\"input_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"node_instance_id\":\"node-a\",\"outcome\":\"SUCCEEDED\",\"plan_drift\":{\"detected\":false,\"reasons\":[]},\"repository_id\":\"repo-a\",\"schema\":\"dev-flow-codex-exec-result-candidate/v1\",\"summary\":\"Implemented and verified.\",\"task_id\":\"task-a\",\"workflow_bundle_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":10}}

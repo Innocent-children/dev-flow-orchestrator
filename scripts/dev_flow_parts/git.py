@@ -630,7 +630,7 @@ def _tracked_worktree_manifest(
                     item["sha256"] = _sha256_bytes(target_bytes)
                 elif stat.S_ISREG(metadata_value.st_mode):
                     item["worktree_type"] = "file"
-                    item["sha256"] = _sha256_file(target)
+                    item["sha256"] = _sha256_worktree_file(target)
                 elif stat.S_ISDIR(metadata_value.st_mode):
                     item["worktree_type"] = "directory"
                 else:
@@ -1143,6 +1143,96 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_worktree_file(path: Path) -> str:
+    """Hash one regular worktree file without following an identity race."""
+
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise FlowError(
+            "WORKTREE_CHANGED",
+            "worktree file disappeared before byte evidence was captured",
+            details={"path": str(path)},
+        ) from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise FlowError(
+            "WORKTREE_CHANGED",
+            "worktree evidence path is no longer a regular file",
+            details={
+                "path": str(path),
+                "mode": format(before.st_mode & 0o177777, "06o"),
+            },
+        )
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise FlowError(
+            "WORKTREE_CHANGED",
+            "worktree file identity changed before it was opened",
+            details={"path": str(path)},
+        ) from exc
+    digest = hashlib.sha256()
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+        ):
+            raise FlowError(
+                "WORKTREE_CHANGED",
+                "opened worktree file does not match its observed identity",
+                details={"path": str(path)},
+            )
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        after_open = os.fstat(descriptor)
+        try:
+            after_path = path.lstat()
+        except OSError as exc:
+            raise FlowError(
+                "WORKTREE_CHANGED",
+                "worktree file disappeared while bytes were captured",
+                details={"path": str(path)},
+            ) from exc
+        signatures = {
+            (
+                item.st_dev,
+                item.st_ino,
+                item.st_mode,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            )
+            for item in (before, opened, after_open, after_path)
+        }
+        if len(signatures) != 1:
+            raise FlowError(
+                "WORKTREE_CHANGED",
+                "worktree file identity or metadata changed during capture",
+                details={"path": str(path)},
+            )
+    except FlowError:
+        raise
+    except OSError as exc:
+        raise FlowError(
+            "WORKTREE_CHANGED",
+            "worktree file could not be read as stable byte evidence",
+            details={"path": str(path)},
+        ) from exc
+    finally:
+        os.close(descriptor)
+    return digest.hexdigest()
+
+
 def _hash_artifact(path: Path) -> dict[str, Any]:
     """Hash a file or a directory without following directory symlinks.
 
@@ -1608,7 +1698,7 @@ def _fingerprint_repo_once(
             content_hash = _sha256_bytes(os.readlink(target).encode("utf-8", "surrogateescape"))
             item_type = "symlink"
         elif stat.S_ISREG(metadata.st_mode):
-            content_hash = _sha256_file(target)
+            content_hash = _sha256_worktree_file(target)
             item_type = "file"
         else:
             raise FlowError(

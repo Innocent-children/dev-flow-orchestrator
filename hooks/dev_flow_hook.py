@@ -19,12 +19,18 @@ from typing import Any, Mapping, NamedTuple, Optional, Sequence
 CONTROLLER = Path(__file__).resolve().parents[1] / "scripts" / "dev_flow.py"
 CHECKPOINT_MARKER_SCHEMA = "dev-flow-hook-checkpoint/v1"
 CHECKPOINT_MARKER_DIRECTORY = "hook-checkpoints"
+WORKER_ASSIGNMENT_CONTEXT_BUDGET = 8192
+SERIAL_FALLBACK_CONTEXT_BUDGET = 600
 
 
 class _PendingCheckpoint(NamedTuple):
     path: Path
     session_sha256: str
     context_sha256: str
+    task_id: Optional[str]
+    revision: Optional[int]
+    frontier_sha256: Optional[str]
+    projection_contract: Optional[str]
 
 
 class _HookOutput(dict[str, Any]):
@@ -41,92 +47,17 @@ class _HookOutput(dict[str, Any]):
         self.pending_checkpoint = pending_checkpoint
 
 
-STAGES = (
-    "INTAKE",
-    "PREFLIGHTED",
-    "BASELINED",
-    "INDEXED",
-    "IMPACT_REVIEW",
-    "ROUTE_APPROVED",
-    "WORKSPACE_READY",
-    "PLANNING",
-    "IMPLEMENTING",
-    "VERIFYING",
-    "REVIEWING",
-    "FINALIZING",
-    "DONE",
-)
-STAGE_INDEX = {stage: index for index, stage in enumerate(STAGES)}
-LITE_STAGES = (
-    "INTAKE",
-    "PREFLIGHTED",
-    "IMPLEMENTING",
-    "VERIFYING",
-    "DONE",
-)
-FLOW_NAMES_ZH = {
-    "full": "完整流程",
-    "lite": "精简流程",
-}
-STATE_NAMES_ZH = {
-    "INTAKE": "需求接收",
-    "PREFLIGHTED": "预检完成",
-    "BASELINED": "基线就绪",
-    "INDEXED": "索引完成",
-    "IMPACT_REVIEW": "影响评审",
-    "ROUTE_APPROVED": "路线已批准",
-    "WORKSPACE_READY": "工作区就绪",
-    "PLANNING": "方案规划",
-    "IMPLEMENTING": "实现中",
-    "VERIFYING": "验证中",
-    "REVIEWING": "独立审查",
-    "FINALIZING": "交付确认",
-    "DONE": "已完成",
-    "BLOCKED": "已阻塞",
-    "CANCELLED": "已取消",
-}
+class _WorkerProjection(NamedTuple):
+    assignment: Mapping[str, Any]
+    dispatch_mode: str
+
+
 WORKSPACE_STRATEGY_NAMES_ZH = {
     "branch": "新建并切换分支",
     "in-place": "使用当前分支",
     "worktree": "创建独立工作树",
 }
 DEFAULT_PROTECTED_BRANCHES = {"main", "master", "trunk"}
-NEXT_ACTIONS = {
-    "INTAKE": "run preflight",
-    "PREFLIGHTED": "approve and capture the baseline",
-    "BASELINED": "index every repository",
-    "INDEXED": "review change impact and select a route",
-    "IMPACT_REVIEW": "approve the selected route",
-    "ROUTE_APPROVED": "approve and prepare the managed workspace",
-    "WORKSPACE_READY": "create or refresh every workspace index, then create the implementation plan",
-    "PLANNING": "create and approve the plan, then refresh workspace indexes before implementation",
-    "IMPLEMENTING": "implement the approved scope, then refresh workspace indexes before verification",
-    "VERIFYING": "run checks, refresh workspace indexes, then capture and independently review the snapshot",
-    "REVIEWING": "approve the review and then finalize",
-    "FINALIZING": "complete the handoff",
-    "DONE": "no further action",
-    "BLOCKED": "resolve the recorded blocker",
-}
-LITE_NEXT_ACTIONS = {
-    "INTAKE": "run preflight",
-    "PREFLIGHTED": "present the in-place scope and obtain the lite approval",
-    "IMPLEMENTING": "implement the approved scope inside the source checkout",
-    "VERIFYING": "run checks and record results, then finish",
-    "DONE": "no further action",
-    "BLOCKED": "resolve the recorded blocker",
-}
-PENDING_GATES = {
-    "PREFLIGHTED": ("baseline-fetch", "baseline fetch/materialization approval"),
-    "IMPACT_REVIEW": ("route", "route approval"),
-    "ROUTE_APPROVED": ("workspace", "workspace approval"),
-    "PLANNING": ("plan", "planning approval"),
-    "REVIEWING": ("review", "review approval"),
-    "BLOCKED": ("unblock", "unblock decision"),
-}
-LITE_PENDING_GATES = {
-    "PREFLIGHTED": ("lite", "lite in-place approval"),
-    "BLOCKED": ("unblock", "unblock decision"),
-}
 
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -205,7 +136,7 @@ def load_active_task(
 
     _import_controller(plugin_root)
     try:
-        from dev_flow import FlowError, find_active_task_for_cwd, load_state
+        from dev_flow import find_active_task_for_cwd, load_state
 
         task = find_active_task_for_cwd(cwd=cwd, data_dir=data_dir)
         if task is None:
@@ -214,8 +145,8 @@ def load_active_task(
                 candidate = load_state(relative.parts[0], data_dir=data_dir)
                 if candidate.get("status") not in {"DONE", "CANCELLED"}:
                     task = candidate
-    except FlowError as exc:
-        if exc.code == "ACTIVE_TASK_AMBIGUITY":
+    except Exception as exc:
+        if getattr(exc, "code", None) == "ACTIVE_TASK_AMBIGUITY":
             return {
                 "task_id": "active-task-ambiguity",
                 "status": "BLOCKED",
@@ -223,10 +154,8 @@ def load_active_task(
                 "workspace": {"strategy": "worktree", "ready": False},
                 "repositories": [],
                 "_active_task_ambiguity": True,
-                "ambiguity": dict(exc.details),
+                "ambiguity": dict(getattr(exc, "details", {})),
             }
-        return None
-    except Exception:
         return None
     return dict(task) if isinstance(task, Mapping) else None
 
@@ -249,29 +178,173 @@ def _workspace_strategy(task: Mapping[str, Any]) -> str:
     return "in-place" if _flow(task) == "lite" else "worktree"
 
 
-def _remaining_workflow(task: Mapping[str, Any]) -> str:
-    flow = _flow(task)
-    ordered = LITE_STAGES if flow == "lite" else STAGES
-    stage = _stage(task)
-    progress_stage = stage
-    if stage == "BLOCKED":
+class _WorkflowView(NamedTuple):
+    bundle: Any
+    resolution: Mapping[str, Any]
+    progress: Mapping[str, Any]
+    node: Mapping[str, Any]
+    actions: Sequence[Mapping[str, object]]
+    task_next: Mapping[str, Any]
+
+
+def _controller_workflow_view(
+    task: Mapping[str, Any],
+    data_dir: Path,
+    plugin_root: Optional[Path] = None,
+) -> _WorkflowView:
+    """Read all Hook metadata through the controller's pinned catalog.
+
+    A blocked task projects progress from its recorded origin, while its
+    current node and legal frontier remain BLOCKED.  No Hook-local workflow
+    ordering, labels, gates, or next-action table participates in this view.
+    """
+
+    _import_controller(plugin_root)
+    from dev_flow import (
+        _workflow_projection_frontier,
+        build_task_next,
+        resolve_loaded_task_workflow,
+        workflow_node_description,
+        workflow_progress_projection,
+        workflow_runtime_services,
+    )
+
+    resolution = resolve_loaded_task_workflow(task, purpose="inspection")
+    services = workflow_runtime_services()
+    bundle = services.catalog.resolve_identity(
+        str(resolution["bundle_sha256"])
+    )
+    progress_state: Mapping[str, Any] = task
+    if _stage(task) == "BLOCKED":
         blocked = task.get("blocked")
-        candidate = (
-            str(blocked.get("from_status", "")).upper()
+        origin = (
+            blocked.get("from_status")
             if isinstance(blocked, Mapping)
-            else ""
+            else None
         )
-        if candidate in ordered:
-            progress_stage = candidate
-    if progress_stage not in ordered:
+        if isinstance(origin, str) and origin:
+            candidate = dict(task)
+            candidate["status"] = origin
+            progress_state = candidate
+    protocol_state = task
+    revision = task.get("revision")
+    if (
+        not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or revision < 0
+    ):
+        compatible = dict(task)
+        compatible["revision"] = 0
+        protocol_state = compatible
+    node_description = workflow_node_description(task)
+    node = node_description.get("node")
+    actions: list[dict[str, object]] = []
+    legal_actions = node_description.get("legal_actions")
+    if isinstance(legal_actions, list):
+        for action in legal_actions:
+            if not isinstance(action, Mapping):
+                continue
+            action_id = action.get("action_id")
+            if not isinstance(action_id, str):
+                continue
+            projected: dict[str, object] = {"action_id": action_id}
+            edge_id = action.get("edge_id")
+            if isinstance(edge_id, str):
+                projected["edge_id"] = edge_id
+            actions.append(projected)
+    status = task.get("status")
+    current_node = bundle.node(status) if isinstance(status, str) else {}
+    condition = {
+        "kind": (
+            "terminal"
+            if bool(current_node.get("terminal"))
+            else "blocked"
+            if status == "BLOCKED"
+            else "waiting"
+            if bool(current_node.get("waiting"))
+            else "ready"
+        ),
+        "node_id": status,
+    }
+    task_next = build_task_next(
+        protocol_state,
+        workflow_ref=resolution,
+        frontier=_workflow_projection_frontier(protocol_state, bundle),
+        # A compact Hook locator includes a next action only when the
+        # controller projects exactly one unambiguous choice.  Keep the full
+        # catalog action set separately for the legacy human-readable
+        # projection helpers; serializing every legal edge can exceed the
+        # agent-v1 task-next budget and would require an artifact write.
+        actions=actions if len(actions) == 1 else (),
+        condition=condition,
+    )
+    return _WorkflowView(
+        bundle=bundle,
+        resolution=resolution,
+        progress=workflow_progress_projection(progress_state),
+        node=node_description,
+        actions=tuple(actions),
+        task_next=task_next,
+    )
+
+
+def _localized_label(value: object, fallback: str) -> str:
+    if isinstance(value, Mapping):
+        for key in ("zh-CN", "en"):
+            label = value.get(key)
+            if isinstance(label, str) and label.strip():
+                return " ".join(label.split())
+    return fallback
+
+
+def _workflow_name(view: _WorkflowView, fallback: str) -> str:
+    graph = getattr(view.bundle, "graph", None)
+    labels = graph.get("labels") if isinstance(graph, Mapping) else None
+    label = _localized_label(labels, fallback)
+    # Frozen legacy adapter labels deliberately announce their provenance.
+    # Preserve the established Hook display wording without a second label
+    # table by removing only those provenance markers.
+    if view.resolution.get("adapter") is not None:
+        compatible = label.replace("冻结", "").replace("旧版", "")
+        return compatible or fallback
+    return label
+
+
+def _node_label(view: _WorkflowView, fallback: str) -> str:
+    node = view.node.get("node")
+    labels = node.get("labels") if isinstance(node, Mapping) else None
+    return _localized_label(labels, fallback)
+
+
+def _ordered_node_ids(view: _WorkflowView) -> tuple[str, ...]:
+    graph = getattr(view.bundle, "graph", None)
+    ordered = graph.get("ordered_nodes") if isinstance(graph, Mapping) else None
+    if not isinstance(ordered, (list, tuple)):
+        return ()
+    return tuple(item for item in ordered if isinstance(item, str))
+
+
+def _remaining_workflow(view: _WorkflowView) -> str:
+    ordered = _ordered_node_ids(view)
+    position = view.progress.get("position")
+    if (
+        not isinstance(position, int)
+        or isinstance(position, bool)
+        or position < 0
+        or position >= len(ordered)
+    ):
         return "无"
-    remaining = ordered[ordered.index(progress_stage) + 1 :]
+    remaining = ordered[position + 1 :]
     if not remaining:
         return "无"
-    return " → ".join(
-        f"{STATE_NAMES_ZH.get(item, item)}（{item}）"
-        for item in remaining
-    )
+    values = []
+    for node_id in remaining:
+        node = view.bundle.node(node_id)
+        labels = node.get("labels") if isinstance(node, Mapping) else None
+        values.append(
+            f"{_localized_label(labels, node_id)}（{node_id}）"
+        )
+    return " → ".join(values)
 
 
 def _render(value: Any, fallback: str) -> str:
@@ -289,56 +362,41 @@ def _render(value: Any, fallback: str) -> str:
     return " ".join(rendered.split())[:500] or fallback
 
 
-def _pending_gate(task: Mapping[str, Any]) -> str:
+def _pending_gate(task: Mapping[str, Any], view: _WorkflowView) -> str:
     explicit = task.get("pending_gate", task.get("pendingGate"))
     if explicit not in (None, ""):
         return _render(explicit, "none")
-    gates = LITE_PENDING_GATES if _flow(task) == "lite" else PENDING_GATES
-    gate = gates.get(_stage(task))
-    if gate is None:
-        return "none"
-    key, label = gate
-    approvals = task.get("approvals")
-    if isinstance(approvals, Mapping) and key in approvals:
-        return "none"
-    return label
+    gates: list[str] = []
+    if isinstance(view.actions, (list, tuple)):
+        for action in view.actions:
+            if not isinstance(action, Mapping):
+                continue
+            gate = action.get("gate")
+            if gate not in (None, ""):
+                rendered = _render(gate, "")
+                if rendered and rendered not in gates:
+                    gates.append(rendered)
+    if not gates:
+        projected = view.progress.get("pending_gates")
+        if isinstance(projected, list):
+            for gate in projected:
+                rendered = _render(gate, "")
+                if rendered and rendered not in gates:
+                    gates.append(rendered)
+    return ", ".join(gates) if gates else "none"
 
 
-def _index_stage(task: Mapping[str, Any]) -> str:
-    stage = _stage(task)
-    if stage == "BLOCKED":
-        blocked = task.get("blocked")
-        if isinstance(blocked, Mapping):
-            stage = str(blocked.get("from_status", "BLOCKED")).upper()
-    return stage
-
-
-def _selected_index_role(task: Mapping[str, Any]) -> Optional[str]:
-    if _flow(task) == "lite":
+def _selected_index_role(view: _WorkflowView) -> Optional[str]:
+    role = view.progress.get("index_role")
+    if not isinstance(role, str) or role in {"", "origin"}:
         return None
-    stage = _index_stage(task)
-    if stage in {
-        "BASELINED",
-        "INDEXED",
-        "IMPACT_REVIEW",
-        "ROUTE_APPROVED",
-    }:
-        return "baseline"
-    if stage in {
-        "WORKSPACE_READY",
-        "PLANNING",
-        "IMPLEMENTING",
-        "VERIFYING",
-        "REVIEWING",
-        "FINALIZING",
-        "DONE",
-    }:
-        return "workspace"
-    return None
+    return role
 
 
-def _index_selection_context(task: Mapping[str, Any]) -> tuple[str, str]:
-    role = _selected_index_role(task)
+def _index_selection_context(
+    task: Mapping[str, Any], view: _WorkflowView
+) -> tuple[str, str]:
+    role = _selected_index_role(view)
     if role is None:
         return "none", "none"
     projects: list[str] = []
@@ -434,25 +492,55 @@ def _uses_v2_confirmation_contract(task: Mapping[str, Any]) -> bool:
     )
 
 
-def _confirmation_checkpoint(task: Mapping[str, Any]) -> str:
+def _confirmation_checkpoint(
+    task: Mapping[str, Any], view: _WorkflowView
+) -> str:
     if not _uses_v2_confirmation_contract(task):
         return (
             "状态切换确认（schema v1）：每条状态边仍须单独用中文展示并取得"
             "明确确认；transition/cancel 使用旧的直接调用"
         )
-    automatic = (
-        "record-index BASELINED→INDEXED、"
-        "transition WORKSPACE_READY→PLANNING、"
-        "transition IMPLEMENTING→VERIFYING、"
-        "review-snapshot VERIFYING→REVIEWING"
-        if _flow(task) == "full"
-        else "transition IMPLEMENTING→VERIFYING"
-    )
+    automatic_edges: list[str] = []
+    for source in _ordered_node_ids(view):
+        for edge in view.bundle.legal_edges(source):
+            if not isinstance(edge, Mapping) or edge.get("automatic") is not True:
+                continue
+            trigger = edge.get("trigger")
+            action_id = (
+                trigger.get("id")
+                if isinstance(trigger, Mapping)
+                else None
+            )
+            target = edge.get("target")
+            if isinstance(action_id, str) and isinstance(target, str):
+                automatic_edges.append(f"{action_id} {source}→{target}")
+    automatic = "、".join(automatic_edges) or "none"
     return (
         f"状态切换确认（schema v2）：自动边仅 {automatic}；其他 "
         "transition/cancel 必须先 --preview，再用同一 revision 的 "
         "--confirm-intent；DONE/CANCELLED 永远显式确认"
     )
+
+
+def _projected_next_action(
+    task: Mapping[str, Any], view: _WorkflowView
+) -> str:
+    explicit = task.get("next_action")
+    if explicit not in (None, ""):
+        return _render(explicit, "inspect task state")
+    action_ids: list[str] = []
+    if isinstance(view.actions, (list, tuple)):
+        for action in view.actions:
+            if not isinstance(action, Mapping):
+                continue
+            action_id = action.get("action_id")
+            if isinstance(action_id, str) and action_id not in action_ids:
+                action_ids.append(action_id)
+    if action_ids:
+        return ", ".join(action_ids)
+    condition = view.task_next.get("condition")
+    kind = condition.get("kind") if isinstance(condition, Mapping) else None
+    return f"no legal action ({kind})" if isinstance(kind, str) else "inspect task state"
 
 
 def build_context(
@@ -463,29 +551,28 @@ def build_context(
 ) -> str:
     stage = _stage(task)
     flow = _flow(task)
+    view = _controller_workflow_view(task, data_dir, controller.parent.parent)
     prefix = _controller_prefix(data_dir, controller)
     task_id = _render(task.get("task_id"), "unknown")
-    index_role, index_projects = _index_selection_context(task)
-    next_actions = LITE_NEXT_ACTIONS if flow == "lite" else NEXT_ACTIONS
+    index_role, index_projects = _index_selection_context(task, view)
     strategy = _workspace_strategy(task)
     revision = _render(task.get("revision"), "unknown")
     scope = "in" if in_scope else "outside"
-    confirmation = _confirmation_checkpoint(task)
+    confirmation = _confirmation_checkpoint(task, view)
     lines = [
         "Dev Flow active-task checkpoint:",
         f"- Active task: {task_id}",
         f"- Revision: {revision}",
-        f"- 流程名称: {FLOW_NAMES_ZH[flow]}（{flow}）",
+        f"- 流程名称: {_workflow_name(view, flow)}（{flow}）",
         f"- 工作方式: {WORKSPACE_STRATEGY_NAMES_ZH[strategy]}（{strategy}）",
-        f"- 当前状态: {STATE_NAMES_ZH.get(stage, stage)}（{stage}）",
-        f"- 剩余流程: {_remaining_workflow(task)}",
+        f"- 当前状态: {_node_label(view, stage)}（{stage}）",
+        f"- 剩余流程: {_remaining_workflow(view)}",
         f"- Route: {_render(task.get('route'), 'not selected')}",
-        f"- Pending gate: {_pending_gate(task)}",
+        f"- Pending gate: {_pending_gate(task, view)}",
         "- codebase-memory selection: explicit project parameter; never automatic",
         f"- Active index role: {index_role}",
         f"- Active index projects: {index_projects}",
-        f"- Next action: "
-        f"{_render(task.get('next_action'), next_actions.get(stage, 'inspect task state'))}",
+        f"- Next action: {_projected_next_action(task, view)}",
         f"- Scope: {scope}",
         f"- Interpreter: {sys.executable}",
         f"- Controller: {controller}",
@@ -521,33 +608,30 @@ def build_compact_context(
 ) -> str:
     stage = _stage(task)
     flow = _flow(task)
+    view = _controller_workflow_view(task, data_dir, controller.parent.parent)
     strategy = _workspace_strategy(task)
     task_id = _render(task.get("task_id"), "unknown")
     revision = _render(task.get("revision"), "unknown")
-    index_role, index_projects = _index_selection_context(task)
-    next_actions = LITE_NEXT_ACTIONS if flow == "lite" else NEXT_ACTIONS
+    index_role, index_projects = _index_selection_context(task, view)
     scope = "in" if in_scope else "outside"
     prefix = _controller_prefix(data_dir, controller)
-    confirmation = _confirmation_checkpoint(task)
+    confirmation = _confirmation_checkpoint(task, view)
     return " | ".join(
         (
             "Dev Flow active-task checkpoint",
             f"Active task: {task_id}",
             f"Revision: {revision}",
-            f"流程名称: {FLOW_NAMES_ZH[flow]}（{flow}）",
+            f"流程名称: {_workflow_name(view, flow)}（{flow}）",
             (
                 "工作方式: "
                 f"{WORKSPACE_STRATEGY_NAMES_ZH[strategy]}（{strategy}）"
             ),
-            f"当前状态: {STATE_NAMES_ZH.get(stage, stage)}（{stage}）",
-            f"剩余流程: {_remaining_workflow(task)}",
-            f"Pending gate: {_pending_gate(task)}",
+            f"当前状态: {_node_label(view, stage)}（{stage}）",
+            f"剩余流程: {_remaining_workflow(view)}",
+            f"Pending gate: {_pending_gate(task, view)}",
             f"Active index role: {index_role}",
             f"Active index projects: {index_projects}",
-            (
-                "Next action: "
-                f"{_render(task.get('next_action'), next_actions.get(stage, 'inspect task state'))}"
-            ),
+            f"Next action: {_projected_next_action(task, view)}",
             f"Scope: {scope}",
             f"Resume command: {prefix} show --task {_quote(task_id)} --compact",
             confirmation,
@@ -559,13 +643,107 @@ def build_compact_context(
     )
 
 
-def _stage_allows_writes(task: Mapping[str, Any]) -> bool:
-    stage = _stage(task)
-    if _flow(task) == "lite":
-        return stage in {"IMPLEMENTING", "VERIFYING"}
-    return stage not in {"BLOCKED", "CANCELLED", "DONE"} and STAGE_INDEX.get(
-        stage, -1
-    ) >= STAGE_INDEX["WORKSPACE_READY"]
+def build_locator_context(
+    task: Mapping[str, Any],
+    data_dir: Path,
+    controller: Path = CONTROLLER,
+) -> tuple[str, Mapping[str, Any]]:
+    """Return the controller-built, budgeted model-visible checkpoint."""
+
+    view = _controller_workflow_view(
+        task, data_dir, controller.parent.parent
+    )
+    _import_controller(controller.parent.parent)
+    from dev_flow import build_hook_checkpoint
+
+    task_id = _render(task.get("task_id"), "unknown")
+    cli = (
+        f"{_controller_prefix(data_dir, controller)} show "
+        f"--task {_quote(task_id)} --next --profile agent-v1"
+    )
+    checkpoint = build_hook_checkpoint(
+        view.task_next,
+        controller_locator=f"cli:{cli}",
+    )
+    condition = checkpoint.get("condition")
+    if isinstance(condition, dict) and not isinstance(
+        condition.get("node_id"), str
+    ):
+        node = view.node.get("node")
+        node_id = node.get("id") if isinstance(node, Mapping) else None
+        if isinstance(node_id, str):
+            condition["node_id"] = node_id
+    encoded = json.dumps(
+        checkpoint,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    # The controller is normative for this budget. Keep this local assertion
+    # only as a fail-open packaging guard in case an incompatible controller
+    # is paired with the Hook.
+    if len(encoded) > 600:
+        raise ValueError("controller hook checkpoint exceeds 600 UTF-8 bytes")
+    return encoded.decode("utf-8"), checkpoint
+
+
+def _stage_allows_writes(
+    task: Mapping[str, Any], data_dir: Path
+) -> bool:
+    """Project repository-write eligibility from the pinned workflow."""
+
+    try:
+        view = _controller_workflow_view(task, data_dir)
+    except Exception:
+        return False
+    node = view.node.get("node")
+    effect_policy = (
+        node.get("effect_policy") if isinstance(node, Mapping) else None
+    )
+    effects = (
+        effect_policy.get("effects")
+        if isinstance(effect_policy, Mapping)
+        else None
+    )
+    if isinstance(effects, (list, tuple)) and "repository-write" in effects:
+        return True
+    # Frozen adapters preserve the legacy source-write window. Derive its
+    # boundary from catalog metadata rather than Hook-local stage constants:
+    # full flow starts at the first workspace-index node; lite flow starts at
+    # the first destination reached through an approval-gated edge.
+    if view.resolution.get("adapter") is None:
+        return False
+    if bool(view.progress.get("terminal")) or bool(
+        view.progress.get("waiting")
+    ):
+        return False
+    if view.progress.get("index_role") == "workspace":
+        return True
+    ordered = _ordered_node_ids(view)
+    if any(
+        isinstance(view.bundle.node(node_id), Mapping)
+        and view.bundle.node(node_id).get("index_role") == "workspace"
+        for node_id in ordered
+    ):
+        return False
+    current = view.progress.get("position")
+    if (
+        not isinstance(current, int)
+        or isinstance(current, bool)
+        or current < 0
+    ):
+        return False
+    gate_destinations: list[int] = []
+    for source in ordered:
+        for edge in view.bundle.legal_edges(source):
+            if not isinstance(edge, Mapping) or not isinstance(
+                edge.get("gate"), Mapping
+            ):
+                continue
+            target = edge.get("target")
+            if isinstance(target, str) and target in ordered:
+                gate_destinations.append(ordered.index(target))
+    return bool(gate_destinations) and current >= min(gate_destinations)
 
 
 def _evidence_root(task: Mapping[str, Any], data_dir: Path) -> Optional[Path]:
@@ -674,7 +852,7 @@ def _write_denial_reason(
     evidence = _evidence_root(task, data_dir)
     if evidence is not None:
         allowed.append(evidence)
-    if _stage_allows_writes(task):
+    if _stage_allows_writes(task, data_dir):
         allowed.extend(_ready_workspaces(task))
     if not allowed:
         return f"Task writes are blocked while the active task is at {_stage(task)}."
@@ -1737,6 +1915,7 @@ def _pending_checkpoint(
     payload: Mapping[str, Any],
     data_dir: Path,
     context: str,
+    checkpoint_identity: Optional[Mapping[str, Any]] = None,
 ) -> Optional[_PendingCheckpoint]:
     raw_session_id = payload.get("session_id")
     if not isinstance(raw_session_id, str) or not raw_session_id.strip():
@@ -1747,10 +1926,27 @@ def _pending_checkpoint(
     except UnicodeEncodeError:
         return None
     session_sha256 = hashlib.sha256(session_bytes).hexdigest()
+    identity = checkpoint_identity or {}
+    task_id = identity.get("task_id")
+    revision = identity.get("revision")
+    frontier_sha256 = identity.get("frontier_sha256")
+    projection_contract = identity.get("contract")
     return _PendingCheckpoint(
         data_dir / CHECKPOINT_MARKER_DIRECTORY / f"{session_sha256}.json",
         session_sha256,
         hashlib.sha256(context_bytes).hexdigest(),
+        task_id if isinstance(task_id, str) else None,
+        (
+            revision
+            if isinstance(revision, int) and not isinstance(revision, bool)
+            else None
+        ),
+        frontier_sha256 if isinstance(frontier_sha256, str) else None,
+        (
+            projection_contract
+            if isinstance(projection_contract, str)
+            else None
+        ),
     )
 
 
@@ -1765,10 +1961,25 @@ def _checkpoint_matches(checkpoint: _PendingCheckpoint) -> bool:
         return False
     return (
         isinstance(document, Mapping)
-        and set(document) == {"schema", "session_sha256", "context_sha256"}
+        and set(document)
+        == {
+            "schema",
+            "session_sha256",
+            "context_sha256",
+            "task_id",
+            "revision",
+            "frontier_sha256",
+            "projection_contract",
+        }
         and document.get("schema") == CHECKPOINT_MARKER_SCHEMA
         and document.get("session_sha256") == checkpoint.session_sha256
         and document.get("context_sha256") == checkpoint.context_sha256
+        and document.get("task_id") == checkpoint.task_id
+        and document.get("revision") == checkpoint.revision
+        and document.get("frontier_sha256")
+        == checkpoint.frontier_sha256
+        and document.get("projection_contract")
+        == checkpoint.projection_contract
     )
 
 
@@ -1778,12 +1989,18 @@ def _checkpointed_context_output(
     checkpoint_context: str,
     payload: Mapping[str, Any],
     data_dir: Path,
+    checkpoint_identity: Optional[Mapping[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     # UserPromptSubmit is the main-session user-prompt lifecycle event.  Codex
     # gives subagents their own SubagentStart/Stop events (with agent_id) while
     # reusing the parent session_id, so those events must never share this
     # prompt checkpoint marker.
-    checkpoint = _pending_checkpoint(payload, data_dir, checkpoint_context)
+    checkpoint = _pending_checkpoint(
+        payload,
+        data_dir,
+        checkpoint_context,
+        checkpoint_identity,
+    )
     if (
         event == "UserPromptSubmit"
         and checkpoint is not None
@@ -1813,6 +2030,10 @@ def _write_checkpoint(checkpoint: _PendingCheckpoint) -> None:
             "schema": CHECKPOINT_MARKER_SCHEMA,
             "session_sha256": checkpoint.session_sha256,
             "context_sha256": checkpoint.context_sha256,
+            "task_id": checkpoint.task_id,
+            "revision": checkpoint.revision,
+            "frontier_sha256": checkpoint.frontier_sha256,
+            "projection_contract": checkpoint.projection_contract,
         },
         ensure_ascii=True,
         separators=(",", ":"),
@@ -1848,6 +2069,267 @@ def _write_checkpoint(checkpoint: _PendingCheckpoint) -> None:
             pass
 
 
+def _payload_string(
+    payload: Mapping[str, Any], *keys: str
+) -> Optional[str]:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _persisted_assignment_candidates(
+    payload: Mapping[str, Any],
+    task: Mapping[str, Any],
+) -> list[str]:
+    """Resolve host selectors only through persisted assignment/dispatch IDs."""
+
+    orchestration = task.get("orchestration")
+    if not isinstance(orchestration, Mapping):
+        return []
+    assignments = orchestration.get("assignments")
+    dispatch = orchestration.get("dispatch")
+    if not isinstance(assignments, Mapping) or not isinstance(
+        dispatch, Mapping
+    ):
+        return []
+    selector = _payload_string(
+        payload, "assignment_id", "host_assignment_id"
+    )
+    agent_id = _payload_string(payload, "agent_id")
+    agent_type = _payload_string(payload, "agent_type")
+    if selector is None and agent_id is None and agent_type is None:
+        return []
+    matches: list[str] = []
+    for assignment_id, assignment in assignments.items():
+        if not isinstance(assignment_id, str) or not isinstance(
+            assignment, Mapping
+        ):
+            continue
+        record = dispatch.get(assignment_id)
+        if not isinstance(record, Mapping):
+            continue
+        host_assignment_id = _payload_string(
+            record, "host_assignment_id", "agent_id"
+        )
+        host_agent_type = _payload_string(
+            record, "host_agent_type", "agent_type"
+        )
+        if not (
+            (selector is not None and selector == assignment_id)
+            or (
+                selector is not None
+                and selector == host_assignment_id
+            )
+            or (agent_id is not None and agent_id == assignment_id)
+            or (
+                agent_id is not None
+                and agent_id == host_assignment_id
+            )
+            or (
+                agent_type is not None
+                and agent_type == host_agent_type
+            )
+        ):
+            continue
+        matches.append(assignment_id)
+    return matches
+
+
+def _selected_worker_assignment(
+    payload: Mapping[str, Any],
+    task: Mapping[str, Any],
+    data_dir: Path,
+    plugin_root: Path,
+) -> Optional[_WorkerProjection]:
+    """Return only the controller's host-isolation-safe worker projection."""
+
+    candidates = _persisted_assignment_candidates(payload, task)
+    if len(candidates) != 1:
+        return None
+    _import_controller(plugin_root)
+
+    def unavailable_secret(_secret_id: str) -> bytes:
+        raise RuntimeError("secret resolution is unavailable to Hooks")
+
+    try:
+        from dev_flow import (
+            orchestration_controller_service,
+            resolve_loaded_task_workflow,
+            validate_worker_assignment,
+        )
+        resolution = resolve_loaded_task_workflow(
+            task, purpose="inspection"
+        )
+        service = orchestration_controller_service(
+            secret_resolver=unavailable_secret
+        )
+        view = service.worker_assignment_view(
+            str(task.get("task_id")),
+            candidates[0],
+            data_dir=data_dir,
+        ).as_dict()
+    except Exception:
+        return None
+    assignment = view.get("assignment")
+    dispatch_mode = view.get("dispatch_mode")
+    blocker_codes = view.get("blocker_codes")
+    if not isinstance(assignment, Mapping):
+        return None
+    try:
+        value = validate_worker_assignment(assignment).as_dict()
+    except Exception:
+        return None
+    expected_mode = (
+        "parallel-writable-worker"
+        if value.get("write_policy") == "scoped-write"
+        else "parallel-read-only-worker"
+    )
+    if (
+        dispatch_mode != expected_mode
+        or blocker_codes not in ([], ())
+        or value.get("assignment_id") != candidates[0]
+        or value.get("task_id") != task.get("task_id")
+        or value.get("workflow_bundle_sha256")
+        != resolution.get("bundle_sha256")
+    ):
+        return None
+    revision = task.get("revision")
+    if (
+        not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or value.get("expected_revision") != revision
+    ):
+        return None
+    return _WorkerProjection(value, str(dispatch_mode))
+
+
+def _worker_assignment_context(
+    projection: _WorkerProjection,
+) -> str:
+    # The controller view is released only after its persisted host-isolation
+    # decision permits parallel dispatch. The validated assignment schema
+    # contains worker capabilities but no manager capability, controller
+    # mutation tool, or plugin-data locator.
+    payload = {
+        "contract": "dev-flow-subagent-assignment-context/v1",
+        "assignment": dict(projection.assignment),
+        "dispatch_mode": projection.dispatch_mode,
+        "authority": "candidate-output-only",
+    }
+    context = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if len(context.encode("utf-8")) > WORKER_ASSIGNMENT_CONTEXT_BUDGET:
+        raise ValueError("worker assignment context exceeds its byte budget")
+    return context
+
+
+def _manager_serial_fallback_context(
+    task: Mapping[str, Any],
+) -> str:
+    """Return bounded, non-authoritative guidance without controller secrets."""
+
+    payload = {
+        "contract": "dev-flow-subagent-serial-fallback/v1",
+        "task_id": _render(task.get("task_id"), "unknown"),
+        "revision": (
+            task.get("revision")
+            if isinstance(task.get("revision"), int)
+            and not isinstance(task.get("revision"), bool)
+            else 0
+        ),
+        "dispatch_mode": "manager-serial",
+        "owner": "manager",
+        "authority": "none",
+        "instruction": (
+            "No writable worker assignment was released. Return control; "
+            "the manager owns serial execution."
+        ),
+    }
+    context = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if len(context.encode("utf-8")) > SERIAL_FALLBACK_CONTEXT_BUDGET:
+        raise ValueError("serial fallback context exceeds its byte budget")
+    return context
+
+
+def _structured_node_result(
+    payload: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    plugin_root: Path,
+) -> Optional[Mapping[str, Any]]:
+    candidates: list[object] = [
+        payload.get("node_result"),
+        payload.get("structured_result"),
+        payload.get("agent_result"),
+        payload.get("result"),
+    ]
+    message = payload.get("last_assistant_message")
+    if isinstance(message, str) and len(message.encode("utf-8")) <= 8192:
+        try:
+            candidates.append(json.loads(message))
+        except (TypeError, ValueError):
+            pass
+    _import_controller(plugin_root)
+    try:
+        from dev_flow import validate_orchestration_node_result
+    except Exception:
+        return None
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        try:
+            encoded = json.dumps(
+                candidate,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError):
+            continue
+        if len(encoded) > 2048:
+            continue
+        try:
+            validated = validate_orchestration_node_result(candidate)
+        except Exception:
+            continue
+        expected = {
+            "task_id": assignment.get("task_id"),
+            "workflow_bundle_sha256": assignment.get(
+                "workflow_bundle_sha256"
+            ),
+            "node_instance_id": assignment.get("node_instance_id"),
+            "attempt": assignment.get("attempt"),
+            "assignment_id": assignment.get("assignment_id"),
+            "repository_id": assignment.get("repository_id"),
+            "map_epoch": assignment.get("map_epoch"),
+        }
+        if all(validated.get(key) == value for key, value in expected.items()):
+            return validated
+    return None
+
+
+def _subagent_continuation() -> dict[str, Any]:
+    return {
+        "decision": "block",
+        "reason": (
+            "Dev Flow requires one canonical dev-flow-node-result/v1 JSON "
+            "object (<=2048 UTF-8 bytes; summary <=512) for the exact "
+            "assignment before this subagent may stop. Continue and emit "
+            "the structured result; the Hook will not commit workflow state."
+        ),
+    }
+
+
 def handle(
     payload: Mapping[str, Any],
     environ: Mapping[str, str],
@@ -1856,13 +2338,24 @@ def handle(
     data_dir_from_cli: bool = False,
 ) -> Optional[dict[str, Any]]:
     event = str(payload.get("hook_event_name", ""))
+    if event == "PostCompact":
+        # Codex 0.145 accepts only the common Hook output fields for
+        # PostCompact; hookSpecificOutput.additionalContext is not part of
+        # this event's wire contract.  A successful empty stdout is the
+        # documented no-op.  SessionStart(source=compact) performs the actual
+        # developer-context restoration immediately after compaction.
+        return None
     plugin = _resolve_plugin_context(
         environ,
         fallback_root=fallback_root,
         data_dir_from_cli=data_dir_from_cli,
     )
     if plugin.diagnostic is not None:
-        if event in {"SessionStart", "UserPromptSubmit", "PreToolUse"}:
+        if event in {
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+        }:
             return _environment_diagnostic(event, plugin.diagnostic)
         return None
     assert plugin.root is not None
@@ -1901,28 +2394,98 @@ def handle(
     if task is None and not in_scope:
         return None
 
+    if event == "SubagentStart":
+        if task is None:
+            return None
+        projection = _selected_worker_assignment(
+            payload, task, data_dir, plugin.root
+        )
+        if (
+            projection is None
+            and _payload_string(
+                payload,
+                "assignment_id",
+                "host_assignment_id",
+                "agent_id",
+                "agent_type",
+            )
+            is None
+        ):
+            return None
+        try:
+            context = (
+                _worker_assignment_context(projection)
+                if projection is not None
+                else _manager_serial_fallback_context(task)
+            )
+        except Exception:
+            context = _manager_serial_fallback_context(task)
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": context,
+            }
+        }
+    if event == "SubagentStop":
+        if task is None:
+            return None
+        projection = _selected_worker_assignment(
+            payload, task, data_dir, plugin.root
+        )
+        if projection is None:
+            return None
+        if (
+            _structured_node_result(
+                payload, projection.assignment, plugin.root
+            )
+            is not None
+        ):
+            return None
+        return _subagent_continuation()
+    if event == "PreCompact":
+        if task is None:
+            return None
+        context, identity = build_locator_context(
+            task, data_dir, plugin.controller
+        )
+        checkpoint = _pending_checkpoint(
+            payload, data_dir, context, identity
+        )
+        return _HookOutput({}, checkpoint)
     if event == "SessionStart":
-        context = (
-            build_context(task, data_dir, in_scope, plugin.controller)
-            if task is not None
-            else build_bootstrap_context(data_dir, plugin.controller)
-        )
-        checkpoint_context = (
-            build_compact_context(task, data_dir, in_scope, plugin.controller)
-            if task is not None
-            else build_compact_bootstrap_context(data_dir, plugin.controller)
-        )
+        if task is not None:
+            context, identity = build_locator_context(
+                task, data_dir, plugin.controller
+            )
+            checkpoint_context = context
+        else:
+            context = build_bootstrap_context(
+                data_dir, plugin.controller
+            )
+            checkpoint_context = build_compact_bootstrap_context(
+                data_dir, plugin.controller
+            )
+            identity = None
         return _checkpointed_context_output(
-            event, context, checkpoint_context, payload, data_dir
+            event,
+            context,
+            checkpoint_context,
+            payload,
+            data_dir,
+            identity,
         )
     if event == "UserPromptSubmit":
-        context = (
-            build_compact_context(task, data_dir, in_scope, plugin.controller)
-            if task is not None
-            else build_compact_bootstrap_context(data_dir, plugin.controller)
-        )
+        if task is not None:
+            context, identity = build_locator_context(
+                task, data_dir, plugin.controller
+            )
+        else:
+            context = build_compact_bootstrap_context(
+                data_dir, plugin.controller
+            )
+            identity = None
         return _checkpointed_context_output(
-            event, context, context, payload, data_dir
+            event, context, context, payload, data_dir, identity
         )
     if event != "PreToolUse":
         return None

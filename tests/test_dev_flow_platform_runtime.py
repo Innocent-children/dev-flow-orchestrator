@@ -438,6 +438,15 @@ class DevFlowPlatformRuntimeTest(test_case.DevFlowTestCase):
 
         repo, _ = self.make_repo("revision race")
         task = self.start(repo, task_id="revision-race")["task"]
+        preview = self.cli(
+            "cancel",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--reason",
+            "concurrent cancellation",
+            "--preview",
+        )
         cancellation = [
             "cancel",
             task["task_id"],
@@ -445,6 +454,8 @@ class DevFlowPlatformRuntimeTest(test_case.DevFlowTestCase):
             str(task["revision"]),
             "--reason",
             "concurrent cancellation",
+            "--confirm-intent",
+            preview["preview"]["intent_id"],
         ]
         first = self.controller_process(*cancellation)
         second = self.controller_process(*cancellation)

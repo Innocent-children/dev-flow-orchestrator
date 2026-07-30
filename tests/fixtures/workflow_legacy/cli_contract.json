@@ -1,0 +1,66 @@
+{
+  "base_commit": "2dc3974",
+  "default_show": {
+    "compact_only_fields": [
+      "summary",
+      "sections"
+    ],
+    "full_state_field": "task",
+    "supported_schema_versions": [
+      1,
+      2
+    ]
+  },
+  "grammar": {
+    "action_count": 132,
+    "canonical_bytes": 21208,
+    "command_count": 17,
+    "commands": [
+      "approve",
+      "baseline",
+      "cancel",
+      "list",
+      "preflight",
+      "prepare-workspace",
+      "record-artifact",
+      "record-index",
+      "record-test",
+      "recover-atomic-write",
+      "recover-quarantine",
+      "review-snapshot",
+      "scope",
+      "set-route",
+      "show",
+      "start",
+      "transition"
+    ],
+    "sha256": "2495c8334ac1df0d6f9f606e9d3e9dd4c909bf8053eb3955e0e2f1c688948313"
+  },
+  "isolated_startup": {
+    "exit_code": 0,
+    "interpreter_flags": [
+      "-I",
+      "-S"
+    ],
+    "response": {
+      "command": "list",
+      "count": 0,
+      "ok": true,
+      "tasks": []
+    }
+  },
+  "stable_errors": {
+    "missing-command": {
+      "code": "INVALID_ARGUMENT",
+      "exit_code": 2
+    },
+    "missing-task": {
+      "code": "TASK_NOT_FOUND",
+      "exit_code": 2
+    },
+    "revision-conflict": {
+      "code": "REVISION_CONFLICT",
+      "exit_code": 3
+    }
+  }
+}

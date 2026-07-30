@@ -92,6 +92,31 @@ Treat optimistic-lock failure as evidence another invocation advanced the task. 
 
 When a Git-changing child cannot be proven quiescent, the controller leaves durable `mutation-quarantine.json` evidence and blocks later mutations. Do not delete or edit that file and do not infer safety from a timeout. Reload the task, inspect the reported child/process-group evidence and external repository state read-only, then call `<ctl> recover-quarantine --task <task-id> --expected-revision <revision>`. The recovery command itself proves that the child is gone, verifies the recorded postconditions and current evidence contract, and archives the quarantine. Treat `QUARANTINE_CHILD_ACTIVE`, revision drift, postcondition drift, or unverifiable process state as a blocker requiring diagnosis; never retry the original mutation until recovery succeeds.
 
+### V4 action recovery requires operator intervention
+
+When action recovery returns `status: UNRESOLVED` and
+`operator_intervention.required: true`, stop every operation overlapping the
+reported scopes. Present the exact reason, target execution, effect IDs,
+affected scopes, and resume conditions to the user, then wait for the user to
+inspect or operate on the external system.
+
+Do not retry the original effect, start compensation, release the scope, edit a
+journal, or translate the user's statement into `ABANDONED`, `COMPENSATED`, or
+`ACCEPTED`. The user may inspect or repair external reality, but the controller
+continues only after a fresh read verifies one of the response's conditions:
+the authenticated original runtime is available, a verifiable stored receipt
+is present, or a future trusted host recovery authority is connected. If none
+is verifiable, leave the task safely blocked and report that fact.
+
+The full canonical intervention packet is capped at 4,096 bytes and is never
+silently truncated. If the controller returns
+`ACTION_RECOVERY_OPERATOR_INTERVENTION_TOO_LARGE` or
+`ACTION_RECOVERY_RESULT_INVALID`, preserve the same blocked/manual boundary.
+Show the exact target, actual/limit byte counts when present, and invoke only
+the reported `action-recovery-inspect` locator for read-only diagnosis. Do not
+infer omitted effect or scope data, and do not use the overflow/corruption
+error as authority to mutate or unblock.
+
 ### Atomic write left rollback evidence
 
 Every controller state write is a rollback-protected atomic replacement. When one is interrupted before its cleanup — a killed process, a lost machine, or a hook terminated at its timeout — a `.<name>.rollback-<suffix>` file survives beside the destination and every later write to that exact file fails closed with `ATOMIC_RECOVERY_REQUIRED` and `details.rollback_candidates`. Expect it to block ordinary commands, including `cancel` and `recover-quarantine`, and expect the same residue on `<state-dir>/config.json` or `<state-dir>/workspace-registry.json`, which belong to no task.

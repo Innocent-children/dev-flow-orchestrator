@@ -1097,6 +1097,9 @@ class DevFlowIndexesTest(test_case.DevFlowTestCase):
             self.data / "tasks" / task["task_id"] / "state.json"
         )
         legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = dev_flow.SCHEMA_VERSION
+        legacy.pop("confirmation_contract_version", None)
+        legacy.pop("risk_assessment", None)
         legacy["repositories"][0].pop("workspace_index", None)
         legacy["repositories"][0].pop("index_history", None)
         dev_flow._atomic_write_json(state_path, legacy)

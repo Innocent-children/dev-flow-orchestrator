@@ -1,0 +1,47 @@
+{
+  "mcpServers": {
+    "dev-flow-posix": {
+      "command": "/bin/sh",
+      "args": [
+        "./scripts/dev_flow_python_launcher",
+        "./scripts/dev_flow_mcp.py"
+      ],
+      "cwd": ".",
+      "enabled": false,
+      "required": false,
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 60,
+      "default_tools_approval_mode": "writes",
+      "enabled_tools": [
+        "task-next",
+        "node-description",
+        "evidence-read",
+        "action-preview",
+        "action-apply",
+        "worker-result"
+      ]
+    },
+    "dev-flow-windows": {
+      "command": "cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        ".\\scripts\\dev_flow_mcp_launcher.cmd"
+      ],
+      "cwd": ".",
+      "enabled": false,
+      "required": false,
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 60,
+      "default_tools_approval_mode": "writes",
+      "enabled_tools": [
+        "task-next",
+        "node-description",
+        "evidence-read",
+        "action-preview",
+        "action-apply",
+        "worker-result"
+      ]
+    }
+  }
+}

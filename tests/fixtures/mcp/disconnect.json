@@ -1,0 +1,25 @@
+{
+  "description": "EOF after initialization is a graceful disconnect and performs no controller call.",
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "disconnect-client",
+          "version": "1.0.0"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "notifications/initialized",
+      "params": {}
+    }
+  ],
+  "expectedExitCode": 0,
+  "expectedControllerCalls": 0
+}

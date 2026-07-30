@@ -1,0 +1,522 @@
+{
+  "manifest_version": "dev-flow-handler-registration-manifest/v1",
+  "audit_policy": "dev-flow-handler-audit/v1",
+  "registry": "executors",
+  "implementation_file_sets": {
+    "audit-runtime-v1": [
+      {
+        "path": "scripts/dev_flow_parts/workflow_builtin_handlers.py",
+        "kind": "T"
+      }
+    ],
+    "v4-runtime-v2": {
+      "files": [
+        {
+          "path": "scripts/dev_flow_parts/action_execution_journal.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/action_execution_store.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/baseline.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/commands.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/core.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/git.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/manager_channel.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/mutation.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/orchestration_action_adapters.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/orchestration_authority.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/orchestration_results.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/orchestration_service.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/process.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/repository_plan.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/review.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/scope.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/transition_engine.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_action_reconciliation.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_action_service.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_action_transaction.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_builtin_handlers.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_catalog.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_registry.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_runtime.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_state.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workflow_v4_handlers.py",
+          "kind": "T"
+        },
+        {
+          "path": "scripts/dev_flow_parts/workspace.py",
+          "kind": "T"
+        },
+        {
+          "path": "workflows/runtime/executors.json",
+          "kind": "J"
+        }
+      ],
+      "semantic_roots": [
+        "_manager_default_actions",
+        "execute_v3_workflow_action_transaction",
+        "install_v4_runtime_policy",
+        "reconcile_v3_workflow_action_quarantine",
+        "recover_v3_workflow_action_transaction"
+      ]
+    }
+  },
+  "entries": [
+    {
+      "id": "executor.barrier/v1",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "audit-runtime-v1",
+      "symbols": {
+        "dispatcher": "_disabled_executor_dispatch"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "barrier"
+    },
+    {
+      "id": "executor.codex-exec/v1",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "external-dispatch"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "audit-runtime-v1",
+      "symbols": {
+        "dispatcher": "_disabled_executor_dispatch"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "external"
+    },
+    {
+      "id": "executor.codex-thread/v1",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "external-dispatch"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "audit-runtime-v1",
+      "symbols": {
+        "dispatcher": "_disabled_executor_dispatch"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "external"
+    },
+    {
+      "id": "executor.deterministic/v1",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "audit-runtime-v1",
+      "symbols": {
+        "dispatcher": "_disabled_executor_dispatch"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.external-tool/v1",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "external-dispatch"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "audit-runtime-v1",
+      "symbols": {
+        "dispatcher": "_disabled_executor_dispatch"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "external"
+    },
+    {
+      "id": "executor.human-gate/v1",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "approval-build"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "audit-runtime-v1",
+      "symbols": {
+        "dispatcher": "_disabled_executor_dispatch"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "human"
+    },
+    {
+      "id": "executor.native-subagents/v1",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "external-dispatch"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "audit-runtime-v1",
+      "symbols": {
+        "dispatcher": "_disabled_executor_dispatch"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "external"
+    },
+    {
+      "id": "executor.v4-abandoned/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_abandoned_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-accepted/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_accepted_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-archive/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_archive_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-compensation/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_compensation_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-containment/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_containment_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-control/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_control_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-dispatch/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_dispatch_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-observation/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_observation_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-reattachment/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_reattachment_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-settlement/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_settlement_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-unblock/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_unblock_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    },
+    {
+      "id": "executor.v4-unresolved/v2",
+      "contract_id": "dev-flow-executor/v1",
+      "authority": [
+        "controller-compute"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.executor.request/v1",
+      "output_schema_ref": "schema.executor.result/v1",
+      "implementation_file_set": "v4-runtime-v2",
+      "symbols": {
+        "dispatcher": "_v4_unresolved_executor"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      },
+      "effect_classification": "deterministic"
+    }
+  ]
+}

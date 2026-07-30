@@ -1,0 +1,2809 @@
+{
+  "schema": "dev-flow-workflow/v1",
+  "bundle_schema_version": 1,
+  "identity_contract": "dev-flow-bundle-identity/v1",
+  "workflow_id": "lite",
+  "workflow_version": 4,
+  "flow": "lite",
+  "legacy_adapter": false,
+  "task_schema_versions": [
+    3
+  ],
+  "execution_profiles": [
+    "single-repository"
+  ],
+  "tool_capabilities": [],
+  "labels": {
+    "en": "Lite workflow",
+    "zh-CN": "精简流程"
+  },
+  "entry_nodes": [
+    "INTAKE"
+  ],
+  "terminal_nodes": [
+    "DONE",
+    "CANCELLED"
+  ],
+  "ordered_nodes": [
+    "INTAKE",
+    "PREFLIGHTED",
+    "IMPLEMENTING",
+    "VERIFYING",
+    "DONE"
+  ],
+  "schemas": {
+    "contracts": "dev-flow-contract-reference/v1",
+    "documents": [
+      {
+        "id": "dev-flow-contract-reference/v1",
+        "kind": "contract-reference",
+        "path": "schemas/contracts.json"
+      },
+      {
+        "id": "dev-flow-node-input/v1",
+        "kind": "node-input",
+        "path": "schemas/node-input.json"
+      },
+      {
+        "id": "dev-flow-node-result/v1",
+        "kind": "node-output",
+        "path": "schemas/node-result.json"
+      }
+    ]
+  },
+  "projection": {
+    "profile": "agent-v1",
+    "hook_checkpoint_max_bytes": 600,
+    "task_next_max_bytes": 1024,
+    "mutation_receipt_max_bytes": 1024,
+    "playbook_max_bytes": 4096,
+    "node_result_max_bytes": 2048,
+    "node_result_summary_max_bytes": 512
+  },
+  "contracts": [
+    {
+      "registry": "guards",
+      "id": "guard.preflight-current/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "guards",
+      "id": "guard.test-current/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "guards",
+      "id": "guard.blocked-resume/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "guards",
+      "id": "guard.lite-approved/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "guards",
+      "id": "guard.lite-risk-safe/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "guards",
+      "id": "guard.note-required/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "guards",
+      "id": "guard.manager-registry-action/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "reducers",
+      "id": "reducer.block/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "reducers",
+      "id": "reducer.resume/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "reducers",
+      "id": "reducer.action-outcome/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "reducers",
+      "id": "reducer.manager-registry-action/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "gates",
+      "id": "gate.lite-outcome/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.deterministic/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.native-subagents/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.codex-exec/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.human-gate/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "reducers",
+      "id": "reducer.v3-cancel/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "reducers",
+      "id": "reducer.v3-invalidate-review/v1",
+      "version": "v1"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-abandoned/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-accepted/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-archive/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-compensation/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-containment/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-control/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-dispatch/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-observation/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-reattachment/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-settlement/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-unblock/v2",
+      "version": "v2"
+    },
+    {
+      "registry": "executors",
+      "id": "executor.v4-unresolved/v2",
+      "version": "v2"
+    }
+  ],
+  "shared_actions": [
+    {
+      "action": {
+        "id": "manager.capability.authorize.v1",
+        "public_command": {
+          "id": "manager-authorize",
+          "selector": "authority",
+          "values": [
+            "operator"
+          ]
+        },
+        "trigger": {
+          "kind": "action",
+          "id": "manager.capability.authorize.v1"
+        },
+        "canonical_event": "manager_capability_authorized",
+        "confirmation": "action-explicit",
+        "requires_note": false,
+        "handler": {
+          "registry": "executors",
+          "id": "executor.deterministic/v1",
+          "version": "v1"
+        },
+        "guards": [
+          {
+            "registry": "guards",
+            "id": "guard.manager-registry-action/v1",
+            "version": "v1"
+          }
+        ],
+        "reducers": [
+          {
+            "registry": "reducers",
+            "id": "reducer.manager-registry-action/v1",
+            "version": "v1"
+          }
+        ],
+        "gate": null,
+        "allowed_state_writes": [],
+        "kernel_state_writes": [
+          "/orchestration"
+        ],
+        "kernel_effects": [
+          "record-manager-capability"
+        ],
+        "kernel_invalidates": [],
+        "side_effects": [
+          "secret-publication",
+          "task-state"
+        ],
+        "effect_classification": "controller",
+        "effects": [
+          {
+            "id": "manager.capability.authorize.v1.secret-publication",
+            "scopes": [
+              "secret-channel",
+              "task"
+            ],
+            "concurrency": "exclusive-task",
+            "dependencies": [],
+            "parallel_group": null,
+            "settlement": "synchronous-quiescence",
+            "receipt": "dev-flow-action-receipt/v1",
+            "dispatch": "single-dispatch",
+            "idempotency": "execution-effect-key/v1",
+            "target_controls": [
+              "control.cancel/v1",
+              "control.reconcile/v1",
+              "control.stop/v1"
+            ],
+            "quarantine": {
+              "reconciliation": "target-bound/v1",
+              "compensation": "new-authorized-execution/v1"
+            },
+            "recovery": {
+              "mode": "observe-or-quarantine/v1",
+              "on_uncertain": "quarantine",
+              "redispatch": "forbidden"
+            }
+          }
+        ],
+        "allowed_artifact_kinds": [],
+        "resume_policy": null,
+        "tool_policy": null,
+        "required_suites": [
+          "action-policy",
+          "action-recovery"
+        ],
+        "handler_closure": [
+          {
+            "role": "abandoned",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-abandoned/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "accepted",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-accepted/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "archive",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-archive/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "compensation",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-compensation/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "containment",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-containment/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "control",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-control/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "dispatch",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-dispatch/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "observation",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-observation/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "reattachment",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-reattachment/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "settlement",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-settlement/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "unblock",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-unblock/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "unresolved",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-unresolved/v2",
+              "version": "v2"
+            }
+          }
+        ]
+      },
+      "placements": [
+        {
+          "node": "INTAKE",
+          "edge_id": "lite.action.intake.manager-authorize.v1"
+        },
+        {
+          "node": "PREFLIGHTED",
+          "edge_id": "lite.action.preflighted.manager-authorize.v1"
+        },
+        {
+          "node": "IMPLEMENTING",
+          "edge_id": "lite.action.implementing.manager-authorize.v1"
+        },
+        {
+          "node": "VERIFYING",
+          "edge_id": "lite.action.verifying.manager-authorize.v1"
+        },
+        {
+          "node": "BLOCKED",
+          "edge_id": "lite.action.blocked.manager-authorize.v1"
+        }
+      ]
+    },
+    {
+      "action": {
+        "id": "manager.capability.revoke.v1",
+        "public_command": {
+          "id": "manager-revoke",
+          "selector": "authority",
+          "values": [
+            "operator"
+          ]
+        },
+        "trigger": {
+          "kind": "action",
+          "id": "manager.capability.revoke.v1"
+        },
+        "canonical_event": "manager_capability_revoked",
+        "confirmation": "action-explicit",
+        "requires_note": false,
+        "handler": {
+          "registry": "executors",
+          "id": "executor.deterministic/v1",
+          "version": "v1"
+        },
+        "guards": [
+          {
+            "registry": "guards",
+            "id": "guard.manager-registry-action/v1",
+            "version": "v1"
+          }
+        ],
+        "reducers": [
+          {
+            "registry": "reducers",
+            "id": "reducer.manager-registry-action/v1",
+            "version": "v1"
+          }
+        ],
+        "gate": null,
+        "allowed_state_writes": [],
+        "kernel_state_writes": [
+          "/orchestration"
+        ],
+        "kernel_effects": [
+          "record-manager-capability"
+        ],
+        "kernel_invalidates": [],
+        "side_effects": [
+          "task-state"
+        ],
+        "effect_classification": "controller",
+        "effects": [
+          {
+            "id": "manager.capability.revoke.v1.registry",
+            "scopes": [
+              "task"
+            ],
+            "concurrency": "exclusive-task",
+            "dependencies": [],
+            "parallel_group": null,
+            "settlement": "synchronous-quiescence",
+            "receipt": "dev-flow-action-receipt/v1",
+            "dispatch": "none",
+            "idempotency": "not-applicable",
+            "target_controls": [],
+            "quarantine": {
+              "reconciliation": "not-applicable",
+              "compensation": "not-applicable"
+            },
+            "recovery": {
+              "mode": "re-evaluate/v1",
+              "on_uncertain": "block",
+              "redispatch": "forbidden"
+            }
+          }
+        ],
+        "allowed_artifact_kinds": [],
+        "resume_policy": null,
+        "tool_policy": null,
+        "required_suites": [
+          "action-policy",
+          "action-recovery"
+        ],
+        "handler_closure": [
+          {
+            "role": "abandoned",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-abandoned/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "accepted",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-accepted/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "archive",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-archive/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "compensation",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-compensation/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "containment",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-containment/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "control",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-control/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "dispatch",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-dispatch/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "observation",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-observation/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "reattachment",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-reattachment/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "settlement",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-settlement/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "unblock",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-unblock/v2",
+              "version": "v2"
+            }
+          },
+          {
+            "role": "unresolved",
+            "handler": {
+              "registry": "executors",
+              "id": "executor.v4-unresolved/v2",
+              "version": "v2"
+            }
+          }
+        ]
+      },
+      "placements": [
+        {
+          "node": "INTAKE",
+          "edge_id": "lite.action.intake.manager-revoke.v1"
+        },
+        {
+          "node": "PREFLIGHTED",
+          "edge_id": "lite.action.preflighted.manager-revoke.v1"
+        },
+        {
+          "node": "IMPLEMENTING",
+          "edge_id": "lite.action.implementing.manager-revoke.v1"
+        },
+        {
+          "node": "VERIFYING",
+          "edge_id": "lite.action.verifying.manager-revoke.v1"
+        },
+        {
+          "node": "BLOCKED",
+          "edge_id": "lite.action.blocked.manager-revoke.v1"
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "INTAKE",
+      "kind": "generic",
+      "contract_version": "v1",
+      "input_schema": "dev-flow-node-input/v1",
+      "output_schema": "dev-flow-node-result/v1",
+      "required_evidence": [],
+      "produced_evidence": [
+        "preflight-report"
+      ],
+      "context_projection": {
+        "profile": "node-v1",
+        "state_paths": [
+          "/status",
+          "/flow",
+          "/repositories"
+        ],
+        "max_bytes": 4096
+      },
+      "approval_policy": {
+        "mode": "edge-policy",
+        "gate": null
+      },
+      "effect_policy": {
+        "classification": "controller",
+        "effects": [
+          "controller-transition"
+        ]
+      },
+      "retry_policy": {
+        "mode": "never",
+        "max_attempts": 1,
+        "backoff": "none",
+        "retry_on": []
+      },
+      "recovery_policy": {
+        "mode": "restart",
+        "on_uncertain": "block",
+        "requires_receipt": false,
+        "resume_same_attempt": false
+      },
+      "allowed_state_writes": [],
+      "labels": {
+        "en": "Intake",
+        "zh-CN": "需求接收"
+      },
+      "phase": "intake",
+      "terminal": false,
+      "waiting": false,
+      "executor": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "actions": [
+        {
+          "id": "lite.intake.preflight.v1",
+          "edge_id": "lite.action.intake.preflight.v1",
+          "public_command": {
+            "id": "preflight",
+            "selector": "mode",
+            "values": [
+              "initial"
+            ]
+          },
+          "trigger": {
+            "kind": "action",
+            "id": "lite.intake.preflight.v1"
+          },
+          "canonical_event": "preflight_recorded",
+          "confirmation": "preflight-preview",
+          "requires_note": false,
+          "handler": {
+            "registry": "executors",
+            "id": "executor.deterministic/v1",
+            "version": "v1"
+          },
+          "guards": [],
+          "reducers": [
+            {
+              "registry": "reducers",
+              "id": "reducer.action-outcome/v1",
+              "version": "v1"
+            }
+          ],
+          "gate": null,
+          "allowed_state_writes": [],
+          "kernel_state_writes": [
+            "/preflight",
+            "/repositories",
+            "/risk_assessment"
+          ],
+          "kernel_effects": [
+            "record-repository-state"
+          ],
+          "kernel_invalidates": [],
+          "side_effects": [
+            "task-state"
+          ],
+          "effect_classification": "controller",
+          "effects": [
+            {
+              "id": "lite.intake.preflight.v1.effect",
+              "scopes": [
+                "repository",
+                "task"
+              ],
+              "concurrency": "exclusive-task",
+              "dependencies": [],
+              "parallel_group": null,
+              "settlement": "synchronous-quiescence",
+              "receipt": "dev-flow-action-receipt/v1",
+              "dispatch": "single-dispatch",
+              "idempotency": "execution-effect-key/v1",
+              "target_controls": [
+                "control.cancel/v1",
+                "control.reconcile/v1",
+                "control.stop/v1"
+              ],
+              "quarantine": {
+                "reconciliation": "target-bound/v1",
+                "compensation": "new-authorized-execution/v1"
+              },
+              "recovery": {
+                "mode": "observe-or-quarantine/v1",
+                "on_uncertain": "quarantine",
+                "redispatch": "forbidden"
+              }
+            }
+          ],
+          "allowed_artifact_kinds": [],
+          "resume_policy": null,
+          "tool_policy": null,
+          "required_suites": [
+            "action-policy",
+            "action-recovery"
+          ],
+          "handler_closure": [
+            {
+              "role": "abandoned",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-abandoned/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "accepted",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-accepted/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "archive",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-archive/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "compensation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-compensation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "containment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-containment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "control",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-control/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "dispatch",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-dispatch/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "observation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-observation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "reattachment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-reattachment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "settlement",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-settlement/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unblock",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unblock/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unresolved",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unresolved/v2",
+                "version": "v2"
+              }
+            }
+          ]
+        }
+      ],
+      "required_sections": [
+        "workflow",
+        "repositories",
+        "risk"
+      ],
+      "index_role": null,
+      "playbook": {
+        "path": "playbooks/workflow.md",
+        "anchor": "intake"
+      }
+    },
+    {
+      "id": "PREFLIGHTED",
+      "kind": "generic",
+      "contract_version": "v1",
+      "input_schema": "dev-flow-node-input/v1",
+      "output_schema": "dev-flow-node-result/v1",
+      "required_evidence": [
+        "preflight-report"
+      ],
+      "produced_evidence": [
+        "approval-record"
+      ],
+      "context_projection": {
+        "profile": "node-v1",
+        "state_paths": [
+          "/status",
+          "/risk",
+          "/approvals"
+        ],
+        "max_bytes": 4096
+      },
+      "approval_policy": {
+        "mode": "kernel-gate",
+        "gate": {
+          "registry": "gates",
+          "id": "gate.lite-outcome/v1",
+          "version": "v1"
+        }
+      },
+      "effect_policy": {
+        "classification": "approval",
+        "effects": [
+          "approval-request"
+        ]
+      },
+      "retry_policy": {
+        "mode": "never",
+        "max_attempts": 1,
+        "backoff": "none",
+        "retry_on": []
+      },
+      "recovery_policy": {
+        "mode": "restart",
+        "on_uncertain": "block",
+        "requires_receipt": false,
+        "resume_same_attempt": false
+      },
+      "allowed_state_writes": [],
+      "labels": {
+        "en": "Preflight complete",
+        "zh-CN": "预检完成"
+      },
+      "phase": "preflighted",
+      "terminal": false,
+      "waiting": false,
+      "executor": {
+        "registry": "executors",
+        "id": "executor.human-gate/v1",
+        "version": "v1"
+      },
+      "actions": [
+        {
+          "id": "lite.preflighted.preflight-refresh.v1",
+          "edge_id": "lite.action.preflighted.preflight-refresh.v1",
+          "public_command": {
+            "id": "preflight",
+            "selector": "mode",
+            "values": [
+              "refresh"
+            ]
+          },
+          "trigger": {
+            "kind": "action",
+            "id": "lite.preflighted.preflight-refresh.v1"
+          },
+          "canonical_event": "preflight_recorded",
+          "confirmation": "preflight-preview",
+          "requires_note": false,
+          "handler": {
+            "registry": "executors",
+            "id": "executor.deterministic/v1",
+            "version": "v1"
+          },
+          "guards": [],
+          "reducers": [
+            {
+              "registry": "reducers",
+              "id": "reducer.action-outcome/v1",
+              "version": "v1"
+            }
+          ],
+          "gate": null,
+          "allowed_state_writes": [],
+          "kernel_state_writes": [
+            "/preflight",
+            "/repositories",
+            "/risk_assessment"
+          ],
+          "kernel_effects": [
+            "record-repository-state"
+          ],
+          "kernel_invalidates": [],
+          "side_effects": [
+            "task-state"
+          ],
+          "effect_classification": "controller",
+          "effects": [
+            {
+              "id": "lite.preflighted.preflight-refresh.v1.effect",
+              "scopes": [
+                "repository",
+                "task"
+              ],
+              "concurrency": "exclusive-task",
+              "dependencies": [],
+              "parallel_group": null,
+              "settlement": "synchronous-quiescence",
+              "receipt": "dev-flow-action-receipt/v1",
+              "dispatch": "single-dispatch",
+              "idempotency": "execution-effect-key/v1",
+              "target_controls": [
+                "control.cancel/v1",
+                "control.reconcile/v1",
+                "control.stop/v1"
+              ],
+              "quarantine": {
+                "reconciliation": "target-bound/v1",
+                "compensation": "new-authorized-execution/v1"
+              },
+              "recovery": {
+                "mode": "observe-or-quarantine/v1",
+                "on_uncertain": "quarantine",
+                "redispatch": "forbidden"
+              }
+            }
+          ],
+          "allowed_artifact_kinds": [],
+          "resume_policy": null,
+          "tool_policy": null,
+          "required_suites": [
+            "action-policy",
+            "action-recovery"
+          ],
+          "handler_closure": [
+            {
+              "role": "abandoned",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-abandoned/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "accepted",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-accepted/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "archive",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-archive/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "compensation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-compensation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "containment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-containment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "control",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-control/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "dispatch",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-dispatch/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "observation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-observation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "reattachment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-reattachment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "settlement",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-settlement/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unblock",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unblock/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unresolved",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unresolved/v2",
+                "version": "v2"
+              }
+            }
+          ]
+        },
+        {
+          "id": "lite.preflighted.approve-lite.v1",
+          "edge_id": "lite.action.preflighted.approve-lite.v1",
+          "public_command": {
+            "id": "approve",
+            "selector": "gate",
+            "values": [
+              "lite"
+            ]
+          },
+          "trigger": {
+            "kind": "action",
+            "id": "lite.preflighted.approve-lite.v1"
+          },
+          "canonical_event": "gate_approved",
+          "confirmation": "action-explicit",
+          "requires_note": false,
+          "handler": {
+            "registry": "executors",
+            "id": "executor.human-gate/v1",
+            "version": "v1"
+          },
+          "guards": [
+            {
+              "registry": "guards",
+              "id": "guard.preflight-current/v1",
+              "version": "v1"
+            },
+            {
+              "registry": "guards",
+              "id": "guard.lite-risk-safe/v1",
+              "version": "v1"
+            }
+          ],
+          "reducers": [
+            {
+              "registry": "reducers",
+              "id": "reducer.action-outcome/v1",
+              "version": "v1"
+            }
+          ],
+          "gate": {
+            "registry": "gates",
+            "id": "gate.lite-outcome/v1",
+            "version": "v1"
+          },
+          "allowed_state_writes": [],
+          "kernel_state_writes": [
+            "/approvals/lite"
+          ],
+          "kernel_effects": [
+            "record-approval"
+          ],
+          "kernel_invalidates": [],
+          "side_effects": [
+            "approval",
+            "task-state"
+          ],
+          "effect_classification": "approval",
+          "effects": [
+            {
+              "id": "lite.preflighted.approve-lite.v1.effect",
+              "scopes": [
+                "task"
+              ],
+              "concurrency": "exclusive-task",
+              "dependencies": [],
+              "parallel_group": null,
+              "settlement": "synchronous-quiescence",
+              "receipt": "dev-flow-action-receipt/v1",
+              "dispatch": "none",
+              "idempotency": "not-applicable",
+              "target_controls": [],
+              "quarantine": {
+                "reconciliation": "not-applicable",
+                "compensation": "not-applicable"
+              },
+              "recovery": {
+                "mode": "re-evaluate/v1",
+                "on_uncertain": "block",
+                "redispatch": "forbidden"
+              }
+            }
+          ],
+          "allowed_artifact_kinds": [],
+          "resume_policy": null,
+          "tool_policy": null,
+          "required_suites": [
+            "action-policy",
+            "action-recovery"
+          ],
+          "handler_closure": [
+            {
+              "role": "abandoned",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-abandoned/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "accepted",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-accepted/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "archive",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-archive/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "compensation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-compensation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "containment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-containment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "control",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-control/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "dispatch",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-dispatch/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "observation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-observation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "reattachment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-reattachment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "settlement",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-settlement/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unblock",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unblock/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unresolved",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unresolved/v2",
+                "version": "v2"
+              }
+            }
+          ]
+        }
+      ],
+      "required_sections": [
+        "workflow",
+        "repositories",
+        "risk",
+        "approvals"
+      ],
+      "index_role": null,
+      "playbook": {
+        "path": "playbooks/workflow.md",
+        "anchor": "preflighted"
+      }
+    },
+    {
+      "id": "IMPLEMENTING",
+      "kind": "generic",
+      "contract_version": "v1",
+      "input_schema": "dev-flow-node-input/v1",
+      "output_schema": "dev-flow-node-result/v1",
+      "required_evidence": [
+        "approval-record"
+      ],
+      "produced_evidence": [
+        "change-evidence",
+        "test-evidence"
+      ],
+      "context_projection": {
+        "profile": "node-v1",
+        "state_paths": [
+          "/status",
+          "/repositories",
+          "/workspace",
+          "/approvals"
+        ],
+        "max_bytes": 8192
+      },
+      "approval_policy": {
+        "mode": "edge-policy",
+        "gate": null
+      },
+      "effect_policy": {
+        "classification": "repository-write",
+        "effects": [
+          "repository-write",
+          "runtime-dispatch"
+        ]
+      },
+      "retry_policy": {
+        "mode": "manual",
+        "max_attempts": 2,
+        "backoff": "none",
+        "retry_on": [
+          "operator-authorized"
+        ]
+      },
+      "recovery_policy": {
+        "mode": "manual",
+        "on_uncertain": "quarantine",
+        "requires_receipt": true,
+        "resume_same_attempt": false
+      },
+      "allowed_state_writes": [
+        "/tests"
+      ],
+      "labels": {
+        "en": "Implementing",
+        "zh-CN": "实现中"
+      },
+      "phase": "implementing",
+      "terminal": false,
+      "waiting": false,
+      "executor": {
+        "registry": "executors",
+        "id": "executor.native-subagents/v1",
+        "version": "v1"
+      },
+      "actions": [
+        {
+          "id": "lite.implementing.record-test.v1",
+          "edge_id": "lite.action.implementing.record-test.v1",
+          "public_command": {
+            "id": "record-test",
+            "selector": "phase",
+            "values": [
+              "implementing"
+            ]
+          },
+          "trigger": {
+            "kind": "action",
+            "id": "lite.implementing.record-test.v1"
+          },
+          "canonical_event": "test_recorded",
+          "confirmation": "action-explicit",
+          "requires_note": false,
+          "handler": {
+            "registry": "executors",
+            "id": "executor.deterministic/v1",
+            "version": "v1"
+          },
+          "guards": [
+            {
+              "registry": "guards",
+              "id": "guard.lite-approved/v1",
+              "version": "v1"
+            }
+          ],
+          "reducers": [
+            {
+              "registry": "reducers",
+              "id": "reducer.action-outcome/v1",
+              "version": "v1"
+            }
+          ],
+          "gate": null,
+          "allowed_state_writes": [
+            "/tests"
+          ],
+          "kernel_state_writes": [],
+          "kernel_effects": [
+            "record-test"
+          ],
+          "kernel_invalidates": [],
+          "side_effects": [
+            "repository-evidence",
+            "task-state"
+          ],
+          "effect_classification": "controller",
+          "effects": [
+            {
+              "id": "lite.implementing.record-test.v1.effect",
+              "scopes": [
+                "repository",
+                "task",
+                "worktree"
+              ],
+              "concurrency": "exclusive-task",
+              "dependencies": [],
+              "parallel_group": null,
+              "settlement": "synchronous-quiescence",
+              "receipt": "dev-flow-action-receipt/v1",
+              "dispatch": "single-dispatch",
+              "idempotency": "execution-effect-key/v1",
+              "target_controls": [
+                "control.cancel/v1",
+                "control.reconcile/v1",
+                "control.stop/v1"
+              ],
+              "quarantine": {
+                "reconciliation": "target-bound/v1",
+                "compensation": "new-authorized-execution/v1"
+              },
+              "recovery": {
+                "mode": "observe-or-quarantine/v1",
+                "on_uncertain": "quarantine",
+                "redispatch": "forbidden"
+              }
+            }
+          ],
+          "allowed_artifact_kinds": [],
+          "resume_policy": null,
+          "tool_policy": null,
+          "required_suites": [
+            "action-policy",
+            "action-recovery"
+          ],
+          "handler_closure": [
+            {
+              "role": "abandoned",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-abandoned/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "accepted",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-accepted/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "archive",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-archive/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "compensation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-compensation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "containment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-containment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "control",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-control/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "dispatch",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-dispatch/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "observation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-observation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "reattachment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-reattachment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "settlement",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-settlement/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unblock",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unblock/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unresolved",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unresolved/v2",
+                "version": "v2"
+              }
+            }
+          ]
+        }
+      ],
+      "required_sections": [
+        "workflow",
+        "repositories",
+        "risk",
+        "approvals",
+        "tests"
+      ],
+      "index_role": null,
+      "playbook": {
+        "path": "playbooks/workflow.md",
+        "anchor": "implementing"
+      }
+    },
+    {
+      "id": "VERIFYING",
+      "kind": "generic",
+      "contract_version": "v1",
+      "input_schema": "dev-flow-node-input/v1",
+      "output_schema": "dev-flow-node-result/v1",
+      "required_evidence": [
+        "change-evidence"
+      ],
+      "produced_evidence": [
+        "test-evidence"
+      ],
+      "context_projection": {
+        "profile": "node-v1",
+        "state_paths": [
+          "/status",
+          "/repositories",
+          "/approvals"
+        ],
+        "max_bytes": 4096
+      },
+      "approval_policy": {
+        "mode": "edge-policy",
+        "gate": null
+      },
+      "effect_policy": {
+        "classification": "external-read",
+        "effects": [
+          "runtime-dispatch"
+        ]
+      },
+      "retry_policy": {
+        "mode": "bounded",
+        "max_attempts": 2,
+        "backoff": "fixed",
+        "retry_on": [
+          "executor-failure"
+        ]
+      },
+      "recovery_policy": {
+        "mode": "restart",
+        "on_uncertain": "block",
+        "requires_receipt": false,
+        "resume_same_attempt": false
+      },
+      "allowed_state_writes": [
+        "/tests"
+      ],
+      "labels": {
+        "en": "Verifying",
+        "zh-CN": "验证中"
+      },
+      "phase": "verifying",
+      "terminal": false,
+      "waiting": false,
+      "executor": {
+        "registry": "executors",
+        "id": "executor.codex-exec/v1",
+        "version": "v1"
+      },
+      "actions": [
+        {
+          "id": "lite.verifying.record-test.v1",
+          "edge_id": "lite.action.verifying.record-test.v1",
+          "public_command": {
+            "id": "record-test",
+            "selector": "phase",
+            "values": [
+              "verifying"
+            ]
+          },
+          "trigger": {
+            "kind": "action",
+            "id": "lite.verifying.record-test.v1"
+          },
+          "canonical_event": "test_recorded",
+          "confirmation": "action-explicit",
+          "requires_note": false,
+          "handler": {
+            "registry": "executors",
+            "id": "executor.codex-exec/v1",
+            "version": "v1"
+          },
+          "guards": [
+            {
+              "registry": "guards",
+              "id": "guard.lite-approved/v1",
+              "version": "v1"
+            }
+          ],
+          "reducers": [
+            {
+              "registry": "reducers",
+              "id": "reducer.action-outcome/v1",
+              "version": "v1"
+            }
+          ],
+          "gate": null,
+          "allowed_state_writes": [
+            "/tests"
+          ],
+          "kernel_state_writes": [],
+          "kernel_effects": [
+            "record-test"
+          ],
+          "kernel_invalidates": [],
+          "side_effects": [
+            "repository-evidence",
+            "task-state"
+          ],
+          "effect_classification": "external-read",
+          "effects": [
+            {
+              "id": "lite.verifying.record-test.v1.effect",
+              "scopes": [
+                "repository",
+                "task",
+                "worktree"
+              ],
+              "concurrency": "exclusive-task",
+              "dependencies": [],
+              "parallel_group": null,
+              "settlement": "synchronous-quiescence",
+              "receipt": "dev-flow-action-receipt/v1",
+              "dispatch": "single-dispatch",
+              "idempotency": "execution-effect-key/v1",
+              "target_controls": [
+                "control.cancel/v1",
+                "control.reconcile/v1",
+                "control.stop/v1"
+              ],
+              "quarantine": {
+                "reconciliation": "target-bound/v1",
+                "compensation": "new-authorized-execution/v1"
+              },
+              "recovery": {
+                "mode": "observe-or-quarantine/v1",
+                "on_uncertain": "quarantine",
+                "redispatch": "forbidden"
+              }
+            }
+          ],
+          "allowed_artifact_kinds": [],
+          "resume_policy": null,
+          "tool_policy": null,
+          "required_suites": [
+            "action-policy",
+            "action-recovery"
+          ],
+          "handler_closure": [
+            {
+              "role": "abandoned",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-abandoned/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "accepted",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-accepted/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "archive",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-archive/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "compensation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-compensation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "containment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-containment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "control",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-control/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "dispatch",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-dispatch/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "observation",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-observation/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "reattachment",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-reattachment/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "settlement",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-settlement/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unblock",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unblock/v2",
+                "version": "v2"
+              }
+            },
+            {
+              "role": "unresolved",
+              "handler": {
+                "registry": "executors",
+                "id": "executor.v4-unresolved/v2",
+                "version": "v2"
+              }
+            }
+          ]
+        }
+      ],
+      "required_sections": [
+        "workflow",
+        "repositories",
+        "risk",
+        "approvals",
+        "tests"
+      ],
+      "index_role": null,
+      "playbook": {
+        "path": "playbooks/workflow.md",
+        "anchor": "verifying"
+      }
+    },
+    {
+      "id": "DONE",
+      "kind": "generic",
+      "contract_version": "v1",
+      "input_schema": "dev-flow-node-input/v1",
+      "output_schema": "dev-flow-node-result/v1",
+      "required_evidence": [
+        "test-evidence"
+      ],
+      "produced_evidence": [],
+      "context_projection": {
+        "profile": "node-v1",
+        "state_paths": [
+          "/status"
+        ],
+        "max_bytes": 1024
+      },
+      "approval_policy": {
+        "mode": "edge-policy",
+        "gate": null
+      },
+      "effect_policy": {
+        "classification": "none",
+        "effects": []
+      },
+      "retry_policy": {
+        "mode": "never",
+        "max_attempts": 1,
+        "backoff": "none",
+        "retry_on": []
+      },
+      "recovery_policy": {
+        "mode": "restart",
+        "on_uncertain": "block",
+        "requires_receipt": false,
+        "resume_same_attempt": false
+      },
+      "allowed_state_writes": [],
+      "labels": {
+        "en": "Done",
+        "zh-CN": "已完成"
+      },
+      "phase": "done",
+      "terminal": true,
+      "waiting": false,
+      "executor": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "actions": [],
+      "required_sections": [
+        "workflow",
+        "summary",
+        "repositories",
+        "risk",
+        "approvals",
+        "tests"
+      ],
+      "index_role": null,
+      "playbook": {
+        "path": "playbooks/workflow.md",
+        "anchor": "done"
+      }
+    },
+    {
+      "id": "BLOCKED",
+      "kind": "generic",
+      "contract_version": "v1",
+      "input_schema": "dev-flow-node-input/v1",
+      "output_schema": "dev-flow-node-result/v1",
+      "required_evidence": [],
+      "produced_evidence": [
+        "recovery-decision"
+      ],
+      "context_projection": {
+        "profile": "node-v1",
+        "state_paths": [
+          "/status",
+          "/blocked"
+        ],
+        "max_bytes": 2048
+      },
+      "approval_policy": {
+        "mode": "edge-policy",
+        "gate": null
+      },
+      "effect_policy": {
+        "classification": "approval",
+        "effects": [
+          "approval-request"
+        ]
+      },
+      "retry_policy": {
+        "mode": "never",
+        "max_attempts": 1,
+        "backoff": "none",
+        "retry_on": []
+      },
+      "recovery_policy": {
+        "mode": "restart",
+        "on_uncertain": "block",
+        "requires_receipt": false,
+        "resume_same_attempt": false
+      },
+      "allowed_state_writes": [],
+      "labels": {
+        "en": "Blocked",
+        "zh-CN": "已阻塞"
+      },
+      "phase": "blocked",
+      "terminal": false,
+      "waiting": true,
+      "executor": {
+        "registry": "executors",
+        "id": "executor.human-gate/v1",
+        "version": "v1"
+      },
+      "actions": [],
+      "required_sections": [
+        "workflow",
+        "blocked",
+        "repositories",
+        "risk"
+      ],
+      "index_role": null,
+      "playbook": {
+        "path": "playbooks/workflow.md",
+        "anchor": "blocked"
+      }
+    },
+    {
+      "id": "CANCELLED",
+      "kind": "generic",
+      "contract_version": "v1",
+      "input_schema": "dev-flow-node-input/v1",
+      "output_schema": "dev-flow-node-result/v1",
+      "required_evidence": [],
+      "produced_evidence": [],
+      "context_projection": {
+        "profile": "node-v1",
+        "state_paths": [
+          "/status"
+        ],
+        "max_bytes": 1024
+      },
+      "approval_policy": {
+        "mode": "edge-policy",
+        "gate": null
+      },
+      "effect_policy": {
+        "classification": "none",
+        "effects": []
+      },
+      "retry_policy": {
+        "mode": "never",
+        "max_attempts": 1,
+        "backoff": "none",
+        "retry_on": []
+      },
+      "recovery_policy": {
+        "mode": "restart",
+        "on_uncertain": "block",
+        "requires_receipt": false,
+        "resume_same_attempt": false
+      },
+      "allowed_state_writes": [],
+      "labels": {
+        "en": "Cancelled",
+        "zh-CN": "已取消"
+      },
+      "phase": "cancelled",
+      "terminal": true,
+      "waiting": false,
+      "executor": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "actions": [],
+      "required_sections": [
+        "workflow",
+        "cancelled",
+        "summary"
+      ],
+      "index_role": null,
+      "playbook": {
+        "path": "playbooks/workflow.md",
+        "anchor": "cancelled"
+      }
+    }
+  ],
+  "edge_policies": [
+    {
+      "id": "preflight-forward",
+      "class": "forward",
+      "trigger": {
+        "kind": "action",
+        "id": "preflight"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.preflight-current/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.action-outcome/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "preflight-preview",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status",
+        "invalidate-approval",
+        "invalidate-evidence",
+        "record-repository-state"
+      ],
+      "side_effects": [
+        "task-state",
+        "repository-evidence"
+      ],
+      "allowed_state_writes": [
+        "/status",
+        "/blocked"
+      ],
+      "kernel_invalidates": [
+        "/approvals/baseline-fetch",
+        "/approvals/lite"
+      ],
+      "priority": 10
+    },
+    {
+      "id": "preflight-block",
+      "class": "block",
+      "trigger": {
+        "kind": "action",
+        "id": "preflight"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.block/v1",
+          "version": "v1"
+        },
+        {
+          "registry": "reducers",
+          "id": "reducer.action-outcome/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "preflight-preview",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status",
+        "invalidate-approval",
+        "invalidate-evidence",
+        "record-repository-state"
+      ],
+      "side_effects": [
+        "task-state",
+        "repository-evidence"
+      ],
+      "allowed_state_writes": [
+        "/status",
+        "/blocked"
+      ],
+      "kernel_invalidates": [
+        "/approvals/baseline-fetch",
+        "/approvals/lite"
+      ],
+      "priority": 5
+    },
+    {
+      "id": "preflight-resume",
+      "class": "resume",
+      "trigger": {
+        "kind": "action",
+        "id": "preflight"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.blocked-resume/v1",
+          "version": "v1"
+        },
+        {
+          "registry": "guards",
+          "id": "guard.preflight-current/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.resume/v1",
+          "version": "v1"
+        },
+        {
+          "registry": "reducers",
+          "id": "reducer.action-outcome/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "preflight-preview",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status",
+        "invalidate-approval",
+        "invalidate-evidence",
+        "record-repository-state"
+      ],
+      "side_effects": [
+        "task-state",
+        "repository-evidence"
+      ],
+      "allowed_state_writes": [
+        "/status",
+        "/blocked"
+      ],
+      "kernel_invalidates": [
+        "/approvals/baseline-fetch",
+        "/approvals/lite"
+      ],
+      "priority": 5
+    },
+    {
+      "id": "implementation-forward",
+      "class": "forward",
+      "trigger": {
+        "kind": "transition",
+        "id": "transition"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.preflight-current/v1",
+          "version": "v1"
+        },
+        {
+          "registry": "guards",
+          "id": "guard.lite-approved/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [],
+      "gate": {
+        "registry": "gates",
+        "id": "gate.lite-outcome/v1",
+        "version": "v1"
+      },
+      "confirmation": "explicit",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status"
+      ],
+      "side_effects": [
+        "task-state"
+      ],
+      "allowed_state_writes": [
+        "/status"
+      ],
+      "kernel_invalidates": [],
+      "priority": 10
+    },
+    {
+      "id": "verification-forward",
+      "class": "forward",
+      "trigger": {
+        "kind": "transition",
+        "id": "transition"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.lite-approved/v1",
+          "version": "v1"
+        },
+        {
+          "registry": "guards",
+          "id": "guard.lite-risk-safe/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [],
+      "gate": null,
+      "confirmation": "automatic",
+      "automatic": true,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status"
+      ],
+      "side_effects": [
+        "task-state"
+      ],
+      "allowed_state_writes": [
+        "/status"
+      ],
+      "kernel_invalidates": [],
+      "priority": 10
+    },
+    {
+      "id": "done-forward",
+      "class": "forward",
+      "trigger": {
+        "kind": "transition",
+        "id": "transition"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.lite-approved/v1",
+          "version": "v1"
+        },
+        {
+          "registry": "guards",
+          "id": "guard.lite-risk-safe/v1",
+          "version": "v1"
+        },
+        {
+          "registry": "guards",
+          "id": "guard.test-current/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [],
+      "gate": {
+        "registry": "gates",
+        "id": "gate.lite-outcome/v1",
+        "version": "v1"
+      },
+      "confirmation": "explicit",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status",
+        "release-repository-claim"
+      ],
+      "side_effects": [
+        "task-state",
+        "irreversible-terminal-state",
+        "repository-claim-release"
+      ],
+      "allowed_state_writes": [
+        "/status"
+      ],
+      "kernel_invalidates": [],
+      "priority": 10
+    },
+    {
+      "id": "rework-implementation",
+      "class": "rework",
+      "trigger": {
+        "kind": "transition",
+        "id": "transition"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.v3-invalidate-review/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "explicit",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status",
+        "invalidate-approval",
+        "invalidate-evidence"
+      ],
+      "side_effects": [
+        "task-state",
+        "evidence-or-approval-invalidation"
+      ],
+      "allowed_state_writes": [
+        "/status"
+      ],
+      "kernel_invalidates": [
+        "/approvals/review",
+        "/review_snapshots"
+      ],
+      "priority": 20
+    },
+    {
+      "id": "reopen-preflight",
+      "class": "rework",
+      "trigger": {
+        "kind": "transition",
+        "id": "transition"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.note-required/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [],
+      "gate": null,
+      "confirmation": "explicit",
+      "automatic": false,
+      "requires_note": true,
+      "kernel_effects": [
+        "set-task-status"
+      ],
+      "side_effects": [
+        "task-state"
+      ],
+      "allowed_state_writes": [
+        "/status"
+      ],
+      "kernel_invalidates": [],
+      "priority": 20
+    },
+    {
+      "id": "safety-block-verifying",
+      "class": "block",
+      "trigger": {
+        "kind": "transition",
+        "id": "lite-risk-verifying"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.block/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "safety-block",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status"
+      ],
+      "side_effects": [
+        "task-state",
+        "risk-escalation"
+      ],
+      "allowed_state_writes": [
+        "/status",
+        "/blocked"
+      ],
+      "kernel_invalidates": [],
+      "priority": 5
+    },
+    {
+      "id": "safety-block-done",
+      "class": "block",
+      "trigger": {
+        "kind": "transition",
+        "id": "lite-risk-done"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.block/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "safety-block",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status"
+      ],
+      "side_effects": [
+        "task-state",
+        "risk-escalation"
+      ],
+      "allowed_state_writes": [
+        "/status",
+        "/blocked"
+      ],
+      "kernel_invalidates": [],
+      "priority": 5
+    },
+    {
+      "id": "manual-block",
+      "class": "block",
+      "trigger": {
+        "kind": "transition",
+        "id": "transition"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.note-required/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.block/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "explicit",
+      "automatic": false,
+      "requires_note": true,
+      "kernel_effects": [
+        "set-task-status"
+      ],
+      "side_effects": [
+        "task-state"
+      ],
+      "allowed_state_writes": [
+        "/status",
+        "/blocked"
+      ],
+      "kernel_invalidates": [],
+      "priority": 40
+    },
+    {
+      "id": "resume",
+      "class": "resume",
+      "trigger": {
+        "kind": "transition",
+        "id": "transition"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.blocked-resume/v1",
+          "version": "v1"
+        },
+        {
+          "registry": "guards",
+          "id": "guard.lite-risk-safe/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.resume/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "explicit",
+      "automatic": false,
+      "requires_note": false,
+      "kernel_effects": [
+        "set-task-status"
+      ],
+      "side_effects": [
+        "task-state"
+      ],
+      "allowed_state_writes": [
+        "/status",
+        "/blocked"
+      ],
+      "kernel_invalidates": [],
+      "priority": 40
+    },
+    {
+      "id": "cancel",
+      "class": "cancel",
+      "trigger": {
+        "kind": "action",
+        "id": "cancel"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.note-required/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.v3-cancel/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "explicit",
+      "automatic": false,
+      "requires_note": true,
+      "kernel_effects": [
+        "set-task-status",
+        "record-cancellation",
+        "release-repository-claim"
+      ],
+      "side_effects": [
+        "task-state",
+        "irreversible-terminal-state",
+        "repository-claim-release"
+      ],
+      "allowed_state_writes": [
+        "/status"
+      ],
+      "kernel_invalidates": [],
+      "priority": 50
+    },
+    {
+      "id": "transition-cancel",
+      "class": "cancel",
+      "trigger": {
+        "kind": "transition",
+        "id": "transition-cancel"
+      },
+      "handler": {
+        "registry": "executors",
+        "id": "executor.deterministic/v1",
+        "version": "v1"
+      },
+      "guards": [
+        {
+          "registry": "guards",
+          "id": "guard.note-required/v1",
+          "version": "v1"
+        }
+      ],
+      "reducers": [
+        {
+          "registry": "reducers",
+          "id": "reducer.v3-cancel/v1",
+          "version": "v1"
+        }
+      ],
+      "gate": null,
+      "confirmation": "explicit",
+      "automatic": false,
+      "requires_note": true,
+      "kernel_effects": [
+        "set-task-status",
+        "record-cancellation",
+        "release-repository-claim"
+      ],
+      "side_effects": [
+        "task-state",
+        "irreversible-terminal-state",
+        "repository-claim-release"
+      ],
+      "allowed_state_writes": [
+        "/status"
+      ],
+      "kernel_invalidates": [],
+      "priority": 50
+    }
+  ],
+  "edges": [
+    {
+      "id": "lite.intake.preflighted",
+      "source": "INTAKE",
+      "target": "PREFLIGHTED",
+      "policy": "preflight-forward"
+    },
+    {
+      "id": "lite.intake.preflight-blocked",
+      "source": "INTAKE",
+      "target": "BLOCKED",
+      "policy": "preflight-block"
+    },
+    {
+      "id": "lite.preflighted.preflight-blocked",
+      "source": "PREFLIGHTED",
+      "target": "BLOCKED",
+      "policy": "preflight-block"
+    },
+    {
+      "id": "lite.blocked.preflighted",
+      "source": "BLOCKED",
+      "target": "PREFLIGHTED",
+      "policy": "preflight-resume"
+    },
+    {
+      "id": "lite.preflighted.implementing",
+      "source": "PREFLIGHTED",
+      "target": "IMPLEMENTING",
+      "policy": "implementation-forward"
+    },
+    {
+      "id": "lite.implementing.verifying",
+      "source": "IMPLEMENTING",
+      "target": "VERIFYING",
+      "policy": "verification-forward"
+    },
+    {
+      "id": "lite.verifying.done",
+      "source": "VERIFYING",
+      "target": "DONE",
+      "policy": "done-forward"
+    },
+    {
+      "id": "lite.verifying.implementing",
+      "source": "VERIFYING",
+      "target": "IMPLEMENTING",
+      "policy": "rework-implementation"
+    },
+    {
+      "id": "lite.implementing.preflighted",
+      "source": "IMPLEMENTING",
+      "target": "PREFLIGHTED",
+      "policy": "reopen-preflight"
+    },
+    {
+      "id": "lite.verifying.preflighted",
+      "source": "VERIFYING",
+      "target": "PREFLIGHTED",
+      "policy": "reopen-preflight"
+    },
+    {
+      "id": "lite.implementing.risk-blocked",
+      "source": "IMPLEMENTING",
+      "target": "BLOCKED",
+      "policy": "safety-block-verifying"
+    },
+    {
+      "id": "lite.verifying.risk-blocked",
+      "source": "VERIFYING",
+      "target": "BLOCKED",
+      "policy": "safety-block-done"
+    }
+  ],
+  "edge_families": [
+    {
+      "id_prefix": "lite.block",
+      "sources": [
+        "INTAKE",
+        "PREFLIGHTED",
+        "IMPLEMENTING",
+        "VERIFYING"
+      ],
+      "targets": [
+        "BLOCKED"
+      ],
+      "policy": "manual-block"
+    },
+    {
+      "id_prefix": "lite.resume",
+      "sources": [
+        "BLOCKED"
+      ],
+      "targets": [
+        "INTAKE",
+        "PREFLIGHTED",
+        "IMPLEMENTING",
+        "VERIFYING"
+      ],
+      "policy": "resume"
+    },
+    {
+      "id_prefix": "lite.cancel",
+      "sources": [
+        "INTAKE",
+        "PREFLIGHTED",
+        "IMPLEMENTING",
+        "VERIFYING",
+        "BLOCKED"
+      ],
+      "targets": [
+        "CANCELLED"
+      ],
+      "policy": "cancel"
+    },
+    {
+      "id_prefix": "lite.transition-cancel",
+      "sources": [
+        "INTAKE",
+        "PREFLIGHTED",
+        "IMPLEMENTING",
+        "VERIFYING",
+        "BLOCKED"
+      ],
+      "targets": [
+        "CANCELLED"
+      ],
+      "policy": "transition-cancel"
+    }
+  ]
+}

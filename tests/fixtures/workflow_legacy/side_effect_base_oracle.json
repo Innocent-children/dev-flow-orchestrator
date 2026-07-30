@@ -1,0 +1,1317 @@
+{
+  "schema": "dev-flow-legacy-base-side-effect-oracle/v1",
+  "base": {
+    "commit": "2dc397411ad1ea5f2a43d43e881523b125bb5eec",
+    "tree": "ee7de366a818d8800b4808015f2d8ae4c4405136",
+    "object_format": "sha1",
+    "source_objects": [
+      {
+        "path": "scripts/dev_flow.py",
+        "mode": "100755",
+        "blob": "51bdbe4d82d0a0f45363964bcb87dff679bd1a3b",
+        "content_sha256": "6c9b1c8772873a3d8b258f6562dd15c61222b9e3f95ad690fe19967b77c72356",
+        "size": 1649
+      },
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "mode": "100644",
+        "blob": "006e266385fe3804d74b05839c1be4bebbae0cb4",
+        "content_sha256": "2844adc852168c57db612fd50d1fddd08975f08e84a6caf381b1a199520cd670",
+        "size": 95814
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "mode": "100644",
+        "blob": "5d3a6a6583e0839f5a726e56d8eaa93d45f25ca9",
+        "content_sha256": "809c8e2611be2873b1b4964c1afdbf3ec8ee01f2af84c1c86edb5e3f28ccec11",
+        "size": 21244
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "mode": "100644",
+        "blob": "b40cc7d2c439e579a501169e818f5cbbcaa06765",
+        "content_sha256": "ac8d72a6c66b4a09938dd5424f4767534cc267961d39f45d28e0289f998ba445",
+        "size": 67115
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "mode": "100644",
+        "blob": "9752ce626b19d7ffde6dbe67990dfccc4c383114",
+        "content_sha256": "15d72501b0add0dde4dcee58917c99c6927fc32e258c7ffba3b0cc2627489797",
+        "size": 88204
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "mode": "100644",
+        "blob": "6951edda010d38d0824fe07500dfbe2003eb99dc",
+        "content_sha256": "d0bae727ebdd9b2c2fcc10b8b0b0e25e242bf39a2e64ba327ca86b0be4dcca79",
+        "size": 90987
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "mode": "100644",
+        "blob": "b802a0e81517de3471e1a6c39c0ff55d5307c6a1",
+        "content_sha256": "2e040bb500b263948d654bf59d86ebbd0fe6513e64f99ae64e9bf0ee7fc14e5c",
+        "size": 36938
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "mode": "100644",
+        "blob": "63f753df2f0a698574b9bcd6774a4a6c01a16c19",
+        "content_sha256": "5934ea137b2782437129a5de61a8fa3a519f95a8955db39996a9acee8d941705",
+        "size": 36128
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "mode": "100644",
+        "blob": "7a8c3c902b91551f098a8cb22c17982ad0f37d4d",
+        "content_sha256": "75013d65545bcf9ede3947425cf0cac9d98f45d278dc59e3ece87fbcae485b7f",
+        "size": 54960
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "mode": "100644",
+        "blob": "4935771db6ecdb7bb0b5a4880d3f870cb894e083",
+        "content_sha256": "4e5a3c9fbda802df279ab1e4ea1d0b98e2da88fa261d20cd1f66b74c01b56ecc",
+        "size": 41866
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "mode": "100644",
+        "blob": "e6628fc05f2660fc73ad531de91409b619e8d40e",
+        "content_sha256": "953908c27488349c37567bfa803e4d58ac0488a799dd6630a7bae796cc59405d",
+        "size": 77487
+      },
+      {
+        "path": "tests/test_cross_platform_safety.py",
+        "mode": "100644",
+        "blob": "d4b353a32be6268e54add806364e159f3203041d",
+        "content_sha256": "c51c15e29a909c12d1c5f0490907c4bde503c296f57aa22e33f2928bad6a2f8e",
+        "size": 35279
+      },
+      {
+        "path": "tests/test_dev_flow.py",
+        "mode": "100644",
+        "blob": "fdfdec7f6414da5a5ef34adbf79a9b969536a7cc",
+        "content_sha256": "104a0cda11f74c614e5063703bf95a694b21dbcd6d587af06e070a1316476e33",
+        "size": 28669
+      },
+      {
+        "path": "tests/test_dev_flow_artifacts_workspace.py",
+        "mode": "100644",
+        "blob": "2a6e89ccbb36c6c85b75507c27344f0022ae2006",
+        "content_sha256": "1524110e4786b488db35be4d04d079729e666b08ac24843f85d55deeb63e8b70",
+        "size": 33992
+      },
+      {
+        "path": "tests/test_dev_flow_full_flow.py",
+        "mode": "100644",
+        "blob": "77fbb1e2b8f2b1f4401a2f399bfd19896a738712",
+        "content_sha256": "ebd665d28ff9f8f67442024a0924e6ec8947861a9ba7dc8ef31e588989696c4a",
+        "size": 63000
+      },
+      {
+        "path": "tests/test_dev_flow_platform_runtime.py",
+        "mode": "100644",
+        "blob": "3918852205a23a0ecdc4c559da148c585c9a17bf",
+        "content_sha256": "712e578b585f8775a1fe9a47c53785f010d3053fcce1fca4bb8b37f230b7818a",
+        "size": 26498
+      },
+      {
+        "path": "tests/test_dev_flow_preflight_evidence.py",
+        "mode": "100644",
+        "blob": "ee5675ad1ce8c7df34431784e180fb069941eec8",
+        "content_sha256": "3b72ab74c72293188789e04bb057cd2a06d5d192f0bac10076b9d54c10244a33",
+        "size": 43818
+      },
+      {
+        "path": "tests/test_dev_flow_v2.py",
+        "mode": "100644",
+        "blob": "a2ccdf4aea8b54becdfb221a82ca66a133d61e7b",
+        "content_sha256": "dc258274fa84df9df2ec2fc72be57f9e3175fb66580b76bd07fbe6cafd6be03f",
+        "size": 42871
+      },
+      {
+        "path": "tests/test_mutation_gate_crash.py",
+        "mode": "100644",
+        "blob": "d210891ef9bf57afa7d1972c84a38d93cc4f2d05",
+        "content_sha256": "18da39f9c2a050e4fd2dac39a1a412464111bb5744c056d1717ae7064931fa0f",
+        "size": 16390
+      }
+    ]
+  },
+  "generation": {
+    "method": "isolated-local-clone-read-only-execution-and-audit",
+    "isolated_clone": true,
+    "git_object_access": "cat-file-and-ls-tree",
+    "fixture_frozen_before_candidate": true,
+    "candidate_expected_regeneration": "forbidden",
+    "audit_command": [
+      "git",
+      "checkout",
+      "--detach",
+      "2dc397411ad1ea5f2a43d43e881523b125bb5eec"
+    ]
+  },
+  "inventory": {
+    "base_cli_commands": [
+      "start",
+      "show",
+      "recover-quarantine",
+      "recover-atomic-write",
+      "list",
+      "scope",
+      "preflight",
+      "baseline",
+      "record-index",
+      "record-artifact",
+      "set-route",
+      "approve",
+      "transition",
+      "prepare-workspace",
+      "record-test",
+      "review-snapshot",
+      "cancel"
+    ],
+    "classifications": {
+      "lifecycle_or_config": [
+        "scope",
+        "start"
+      ],
+      "read_only": [
+        "list",
+        "show"
+      ],
+      "recovery": [
+        "recover-atomic-write",
+        "recover-quarantine"
+      ],
+      "state_only": [
+        "approve",
+        "cancel",
+        "record-index",
+        "set-route",
+        "transition"
+      ],
+      "retained_side_effect": [
+        "baseline",
+        "preflight",
+        "prepare-workspace",
+        "record-artifact",
+        "record-test",
+        "review-snapshot"
+      ]
+    },
+    "retained_side_effect_commands": [
+      "baseline",
+      "preflight",
+      "prepare-workspace",
+      "record-artifact",
+      "record-test",
+      "review-snapshot"
+    ],
+    "variant_ids": [
+      "baseline.fetch",
+      "baseline.materialize",
+      "preflight.capture",
+      "prepare-workspace.execute",
+      "prepare-workspace.plan",
+      "record-artifact.observe",
+      "record-test.fingerprint",
+      "review-snapshot.capture"
+    ]
+  },
+  "byte_contracts": {
+    "state_json": {
+      "encoding": "utf-8",
+      "format": "indent-2-sort-keys-terminal-lf",
+      "terminal_lf": true,
+      "vector": {
+        "schema_version": 1,
+        "task_id": "oracle-task",
+        "revision": 7,
+        "status": "PREFLIGHTED"
+      },
+      "exact_hex": "7b0a2020227265766973696f6e223a20372c0a202022736368656d615f76657273696f6e223a20312c0a202022737461747573223a2022505245464c494748544544222c0a2020227461736b5f6964223a20226f7261636c652d7461736b220a7d0a",
+      "size": 98,
+      "sha256": "5d1e663c28671d4fa51b8b3741bc1edfee82b924897e10b0a8e88a0206237ae6"
+    },
+    "event_jsonl": {
+      "encoding": "utf-8",
+      "format": "compact-sort-keys-terminal-lf",
+      "terminal_lf": true,
+      "vector": {
+        "event_id": "event-1",
+        "evidence_contract_version": "integration-v2",
+        "task_id": "oracle-task",
+        "type": "preflight_recorded",
+        "at": "2026-07-27T00:00:00.000Z",
+        "actor": "oracle",
+        "previous_revision": 6,
+        "revision": 7,
+        "status": "PREFLIGHTED",
+        "payload": {
+          "repository_ids": [
+            "repo"
+          ]
+        }
+      },
+      "exact_hex": "7b226163746f72223a226f7261636c65222c226174223a22323032362d30372d32375430303a30303a30302e3030305a222c226576656e745f6964223a226576656e742d31222c2265766964656e63655f636f6e74726163745f76657273696f6e223a22696e746567726174696f6e2d7632222c227061796c6f6164223a7b227265706f7369746f72795f696473223a5b227265706f225d7d2c2270726576696f75735f7265766973696f6e223a362c227265766973696f6e223a372c22737461747573223a22505245464c494748544544222c227461736b5f6964223a226f7261636c652d7461736b222c2274797065223a22707265666c696768745f7265636f72646564227d0a",
+      "size": 265,
+      "sha256": "c59764d4dbbb0025d0e8efc75994f0d1b4c0fe8cac6ff01adf6f9a96653d588f"
+    },
+    "mutation_quarantine": {
+      "encoding": "utf-8",
+      "format": "indent-2-sort-keys-terminal-lf",
+      "terminal_lf": true,
+      "vector": {
+        "evidence_contract_version": "integration-v2",
+        "gate_protocol_version": 1,
+        "phase": "child_quiescent",
+        "state_revision": 6,
+        "expected_committed_revision": 7,
+        "command": [
+          "git",
+          "fetch"
+        ],
+        "operations": [
+          {
+            "command": [
+              "git",
+              "fetch"
+            ],
+            "phase": "child_quiescent",
+            "target_release_authorized": true
+          }
+        ]
+      },
+      "exact_hex": "7b0a202022636f6d6d616e64223a205b0a2020202022676974222c0a20202020226665746368220a20205d2c0a20202265766964656e63655f636f6e74726163745f76657273696f6e223a2022696e746567726174696f6e2d7632222c0a20202265787065637465645f636f6d6d69747465645f7265766973696f6e223a20372c0a202022676174655f70726f746f636f6c5f76657273696f6e223a20312c0a2020226f7065726174696f6e73223a205b0a202020207b0a20202020202022636f6d6d616e64223a205b0a202020202020202022676974222c0a2020202020202020226665746368220a2020202020205d2c0a202020202020227068617365223a20226368696c645f717569657363656e74222c0a202020202020227461726765745f72656c656173655f617574686f72697a6564223a20747275650a202020207d0a20205d2c0a2020227068617365223a20226368696c645f717569657363656e74222c0a20202273746174655f7265766973696f6e223a20360a7d0a",
+      "size": 382,
+      "sha256": "000c09419db07f030776eedb64e0373a44093ceb71191de4081162e7280ccbc8"
+    }
+  },
+  "interruption_profiles": {
+    "atomic-write": {
+      "supported_stages": [
+        {
+          "id": "preexisting-rollback-block",
+          "observation": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "same-directory-rollback-evidence",
+            "quarantine": "absent",
+            "recovery": "recover-atomic-write",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "ATOMIC_RECOVERY_REQUIRED",
+            "persisted_bytes": "destination-unchanged"
+          }
+        },
+        {
+          "id": "postcheck-restored",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "same-directory-rollback-evidence",
+            "quarantine": "absent",
+            "recovery": "not-required",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "ATOMIC_POSTCHECK_FAILED",
+            "persisted_bytes": "previous-destination-exactly-restored"
+          }
+        },
+        {
+          "id": "postcheck-restore-uncertain",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "same-directory-rollback-evidence",
+            "quarantine": "absent",
+            "recovery": "recover-atomic-write",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "ATOMIC_RECOVERY_UNCERTAIN",
+            "persisted_bytes": "replacement-and-rollback-evidence-preserved"
+          }
+        }
+      ],
+      "base_evidence": [
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_atomic_postcheck_restores_or_preserves_rollback"
+      ],
+      "unsupported_stages": [
+        "named-crash-after-backup",
+        "named-crash-after-replace-before-postcheck",
+        "named-crash-before-temporary-create"
+      ]
+    },
+    "mutation-gate": {
+      "supported_stages": [
+        {
+          "id": "intent-write-failure",
+          "observation": {
+            "effect_start": false,
+            "mutation_intent": "intent-write-failed",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "not-required",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "ATOMIC_WRITE_FAILED",
+            "persisted_bytes": "task-and-events-unchanged"
+          }
+        },
+        {
+          "id": "spawn-pending-parent-crash",
+          "observation": {
+            "effect_start": false,
+            "mutation_intent": "spawn_pending",
+            "containment": "gate-child-not-released",
+            "quarantine": "active-spawn_pending",
+            "recovery": "recover-quarantine",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": null,
+            "persisted_bytes": "mutation-quarantine-exact-format"
+          }
+        },
+        {
+          "id": "target-release-parent-death",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "target_release_authorized",
+            "containment": "owned-process-group-or-job",
+            "quarantine": "active-target_release_authorized",
+            "recovery": "recover-quarantine",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": null,
+            "persisted_bytes": "mutation-quarantine-exact-format"
+          }
+        },
+        {
+          "id": "communicate-interruption-quiescent",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "interrupted_quiescent",
+            "containment": "owned-child-proven-quiescent",
+            "quarantine": "active-interrupted_quiescent",
+            "recovery": "recover-quarantine",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": null,
+            "persisted_bytes": "mutation-quarantine-exact-format"
+          }
+        },
+        {
+          "id": "communicate-interruption-unquiesced",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "quiescence_unproven",
+            "containment": "owned-child-quiescence-unproven",
+            "quarantine": "active-quiescence_unproven",
+            "recovery": "recover-quarantine",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "MUTATION_QUARANTINED",
+            "persisted_bytes": "mutation-quarantine-exact-format"
+          }
+        },
+        {
+          "id": "child-success-before-state-commit",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "child_quiescent",
+            "containment": "owned-child-proven-quiescent",
+            "quarantine": "active-child_quiescent",
+            "recovery": "recover-quarantine-before-retry",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": null,
+            "persisted_bytes": "mutation-quarantine-exact-format"
+          }
+        },
+        {
+          "id": "child-failed-quiescent",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "child_failed_quiescent",
+            "containment": "owned-child-proven-quiescent",
+            "quarantine": "active-child_failed_quiescent",
+            "recovery": "recover-quarantine-before-retry",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "COMMAND_FAILED",
+            "persisted_bytes": "mutation-quarantine-exact-format"
+          }
+        },
+        {
+          "id": "gate-envelope-authentication-failure",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "child_quiescent",
+            "containment": "owned-child-proven-quiescent",
+            "quarantine": "active-child_quiescent",
+            "recovery": "recover-quarantine",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "MUTATION_QUARANTINED",
+            "persisted_bytes": "mutation-quarantine-exact-format"
+          }
+        },
+        {
+          "id": "cleanup-interruption",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "quiescence_unproven",
+            "containment": "forced-process-group-or-job-termination",
+            "quarantine": "active-quiescence_unproven",
+            "recovery": "recover-quarantine",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "MUTATION_QUARANTINED",
+            "persisted_bytes": "mutation-quarantine-exact-format"
+          }
+        }
+      ],
+      "base_evidence": [
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_later_unstarted_child_preserves_prior_mutation_intent",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_mutation_gate_orders_durable_intent_before_release",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_mutation_intent_survives_child_until_state_commit",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_pre_spawn_intent_failure_never_calls_popen",
+        "tests.test_dev_flow_platform_runtime.DevFlowPlatformRuntimeTest.test_interrupted_children_are_quiesced_or_durably_quarantined",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_cleanup_interruption_still_quarantines_and_forces_posix_kill",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_cleanup_interruption_still_terminates_and_closes_windows_job",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_first_target_cannot_spoof_gate_spawn_failure",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_known_outer_and_inner_spawn_errors_are_structured",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_non_keyboard_communicate_error_quiesces_before_unlock",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_parent_crash_before_pid_persistence_never_starts_target",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_parent_death_after_release_quiesces_owned_tree",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_posix_escalation_targets_group_after_leader_exit",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_real_target_cannot_spoof_gate_spawn_failure"
+      ],
+      "unsupported_stages": [
+        "command-specific-named-interruption-flag",
+        "deterministic-crash-after-provider-effect-before-gate-envelope"
+      ]
+    },
+    "review-cleanup": {
+      "supported_stages": [
+        {
+          "id": "capture-exception-cleanup-success",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "snapshot-root",
+            "quarantine": "absent",
+          "recovery": "retry-after-cleanup",
+          "revision_delta": 0,
+          "durable_event_batch": [],
+          "error_code": "REVIEW_SNAPSHOT_CHANGED",
+          "persisted_bytes": "incomplete-snapshot-root-absent"
+          }
+        },
+        {
+          "id": "capture-exception-cleanup-failure",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "snapshot-root",
+            "quarantine": "absent",
+            "recovery": "operator-inspection-required",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVIEW_SNAPSHOT_CLEANUP_FAILED",
+            "persisted_bytes": "incomplete-snapshot-root-preserved"
+          }
+        }
+      ],
+      "base_evidence": [
+        "scripts/dev_flow_parts/review.py:command_review_snapshot:exception-cleanup-audit"
+      ],
+      "unsupported_stages": [
+        "named-crash-between-patch-files",
+        "named-crash-between-tar-and-manifest",
+        "process-death-cleanup-hook"
+      ]
+    },
+    "state-outbox": {
+      "supported_stages": [
+        {
+          "id": "event-append-interruption",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "preserved-until-outbox-delivery",
+            "containment": "state-pending-event-outbox",
+            "quarantine": "preserved-if-external-mutation",
+            "recovery": "reload-task-idempotent-outbox-flush",
+            "revision_delta": 1,
+            "durable_event_batch": [],
+            "error_code": "EVENT_DELIVERY_PENDING",
+            "persisted_bytes": "state-has-canonical-pending-event-bytes"
+          }
+        },
+        {
+          "id": "partial-batch-delivery",
+          "observation": {
+            "effect_start": true,
+            "mutation_intent": "preserved-until-outbox-delivery",
+            "containment": "state-pending-events-outbox",
+            "quarantine": "preserved-if-external-mutation",
+            "recovery": "reload-task-idempotent-batch-flush",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "already-appended-prefix"
+            ],
+            "error_code": "EVENT_DELIVERY_PENDING",
+            "persisted_bytes": "state-has-canonical-pending-events-bytes"
+          }
+        }
+      ],
+      "base_evidence": [
+        "tests.test_dev_flow.DevFlowStateTest.test_pending_event_recovery_is_idempotent_and_partial_writes_complete",
+        "tests.test_dev_flow_v2.DevFlowV2ContractTest.test_batched_outbox_recovers_idempotently_after_partial_delivery"
+      ],
+      "unsupported_stages": [
+        "named-crash-after-each-event-append",
+        "named-crash-before-pending-outbox-clear"
+      ]
+    }
+  },
+  "cross_product": [
+    {
+      "variant_id": "baseline.fetch",
+      "command": "baseline",
+      "phase": "fetch-approved-base",
+      "effects": [
+        "git-fetch",
+        "state-commit"
+      ],
+      "source_anchors": [
+        {
+          "path": "scripts/dev_flow_parts/baseline.py",
+          "tokens": [
+            "def command_baseline",
+            "_git_mutating(",
+            "\"fetch\"",
+            "\"baseline_recorded\""
+          ]
+        }
+      ],
+      "interruption_profiles": [
+        "mutation-gate",
+        "state-outbox"
+      ],
+      "schemas": {
+        "1": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "child_quiescent-until-state-commit",
+            "containment": "mutation-gate-process",
+            "quarantine": "cleared-after-state-commit",
+            "recovery": "recover-quarantine-before-retry",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "baseline_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "state-json+event-jsonl-exact-formats"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "task-and-events-unchanged"
+          }
+        },
+        "2": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "child_quiescent-until-state-commit",
+            "containment": "mutation-gate-process",
+            "quarantine": "cleared-after-state-commit",
+            "recovery": "recover-quarantine-before-retry",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "baseline_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "state-json+event-jsonl-exact-formats"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "task-and-events-unchanged"
+          }
+        }
+      }
+    },
+    {
+      "variant_id": "baseline.materialize",
+      "command": "baseline",
+      "phase": "analysis-worktree-materialization",
+      "effects": [
+        "analysis-worktree-add",
+        "state-commit"
+      ],
+      "source_anchors": [
+        {
+          "path": "scripts/dev_flow_parts/baseline.py",
+          "tokens": [
+            "def _materialize_analysis_workspace",
+            "_git_mutating(",
+            "\"worktree\"",
+            "\"add\""
+          ]
+        }
+      ],
+      "interruption_profiles": [
+        "mutation-gate",
+        "state-outbox"
+      ],
+      "schemas": {
+        "1": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "child_quiescent-until-state-commit",
+            "containment": "mutation-gate-process",
+            "quarantine": "cleared-after-state-commit",
+            "recovery": "recover-quarantine-before-retry",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "baseline_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "analysis-worktree+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "task-events-and-worktrees-unchanged"
+          }
+        },
+        "2": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "child_quiescent-until-state-commit",
+            "containment": "mutation-gate-process",
+            "quarantine": "cleared-after-state-commit",
+            "recovery": "recover-quarantine-before-retry",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "baseline_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "analysis-worktree+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "task-events-and-worktrees-unchanged"
+          }
+        }
+      }
+    },
+    {
+      "variant_id": "preflight.capture",
+      "command": "preflight",
+      "phase": "confirmed-evidence-capture",
+      "effects": [
+        "repository-fingerprint-read",
+        "repository-observation",
+        "state-commit"
+      ],
+      "source_anchors": [
+        {
+          "path": "scripts/dev_flow_parts/commands.py",
+          "tokens": [
+            "def command_preflight",
+            "_preflight_repo(",
+            "_fingerprint_repo(",
+            "\"preflight_recorded\""
+          ]
+        }
+      ],
+      "interruption_profiles": [
+        "atomic-write",
+        "state-outbox"
+      ],
+      "schemas": {
+        "1": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "repository-observation-in-memory",
+            "quarantine": "absent",
+            "recovery": "atomic-write-recovery-if-present",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "preflight_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "state-json+event-jsonl-exact-formats"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "task-and-events-unchanged"
+          }
+        },
+        "2": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "repository-observation-in-memory",
+            "quarantine": "absent",
+            "recovery": "atomic-write-recovery-if-present",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "preflight_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "state-json+event-jsonl-exact-formats"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "task-and-events-unchanged"
+          }
+        }
+      }
+    },
+    {
+      "variant_id": "prepare-workspace.execute",
+      "command": "prepare-workspace",
+      "phase": "registry-claim-and-worktree-create",
+      "effects": [
+        "implementation-worktree-add",
+        "state-commit",
+        "workspace-registry-claim"
+      ],
+      "source_anchors": [
+        {
+          "path": "scripts/dev_flow_parts/workspace.py",
+          "tokens": [
+            "def command_prepare_workspace",
+            "_claim_workspace_plan(",
+            "_execute_worktree(",
+            "\"workspace_prepared\""
+          ]
+        }
+      ],
+      "interruption_profiles": [
+        "atomic-write",
+        "mutation-gate",
+        "state-outbox"
+      ],
+      "schemas": {
+        "1": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "child_quiescent-until-state-commit",
+            "containment": "registry-claim+mutation-gate-process",
+            "quarantine": "cleared-after-state-commit",
+            "recovery": "recover-quarantine-before-retry",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "workspace_prepared"
+            ],
+            "error_code": null,
+            "persisted_bytes": "registry+worktree+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "registry-task-events-and-worktrees-unchanged"
+          }
+        },
+        "2": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "child_quiescent-until-state-commit",
+            "containment": "registry-claim+mutation-gate-process",
+            "quarantine": "cleared-after-state-commit",
+            "recovery": "recover-quarantine-before-retry",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "workspace_prepared"
+            ],
+            "error_code": null,
+            "persisted_bytes": "registry+worktree+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "registry-task-events-and-worktrees-unchanged"
+          }
+        }
+      }
+    },
+    {
+      "variant_id": "prepare-workspace.plan",
+      "command": "prepare-workspace",
+      "phase": "plan-and-registry-claim",
+      "effects": [
+        "state-commit",
+        "workspace-plan-write",
+        "workspace-registry-claim"
+      ],
+      "source_anchors": [
+        {
+          "path": "scripts/dev_flow_parts/workspace.py",
+          "tokens": [
+            "def command_prepare_workspace",
+            "_claim_workspace_plan(",
+            "_atomic_write_bytes(plan_path",
+            "\"workspace_plan_recorded\""
+          ]
+        }
+      ],
+      "interruption_profiles": [
+        "atomic-write",
+        "state-outbox"
+      ],
+      "schemas": {
+        "1": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "registry-and-plan-paths",
+            "quarantine": "absent",
+            "recovery": "atomic-write-recovery-if-present",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "workspace_plan_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "registry+plan+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "registry-plan-task-and-events-unchanged"
+          }
+        },
+        "2": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "registry-and-plan-paths",
+            "quarantine": "absent",
+            "recovery": "atomic-write-recovery-if-present",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "workspace_plan_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "registry+plan+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "registry-plan-task-and-events-unchanged"
+          }
+        }
+      }
+    },
+    {
+      "variant_id": "record-artifact.observe",
+      "command": "record-artifact",
+      "phase": "filesystem-hash-and-record",
+      "effects": [
+        "artifact-filesystem-observation",
+        "state-commit"
+      ],
+      "source_anchors": [
+        {
+          "path": "scripts/dev_flow_parts/baseline.py",
+          "tokens": [
+            "def command_record_artifact",
+            "_hash_artifact(",
+            "\"artifact_recorded\""
+          ]
+        }
+      ],
+      "interruption_profiles": [
+        "state-outbox"
+      ],
+      "schemas": {
+        "1": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "source-artifact-read-only",
+            "quarantine": "absent",
+            "recovery": "reload-pending-outbox-if-needed",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "artifact_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "source-unchanged+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "source-task-and-events-unchanged"
+          }
+        },
+        "2": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "source-artifact-read-only",
+            "quarantine": "absent",
+            "recovery": "reload-pending-outbox-if-needed",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "artifact_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "source-unchanged+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "source-task-and-events-unchanged"
+          }
+        }
+      }
+    },
+    {
+      "variant_id": "record-test.fingerprint",
+      "command": "record-test",
+      "phase": "fingerprint-and-test-record",
+      "effects": [
+        "fingerprint-blob-write",
+        "state-commit"
+      ],
+      "source_anchors": [
+        {
+          "path": "scripts/dev_flow_parts/review.py",
+          "tokens": [
+            "def command_record_test",
+            "_store_fingerprint(",
+            "\"test_recorded\""
+          ]
+        }
+      ],
+      "interruption_profiles": [
+        "atomic-write",
+        "state-outbox"
+      ],
+      "schemas": {
+        "1": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "controller-fingerprint-path",
+            "quarantine": "absent",
+            "recovery": "atomic-write-recovery-if-present",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "test_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "fingerprint+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "fingerprint-task-and-events-unchanged"
+          }
+        },
+        "2": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "controller-fingerprint-path",
+            "quarantine": "absent",
+            "recovery": "atomic-write-recovery-if-present",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "test_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "fingerprint+state-json+event-jsonl"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "fingerprint-task-and-events-unchanged"
+          }
+        }
+      }
+    },
+    {
+      "variant_id": "review-snapshot.capture",
+      "command": "review-snapshot",
+      "phase": "patch-untracked-tar-manifest-capture",
+      "effects": [
+        "fingerprint-blob-write",
+        "review-manifest-write",
+        "review-patch-write",
+        "review-tar-write",
+        "state-commit"
+      ],
+      "source_anchors": [
+        {
+          "path": "scripts/dev_flow_parts/review.py",
+          "tokens": [
+            "def command_review_snapshot",
+            "_write_review_repo(",
+            "_atomic_write_json(manifest_path",
+            "\"review_snapshot_recorded\""
+          ]
+        }
+      ],
+      "interruption_profiles": [
+        "atomic-write",
+        "review-cleanup",
+        "state-outbox"
+      ],
+      "schemas": {
+        "1": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "snapshot-root",
+            "quarantine": "absent",
+            "recovery": "cleanup-then-retry-on-capture-failure",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "review_snapshot_recorded"
+            ],
+            "error_code": null,
+            "persisted_bytes": "patches+tar+manifest+fingerprint+state+event"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "reviews-task-and-events-unchanged"
+          }
+        },
+        "2": {
+          "success": {
+            "effect_start": true,
+            "mutation_intent": "none",
+            "containment": "snapshot-root",
+            "quarantine": "absent",
+            "recovery": "cleanup-then-retry-on-capture-failure",
+            "revision_delta": 1,
+            "durable_event_batch": [
+              "review_snapshot_recorded",
+              "state_transitioned"
+            ],
+            "error_code": null,
+            "persisted_bytes": "patches+tar+manifest+fingerprint+state+event-batch"
+          },
+          "pre_effect_rejection": {
+            "effect_start": false,
+            "mutation_intent": "none",
+            "containment": "none",
+            "quarantine": "absent",
+            "recovery": "retry-with-current-revision",
+            "revision_delta": 0,
+            "durable_event_batch": [],
+            "error_code": "REVISION_CONFLICT",
+            "persisted_bytes": "reviews-task-and-events-unchanged"
+          }
+        }
+      }
+    }
+  ],
+  "base_test_evidence": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "tests.test_mutation_gate_crash",
+        "-v"
+      ],
+      "tests": [
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_cleanup_interruption_still_quarantines_and_forces_posix_kill",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_cleanup_interruption_still_terminates_and_closes_windows_job",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_first_target_cannot_spoof_gate_spawn_failure",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_known_outer_and_inner_spawn_errors_are_structured",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_non_keyboard_communicate_error_quiesces_before_unlock",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_parent_crash_before_pid_persistence_never_starts_target",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_parent_death_after_release_quiesces_owned_tree",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_posix_escalation_targets_group_after_leader_exit",
+        "tests.test_mutation_gate_crash.MutationGateCrashTest.test_real_target_cannot_spoof_gate_spawn_failure"
+      ],
+      "result": "passed"
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_pre_spawn_intent_failure_never_calls_popen",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_mutation_intent_survives_child_until_state_commit",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_later_unstarted_child_preserves_prior_mutation_intent",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_mutation_gate_orders_durable_intent_before_release",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_atomic_postcheck_restores_or_preserves_rollback",
+        "tests.test_dev_flow_platform_runtime.DevFlowPlatformRuntimeTest.test_interrupted_children_are_quiesced_or_durably_quarantined",
+        "-v"
+      ],
+      "tests": [
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_atomic_postcheck_restores_or_preserves_rollback",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_later_unstarted_child_preserves_prior_mutation_intent",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_mutation_gate_orders_durable_intent_before_release",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_mutation_intent_survives_child_until_state_commit",
+        "tests.test_cross_platform_safety.CrossPlatformSafetyTest.test_pre_spawn_intent_failure_never_calls_popen",
+        "tests.test_dev_flow_platform_runtime.DevFlowPlatformRuntimeTest.test_interrupted_children_are_quiesced_or_durably_quarantined"
+      ],
+      "result": "passed"
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "tests.test_dev_flow_artifacts_workspace.DevFlowArtifactsWorkspaceTest.test_directory_artifact_hash_changes_with_content",
+        "tests.test_dev_flow_preflight_evidence.DevFlowPreflightEvidenceTest.test_preflight_preview_binds_status_decision_and_refreshes_evidence",
+        "-v"
+      ],
+      "tests": [
+        "tests.test_dev_flow_artifacts_workspace.DevFlowArtifactsWorkspaceTest.test_directory_artifact_hash_changes_with_content",
+        "tests.test_dev_flow_preflight_evidence.DevFlowPreflightEvidenceTest.test_preflight_preview_binds_status_decision_and_refreshes_evidence"
+      ],
+      "result": "passed"
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "tests.test_dev_flow_artifacts_workspace.DevFlowArtifactsWorkspaceTest.test_multi_repo_workspace_overrides_are_exact_and_executable",
+        "tests.test_dev_flow_full_flow.DevFlowFullFlowTest.test_baseline_fetch_uses_only_the_approved_base_refspec",
+        "tests.test_dev_flow_full_flow.DevFlowFullFlowTest.test_materialize_can_resume_after_baseline_and_is_idempotent",
+        "-v"
+      ],
+      "tests": [
+        "tests.test_dev_flow_artifacts_workspace.DevFlowArtifactsWorkspaceTest.test_multi_repo_workspace_overrides_are_exact_and_executable",
+        "tests.test_dev_flow_full_flow.DevFlowFullFlowTest.test_baseline_fetch_uses_only_the_approved_base_refspec",
+        "tests.test_dev_flow_full_flow.DevFlowFullFlowTest.test_materialize_can_resume_after_baseline_and_is_idempotent"
+      ],
+      "result": "passed"
+    },
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "tests.test_dev_flow.DevFlowStateTest.test_pending_event_recovery_is_idempotent_and_partial_writes_complete",
+        "tests.test_dev_flow_v2.DevFlowV2ContractTest.test_batched_outbox_recovers_idempotently_after_partial_delivery",
+        "-v"
+      ],
+      "tests": [
+        "tests.test_dev_flow.DevFlowStateTest.test_pending_event_recovery_is_idempotent_and_partial_writes_complete",
+        "tests.test_dev_flow_v2.DevFlowV2ContractTest.test_batched_outbox_recovers_idempotently_after_partial_delivery"
+      ],
+      "result": "passed"
+    }
+  ],
+  "unsupported_injection_points": [
+    "atomic-write:no-named-crash-hook-after-replace-before-postcheck",
+    "atomic-write:no-named-crash-hook-before-backup",
+    "baseline:no-command-specific-interruption-flag",
+    "preflight:no-command-specific-interruption-flag",
+    "prepare-workspace:no-command-specific-interruption-flag",
+    "record-artifact:no-external-write-dispatch",
+    "record-test:no-command-specific-interruption-flag",
+    "review-snapshot:no-named-process-crash-hook-between-section-files"
+  ],
+  "fixture_sha256": "c52f3c84fb365edf6cca0aa8151ebd0c9921e7d33af8762fe0588410e944408b"
+}

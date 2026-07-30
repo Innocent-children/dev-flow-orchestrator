@@ -970,38 +970,75 @@ def _release_exclusive(handle: Any, lock_path: Path) -> None:
 
 
 @contextlib.contextmanager
+def _in_process_file_lock(lock_path: Path) -> Iterator[None]:
+    """Serialize same-process threads before acquiring the OS file lock."""
+
+    identity = str(lock_path.resolve(strict=False))
+    with _IN_PROCESS_FILE_LOCKS_GUARD:
+        entry = _IN_PROCESS_FILE_LOCKS.get(identity)
+        if entry is None:
+            thread_lock = threading.RLock()
+            references = 0
+        else:
+            thread_lock, references = entry
+        _IN_PROCESS_FILE_LOCKS[identity] = (
+            thread_lock,
+            references + 1,
+        )
+    thread_lock.acquire()
+    try:
+        yield
+    finally:
+        thread_lock.release()
+        with _IN_PROCESS_FILE_LOCKS_GUARD:
+            current = _IN_PROCESS_FILE_LOCKS.get(identity)
+            if current is None or current[0] is not thread_lock:
+                raise RuntimeError(
+                    "in-process file lock registry lost its live entry"
+                )
+            if current[1] == 1:
+                del _IN_PROCESS_FILE_LOCKS[identity]
+            else:
+                _IN_PROCESS_FILE_LOCKS[identity] = (
+                    thread_lock,
+                    current[1] - 1,
+                )
+
+
+@contextlib.contextmanager
 def _file_lock(
     directory: Path, name: str, *, allow_quarantine: bool = False
 ) -> Iterator[None]:
     _ensure_private_dir(directory)
     lock_path = directory / name
-    with lock_path.open("a+b") as handle:
-        _set_private_permissions(lock_path, 0o600)
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
-            os.fsync(handle.fileno())
-        handle.seek(0)
-        _acquire_exclusive(handle, lock_path)
-        token: contextvars.Token[tuple[str, ...]] | None = None
-        try:
-            if not allow_quarantine:
-                _assert_no_mutation_quarantine(directory)
-            token = _HELD_LOCK_DIRECTORIES.set(
-                (
-                    *_HELD_LOCK_DIRECTORIES.get(),
-                    str(directory.resolve(strict=False)),
-                )
-            )
-            yield
-        finally:
-            if token is not None:
-                _HELD_LOCK_DIRECTORIES.reset(token)
+    with _in_process_file_lock(lock_path):
+        with lock_path.open("a+b") as handle:
+            _set_private_permissions(lock_path, 0o600)
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            handle.seek(0)
+            _acquire_exclusive(handle, lock_path)
+            token: contextvars.Token[tuple[str, ...]] | None = None
             try:
-                _release_exclusive(handle, lock_path)
+                if not allow_quarantine:
+                    _assert_no_mutation_quarantine(directory)
+                token = _HELD_LOCK_DIRECTORIES.set(
+                    (
+                        *_HELD_LOCK_DIRECTORIES.get(),
+                        str(directory.resolve(strict=False)),
+                    )
+                )
+                yield
             finally:
-                _forget_active_mutation_intents(directory)
+                if token is not None:
+                    _HELD_LOCK_DIRECTORIES.reset(token)
+                try:
+                    _release_exclusive(handle, lock_path)
+                finally:
+                    _forget_active_mutation_intents(directory)
 
 
 @contextlib.contextmanager
@@ -1030,5 +1067,3 @@ def _workspace_registry_lock(data_root: Path) -> Iterator[None]:
 def _config_lock(data_root: Path) -> Iterator[None]:
     with _file_lock(data_root, "config.lock"):
         yield
-
-

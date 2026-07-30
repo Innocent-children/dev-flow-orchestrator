@@ -26,6 +26,27 @@ Bundled handlers SHALL load plugin code from `PLUGIN_ROOT` and SHALL use `PLUGIN
 - **WHEN** a bundled handler cannot resolve `PLUGIN_ROOT` or `PLUGIN_DATA`
 - **THEN** it emits a non-mutating diagnostic response and does not construct a command that reads or writes an unrelated default location
 
+### Requirement: Platform-specific MCP profiles use their native packaged launch commands
+When the MCP companion schema cannot express an operating-system-specific
+command override, the plugin SHALL expose explicit POSIX and Windows profiles
+that default to disabled and are documented as mutually exclusive. Native
+validation MUST select the current-host profile from the exact packaged
+`.mcp.json` and complete MCP initialization and tool discovery through that
+profile's configured command. Directly invoking the underlying Python server
+MUST NOT substitute for this launcher proof.
+
+#### Scenario: Validate the POSIX MCP profile
+- **WHEN** a supported macOS or Linux validation job selects the packaged POSIX profile
+- **THEN** its configured shell command starts from the plugin root and returns a valid initialize response and bounded tool list
+
+#### Scenario: Validate the Windows MCP profile
+- **WHEN** a native Windows validation job selects the packaged Windows profile
+- **THEN** its configured `cmd.exe` command starts the shipped launcher from the plugin root and returns a valid initialize response and bounded tool list
+
+#### Scenario: Reject simultaneous platform profiles
+- **WHEN** package validation finds both platform profiles enabled
+- **THEN** it rejects the ambiguous configuration before plugin handoff
+
 ### Requirement: Canonical Codex command matcher is preserved
 The hook configuration SHALL retain the canonical Codex `Bash` matcher for command-tool events. Cross-platform support MUST be implemented by portable launch commands and command-payload recognition, not by replacing the canonical matcher with undocumented operating-system-specific tool aliases.
 

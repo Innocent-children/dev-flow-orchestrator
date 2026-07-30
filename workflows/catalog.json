@@ -1,0 +1,193 @@
+{
+  "schema": "dev-flow-workflow-catalog/v1",
+  "identity_contract": "dev-flow-bundle-identity/v1",
+  "activation": "activation.json",
+  "bundles": [
+    {
+      "workflow_id": "full",
+      "workflow_version": 3,
+      "bundle_schema_version": 1,
+      "root": "bundles/full-v3",
+      "graph": "workflow.json",
+      "files": [
+        {
+          "path": "playbooks/workflow.md",
+          "kind": "T"
+        },
+        {
+          "path": "schemas/contracts.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-input.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-result.json",
+          "kind": "J"
+        },
+        {
+          "path": "workflow.json",
+          "kind": "J"
+        }
+      ],
+      "graph_sha256": "46b18d375f3159d9fef1d9f5f6fb19c06663edf49949952cce3d4d189fbb7423",
+      "bundle_sha256": "31b82d3774c56546b9d28237a0dd68226ff0516d247cc0b18457294a0d3b4a12"
+    },
+    {
+      "workflow_id": "full",
+      "workflow_version": 4,
+      "bundle_schema_version": 1,
+      "root": "bundles/full-v4",
+      "graph": "workflow.json",
+      "files": [
+        {
+          "path": "playbooks/workflow.md",
+          "kind": "T"
+        },
+        {
+          "path": "schemas/contracts.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-input.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-result.json",
+          "kind": "J"
+        },
+        {
+          "path": "workflow.json",
+          "kind": "J"
+        }
+      ],
+      "graph_sha256": "8aa863efb740dc979c862919012c1073de3a00ab130d8ce62d851e80bc422078",
+      "bundle_sha256": "bc5082c941a839490506c8f403038dbee93c49d07ab6e6529557bc41e707760d"
+    },
+    {
+      "workflow_id": "lite",
+      "workflow_version": 3,
+      "bundle_schema_version": 1,
+      "root": "bundles/lite-v3",
+      "graph": "workflow.json",
+      "files": [
+        {
+          "path": "playbooks/workflow.md",
+          "kind": "T"
+        },
+        {
+          "path": "schemas/contracts.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-input.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-result.json",
+          "kind": "J"
+        },
+        {
+          "path": "workflow.json",
+          "kind": "J"
+        }
+      ],
+      "graph_sha256": "9bfd642610f6ff6eca9e164ea3544044f979606e2d36a9a6543d5a13e0a929f2",
+      "bundle_sha256": "111791bb7dd660dbb22842411cd8af87b8bc103478d0d6414900a993ef326bf3"
+    },
+    {
+      "workflow_id": "lite",
+      "workflow_version": 4,
+      "bundle_schema_version": 1,
+      "root": "bundles/lite-v4",
+      "graph": "workflow.json",
+      "files": [
+        {
+          "path": "playbooks/workflow.md",
+          "kind": "T"
+        },
+        {
+          "path": "schemas/contracts.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-input.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-result.json",
+          "kind": "J"
+        },
+        {
+          "path": "workflow.json",
+          "kind": "J"
+        }
+      ],
+      "graph_sha256": "3aa27e087ad7760008e6dfbb6004ae94cf767f7cb7ec2c18bd3a89cde9c01341",
+      "bundle_sha256": "4dffb5ce137384301f574fb09146785d5583928e4d9205d0678f4a891d2abc69"
+    },
+    {
+      "workflow_id": "full-legacy",
+      "workflow_version": 2,
+      "bundle_schema_version": 1,
+      "root": "bundles/full-legacy-v2",
+      "graph": "workflow.json",
+      "files": [
+        {
+          "path": "playbooks/workflow.md",
+          "kind": "T"
+        },
+        {
+          "path": "schemas/contracts.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-input.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-result.json",
+          "kind": "J"
+        },
+        {
+          "path": "workflow.json",
+          "kind": "J"
+        }
+      ],
+      "graph_sha256": "f4805031b99c1b537538895f9b0d9223da0a7bf55bf2ed18ca7622677acad40a",
+      "bundle_sha256": "7dd988538f4e83b5a9c1a2d01776befc3689527fd530b446c29b65db82f59d01"
+    },
+    {
+      "workflow_id": "lite-legacy",
+      "workflow_version": 2,
+      "bundle_schema_version": 1,
+      "root": "bundles/lite-legacy-v2",
+      "graph": "workflow.json",
+      "files": [
+        {
+          "path": "playbooks/workflow.md",
+          "kind": "T"
+        },
+        {
+          "path": "schemas/contracts.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-input.json",
+          "kind": "J"
+        },
+        {
+          "path": "schemas/node-result.json",
+          "kind": "J"
+        },
+        {
+          "path": "workflow.json",
+          "kind": "J"
+        }
+      ],
+      "graph_sha256": "973c40f7533c4dc14eca49f794f9c6b05f7992030306e4871f38b105f838980c",
+      "bundle_sha256": "f9df30044832c4899883e266264966469c7e4d1264fd1b9841f8cf8c0e4fc08d"
+    }
+  ]
+}

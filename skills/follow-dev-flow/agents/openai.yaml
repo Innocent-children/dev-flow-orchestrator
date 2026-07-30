@@ -7,3 +7,5 @@ dependencies:
     - type: "mcp"
       value: "codebase-memory-mcp"
       description: "Maintains explicit baseline and current-workspace projects and traces change impact"
+policy:
+  allow_implicit_invocation: true

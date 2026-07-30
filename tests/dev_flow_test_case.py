@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import errno
 import importlib.util
 import io
@@ -17,6 +18,7 @@ import time
 import unittest
 from unittest import mock
 from pathlib import Path
+from types import MappingProxyType
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "dev_flow.py"
@@ -26,6 +28,29 @@ assert SPEC and SPEC.loader
 dev_flow = importlib.util.module_from_spec(SPEC)
 sys.modules["dev_flow"] = dev_flow
 SPEC.loader.exec_module(dev_flow)
+
+
+def inactive_workflow_runtime_services() -> object:
+    """Freeze legacy regression tests below the v3 activation boundary."""
+
+    services = dev_flow.workflow_runtime_services()
+    activations = tuple(
+        MappingProxyType(
+            {
+                **dict(item),
+                "active": False,
+                "required_suites": [],
+            }
+        )
+        for item in services.catalog.activations
+    )
+    return dataclasses.replace(
+        services,
+        catalog=dataclasses.replace(
+            services.catalog,
+            activations=activations,
+        ),
+    )
 
 
 def git(repo: Path, *args: str) -> str:
@@ -52,7 +77,7 @@ def git(repo: Path, *args: str) -> str:
 class DevFlowTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.data = self.root / "state"
         git_home = self.root / "isolated git home"
         git_home.mkdir()
@@ -68,9 +93,19 @@ class DevFlowTestCase(unittest.TestCase):
             },
         )
         self.environment.start()
+        # The production candidate activates schema-v3 creation. Historical
+        # CLI/state regression cases must continue to exercise the frozen v2
+        # adapters explicitly; v3 suites opt back into an exact profile.
+        self.workflow_runtime = mock.patch.object(
+            dev_flow,
+            "_workflow_runtime_services",
+            inactive_workflow_runtime_services(),
+        )
+        self.workflow_runtime.start()
         self.workspace_plan_fixture_counter = 0
 
     def tearDown(self) -> None:
+        self.workflow_runtime.stop()
         self.environment.stop()
         self.temporary.cleanup()
 

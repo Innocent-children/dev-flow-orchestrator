@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import importlib.util
 import io
@@ -17,6 +18,9 @@ from unittest import mock
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 HOOK = PLUGIN_ROOT / "hooks" / "dev_flow_hook.py"
 WINDOWS_HOOK = PLUGIN_ROOT / "hooks" / "dev_flow_hook.cmd"
+POSIX_PYTHON_LAUNCHER = (
+    PLUGIN_ROOT / "scripts" / "dev_flow_python_launcher"
+)
 HOOKS_JSON = PLUGIN_ROOT / "hooks" / "hooks.json"
 
 
@@ -132,6 +136,139 @@ class DevFlowHookTests(unittest.TestCase):
         digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
         return self.data_dir / "hook-checkpoints" / f"{digest}.json"
 
+    def locator_payload(self, stdout: str) -> dict:
+        output = json.loads(stdout)
+        context = output["hookSpecificOutput"]["additionalContext"]
+        return json.loads(context)
+
+    def add_worker_assignment(
+        self,
+        state_file: Path,
+        *,
+        host_agent_id: str = "agent-7",
+        parallel_dispatch_allowed: bool = True,
+        manager_secret: str | None = None,
+    ) -> dict:
+        from tests import test_orchestration_authority as authority_fixture
+
+        scripts = str(PLUGIN_ROOT / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import dev_flow
+
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        bundle = dev_flow.workflow_runtime_services().catalog.resolve(
+            "full", 3
+        )
+        creation = dev_flow.build_v3_task_creation_fields(
+            state["task_id"],
+            bundle,
+            execution_profile="multi-repository",
+        )
+        state.update(
+            {
+                "schema_version": 3,
+                "revision": 41,
+                "flow": "full",
+                **creation,
+            }
+        )
+        lease_values = authority_fixture.lease_spec()
+        lease_values["task_id"] = state["task_id"]
+        lease_values["repository_id"] = state["repositories"][0]["id"]
+        lease_values["workflow_bundle_sha256"] = bundle.bundle_sha256
+        lease = authority_fixture.issue_lease(lease_values)
+        assignment = dev_flow.create_worker_assignment(
+            lease.as_dict(),
+            node_id="repository.implement/v1",
+            worktree_path=str(self.cwd.resolve()),
+            controller_claim_sha256=authority_fixture.digest("9"),
+            plan_id="repository-plan:task-7:3",
+            plan_artifact_sha256=authority_fixture.digest("a"),
+            playbook_locator="playbooks/repository-implement.md",
+            playbook_sha256=authority_fixture.digest("b"),
+            required_evidence_contract_sha256s=[
+                authority_fixture.digest("c"),
+                authority_fixture.digest("d"),
+            ],
+        ).as_dict()
+        dispatch_mode = (
+            "parallel-writable-worker"
+            if parallel_dispatch_allowed
+            else "manager-serial"
+        )
+        orchestration = state["orchestration"]
+        orchestration.update(
+            {
+                "assignments": {
+                    assignment["assignment_id"]: assignment,
+                },
+                "dispatch": {
+                    assignment["assignment_id"]: {
+                        "decision": {
+                            "schema": (
+                                "dev-flow-host-isolation-decision/v1"
+                            ),
+                            "assignment_id": assignment["assignment_id"],
+                            "parallel_dispatch_allowed": (
+                                parallel_dispatch_allowed
+                            ),
+                            "dispatch_mode": dispatch_mode,
+                            "blocker_codes": (
+                                []
+                                if parallel_dispatch_allowed
+                                else ["HOST_BOUNDARY_NOT_ENFORCED"]
+                            ),
+                        },
+                        "host_assignment_id": host_agent_id,
+                        **(
+                            {"manager_secret": manager_secret}
+                            if manager_secret is not None
+                            else {}
+                        ),
+                    }
+                },
+            }
+        )
+        state["status"] = "IMPLEMENTING"
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+        return assignment
+
+    def node_result_for_assignment(self, assignment: dict) -> dict:
+        import dev_flow
+
+        credential = assignment["lease_credential"]
+        candidate = {
+            "schema": "dev-flow-node-result/v1",
+            "task_id": assignment["task_id"],
+            "workflow_bundle_sha256": assignment[
+                "workflow_bundle_sha256"
+            ],
+            "map_epoch": assignment["map_epoch"],
+            "repository_id": assignment["repository_id"],
+            "node_instance_id": assignment["node_instance_id"],
+            "attempt": assignment["attempt"],
+            "assignment_id": assignment["assignment_id"],
+            "lease_id": credential["lease_id"],
+            "lease_nonce": credential["lease_nonce"],
+            "input_sha256": assignment["input_evidence_sha256"],
+            "output_sha256": "1" * 64,
+            "worktree_sha256": assignment[
+                "worktree_identity_sha256"
+            ],
+            "changed_paths_sha256": "2" * 64,
+            "verification_sha256": "3" * 64,
+            "outcome": "SUCCEEDED",
+            "summary": "implemented the scoped node",
+            "blockers": [],
+            "plan_drift": {"detected": False, "reasons": []},
+            "artifact_refs": [],
+            "evidence_refs": [],
+            "runtime_handle": None,
+        }
+        bound = dev_flow.bind_node_result_identity(candidate)
+        return json.loads(dev_flow.canonical_node_result_bytes(bound))
+
     def upgrade_state_to_v2(self, state_file: Path, *, revision: int = 7) -> None:
         policy = {
             "schema": "dev-flow-risk-policy/v1",
@@ -195,13 +332,26 @@ class DevFlowHookTests(unittest.TestCase):
         document = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
         hooks = document["hooks"]
         self.assertEqual(
-            set(hooks), {"SessionStart", "UserPromptSubmit", "PreToolUse"}
+            set(hooks),
+            {
+                "SessionStart",
+                "UserPromptSubmit",
+                "PreToolUse",
+                "SubagentStart",
+                "SubagentStop",
+                "PreCompact",
+                "PostCompact",
+            },
         )
         self.assertNotIn("Stop", hooks)
         self.assertIn("Bash", hooks["PreToolUse"][0]["matcher"])
         for groups in hooks.values():
             for group in groups:
                 for handler in group["hooks"]:
+                    self.assertIn(
+                        "$PLUGIN_ROOT/scripts/dev_flow_python_launcher",
+                        handler["command"],
+                    )
                     self.assertIn("$PLUGIN_ROOT/hooks/dev_flow_hook.py", handler["command"])
                     self.assertIn("commandWindows", handler)
                     self.assertIn(
@@ -211,6 +361,7 @@ class DevFlowHookTests(unittest.TestCase):
                     self.assertNotIn("python3", handler["commandWindows"].lower())
                     self.assertNotIn("~", handler["command"])
                     self.assertNotIn("~", handler["commandWindows"])
+                    self.assertNotIn("python3", handler["command"])
         shim = WINDOWS_HOOK.read_text(encoding="utf-8")
         self.assertIn("setlocal DisableDelayedExpansion", shim)
         self.assertIn("py -3", shim)
@@ -221,6 +372,14 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertIn('"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.py"', shim)
         self.assertIn("%*", shim)
         self.assertIn("exit /b %errorlevel%", shim)
+        posix = POSIX_PYTHON_LAUNCHER.read_text(encoding="utf-8")
+        self.assertIn(
+            "(3, 9) <= sys.version_info[:2] < (3, 15)",
+            posix,
+        )
+        self.assertIn("python3.14", posix)
+        self.assertIn("python3.9", posix)
+        self.assertIn("DEV_FLOW_PYTHON", posix)
 
     def test_session_start_injects_active_task_checkpoint(self) -> None:
         self.activate("ROUTE_APPROVED")
@@ -232,35 +391,15 @@ class DevFlowHookTests(unittest.TestCase):
         specific = output["hookSpecificOutput"]
         self.assertEqual(specific["hookEventName"], "SessionStart")
         context = specific["additionalContext"]
-        self.assertIn("Active task: TASK-42", context)
-        self.assertIn("Revision: unknown", context)
-        self.assertIn("流程名称: 完整流程（full）", context)
-        self.assertIn("工作方式: 创建独立工作树（worktree）", context)
-        self.assertIn("当前状态: 路线已批准（ROUTE_APPROVED）", context)
-        self.assertNotIn("- Flow:", context)
-        self.assertNotIn("- Stage:", context)
-        self.assertIn(
-            "剩余流程: 工作区就绪（WORKSPACE_READY） → 方案规划（PLANNING）",
-            context,
-        )
-        self.assertIn("Route: direct", context)
-        self.assertIn("Pending gate: workspace-approval", context)
-        self.assertIn("Next action: prepare the managed worktree", context)
-        self.assertIn(f"Data directory: {self.data_dir.resolve()}", context)
-        self.assertIn(f"Controller: {PLUGIN_ROOT / 'scripts' / 'dev_flow.py'}", context)
-        self.assertIn(f"Interpreter: {sys.executable}", context)
+        locator = json.loads(context)
+        self.assertEqual(locator["contract"], "dev-flow-hook-checkpoint/v1")
+        self.assertEqual(locator["task_id"], "TASK-42")
+        self.assertEqual(locator["revision"], 0)
+        self.assertEqual(locator["condition"]["node_id"], "ROUTE_APPROVED")
+        self.assertRegex(locator["frontier_sha256"], r"^[0-9a-f]{64}$")
         self.assertIn(f"--data-dir {self.data_dir.resolve()}", context)
-        self.assertIn("show --task TASK-42 --compact", context)
-        self.assertIn("Every controller call must explicitly include", context)
-        self.assertIn("状态切换确认（schema v1）", context)
-        self.assertIn("每条状态边仍须单独", context)
-        self.assertIn("preflight --preview", context)
-        self.assertIn("preflight --confirm-preview", context)
-        self.assertIn("只有决策输入或状态边漂移才必须重新 preview", context)
-        self.assertIn("轻量观察（observation）", context)
-        self.assertIn("证据摘要（evidence summary）", context)
-        self.assertIn("--accept-evidence-refresh", context)
-        self.assertNotIn("应用未变化的令牌", context)
+        self.assertIn("show --task TASK-42 --next --profile agent-v1", context)
+        self.assertLessEqual(len(context.encode("utf-8")), 600)
         self.assertNotIn("$PLUGIN_ROOT", context)
 
     def test_data_dir_argument_replaces_missing_plugin_data(self) -> None:
@@ -372,12 +511,24 @@ class DevFlowHookTests(unittest.TestCase):
         shutil.copy2(HOOK, special_root / "hooks" / HOOK.name)
         shutil.copy2(WINDOWS_HOOK, special_root / "hooks" / WINDOWS_HOOK.name)
         shutil.copy2(
+            POSIX_PYTHON_LAUNCHER,
+            special_root / "scripts" / POSIX_PYTHON_LAUNCHER.name,
+        )
+        shutil.copy2(
             PLUGIN_ROOT / "scripts" / "dev_flow.py",
             special_root / "scripts" / "dev_flow.py",
+        )
+        shutil.copy2(
+            PLUGIN_ROOT / "scripts" / "workflow_bundle_identity.py",
+            special_root / "scripts" / "workflow_bundle_identity.py",
         )
         shutil.copytree(
             PLUGIN_ROOT / "scripts" / "dev_flow_parts",
             special_root / "scripts" / "dev_flow_parts",
+        )
+        shutil.copytree(
+            PLUGIN_ROOT / "workflows",
+            special_root / "workflows",
         )
 
         task_dir = special_data / "tasks" / "PACKAGED-1"
@@ -417,6 +568,26 @@ class DevFlowHookTests(unittest.TestCase):
                 "tool_input": {"command": "git pull --ff-only"},
                 "cwd": str(special_cwd),
             },
+            "SubagentStart": {
+                "hook_event_name": "SubagentStart",
+                "agent_type": "worker",
+                "cwd": str(special_cwd),
+            },
+            "SubagentStop": {
+                "hook_event_name": "SubagentStop",
+                "agent_type": "worker",
+                "cwd": str(special_cwd),
+            },
+            "PreCompact": {
+                "hook_event_name": "PreCompact",
+                "session_id": "packaged-session",
+                "cwd": str(special_cwd),
+            },
+            "PostCompact": {
+                "hook_event_name": "PostCompact",
+                "session_id": "packaged-session",
+                "cwd": str(special_cwd),
+            },
         }
         command_key = "commandWindows" if os.name == "nt" else "command"
         environment = {
@@ -448,11 +619,30 @@ class DevFlowHookTests(unittest.TestCase):
                             completed.returncode, 0, completed.stderr
                         )
                         self.assertEqual(completed.stderr, b"")
+                        if event in {"SubagentStop", "PostCompact"}:
+                            self.assertEqual(completed.stdout, b"")
+                            continue
                         self.assertTrue(completed.stdout.endswith(b"\n"))
                         self.assertFalse(completed.stdout.endswith(b"\r\n"))
                         output = json.loads(completed.stdout.decode("utf-8"))
+                        if event == "PreCompact":
+                            self.assertEqual(output, {})
+                            continue
                         specific = output["hookSpecificOutput"]
                         self.assertEqual(specific["hookEventName"], event)
+                        if event == "SubagentStart":
+                            context = specific["additionalContext"]
+                            fallback = json.loads(context)
+                            self.assertEqual(
+                                fallback["contract"],
+                                "dev-flow-subagent-serial-fallback/v1",
+                            )
+                            self.assertEqual(
+                                fallback["dispatch_mode"],
+                                "manager-serial",
+                            )
+                            self.assertNotIn(str(special_data), context)
+                            continue
                         if event == "PreToolUse":
                             self.assertEqual(
                                 specific["permissionDecision"], "deny"
@@ -464,17 +654,12 @@ class DevFlowHookTests(unittest.TestCase):
                             context = specific["additionalContext"]
                             self.assertIn(str(special_root), context)
                             self.assertIn(str(special_data), context)
-                            interpreter = next(
-                                line.removeprefix("- Interpreter: ")
-                                for line in context.splitlines()
-                                if line.startswith("- Interpreter: ")
+                            locator = json.loads(context)
+                            self.assertEqual(
+                                locator["contract"],
+                                "dev-flow-hook-checkpoint/v1",
                             )
-                            command_line = next(
-                                line
-                                for line in context.splitlines()
-                                if line.startswith(("- Bootstrap command: ", "- Resume command: "))
-                            )
-                            self.assertIn(interpreter, command_line)
+                            self.assertIn(sys.executable, locator["controller"])
 
     @unittest.skipUnless(
         os.name == "nt", "requires native cmd.exe launcher resolution"
@@ -546,6 +731,71 @@ class DevFlowHookTests(unittest.TestCase):
                 "python-supported",
             ],
         )
+
+    @unittest.skipIf(
+        os.name == "nt", "requires the packaged POSIX /bin/sh launcher"
+    )
+    def test_posix_launcher_handles_sparse_path_fallback_and_exact_stdio(
+        self,
+    ) -> None:
+        root = Path(self.temporary.name)
+        launcher_dir = root / "稀疏 launchers"
+        handler_dir = root / "插件 handler ü"
+        launcher_dir.mkdir()
+        handler_dir.mkdir()
+        handler = handler_dir / "echo exit ü.py"
+        handler.write_text(
+            "import sys\n"
+            "payload = sys.stdin.buffer.read()\n"
+            "sys.stdout.buffer.write(payload)\n"
+            "sys.stdout.buffer.flush()\n"
+            "raise SystemExit(int(sys.argv[1]))\n",
+            encoding="utf-8",
+        )
+        unsupported = launcher_dir / "python3"
+        unsupported.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' python3 >>\"$DEV_FLOW_LAUNCH_LOG\"\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        supported_name = (
+            f"python{sys.version_info.major}.{sys.version_info.minor}"
+        )
+        supported = launcher_dir / supported_name
+        supported.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$0\" >>\"$DEV_FLOW_LAUNCH_LOG\"\n"
+            "exec \"$DEV_FLOW_REAL_PYTHON\" \"$@\"\n",
+            encoding="utf-8",
+        )
+        unsupported.chmod(0o755)
+        supported.chmod(0o755)
+        launch_log = root / "launch log.txt"
+        payload = "stdio 保真 ü\n".encode("utf-8")
+        completed = subprocess.run(
+            [
+                str(POSIX_PYTHON_LAUNCHER),
+                str(handler),
+                "7",
+            ],
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env={
+                "PATH": str(launcher_dir),
+                "DEV_FLOW_LAUNCH_LOG": str(launch_log),
+                "DEV_FLOW_REAL_PYTHON": sys.executable,
+            },
+            timeout=20,
+        )
+        self.assertEqual(completed.returncode, 7, completed.stderr)
+        self.assertEqual(completed.stdout, payload)
+        self.assertEqual(completed.stderr, b"")
+        observed = launch_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(observed[0], "python3")
+        self.assertTrue(observed[-1].endswith(supported_name), observed)
 
     @unittest.skipUnless(
         os.name == "nt", "requires native cmd.exe launcher resolution"
@@ -631,11 +881,12 @@ class DevFlowHookTests(unittest.TestCase):
         specific = output["hookSpecificOutput"]
         self.assertEqual(specific["hookEventName"], "UserPromptSubmit")
         context = specific["additionalContext"]
-        self.assertIn("Next action: write the plan", context)
-        self.assertIn("Revision:", context)
-        self.assertIn("show --task TASK-42 --compact", context)
+        locator = json.loads(context)
+        self.assertEqual(locator["task_id"], "TASK-42")
+        self.assertEqual(locator["condition"]["node_id"], "PLANNING")
+        self.assertIn("show --task TASK-42 --next", locator["controller"])
         self.assertNotIn("\n", context)
-        self.assertLess(len(context.encode("utf-8")), 1800)
+        self.assertLessEqual(len(context.encode("utf-8")), 600)
 
     def test_user_prompt_submit_suppresses_same_session_and_exact_context(self) -> None:
         self.activate("PLANNING", pending_gate=None, next_action="write the plan")
@@ -727,17 +978,11 @@ class DevFlowHookTests(unittest.TestCase):
         context = json.loads(started)["hookSpecificOutput"][
             "additionalContext"
         ]
-        self.assertIn("Revision: 7", context)
-        self.assertIn("show --task TASK-42 --compact", context)
-        self.assertIn("状态切换确认（schema v2）", context)
-        self.assertIn("record-index BASELINED→INDEXED", context)
-        self.assertIn("WORKSPACE_READY→PLANNING", context)
-        self.assertIn("IMPLEMENTING→VERIFYING", context)
-        self.assertIn("review-snapshot VERIFYING→REVIEWING", context)
-        self.assertIn("--preview", context)
-        self.assertIn("--confirm-intent", context)
-        self.assertIn("DONE/CANCELLED 永远显式确认", context)
-        self.assertNotIn("每条状态边仍须单独", context)
+        locator = json.loads(context)
+        self.assertEqual(locator["revision"], 7)
+        self.assertEqual(locator["condition"]["node_id"], "PLANNING")
+        self.assertIn("show --task TASK-42 --next", locator["controller"])
+        self.assertLessEqual(len(context.encode("utf-8")), 600)
 
         prompt, prompt_stderr = self.invoke(
             {
@@ -766,7 +1011,17 @@ class DevFlowHookTests(unittest.TestCase):
                 "agent_type": "reviewer",
             }
         )
-        self.assertEqual(subagent, "")
+        fallback = json.loads(
+            json.loads(subagent)["hookSpecificOutput"][
+                "additionalContext"
+            ]
+        )
+        self.assertEqual(
+            fallback["contract"],
+            "dev-flow-subagent-serial-fallback/v1",
+        )
+        self.assertEqual(fallback["owner"], "manager")
+        self.assertEqual(fallback["authority"], "none")
         self.assertEqual(subagent_stderr, "")
         self.assertFalse(self.checkpoint_marker(session_id).exists())
 
@@ -781,6 +1036,300 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertTrue(prompt)
         self.assertEqual(prompt_stderr, "")
         self.assertTrue(self.checkpoint_marker(session_id).is_file())
+
+    def test_subagent_start_injects_only_exact_scoped_assignment(self) -> None:
+        state_file = self.activate("IMPLEMENTING")
+        assignment = self.add_worker_assignment(state_file)
+        before = state_file.read_bytes()
+        stdout, stderr = self.invoke(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_id": "agent-7",
+                "agent_type": "worker",
+                "unsupported_host_field": {
+                    "manager_secret": "must-not-leak"
+                },
+            }
+        )
+        self.assertEqual(stderr, "")
+        output = json.loads(stdout)
+        self.assertEqual(
+            output["hookSpecificOutput"]["hookEventName"],
+            "SubagentStart",
+        )
+        context = output["hookSpecificOutput"]["additionalContext"]
+        projected = json.loads(context)
+        self.assertEqual(projected["assignment"], assignment)
+        self.assertEqual(
+            projected["dispatch_mode"],
+            "parallel-writable-worker",
+        )
+        self.assertEqual(
+            projected["assignment"]["worktree_path"],
+            str(self.cwd.resolve()),
+        )
+        self.assertEqual(
+            projected["assignment"]["approved_paths"],
+            ["src", "tests"],
+        )
+        self.assertEqual(
+            projected["assignment"]["playbook_locator"],
+            "playbooks/repository-implement.md",
+        )
+        self.assertNotIn("manager_secret", context)
+        self.assertNotIn("manager-capability", context)
+        self.assertNotIn("action.apply", context)
+        self.assertNotIn(str(self.data_dir), context)
+        self.assertEqual(state_file.read_bytes(), before)
+
+    def test_subagent_start_serial_fallback_never_releases_assignment(
+        self,
+    ) -> None:
+        state_file = self.activate("IMPLEMENTING")
+        self.add_worker_assignment(
+            state_file, parallel_dispatch_allowed=False
+        )
+        before = state_file.read_bytes()
+
+        stdout, stderr = self.invoke(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_id": "agent-7",
+                "agent_type": "worker",
+            }
+        )
+
+        self.assertEqual(stderr, "")
+        context = json.loads(stdout)["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        fallback = json.loads(context)
+        self.assertEqual(
+            fallback["contract"],
+            "dev-flow-subagent-serial-fallback/v1",
+        )
+        self.assertEqual(fallback["dispatch_mode"], "manager-serial")
+        self.assertEqual(fallback["authority"], "none")
+        self.assertNotIn("assignment", fallback)
+        self.assertLessEqual(len(context.encode("utf-8")), 600)
+        self.assertEqual(state_file.read_bytes(), before)
+
+    def test_subagent_start_unsafe_assignment_is_not_injected(
+        self,
+    ) -> None:
+        state_file = self.activate("IMPLEMENTING")
+        assignment = self.add_worker_assignment(state_file)
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        persisted = state["orchestration"]["assignments"][
+            assignment["assignment_id"]
+        ]
+        persisted["capabilities"].append("action.apply/v1")
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+
+        stdout, stderr = self.invoke(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_id": "agent-7",
+            }
+        )
+
+        self.assertEqual(stderr, "")
+        context = json.loads(stdout)["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        fallback = json.loads(context)
+        self.assertEqual(
+            fallback["contract"],
+            "dev-flow-subagent-serial-fallback/v1",
+        )
+        self.assertNotIn("assignment", fallback)
+        self.assertNotIn("action.apply/v1", context)
+
+    def test_subagent_start_controller_projection_never_leaks_manager_secret(
+        self,
+    ) -> None:
+        state_file = self.activate("IMPLEMENTING")
+        secret = "manager-only-value-7"
+        assignment = self.add_worker_assignment(
+            state_file, manager_secret=secret
+        )
+
+        stdout, stderr = self.invoke(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_id": "agent-7",
+            }
+        )
+
+        self.assertEqual(stderr, "")
+        context = json.loads(stdout)["hookSpecificOutput"][
+            "additionalContext"
+        ]
+        projection = json.loads(context)
+        self.assertEqual(projection["assignment"], assignment)
+        self.assertNotIn("manager_secret", context)
+        self.assertNotIn(secret, context)
+        self.assertNotIn(str(self.data_dir), context)
+
+    def test_subagent_stop_requests_continuation_without_committing(self) -> None:
+        state_file = self.activate("IMPLEMENTING")
+        assignment = self.add_worker_assignment(state_file)
+        before = state_file.read_bytes()
+        missing, missing_stderr = self.invoke(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_id": "agent-7",
+                "last_assistant_message": "work is done",
+            }
+        )
+        self.assertEqual(missing_stderr, "")
+        continuation = json.loads(missing)
+        self.assertEqual(continuation["decision"], "block")
+        self.assertIn("Continue", continuation["reason"])
+        self.assertIn("<=2048", continuation["reason"])
+        self.assertEqual(state_file.read_bytes(), before)
+
+        result = self.node_result_for_assignment(assignment)
+        accepted, accepted_stderr = self.invoke(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_id": "agent-7",
+                "last_assistant_message": json.dumps(
+                    result, separators=(",", ":"), sort_keys=True
+                ),
+            }
+        )
+        self.assertEqual(accepted, "")
+        self.assertEqual(accepted_stderr, "")
+        self.assertEqual(state_file.read_bytes(), before)
+
+    def test_subagent_result_budget_and_unknown_assignment_fail_open(self) -> None:
+        state_file = self.activate("IMPLEMENTING")
+        self.add_worker_assignment(state_file)
+        oversized, _ = self.invoke(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_id": "agent-7",
+                "last_assistant_message": json.dumps(
+                    {"schema": "dev-flow-node-result/v1", "raw": "x" * 9000}
+                ),
+            }
+        )
+        self.assertEqual(json.loads(oversized)["decision"], "block")
+        unknown, unknown_stderr = self.invoke(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_id": "unknown-agent",
+                "agent_type": ["unsupported"],
+            }
+        )
+        fallback = json.loads(
+            json.loads(unknown)["hookSpecificOutput"][
+                "additionalContext"
+            ]
+        )
+        self.assertEqual(
+            fallback["contract"],
+            "dev-flow-subagent-serial-fallback/v1",
+        )
+        self.assertNotIn("assignment", fallback)
+        self.assertEqual(unknown_stderr, "")
+
+    def test_compact_checkpoint_uses_session_start_wire_contract(self) -> None:
+        state_file = self.activate("IMPLEMENTING")
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["revision"] = 9
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+        session_id = "compact-session-9"
+        before = state_file.read_bytes()
+
+        pre, pre_stderr = self.invoke(
+            {
+                "hook_event_name": "PreCompact",
+                "session_id": session_id,
+                "trigger": "auto",
+                "unsupported_host_field": ["ignored"],
+            }
+        )
+        self.assertEqual(pre_stderr, "")
+        self.assertEqual(json.loads(pre), {})
+        marker = self.checkpoint_marker(session_id)
+        document = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(document["task_id"], "TASK-42")
+        self.assertEqual(document["revision"], 9)
+        self.assertRegex(
+            document["frontier_sha256"], r"^[0-9a-f]{64}$"
+        )
+        self.assertEqual(
+            document["projection_contract"],
+            "dev-flow-hook-checkpoint/v1",
+        )
+
+        post, post_stderr = self.invoke(
+            {
+                "hook_event_name": "PostCompact",
+                "session_id": session_id,
+                "compaction_id": "unsupported-but-safe",
+            }
+        )
+        self.assertEqual(post_stderr, "")
+        self.assertEqual(post, "")
+
+        restored, restored_stderr = self.invoke(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": session_id,
+                "source": "compact",
+            }
+        )
+        self.assertEqual(restored_stderr, "")
+        locator = self.locator_payload(restored)
+        self.assertEqual(locator["revision"], 9)
+        self.assertEqual(locator["condition"]["node_id"], "IMPLEMENTING")
+        encoded = json.dumps(
+            locator,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        self.assertLessEqual(len(encoded), 600)
+        self.assertTrue(locator["controller"].startswith("cli:"))
+        self.assertIn("--next --profile agent-v1", locator["controller"])
+        self.assertEqual(state_file.read_bytes(), before)
+
+    def test_post_compact_emits_no_unsupported_hook_specific_output(
+        self,
+    ) -> None:
+        self.activate("IMPLEMENTING")
+        stdout, stderr = self.invoke(
+            {
+                "hook_event_name": "PostCompact",
+                "turn_id": "turn-compact-wire",
+                "trigger": "auto",
+            }
+        )
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+
+    def test_concurrent_corrupt_checkpoint_markers_fail_open(self) -> None:
+        self.activate("PLANNING")
+        session_id = "concurrent-corrupt"
+        marker = self.checkpoint_marker(session_id)
+        marker.parent.mkdir()
+        marker.write_bytes(b"{corrupt")
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session_id,
+            "prompt": "continue",
+        }
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(self.invoke, payload) for _ in range(4)]
+            results = [future.result() for future in futures]
+        self.assertTrue(any(stdout for stdout, _ in results))
+        self.assertTrue(all(stderr == "" for _, stderr in results))
+        healed = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(healed["schema"], "dev-flow-hook-checkpoint/v1")
+        self.assertEqual(healed["task_id"], "TASK-42")
 
     def test_checkpoint_is_scoped_by_session_and_compact_context(self) -> None:
         state_file = self.activate(
@@ -804,7 +1353,7 @@ class DevFlowHookTests(unittest.TestCase):
         self.assertTrue(second_session)
 
         state = json.loads(state_file.read_text(encoding="utf-8"))
-        state["next_action"] = "record focused test evidence"
+        state["revision"] = 1
         state_file.write_text(json.dumps(state), encoding="utf-8")
         changed, _ = self.invoke(
             {
@@ -816,7 +1365,7 @@ class DevFlowHookTests(unittest.TestCase):
         changed_context = json.loads(changed)["hookSpecificOutput"][
             "additionalContext"
         ]
-        self.assertIn("record focused test evidence", changed_context)
+        self.assertEqual(json.loads(changed_context)["revision"], 1)
         repeated, _ = self.invoke(
             {
                 "hook_event_name": "UserPromptSubmit",
@@ -952,13 +1501,20 @@ class DevFlowHookTests(unittest.TestCase):
         stdout, _ = self.invoke(
             {"hook_event_name": "SessionStart", "source": "resume"}
         )
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn(
-            "codebase-memory selection: explicit project parameter; never automatic",
-            context,
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["task_id"], "TASK-42")
+        self.assertEqual(locator["condition"]["node_id"], "INDEXED")
+        self.assertLessEqual(
+            len(
+                json.dumps(
+                    locator,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ),
+            600,
         )
-        self.assertIn("Active index role: baseline", context)
-        self.assertIn("Active index projects: service=task-service-baseline", context)
 
     def test_context_requires_workspace_index_after_workspace_creation(self) -> None:
         self.activate(
@@ -973,13 +1529,9 @@ class DevFlowHookTests(unittest.TestCase):
         stdout, _ = self.invoke(
             {"hook_event_name": "UserPromptSubmit", "prompt": "continue"}
         )
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Active index role: workspace", context)
-        self.assertIn("Active index projects: service=MISSING", context)
-        self.assertIn(
-            "Next action: create or refresh every workspace index, then create the implementation plan",
-            context,
-        )
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["condition"]["node_id"], "WORKSPACE_READY")
+        self.assertIn("--next --profile agent-v1", locator["controller"])
 
     def test_context_selects_current_workspace_project_and_blocked_origin(self) -> None:
         repository = {
@@ -992,11 +1544,8 @@ class DevFlowHookTests(unittest.TestCase):
         stdout, _ = self.invoke(
             {"hook_event_name": "SessionStart", "source": "resume"}
         )
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Active index role: workspace", context)
-        self.assertIn(
-            "Active index projects: service=task-service-workspace-r0", context
-        )
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["condition"]["node_id"], "IMPLEMENTING")
 
         task = json.loads(state_file.read_text(encoding="utf-8"))
         task["status"] = "BLOCKED"
@@ -1005,14 +1554,9 @@ class DevFlowHookTests(unittest.TestCase):
         stdout, _ = self.invoke(
             {"hook_event_name": "UserPromptSubmit", "prompt": "resume"}
         )
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Active index role: baseline", context)
-        self.assertIn("Active index projects: service=task-service-baseline", context)
-        self.assertIn("当前状态: 已阻塞（BLOCKED）", context)
-        self.assertIn(
-            "剩余流程: 影响评审（IMPACT_REVIEW） → 路线已批准（ROUTE_APPROVED）",
-            context,
-        )
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["condition"]["node_id"], "BLOCKED")
+        self.assertEqual(locator["condition"]["kind"], "blocked")
 
     def test_context_uses_controller_gate_keys_and_stage_actions(self) -> None:
         state_file = self.activate(
@@ -1021,8 +1565,8 @@ class DevFlowHookTests(unittest.TestCase):
         stdout, _ = self.invoke(
             {"hook_event_name": "SessionStart", "source": "resume"}
         )
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Pending gate: baseline fetch/materialization approval", context)
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["condition"]["node_id"], "PREFLIGHTED")
 
         task = json.loads(state_file.read_text(encoding="utf-8"))
         task["status"] = "REVIEWING"
@@ -1031,17 +1575,16 @@ class DevFlowHookTests(unittest.TestCase):
         stdout, _ = self.invoke(
             {"hook_event_name": "UserPromptSubmit", "prompt": "continue"}
         )
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Pending gate: review approval", context)
-        self.assertIn("Next action: approve the review and then finalize", context)
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["condition"]["node_id"], "REVIEWING")
 
         task["status"] = "FINALIZING"
         state_file.write_text(json.dumps(task), encoding="utf-8")
         stdout, _ = self.invoke(
             {"hook_event_name": "SessionStart", "source": "resume"}
         )
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Pending gate: none", context)
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["condition"]["node_id"], "FINALIZING")
 
     def test_current_core_layout_preserves_nonterminal_task_ambiguity(self) -> None:
         self.write_core_state(
@@ -1085,8 +1628,8 @@ class DevFlowHookTests(unittest.TestCase):
         stdout, _ = self.invoke(
             {"hook_event_name": "UserPromptSubmit", "prompt": "continue"}
         )
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Active task: TASK-WORKSPACE", context)
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["task_id"], "TASK-WORKSPACE")
 
     def test_analysis_workspace_is_active_but_remains_write_guarded(self) -> None:
         source = Path(self.temporary.name) / "source-repository"
@@ -1651,22 +2194,19 @@ class DevFlowHookTests(unittest.TestCase):
             {"hook_event_name": "SessionStart", "source": "resume"}
         )
         self.assertEqual(stderr, "")
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Active task: LITE-7", context)
-        self.assertIn("流程名称: 精简流程（lite）", context)
-        self.assertIn("工作方式: 使用当前分支（in-place）", context)
-        self.assertIn("当前状态: 预检完成（PREFLIGHTED）", context)
-        self.assertNotIn("- Flow:", context)
-        self.assertNotIn("- Stage:", context)
-        self.assertIn(
-            "剩余流程: 实现中（IMPLEMENTING） → 验证中（VERIFYING） → 已完成（DONE）",
-            context,
-        )
-        self.assertIn("Pending gate: lite in-place approval", context)
-        self.assertIn("Active index role: none", context)
-        self.assertIn(
-            "Next action: present the in-place scope and obtain the lite approval",
-            context,
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["task_id"], "LITE-7")
+        self.assertEqual(locator["condition"]["node_id"], "PREFLIGHTED")
+        self.assertLessEqual(
+            len(
+                json.dumps(
+                    locator,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ),
+            600,
         )
 
     def test_lite_branch_checkpoint_uses_the_user_selected_chinese_name(self) -> None:
@@ -1682,11 +2222,9 @@ class DevFlowHookTests(unittest.TestCase):
             {"hook_event_name": "SessionStart", "source": "resume"}
         )
         self.assertEqual(stderr, "")
-        context = json.loads(stdout)["hookSpecificOutput"][
-            "additionalContext"
-        ]
-        self.assertIn("流程名称: 精简流程（lite）", context)
-        self.assertIn("工作方式: 新建并切换分支（branch）", context)
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["task_id"], "LITE-BRANCH")
+        self.assertEqual(locator["condition"]["node_id"], "INTAKE")
 
     def test_lite_task_source_writes_follow_the_stage(self) -> None:
         state_file = self.write_core_state(
@@ -1839,9 +2377,8 @@ class DevFlowHookTests(unittest.TestCase):
         included.mkdir()
         self.write_scope(include=[included])
         stdout, _ = self.invoke({"hook_event_name": "SessionStart"})
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Active task: TASK-42", context)
-        self.assertIn("Directory scope: outside the configured scope", context)
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["task_id"], "TASK-42")
         self.assertIn(
             "Direct commits on protected branch",
             self.assert_denied("git commit -m 'out of scope'"),
@@ -1851,9 +2388,8 @@ class DevFlowHookTests(unittest.TestCase):
         self.activate("IMPLEMENTING")
         self.write_scope(include=[self.cwd])
         stdout, _ = self.invoke({"hook_event_name": "SessionStart"})
-        context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Active task: TASK-42", context)
-        self.assertNotIn("Directory scope", context)
+        locator = self.locator_payload(stdout)
+        self.assertEqual(locator["task_id"], "TASK-42")
 
     def test_unreadable_scope_configuration_keeps_the_hook_active(self) -> None:
         (self.data_dir / "config.json").write_text("{ not json", encoding="utf-8")

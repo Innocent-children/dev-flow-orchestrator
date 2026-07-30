@@ -1,0 +1,72 @@
+#!/bin/sh
+# Select one supported POSIX Python without depending on the hook's cwd.
+
+if [ "$#" -lt 1 ]; then
+  echo "dev-flow-orchestrator: a Python handler path is required." >&2
+  exit 64
+fi
+
+dev_flow_handler=$1
+shift
+
+if [ ! -f "$dev_flow_handler" ]; then
+  echo "dev-flow-orchestrator: Python handler does not exist: $dev_flow_handler" >&2
+  exit 66
+fi
+
+dev_flow_try_python() {
+  dev_flow_candidate=$1
+  shift
+
+  case "$dev_flow_candidate" in
+    */*)
+      if [ ! -f "$dev_flow_candidate" ] || [ ! -x "$dev_flow_candidate" ]; then
+        return 1
+      fi
+      ;;
+    *)
+      if ! command -v "$dev_flow_candidate" >/dev/null 2>&1; then
+        return 1
+      fi
+      ;;
+  esac
+
+  if ! "$dev_flow_candidate" -c \
+    'import sys;sys.exit(0 if (3, 9) <= sys.version_info[:2] < (3, 15) else 1)' \
+    >/dev/null 2>&1
+  then
+    return 1
+  fi
+
+  exec "$dev_flow_candidate" "$dev_flow_handler" "$@"
+}
+
+if [ -n "${DEV_FLOW_PYTHON:-}" ]; then
+  dev_flow_try_python "$DEV_FLOW_PYTHON" "$@" || true
+fi
+
+# Prefer the host's normal launchers, then explicit minor-version launchers.
+# This lets an unsupported python3 fall through to a supported python3.x.
+for dev_flow_candidate in \
+  python3 python \
+  python3.14 python3.13 python3.12 python3.11 python3.10 python3.9
+do
+  dev_flow_try_python "$dev_flow_candidate" "$@" || true
+done
+
+# Hooks intentionally run with a sparse environment. Probe only conventional
+# absolute POSIX installation paths; a custom path belongs in DEV_FLOW_PYTHON.
+for dev_flow_candidate in \
+  /usr/bin/python3 \
+  /usr/local/bin/python3 \
+  /opt/homebrew/bin/python3 \
+  /opt/local/bin/python3 \
+  /usr/pkg/bin/python3
+do
+  dev_flow_try_python "$dev_flow_candidate" "$@" || true
+done
+
+echo \
+  "dev-flow-orchestrator: Python 3.9-3.14 was not found; set DEV_FLOW_PYTHON to a verified absolute interpreter." \
+  >&2
+exit 127

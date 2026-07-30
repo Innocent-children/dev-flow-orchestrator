@@ -677,6 +677,7 @@ class DevFlowFullFlowTest(test_case.DevFlowTestCase):
         self.assertEqual(response["status"], "REVIEWING")
         task = dev_flow.load_state(task["task_id"], self.data)
         snapshot = task["review_snapshots"][-1]
+        self.assertEqual(snapshot_receipt["sha256"], snapshot["sha256"])
         sections = snapshot["repositories"][0]["sections"]
         fingerprint_reference = snapshot["repositories"][0]["fingerprint"]
         self.assertEqual(
@@ -806,9 +807,15 @@ class DevFlowFullFlowTest(test_case.DevFlowTestCase):
         task = dev_flow.load_state(task["task_id"], self.data)
         verified_conditional, _ = dev_flow._require_review_gate(task)
         self.assertTrue(verified_conditional["conditional_accepted"])
-        newer_snapshot = self.mutate("review-snapshot", task)["snapshot"]
-        self.assertNotEqual(newer_snapshot["sha256"], snapshot["sha256"])
+        newer_snapshot_receipt = self.mutate(
+            "review-snapshot", task
+        )["snapshot"]
         task = dev_flow.load_state(task["task_id"], self.data)
+        newer_snapshot = task["review_snapshots"][-1]
+        self.assertEqual(
+            newer_snapshot_receipt["sha256"], newer_snapshot["sha256"]
+        )
+        self.assertNotEqual(newer_snapshot["sha256"], snapshot["sha256"])
         stale_report = self.cli(
             "transition",
             task["task_id"],
@@ -927,8 +934,25 @@ class DevFlowFullFlowTest(test_case.DevFlowTestCase):
         config_residue = self.data / ".config.json.rollback-cafe"
         config_residue.write_bytes(b"")
 
-        blocked = self.mutate(
-            "cancel", task, "--reason", "blocked by residue", expected_code=2
+        cancel_preview = self.cli(
+            "cancel",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--reason",
+            "blocked by residue",
+            "--preview",
+        )
+        blocked = self.cli(
+            "cancel",
+            task["task_id"],
+            "--expected-revision",
+            str(task["revision"]),
+            "--reason",
+            "blocked by residue",
+            "--confirm-intent",
+            cancel_preview["preview"]["intent_id"],
+            expected_code=2,
         )
         self.assertEqual(
             blocked["error"]["code"], "ATOMIC_RECOVERY_REQUIRED"

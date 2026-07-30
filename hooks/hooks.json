@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
             "commandWindows": "\"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd\"",
             "timeout": 10,
             "statusMessage": "Loading the active Dev Flow task"
@@ -20,9 +20,60 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
             "commandWindows": "\"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd\"",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "commandWindows": "\"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd\"",
+            "timeout": 10,
+            "statusMessage": "Loading the scoped Dev Flow assignment"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "commandWindows": "\"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd\"",
+            "timeout": 10,
+            "statusMessage": "Checking the Dev Flow worker result"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "commandWindows": "\"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "commandWindows": "\"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd\"",
+            "timeout": 10,
+            "statusMessage": "Finishing the Dev Flow compaction checkpoint"
           }
         ]
       }
@@ -33,7 +84,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
             "commandWindows": "\"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd\"",
             "timeout": 10,
             "statusMessage": "Checking Dev Flow guardrails"

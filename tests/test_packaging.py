@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -12,6 +13,8 @@ import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
+
+from scripts import windows_native_validation
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -84,6 +87,20 @@ class PackageValidationTests(unittest.TestCase):
             / "agents"
             / "openai.yaml"
         ).read_text(encoding="utf-8")
+        impact_interface = (
+            PLUGIN_ROOT
+            / "skills"
+            / "analyze-change-impact"
+            / "agents"
+            / "openai.yaml"
+        ).read_text(encoding="utf-8")
+        review_interface = (
+            PLUGIN_ROOT
+            / "skills"
+            / "review-dev-flow-change"
+            / "agents"
+            / "openai.yaml"
+        ).read_text(encoding="utf-8")
 
         for label in (
             "使用当前分支（精简流程）",
@@ -108,7 +125,11 @@ class PackageValidationTests(unittest.TestCase):
         self.assertIn("一次确认不得授权后续状态边", skill)
         self.assertIn("git switch -c <branch>", skill)
         self.assertIn("git switch -c <branch>", common)
-        self.assertIn("preflight --preview", skill)
+        self.assertIn("task-next", skill)
+        self.assertIn("node-description", skill)
+        self.assertIn("--profile agent-v1", skill)
+        self.assertIn("Do not preload unrelated", skill)
+        self.assertNotIn("Run the controller's `--help`", skill)
         self.assertIn("PREFLIGHT_PREVIEW_STALE", preflight)
         self.assertIn(
             "`start` rejects a\nmissing `--workspace-strategy",
@@ -125,6 +146,17 @@ class PackageValidationTests(unittest.TestCase):
         self.assertIn("repository's unambiguous dominant language", openspec_route)
         self.assertIn("stop and ask the user", openspec_route)
         self.assertIn("执行开发流程", interface)
+        self.assertNotIn('value: "dev-flow"', interface)
+        self.assertNotIn('value: "dev-flow-posix"', interface)
+        self.assertNotIn('value: "dev-flow-windows"', interface)
+        self.assertIn('value: "codebase-memory-mcp"', interface)
+        self.assertIn("allow_implicit_invocation: true", interface)
+        self.assertIn(
+            "allow_implicit_invocation: false", impact_interface
+        )
+        self.assertIn(
+            "allow_implicit_invocation: false", review_interface
+        )
 
     def test_controller_hook_and_document_workflow_names_stay_in_sync(self) -> None:
         controller = load_script(
@@ -135,6 +167,10 @@ class PackageValidationTests(unittest.TestCase):
             "dev_flow_hook_name_sync",
             PLUGIN_ROOT / "hooks" / "dev_flow_hook.py",
         )
+        hook_source = (
+            PLUGIN_ROOT / "hooks" / "dev_flow_hook.py"
+        ).read_text(encoding="utf-8")
+        hook_tree = ast.parse(hook_source)
         common = (
             PLUGIN_ROOT
             / "skills"
@@ -142,26 +178,142 @@ class PackageValidationTests(unittest.TestCase):
             / "references"
             / "state-machine-common.md"
         ).read_text(encoding="utf-8")
+        readmes = [
+            (PLUGIN_ROOT / name).read_text(encoding="utf-8")
+            for name in ("README.md", "README.zh-CN.md")
+        ]
 
-        self.assertEqual(controller.FLOW_NAMES_ZH, hook.FLOW_NAMES_ZH)
-        self.assertEqual(controller.STATE_NAMES_ZH, hook.STATE_NAMES_ZH)
-        self.assertEqual(
-            controller.WORKSPACE_STRATEGY_NAMES_ZH,
-            hook.WORKSPACE_STRATEGY_NAMES_ZH,
+        workflow_view = next(
+            node
+            for node in hook_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_controller_workflow_view"
         )
-        self.assertEqual(tuple(controller.ORDERED_STATES), hook.STAGES)
-        self.assertEqual(
-            tuple(controller.LITE_ORDERED_STATES),
-            hook.LITE_STAGES,
+        imported = {
+            alias.name
+            for node in ast.walk(workflow_view)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "dev_flow"
+            for alias in node.names
+        }
+        called = {
+            node.func.id
+            for node in ast.walk(workflow_view)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+        }
+        projection_apis = {
+            "build_task_next",
+            "resolve_loaded_task_workflow",
+            "workflow_node_description",
+            "workflow_progress_projection",
+            "workflow_runtime_services",
+        }
+        self.assertTrue(projection_apis <= imported)
+        self.assertTrue(projection_apis <= called)
+
+        assigned_names = {
+            target.id
+            for node in hook_tree.body
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            for target in (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else (node.target,)
+            )
+            if isinstance(target, ast.Name)
+        }
+        self.assertTrue(
+            {
+                "FLOW_NAMES_ZH",
+                "STATE_NAMES_ZH",
+                "ORDERED_STATES",
+                "LITE_ORDERED_STATES",
+                "STAGES",
+                "LITE_STAGES",
+                "FULL_GATES",
+                "LITE_GATE",
+                "APPROVAL_GATES",
+            }.isdisjoint(assigned_names)
         )
-        for stable_id, display_name in {
-            **controller.FLOW_NAMES_ZH,
-            **controller.STATE_NAMES_ZH,
-        }.items():
+
+        catalog = controller.workflow_runtime_services().catalog
+        full = catalog.resolve("full", 3)
+        lite = catalog.resolve("lite", 3)
+        for bundle in (full, lite):
+            flow_id = bundle.graph["flow"]
+            display_name = bundle.graph["labels"]["zh-CN"]
+            self.assertEqual(
+                controller.FLOW_NAMES_ZH[flow_id],
+                display_name,
+            )
+            self.assertIn(
+                f"| `{flow_id}` | {display_name} |",
+                common,
+            )
+            for readme in readmes:
+                self.assertIn(flow_id, readme)
+                self.assertIn(display_name, readme)
+        for stable_id, display_name in controller.STATE_NAMES_ZH.items():
+            self.assertEqual(
+                full.node(stable_id)["labels"]["zh-CN"],
+                display_name,
+            )
             self.assertIn(
                 f"| `{stable_id}` | {display_name} |",
                 common,
             )
+
+        state = {
+            "schema_version": 3,
+            "task_id": "hook-projection-sync",
+            "revision": 1,
+            "status": "PLANNING",
+            "flow": "full",
+            "execution_profile": "single-repository",
+            "workflow_ref": {
+                "id": full.workflow_id,
+                "version": full.workflow_version,
+                "schema": full.graph["schema"],
+                "graph_sha256": full.graph_sha256,
+                "bundle_sha256": full.bundle_sha256,
+            },
+            "node_instances": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            view = hook._controller_workflow_view(
+                state,
+                Path(temporary),
+                PLUGIN_ROOT,
+            )
+        description = controller.workflow_node_description(state)
+        expected_action_ids = []
+        for action in description["legal_actions"]:
+            action_id = action["action_id"]
+            if action_id not in expected_action_ids:
+                expected_action_ids.append(action_id)
+
+        self.assertEqual(view.task_next["contract"], "agent-v1")
+        self.assertEqual(
+            view.task_next["workflow"]["bundle_sha256"],
+            full.bundle_sha256,
+        )
+        self.assertEqual(
+            hook._workflow_name(view, "fallback"),
+            full.graph["labels"]["zh-CN"],
+        )
+        self.assertEqual(
+            hook._node_label(view, "fallback"),
+            full.node("PLANNING")["labels"]["zh-CN"],
+        )
+        self.assertEqual(
+            view.task_next["frontier"][0]["label"],
+            full.node("PLANNING")["labels"]["zh-CN"],
+        )
+        self.assertEqual(
+            hook._projected_next_action(state, view),
+            ", ".join(expected_action_ids),
+        )
 
     def test_state_machine_references_are_routed_and_bounded(self) -> None:
         skill_root = PLUGIN_ROOT / "skills" / "follow-dev-flow"
@@ -205,6 +357,29 @@ class PackageValidationTests(unittest.TestCase):
         self.assertEqual(len(errors), 2)
         self.assertTrue(all("portable package path collision" in item for item in errors))
 
+    def test_identity_inventory_covers_v4_runtime_and_release_inputs(
+        self,
+    ) -> None:
+        inventory = validate_package.package_inventory(PLUGIN_ROOT)
+        self.assertEqual(
+            validate_package.validate_identity_inventory(
+                PLUGIN_ROOT, inventory
+            ),
+            [],
+        )
+        inventory.remove(
+            "scripts/dev_flow_parts/workflow_action_transaction.py"
+        )
+        errors = validate_package.validate_identity_inventory(
+            PLUGIN_ROOT, inventory
+        )
+        self.assertTrue(
+            any(
+                "workflow_action_transaction.py" in item
+                for item in errors
+            )
+        )
+
     def test_manifest_validator_is_independent_of_default_hook_discovery(self) -> None:
         manifest = json.loads(
             (PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
@@ -217,6 +392,253 @@ class PackageValidationTests(unittest.TestCase):
         manifest["hooks"] = "./hooks/hooks.json"
         errors = validate_package.validate_manifest(manifest, inventory, PLUGIN_ROOT)
         self.assertTrue(any("must omit `hooks`" in item for item in errors))
+
+    def test_manifest_and_mcp_configuration_use_official_companion_shape(
+        self,
+    ) -> None:
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        document = json.loads(
+            (PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8")
+        )
+        inventory = validate_package.package_inventory(PLUGIN_ROOT)
+
+        self.assertEqual(manifest["mcpServers"], "./.mcp.json")
+        self.assertEqual(
+            validate_package.validate_mcp_configuration(
+                document, inventory
+            ),
+            [],
+        )
+        self.assertEqual(
+            set(document),
+            {"mcpServers"},
+        )
+        self.assertEqual(
+            set(document["mcpServers"]),
+            {"dev-flow-posix", "dev-flow-windows"},
+        )
+        posix = document["mcpServers"]["dev-flow-posix"]
+        windows = document["mcpServers"]["dev-flow-windows"]
+        self.assertEqual(
+            posix["command"],
+            "/bin/sh",
+        )
+        self.assertEqual(
+            posix["args"],
+            [
+                "./scripts/dev_flow_python_launcher",
+                "./scripts/dev_flow_mcp.py",
+            ],
+        )
+        self.assertEqual(windows["command"], "cmd.exe")
+        self.assertEqual(
+            windows["args"],
+            [
+                "/d",
+                "/c",
+                ".\\scripts\\dev_flow_mcp_launcher.cmd",
+            ],
+        )
+        for server in (posix, windows):
+            self.assertEqual(
+                server["default_tools_approval_mode"], "writes"
+            )
+            self.assertFalse(server["enabled"])
+            self.assertFalse(server["required"])
+            self.assertNotIn("env", server)
+
+    def test_mcp_configuration_rejects_nonportable_or_unsafe_defaults(
+        self,
+    ) -> None:
+        document = json.loads(
+            (PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8")
+        )
+        inventory = validate_package.package_inventory(PLUGIN_ROOT)
+        posix = document["mcpServers"]["dev-flow-posix"]
+        posix["command"] = "/absolute/unsupported-shell"
+        posix["enabled"] = True
+        document["mcpServers"]["dev-flow-windows"]["enabled"] = True
+        posix[
+            "default_tools_approval_mode"
+        ] = "auto"
+        posix["env"] = {
+            "manager_secret": "forbidden"
+        }
+
+        errors = validate_package.validate_mcp_configuration(
+            document, inventory
+        )
+
+        self.assertTrue(
+            any("command must be" in error for error in errors), errors
+        )
+        self.assertTrue(
+            any("default disabled" in error for error in errors), errors
+        )
+        self.assertTrue(
+            any("prompt for write tools" in error for error in errors),
+            errors,
+        )
+        self.assertTrue(
+            any("secret material" in error for error in errors), errors
+        )
+
+    def test_mcp_profiles_use_explicit_host_launchers_without_pathext(
+        self,
+    ) -> None:
+        posix_launcher = (
+            PLUGIN_ROOT / "scripts" / "dev_flow_mcp_launcher"
+        )
+        windows_launcher = (
+            PLUGIN_ROOT / "scripts" / "dev_flow_mcp_launcher.cmd"
+        )
+        self.assertTrue(posix_launcher.is_file())
+        self.assertTrue(windows_launcher.is_file())
+        windows = windows_launcher.read_text(encoding="utf-8")
+        self.assertIn('"%~dp0dev_flow_mcp.py"', windows)
+        self.assertIn("3.14 3.13 3.12 3.11 3.10 3.9", windows)
+        document = json.loads(
+            (PLUGIN_ROOT / ".mcp.json").read_text(encoding="utf-8")
+        )
+        windows_profile = document["mcpServers"]["dev-flow-windows"]
+        self.assertEqual(windows_profile["command"], "cmd.exe")
+        self.assertTrue(
+            windows_profile["args"][-1].endswith(
+                "dev_flow_mcp_launcher.cmd"
+            )
+        )
+        self.assertNotIn("PATHEXT", json.dumps(document))
+
+        if os.name != "nt":
+            posix_profile = document["mcpServers"]["dev-flow-posix"]
+            command = [
+                posix_profile["command"],
+                *posix_profile["args"],
+            ]
+            cwd = (PLUGIN_ROOT / posix_profile["cwd"]).resolve()
+            completed = subprocess.run(
+                command,
+                cwd=cwd,
+                input=windows_native_validation._mcp_probe_input(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                env={
+                    **os.environ,
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
+                timeout=30,
+            )
+            observed = windows_native_validation._validate_mcp_probe(
+                completed,
+                label="packaged POSIX profile",
+            )
+            self.assertEqual(
+                observed["tool_names"],
+                list(windows_native_validation.MCP_EXPECTED_TOOLS),
+            )
+            self.assertEqual(
+                command,
+                [
+                    "/bin/sh",
+                    "./scripts/dev_flow_python_launcher",
+                    "./scripts/dev_flow_mcp.py",
+                ],
+            )
+            self.assertEqual(cwd, PLUGIN_ROOT)
+
+    def test_current_codex_bundle_proves_plugin_relative_mcp_convention(
+        self,
+    ) -> None:
+        candidates = (
+            Path(
+                "/Applications/ChatGPT.app/Contents/Resources/plugins/"
+                "openai-bundled/plugins/computer-use/.mcp.json"
+            ),
+            Path.home()
+            / ".codex"
+            / ".tmp"
+            / "bundled-marketplaces"
+            / "openai-bundled"
+            / "plugins"
+            / "computer-use"
+            / ".mcp.json",
+        )
+        companion = next(
+            (candidate for candidate in candidates if candidate.is_file()),
+            None,
+        )
+        if companion is None:
+            self.skipTest(
+                "current Codex bundled-plugin MCP evidence is unavailable"
+            )
+        document = json.loads(companion.read_text(encoding="utf-8"))
+        self.assertEqual(set(document), {"mcpServers"})
+        relative_servers = [
+            server
+            for server in document["mcpServers"].values()
+            if isinstance(server, dict)
+            and server.get("cwd") == "."
+            and isinstance(server.get("command"), str)
+            and server["command"].startswith("./")
+        ]
+        self.assertTrue(relative_servers, document)
+        for server in relative_servers:
+            self.assertTrue(
+                (companion.parent / server["command"]).is_file(),
+                server,
+            )
+
+    def test_mcp_profiles_are_optional_mutually_exclusive_acceleration(
+        self,
+    ) -> None:
+        english = (PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")
+        chinese = (PLUGIN_ROOT / "README.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        install = (PLUGIN_ROOT / "INSTALL.md").read_text(encoding="utf-8")
+        for document in (english, install):
+            self.assertIn("Never enable both", document)
+            self.assertIn("optional acceleration layer", document)
+            self.assertIn("optional/OR", document)
+        self.assertIn("绝不能同时启用", chinese)
+        self.assertIn("可选加速层", chinese)
+        self.assertIn("optional/OR", chinese)
+
+    def test_current_bundled_plugin_validator_accepts_companion_mcp(
+        self,
+    ) -> None:
+        validator, _, discovery_error = (
+            run_bundled_validators._validator_path(
+                "DEV_FLOW_PLUGIN_VALIDATOR",
+                run_bundled_validators.PLUGIN_VALIDATOR_RELATIVE,
+            )
+        )
+        if discovery_error is not None:
+            self.fail(discovery_error)
+        if validator is None:
+            self.skipTest("Codex-bundled plugin validator is unavailable")
+        interpreter, interpreter_error = (
+            run_bundled_validators._validator_python()
+        )
+        if interpreter_error is not None or interpreter is None:
+            self.fail(
+                interpreter_error or "validator interpreter is unavailable"
+            )
+        with contextlib.redirect_stdout(io.StringIO()):
+            status, detail = run_bundled_validators._run_validator(
+                validator_kind="plugin-manifest-regression",
+                validator_path=validator,
+                interpreter=interpreter,
+                target=PLUGIN_ROOT,
+            )
+        if status == "unavailable":
+            self.skipTest(detail or "validator dependencies are unavailable")
+        self.assertEqual(status, "passed", detail)
 
     def test_document_reference_validator_names_a_missing_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -277,6 +699,10 @@ class PackageValidationTests(unittest.TestCase):
             shutil.copy2(
                 PLUGIN_ROOT / "scripts" / "dev_flow.py",
                 scripts / "dev_flow.py",
+            )
+            shutil.copy2(
+                PLUGIN_ROOT / "scripts" / "workflow_bundle_identity.py",
+                scripts / "workflow_bundle_identity.py",
             )
             shutil.copytree(
                 PLUGIN_ROOT / "scripts" / "dev_flow_parts",

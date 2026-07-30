@@ -1,0 +1,29 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "tools",
+    "method": "tools/list",
+    "params": {}
+  },
+  "expectedNames": [
+    "task-next",
+    "node-description",
+    "evidence-read",
+    "action-preview",
+    "action-apply",
+    "worker-result"
+  ],
+  "readOnly": [
+    "task-next",
+    "node-description",
+    "evidence-read",
+    "action-preview"
+  ],
+  "write": [
+    "action-apply",
+    "worker-result"
+  ],
+  "destructive": [
+    "action-apply"
+  ]
+}

@@ -7,3 +7,5 @@ dependencies:
     - type: "mcp"
       value: "codebase-memory-mcp"
       description: "Uses the explicitly selected current workspace project for review discovery"
+policy:
+  allow_implicit_invocation: false

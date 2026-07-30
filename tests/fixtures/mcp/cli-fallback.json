@@ -1,0 +1,15 @@
+{
+  "tool": "task-next",
+  "arguments": {
+    "contract": "dev-flow-mcp-task-next/v1",
+    "task_id": "task-1"
+  },
+  "expectedErrorCode": "CONTROLLER_SERVICE_UNAVAILABLE",
+  "expectedArguments": [
+    "show",
+    "--task",
+    "task-1",
+    "--data-dir",
+    "/plugin-data"
+  ]
+}

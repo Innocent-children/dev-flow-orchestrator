@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import json
 import os
 import platform
 import subprocess
@@ -16,20 +17,52 @@ from typing import Iterable, Optional, Sequence, Set
 
 
 DEV_FLOW_PART_PATHS = (
+    Path("scripts/dev_flow_parts/workflow_registry.py"),
+    Path("scripts/dev_flow_parts/workflow_handlers.py"),
+    Path("scripts/dev_flow_parts/workflow_builtin_handlers.py"),
+    Path("scripts/dev_flow_parts/workflow_v3_handlers.py"),
+    Path("scripts/dev_flow_parts/workflow_v4_handlers.py"),
+    Path("scripts/dev_flow_parts/workflow_catalog.py"),
+    Path("scripts/dev_flow_parts/workflow_state.py"),
+    Path("scripts/dev_flow_parts/transition_engine.py"),
+    Path("scripts/dev_flow_parts/agent_protocol.py"),
+    Path("scripts/dev_flow_parts/node_telemetry.py"),
+    Path("scripts/dev_flow_parts/external_tools.py"),
+    Path("scripts/dev_flow_parts/external_write_bridge.py"),
+    Path("scripts/dev_flow_parts/repository_plan.py"),
+    Path("scripts/dev_flow_parts/orchestration_authority.py"),
+    Path("scripts/dev_flow_parts/orchestration_results.py"),
+    Path("scripts/dev_flow_parts/runtime_adapters.py"),
+    Path("scripts/dev_flow_parts/workflow_projection.py"),
+    Path("scripts/dev_flow_parts/workflow_transition_service.py"),
+    Path("scripts/dev_flow_parts/action_execution_journal.py"),
+    Path("scripts/dev_flow_parts/action_execution_store.py"),
+    Path("scripts/dev_flow_parts/workflow_action_service.py"),
+    Path("scripts/dev_flow_parts/workflow_action_transaction.py"),
+    Path("scripts/dev_flow_parts/workflow_action_reconciliation.py"),
+    Path("scripts/dev_flow_parts/orchestration_action_adapters.py"),
     Path("scripts/dev_flow_parts/core.py"),
     Path("scripts/dev_flow_parts/mutation.py"),
     Path("scripts/dev_flow_parts/scope.py"),
+    Path("scripts/dev_flow_parts/manager_channel.py"),
+    Path("scripts/dev_flow_parts/workflow_action_recovery_cli.py"),
+    Path("scripts/dev_flow_parts/workflow_action_recovery_commands.py"),
     Path("scripts/dev_flow_parts/process.py"),
+    Path("scripts/dev_flow_parts/orchestration_service.py"),
+    Path("scripts/dev_flow_parts/mcp_controller_service.py"),
     Path("scripts/dev_flow_parts/git.py"),
     Path("scripts/dev_flow_parts/commands.py"),
     Path("scripts/dev_flow_parts/baseline.py"),
     Path("scripts/dev_flow_parts/workspace.py"),
     Path("scripts/dev_flow_parts/review.py"),
     Path("scripts/dev_flow_parts/cli.py"),
+    Path("scripts/dev_flow_parts/workflow_runtime.py"),
 )
 RUNTIME_PATHS = (
     Path("scripts/candidate_identity.py"),
     Path("scripts/dev_flow.py"),
+    Path("scripts/dev_flow_mcp.py"),
+    Path("scripts/workflow_bundle_identity.py"),
     *DEV_FLOW_PART_PATHS,
     Path("scripts/__init__.py"),
     Path("scripts/windows_native_validation.py"),
@@ -247,6 +280,25 @@ def isolated_startup_errors(plugin_root: Path) -> list[str]:
             b"{}\n",
         ),
         (
+            "mcp",
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(plugin_root / "scripts/dev_flow_mcp.py"),
+            ],
+            (
+                b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+                b'{"protocolVersion":"2025-06-18","capabilities":{},'
+                b'"clientInfo":{"name":"runtime-audit","version":"1"}}}\n'
+                b'{"jsonrpc":"2.0","method":"notifications/initialized",'
+                b'"params":{}}\n'
+                b'{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n'
+                b'{"jsonrpc":"2.0","id":3,"method":"shutdown","params":{}}\n'
+                b'{"jsonrpc":"2.0","method":"exit","params":{}}\n'
+            ),
+        ),
+        (
             "windows-native-runner",
             [
                 sys.executable,
@@ -279,6 +331,45 @@ def isolated_startup_errors(plugin_root: Path) -> list[str]:
             errors.append(
                 f"{name}: isolated startup exited {completed.returncode}: {stderr}"
             )
+        elif name == "mcp":
+            try:
+                responses = [
+                    json.loads(line)
+                    for line in completed.stdout.splitlines()
+                    if line.strip()
+                ]
+                response_ids = [item.get("id") for item in responses]
+                tools = responses[1]["result"]["tools"]
+                tool_names = [tool["name"] for tool in tools]
+            except (
+                IndexError,
+                KeyError,
+                TypeError,
+                UnicodeError,
+                json.JSONDecodeError,
+            ) as exc:
+                errors.append(
+                    f"mcp: isolated protocol output is invalid: {exc}"
+                )
+            else:
+                if response_ids != [1, 2, 3]:
+                    errors.append(
+                        "mcp: isolated protocol response IDs differ from "
+                        f"[1, 2, 3]: {response_ids!r}"
+                    )
+                expected_tools = [
+                    "task-next",
+                    "node-description",
+                    "evidence-read",
+                    "action-preview",
+                    "action-apply",
+                    "worker-result",
+                ]
+                if tool_names != expected_tools:
+                    errors.append(
+                        "mcp: isolated tool inventory differs from the "
+                        f"packaged surface: {tool_names!r}"
+                    )
     return errors
 
 
@@ -295,7 +386,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Reject third-party imports in shipped runtime files and start the "
-            "controller, hook, and Windows native runner with Python -I -S."
+            "controller, MCP adapter, hook, and Windows native runner with "
+            "Python -I -S."
         )
     )
     parser.add_argument(

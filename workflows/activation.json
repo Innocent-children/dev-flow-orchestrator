@@ -1,0 +1,122 @@
+{
+  "schema": "dev-flow-workflow-activation/v1",
+  "profiles": [
+    {
+      "workflow_id": "full",
+      "workflow_version": 3,
+      "bundle_sha256": "31b82d3774c56546b9d28237a0dd68226ff0516d247cc0b18457294a0d3b4a12",
+      "execution_profile": "single-repository",
+      "active": false,
+      "required_suites": [
+        "action-policy",
+        "action-recovery",
+        "compatibility",
+        "external-tool-capability-evidence",
+        "legacy-golden-equivalence",
+        "recovery",
+        "rollback-rehearsal",
+        "transition-shadow-equivalence"
+      ]
+    },
+    {
+      "workflow_id": "full",
+      "workflow_version": 3,
+      "bundle_sha256": "31b82d3774c56546b9d28237a0dd68226ff0516d247cc0b18457294a0d3b4a12",
+      "execution_profile": "multi-repository",
+      "active": false,
+      "required_suites": [
+        "action-policy",
+        "action-recovery",
+        "barrier",
+        "capability",
+        "compatibility",
+        "external-tool-capability-evidence",
+        "integration",
+        "lease",
+        "legacy-golden-equivalence",
+        "node-result",
+        "orchestration-action-matrix",
+        "quiescence",
+        "recovery",
+        "repository-plan",
+        "rollback-rehearsal",
+        "transition-shadow-equivalence"
+      ]
+    },
+    {
+      "workflow_id": "lite",
+      "workflow_version": 3,
+      "bundle_sha256": "111791bb7dd660dbb22842411cd8af87b8bc103478d0d6414900a993ef326bf3",
+      "execution_profile": "single-repository",
+      "active": false,
+      "required_suites": [
+        "action-policy",
+        "action-recovery",
+        "compatibility",
+        "legacy-golden-equivalence",
+        "recovery",
+        "rollback-rehearsal",
+        "transition-shadow-equivalence"
+      ]
+    },
+    {
+      "workflow_id": "full",
+      "workflow_version": 4,
+      "bundle_sha256": "bc5082c941a839490506c8f403038dbee93c49d07ab6e6529557bc41e707760d",
+      "execution_profile": "single-repository",
+      "active": true,
+      "required_suites": [
+        "action-policy",
+        "action-recovery",
+        "compatibility",
+        "external-tool-capability-evidence",
+        "legacy-golden-equivalence",
+        "orchestration-action-matrix",
+        "recovery",
+        "rollback-rehearsal",
+        "transition-shadow-equivalence"
+      ]
+    },
+    {
+      "workflow_id": "full",
+      "workflow_version": 4,
+      "bundle_sha256": "bc5082c941a839490506c8f403038dbee93c49d07ab6e6529557bc41e707760d",
+      "execution_profile": "multi-repository",
+      "active": true,
+      "required_suites": [
+        "action-policy",
+        "action-recovery",
+        "barrier",
+        "capability",
+        "compatibility",
+        "external-tool-capability-evidence",
+        "integration",
+        "lease",
+        "legacy-golden-equivalence",
+        "node-result",
+        "orchestration-action-matrix",
+        "quiescence",
+        "recovery",
+        "repository-plan",
+        "rollback-rehearsal",
+        "transition-shadow-equivalence"
+      ]
+    },
+    {
+      "workflow_id": "lite",
+      "workflow_version": 4,
+      "bundle_sha256": "4dffb5ce137384301f574fb09146785d5583928e4d9205d0678f4a891d2abc69",
+      "execution_profile": "single-repository",
+      "active": true,
+      "required_suites": [
+        "action-policy",
+        "action-recovery",
+        "compatibility",
+        "legacy-golden-equivalence",
+        "recovery",
+        "rollback-rehearsal",
+        "transition-shadow-equivalence"
+      ]
+    }
+  ]
+}

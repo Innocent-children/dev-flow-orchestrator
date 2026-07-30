@@ -1062,7 +1062,12 @@ class DevFlowPreflightEvidenceTest(test_case.DevFlowTestCase):
         dev_flow._atomic_write_json(state_path, legacy)
 
         loaded = dev_flow.load_state(task["task_id"], self.data)
-        self.assertEqual(loaded["schema_version"], dev_flow.SCHEMA_VERSION)
+        self.assertEqual(
+            loaded["schema_version"], dev_flow.TASK_SCHEMA_VERSION
+        )
+        self.assertEqual(
+            loaded["schema_version"], current["schema_version"]
+        )
         denied = self.mutate(
             "approve",
             loaded,

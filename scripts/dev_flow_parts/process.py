@@ -20,18 +20,196 @@ def _commit_state(
     payload: dict[str, Any] | None = None,
     *,
     additional_events: Sequence[tuple[str, dict[str, Any]]] | None = None,
+    _manager_registry_operation: object = None,
 ) -> dict[str, Any]:
+    linked_events = list(additional_events or ())
+    is_v3 = (
+        old_state is not None
+        and old_state.get("schema_version") == V3_TASK_SCHEMA_VERSION
+    )
+    node_instances_changed = (
+        old_state is not None
+        and old_state.get("node_instances")
+        != new_state.get("node_instances")
+    )
+    orchestration_changed = (
+        old_state is not None
+        and old_state.get("orchestration")
+        != new_state.get("orchestration")
+    )
+    if _manager_registry_operation is not None:
+        if not is_v3:
+            raise FlowError(
+                "MANAGER_CAPABILITY_SCHEMA_REQUIRED",
+                "manager registry operations require a schema-v3 task",
+            )
+        manager_process_commit_gate_v1(
+            old_state,
+            new_state,
+            event_type,
+            _manager_registry_operation,
+        )
+        return _persist_state_transaction(
+            old_state,
+            new_state,
+            task_dir,
+            event_type,
+            payload,
+            additional_events=linked_events,
+        )
+    if (
+        old_state is not None
+        and old_state.get("status") != new_state.get("status")
+    ):
+        if is_v3 and orchestration_changed:
+            raise FlowError(
+                "V3_TRANSITION_SERVICE_REQUIRED",
+                "schema-v3 orchestration state cannot ride a task movement",
+                details={"task_id": old_state.get("task_id")},
+            )
+        try:
+            movement = resolve_loaded_task_workflow(
+                old_state,
+                purpose="mutation",
+                candidate_state=new_state,
+                candidate_event_type=event_type,
+                payload=payload,
+            )
+            movement_events = movement.get(
+                "_movement_audit_events", ()
+            )
+            if isinstance(movement_events, (list, tuple)):
+                linked_events.extend(movement_events)
+        except (
+            WorkflowCatalogError,
+            WorkflowStateError,
+        ) as exc:
+            raise FlowError(
+                getattr(exc, "code", "WORKFLOW_MOVEMENT_REJECTED"),
+                str(
+                    getattr(
+                        exc,
+                        "message",
+                        "candidate workflow movement was rejected",
+                    )
+                ),
+                details=getattr(exc, "details", {}),
+            ) from exc
+    elif is_v3 and (
+        node_instances_changed or orchestration_changed
+    ):
+        raise FlowError(
+            "V3_TRANSITION_SERVICE_REQUIRED",
+            "schema-v3 node or orchestration state requires a formal service",
+            details={
+                "task_id": old_state.get("task_id"),
+                "node_instances_changed": node_instances_changed,
+                "orchestration_changed": orchestration_changed,
+            },
+        )
+    if is_v3:
+        try:
+            manager_event = manager_process_commit_gate_v1(
+                old_state,
+                new_state,
+                event_type,
+            )
+            if manager_event is None:
+                raise FlowError(
+                    "MANAGER_AUTHORIZATION_INVALID",
+                    "manager authority gate produced no consumption event",
+                )
+            linked_events.append(manager_event)
+            return _persist_state_transaction(
+                old_state,
+                new_state,
+                task_dir,
+                event_type,
+                payload,
+                additional_events=linked_events,
+            )
+        finally:
+            manager_process_commit_gate_v1(
+                old_state,
+                new_state,
+                event_type,
+                _effect_lifecycle=("clear", "generic"),
+            )
+    return _persist_state_transaction(
+        old_state,
+        new_state,
+        task_dir,
+        event_type,
+        payload,
+        additional_events=linked_events,
+    )
+
+
+def _persist_state_transaction(
+    old_state: dict[str, Any] | None,
+    new_state: dict[str, Any],
+    task_dir: Path,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    additional_events: Sequence[
+        tuple[str, dict[str, Any]]
+    ] | None = None,
+    _event_ids: Sequence[str] | None = None,
+    _transaction_id: str | None = None,
+) -> dict[str, Any]:
+    """Raw revision/outbox persistence; callers must authorize beforehand."""
+
     previous_revision = int(old_state.get("revision", 0)) if old_state else 0
     revision = previous_revision + 1
     now = utc_now()
     new_state["revision"] = revision
     new_state["updated_at"] = now
-    event_specs = [(event_type, payload or {}), *(additional_events or ())]
-    transaction_id = str(uuid.uuid4()) if len(event_specs) > 1 else None
+    event_specs = [
+        (event_type, payload or {}),
+        *(additional_events or ()),
+    ]
+    if _event_ids is None:
+        event_ids = [str(uuid.uuid4()) for _item in event_specs]
+    else:
+        event_ids = list(_event_ids)
+        if (
+            len(event_ids) != len(event_specs)
+            or any(
+                not isinstance(item, str) or not item
+                for item in event_ids
+            )
+            or len(event_ids) != len(set(event_ids))
+        ):
+            raise FlowError(
+                "STATE_EVENT_PLAN_INVALID",
+                "preallocated event identities do not match the transaction",
+            )
+    transaction_id = (
+        _transaction_id
+        if len(event_specs) > 1
+        else None
+    )
+    if len(event_specs) > 1 and transaction_id is None:
+        transaction_id = str(uuid.uuid4())
+    if (
+        transaction_id is not None
+        and (
+            not isinstance(transaction_id, str)
+            or not transaction_id
+        )
+    ):
+        raise FlowError(
+            "STATE_EVENT_PLAN_INVALID",
+            "preallocated transaction identity is invalid",
+        )
     events: list[dict[str, Any]] = []
-    for recorded_type, recorded_payload in event_specs:
+    for event_id, (
+        recorded_type,
+        recorded_payload,
+    ) in zip(event_ids, event_specs):
         event = {
-            "event_id": str(uuid.uuid4()),
+            "event_id": event_id,
             "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
             "task_id": new_state["task_id"],
             "type": recorded_type,
@@ -101,6 +279,33 @@ def _check_revision(state_value: dict[str, Any], expected_revision: int) -> None
         )
 
 
+def _validate_loaded_state_for_mutation(
+    state_path: Path,
+    state_value: dict[str, Any],
+) -> Mapping[str, object]:
+    """Resolve immutable workflow truth before any mutation-side effect."""
+
+    # Old schema-v1 snapshots may predate the additive flow projection. They
+    # have always meant full flow, but the persisted bytes remain untouched
+    # until an ordinary state transition commits a new revision.
+    validation_view = dict(state_value)
+    validation_view.setdefault("flow", DEFAULT_FLOW)
+    try:
+        return validate_task_state_for_mutation(
+            validation_view,
+            resolver=resolve_loaded_task_workflow,
+        )
+    except WorkflowStateError as exc:
+        raise FlowError(
+            exc.code,
+            exc.message,
+            details={
+                "path": str(state_path),
+                **dict(exc.details),
+            },
+        ) from exc
+
+
 @contextlib.contextmanager
 def _locked_state(
     task_id: str,
@@ -108,16 +313,97 @@ def _locked_state(
     expected_revision: int,
     *,
     lock_workspace_registry: bool = False,
+    manager_effect_policy: str = "generic",
+    manager_action_id: str | None = None,
+    allow_quarantine: bool = False,
+    short_v3_effect_boundary: bool = False,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
     task_dir = _task_dir(task_id, data_dir)
-    with _task_lock(task_dir):
-        state_value = load_state(task_id, data_dir)
-        _check_revision(state_value, expected_revision)
-        if lock_workspace_registry:
-            with _workspace_registry_lock(resolve_data_dir(data_dir)):
-                yield task_dir, state_value
-        else:
-            yield task_dir, state_value
+    detached_v3_snapshot: tuple[Path, dict[str, Any]] | None = None
+    preauthorization_open = False
+    try:
+        with _task_lock(
+            task_dir, allow_quarantine=allow_quarantine
+        ):
+            state_path = task_dir / "state.json"
+            state_value = _read_task_state_structural_snapshot(
+                state_path
+            )
+            _check_revision(state_value, expected_revision)
+            _validate_loaded_state_for_mutation(
+                state_path, state_value
+            )
+            _validate_task_state_snapshot(
+                state_path, state_value, resolve_workflow=False
+            )
+            manager_process_commit_gate_v1(
+                state_value,
+                state_value,
+                "manager_effect_preauthorized",
+                _effect_lifecycle=(
+                    "preauthorize",
+                    manager_effect_policy,
+                ),
+                _effect_package_action_id=manager_action_id,
+            )
+            preauthorization_open = True
+            state_value = _finish_loaded_state(state_path, state_value)
+            if (
+                short_v3_effect_boundary
+                and state_value.get("schema_version")
+                == V3_TASK_SCHEMA_VERSION
+            ):
+                detached_v3_snapshot = (
+                    task_dir,
+                    _copy_state(state_value),
+                )
+            else:
+                try:
+                    if (
+                        lock_workspace_registry
+                        or state_value.get("schema_version")
+                        == V3_TASK_SCHEMA_VERSION
+                    ):
+                        with _workspace_registry_lock(
+                            resolve_data_dir(data_dir)
+                        ):
+                            yield task_dir, state_value
+                    else:
+                        yield task_dir, state_value
+                finally:
+                    manager_process_commit_gate_v1(
+                        state_value,
+                        state_value,
+                        "manager_effect_closed",
+                        _effect_lifecycle=(
+                            "clear",
+                            manager_effect_policy,
+                        ),
+                    )
+                    preauthorization_open = False
+                return
+        if detached_v3_snapshot is None:
+            raise FlowError(
+                "MANAGER_EFFECT_BOUNDARY_INVALID",
+                "short schema-v3 effect boundary produced no snapshot",
+            )
+        yield detached_v3_snapshot
+    finally:
+        if preauthorization_open:
+            authorization_state = (
+                detached_v3_snapshot[1]
+                if detached_v3_snapshot is not None
+                else state_value
+            )
+            manager_process_commit_gate_v1(
+                authorization_state,
+                authorization_state,
+                "manager_effect_closed",
+                _effect_lifecycle=(
+                    "clear",
+                    manager_effect_policy,
+                ),
+            )
 
 
 def _posix_process_group_alive(process_group: int) -> bool:

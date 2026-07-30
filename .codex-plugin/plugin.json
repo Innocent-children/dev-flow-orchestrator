@@ -1,15 +1,16 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "0.3.0",
-  "description": "A guarded, resumable Windows, macOS, and Linux workflow for Codex, OpenSpec, Git, and codebase-memory.",
+  "version": "0.3.0+codex.20260729234414",
+  "description": "A guarded, resumable macOS workflow for Codex, OpenSpec, Git, and codebase-memory; retained Windows and Linux artifacts are unvalidated.",
   "author": {
     "name": "Local developer"
   },
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Dev Flow Orchestrator",
     "shortDescription": "Guard and resume Git-to-OpenSpec development work",
-    "longDescription": "Runs the same guarded state machine on Windows, macOS, and Linux; checks repository baselines, routes explicit baseline/workspace codebase-memory indexes by phase, guides direct or OpenSpec planning, and verifies the complete change before handoff.",
+    "longDescription": "Runs the guarded state machine on the validated macOS host; checks repository baselines, routes explicit baseline/workspace codebase-memory indexes by phase, guides direct or OpenSpec planning, and verifies the complete change before handoff. Retained Windows and Linux artifacts are not a support claim.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [

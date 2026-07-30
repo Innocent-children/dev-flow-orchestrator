@@ -1,5 +1,8 @@
-"""Deterministic development-flow control plane."""
+"""Package boundary for standalone validation and controller modules.
 
-from .dev_flow import find_active_task_for_cwd, load_state, resolve_data_dir
+Importing :mod:`scripts` must stay side-effect free.  Candidate identity and
+native validation run before the controller catalog is activated, so importing
+the controller here would make release tooling depend on mutable runtime state.
+"""
 
-__all__ = ["find_active_task_for_cwd", "load_state", "resolve_data_dir"]
+__all__: list[str] = []

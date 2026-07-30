@@ -7,3 +7,8 @@ htmlcov/
 work/
 .idea
 .qoder
+
+# Host-local Codex/workspace tooling inputs. They are deliberately outside the
+# shipped plugin candidate and must never appear as release metadata.
+/pyproject.toml
+/uv.lock

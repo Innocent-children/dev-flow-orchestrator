@@ -116,7 +116,11 @@ Verification SHALL execute the actual `command` and `commandWindows` entries fro
 
 #### Scenario: Packaged hook command round-trips JSON
 - **WHEN** a native CI job launches each bundled handler using the command selected for that operating system
-- **THEN** the handler reads one representative JSON event, writes valid JSON, uses the injected plugin directories, and exits according to the hook contract
+- **THEN** the handler reads one representative JSON event, uses the injected plugin directories, emits the event-specific supported wire shape, and exits according to the hook contract; structured-output events write valid JSON, while `PostCompact` may succeed with empty or common output and MUST NOT emit an unsupported `hookSpecificOutput`
+
+#### Scenario: Compact recovery uses the supported lifecycle boundary
+- **WHEN** native validation launches `PreCompact`, `PostCompact`, and the following `SessionStart` with compact source
+- **THEN** `PreCompact` best-effort preserves the bounded locator, `PostCompact` succeeds without unsupported context injection, and `SessionStart` restores the current controller, task, revision, node, and next-action locators
 
 #### Scenario: Equivalent protected Git commands are parameterized
 - **WHEN** the parser test table supplies equivalent protected Git mutations through every supported executable spelling and shell wrapper

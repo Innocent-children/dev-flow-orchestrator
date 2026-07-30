@@ -1,0 +1,759 @@
+{
+  "manifest_version": "dev-flow-handler-registration-manifest/v1",
+  "audit_policy": "dev-flow-handler-audit/v1",
+  "registry": "guards",
+  "implementation_file_sets": {
+    "audit-runtime-v1": [
+      {
+        "path": "scripts/dev_flow_parts/workflow_builtin_handlers.py",
+        "kind": "T"
+      }
+    ],
+    "manager-registry-action-v1": [
+      {
+        "path": "scripts/dev_flow_parts/manager_channel.py",
+        "kind": "T"
+      }
+    ],
+    "baseline-current-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      }
+    ],
+    "full-transition-read-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "index-current-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "lite-approved-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      }
+    ],
+    "lite-risk-v1": [
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      }
+    ],
+    "multi-repository-authority-v1": [
+      {
+        "path": "scripts/dev_flow_parts/workflow_builtin_handlers.py",
+        "kind": "T"
+      }
+    ],
+    "plan-review-current-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "preflight-current-v1": [
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      }
+    ],
+    "review-approved-v1": [
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      }
+    ],
+    "route-approved-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "workspace-current-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ]
+  },
+  "entries": [
+    {
+      "id": "guard.baseline-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "baseline-current-v1",
+      "symbols": {
+        "evaluator": "_require_baseline_fetch_approval"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "_fingerprint_repo",
+          "_live_approved_remote_url",
+          "_preflight_remote_evidence_sha256",
+          "_require_gate"
+        ],
+        "allowed_imports": [
+          "pathlib"
+        ]
+      }
+    },
+    {
+      "id": "guard.blocked-resume/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "full-transition-read-v1",
+      "symbols": {
+        "evaluator": "_transition_guard"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "_current_repository_fingerprints",
+          "_flow",
+          "_index_provenance_evidence",
+          "_latest_passing_test_is_current",
+          "_lite_transition_guard",
+          "_require_current_evidence",
+          "_require_current_plan_gate",
+          "_require_current_workspace_indexes",
+          "_require_review_gate",
+          "_require_route_gate",
+          "_require_workspace_ready",
+          "_review_is_current"
+        ],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.index-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "index-current-v1",
+      "symbols": {
+        "evaluator": "_index_provenance_evidence"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "EVIDENCE_CONTRACT_VERSION",
+          "FlowError",
+          "SCHEMA_VERSION",
+          "_analysis_workspace_integrity_error",
+          "_recorded_path_matches",
+          "_require_current_evidence",
+          "_require_gate",
+          "_sha256_file",
+          "_validate_degraded_index_metadata"
+        ],
+        "allowed_imports": [
+          "pathlib"
+        ]
+      }
+    },
+    {
+      "id": "guard.lite-approved/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "lite-approved-v1",
+      "symbols": {
+        "evaluator": "_require_lite_gate"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "LITE_GATE",
+          "_assert_branch_checkout_binding",
+          "_fingerprint_repo",
+          "_git_optional",
+          "_lite_preflight_evidence_sha256",
+          "_require_gate",
+          "_uses_confirmation_contract"
+        ],
+        "allowed_imports": [
+          "pathlib"
+        ]
+      }
+    },
+    {
+      "id": "guard.lite-risk-safe/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "lite-risk-v1",
+      "symbols": {
+        "evaluator": "_lite_change_assessment"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "_capture_lite_change_assessment"
+        ],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.manager-registry-action/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "manager-registry-action-v1",
+      "symbols": {
+        "evaluator": "_manager_registry_action_guard_v1"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.multi-repository-barrier-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "multi-repository-authority-v1",
+      "symbols": {
+        "evaluator": "_workflow_handlers_guard_multi_repository_authority"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.multi-repository-cancellation-quiesced/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "multi-repository-authority-v1",
+      "symbols": {
+        "evaluator": "_workflow_handlers_guard_multi_repository_authority"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.multi-repository-integration-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "multi-repository-authority-v1",
+      "symbols": {
+        "evaluator": "_workflow_handlers_guard_multi_repository_authority"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.multi-repository-review-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "multi-repository-authority-v1",
+      "symbols": {
+        "evaluator": "_workflow_handlers_guard_multi_repository_authority"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.note-required/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "audit-runtime-v1",
+      "symbols": {
+        "evaluator": "_guard_note_required"
+      },
+      "audit": {
+        "profile": "pure-v1",
+        "allowed_globals": [],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.plan-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "plan-review-current-v1",
+      "symbols": {
+        "evaluator": "_require_current_plan_gate"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "_planning_context_sha256",
+          "_require_current_plan_artifact",
+          "_require_gate"
+        ],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.preflight-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "preflight-current-v1",
+      "symbols": {
+        "evaluator": "_require_current_evidence"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "EVIDENCE_CONTRACT_VERSION",
+          "FlowError"
+        ],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.review-approved/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "review-approved-v1",
+      "symbols": {
+        "evaluator": "_require_review_gate"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "_require_gate",
+          "_require_review_report_for_latest_snapshot"
+        ],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.review-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "plan-review-current-v1",
+      "symbols": {
+        "evaluator": "_review_is_current"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "_fingerprint_repo",
+          "_review_snapshot_integrity_error",
+          "_working_path",
+          "_workspace_integrity_error"
+        ],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.route-approved/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "route-approved-v1",
+      "symbols": {
+        "evaluator": "_require_route_gate"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "_require_current_route_selection",
+          "_require_gate_for_latest_artifact",
+          "_uses_confirmation_contract"
+        ],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.test-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "full-transition-read-v1",
+      "symbols": {
+        "evaluator": "_latest_passing_test_is_current"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "_fingerprint_repo",
+          "_flow",
+          "_load_recorded_fingerprint",
+          "_recorded_path_matches",
+          "_require_current_evidence",
+          "_require_current_plan_gate",
+          "_require_lite_gate",
+          "_sha256_file",
+          "_test_identity",
+          "_working_path"
+        ],
+        "allowed_imports": [
+          "pathlib"
+        ]
+      }
+    },
+    {
+      "id": "guard.workspace-indexes-current/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "workspace-current-v1",
+      "symbols": {
+        "evaluator": "_require_current_workspace_indexes"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "_workspace_index_staleness"
+        ],
+        "allowed_imports": []
+      }
+    },
+    {
+      "id": "guard.workspace-ready/v1",
+      "contract_id": "dev-flow-guard/v1",
+      "authority": [
+        "read-only"
+      ],
+      "capabilities": [
+        "legacy.kernel-evidence-read"
+      ],
+      "input_schema_ref": "schema.guard.projection/v1",
+      "output_schema_ref": "schema.guard.result/v1",
+      "implementation_file_set": "workspace-current-v1",
+      "symbols": {
+        "evaluator": "_require_workspace_ready"
+      },
+      "audit": {
+        "profile": "legacy-read-only-wrapper-v1",
+        "allowed_globals": [
+          "FlowError",
+          "_json_bytes",
+          "_require_current_evidence",
+          "_require_gate_for_latest_artifact",
+          "_sha256_bytes",
+          "_workspace_integrity_error",
+          "_workspace_plan_evidence"
+        ],
+        "allowed_imports": [
+          "json",
+          "pathlib"
+        ]
+      }
+    }
+  ]
+}

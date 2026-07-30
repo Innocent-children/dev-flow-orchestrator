@@ -184,12 +184,13 @@ class DevFlowStateTest(test_case.DevFlowTestCase):
                 )
 
     def test_task_id_portable_boundaries_and_case_collision(self) -> None:
-        repo, _ = self.make_repo("task-id-repository")
-        for task_id in ("a", "x" * 64):
+        for index, task_id in enumerate(("a", "x" * 64), start=1):
             with self.subTest(valid=task_id):
+                repo, _ = self.make_repo(f"task-id-valid-{index}")
                 response = self.start(repo, task_id=task_id)
                 self.assertEqual(response["task"]["task_id"], task_id)
 
+        repo, _ = self.make_repo("task-id-invalid")
         invalid_ids = (
             "x" * 65,
             "任务",
@@ -232,7 +233,8 @@ class DevFlowStateTest(test_case.DevFlowTestCase):
                     before,
                 )
 
-        self.start(repo, task_id="PortableCase")
+        collision_repo, _ = self.make_repo("task-id-case-collision")
+        self.start(collision_repo, task_id="PortableCase")
         denied = self.cli(
             "start",
             "--task-id",
@@ -242,7 +244,7 @@ class DevFlowStateTest(test_case.DevFlowTestCase):
             "--requirement",
             "portable namespace collision",
             "--repo",
-            str(repo),
+            str(collision_repo),
             expected_code=2,
         )
         self.assertEqual(

@@ -2,9 +2,14 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-面向 Codex 的受控开发工作流，横跨 Git 仓库、`codebase-memory-mcp` 和 OpenSpec。它在原生 Windows、macOS 和 Linux 上保持同一套状态机、审批与证据语义，持久化机器可读的任务状态，确保人工审批明确可见，并在交付前审查已提交、已暂存、未暂存和未跟踪的全部变更。
+面向 Codex 的受控开发工作流，横跨 Git 仓库、`codebase-memory-mcp` 和
+OpenSpec。它持久化机器可读的任务状态，确保人工审批明确可见，并在交付前
+审查已提交、已暂存、未暂存和未跟踪的全部变更。
 
-受支持的运行时为原生 Windows、macOS 和 Linux，须配备 Python 3.9–3.14，以及真正支持 `git worktree` 的 Git。控制器和钩子运行时只使用 Python 标准库；Windows 无需 POSIX 兼容层。
+当前 V4 交付仅在原生 macOS 上验证和支持，使用本机已安装的 Python
+解释器以及真正支持 `git worktree` 的 Git。控制器和钩子运行时只使用
+Python 标准库。包内保留的 Windows/Linux 启动器在本次交付中未经验证，
+不构成支持声明。
 
 **第一次使用？** 按顺序做完[配置](#配置)即可——六步，几分钟。[配置项速查](#配置项速查)是所有设置的一屏汇总。再往后是工作原理与设计取舍的讲解。
 
@@ -16,9 +21,9 @@
 
 | 占位符 | 含义 | 典型取值 |
 | --- | --- | --- |
-| `<python>` | Python 3.9–3.14 解释器的绝对路径 | `/usr/bin/python3`、`C:\Users\me\AppData\Local\Programs\Python\Python314\python.exe` |
-| `<plugin-root>` | 插件安装目录 | `~/plugins/dev-flow-orchestrator`、`%USERPROFILE%\.codex\plugins\cache\personal\dev-flow-orchestrator\0.3.0` |
-| `<PLUGIN_DATA>` | 插件的私有状态目录 | `~/.codex/plugin-data/dev-flow-orchestrator`、`%USERPROFILE%\.codex\plugin-data\dev-flow-orchestrator` |
+| `<python>` | macOS 本机 Python 解释器的绝对路径 | `/usr/bin/python3` |
+| `<plugin-root>` | 插件安装目录 | `~/plugins/dev-flow-orchestrator` |
+| `<PLUGIN_DATA>` | 插件的私有状态目录 | `~/.codex/plugin-data/dev-flow-orchestrator` |
 
 手工调用控制器或配置全局钩子时，应使用解释器、handler 和数据目录的绝对路径。钩子运行时的工作目录不可预测，环境也有意保持精简，因此相对路径或依赖 `PATH` 的裸解释器名常会造成看似毫无反应的配置失败。插件自带的钩子是例外：它使用 Codex 注入的 `PLUGIN_ROOT`/`PLUGIN_DATA` 和随包的跨平台启动命令；工作流技能随后会保留注入的解释器、控制器和数据目录参数，而不会重建启动命令。
 
@@ -31,7 +36,11 @@
 | 已启用的 `codebase-memory-mcp` | 仅完整流程（影响分析、工作区发现） | 该 MCP 服务器出现在 Codex 工具列表中 |
 | `PATH` 中的 OpenSpec | 仅 OpenSpec 路线 | `openspec --version` |
 
-精简流程只需要受支持版本的 Python 和 Git；完整流程还需要 codebase-memory，只有 OpenSpec 路线需要 OpenSpec。本插件有意不捆绑 Python、Git、OpenSpec、POSIX 兼容层或与特定机器相关的 `.mcp.json`；请自行安装前两项，并继续使用现有的用户级或项目级 MCP 配置。Python 3.9 与 3.14 会在 Windows、macOS、Linux 上运行完整验证，3.10–3.13 至少在 Linux 上验证；新 Python 小版本只有进入该原生矩阵后才会被声明为受支持。
+精简流程只需要本机 Python 和 Git；完整流程还需要 codebase-memory，只有
+OpenSpec 路线需要 OpenSpec。本插件有意不捆绑 Python、Git、OpenSpec、
+可选 Agent SDK 或与机器相关的 codebase-memory 配置。随包 `.mcp.json`
+仍保留两套默认禁用的宿主 profile，但本次 V4 只验证并启用 macOS 上的
+POSIX profile。其他 MCP 服务器继续沿用现有用户级或项目级配置。
 
 ### 2. 放置插件
 
@@ -45,13 +54,43 @@
 
 若 `~/.agents/plugins/marketplace.json` 不存在，把 `templates/personal-marketplace.example.json` 复制过去作为初始内容。若已存在，只把 `templates/marketplace-entry.json` 中的那个对象合并进它的 `plugins` 数组，文件其余部分保持不动。重启桌面应用，从该市场安装插件，然后开启一个新任务。完整的包放置映射和更新（含缓存刷新）流程见 [`INSTALL.md`](INSTALL.md)。
 
+强类型控制器 MCP 是可选项。要使用它，请在 Codex `config.toml` 中只启用
+当前宿主对应的一套 profile；如果实际市场名不是 `personal`，请替换下面的
+`@personal`。官方 Skill 依赖元数据没有 `optional/OR` 表达式，因此不会
+把这一可选传输层声明为 Skill 的硬依赖。
+
+macOS/Linux：
+
+```toml
+[plugins."dev-flow-orchestrator@personal".mcp_servers.dev-flow-posix]
+enabled = true
+```
+
+原生 Windows：
+
+```toml
+[plugins."dev-flow-orchestrator@personal".mcp_servers.dev-flow-windows]
+enabled = true
+```
+
+这两套 profile 绝不能同时启用：它们暴露相同的工具名，而当前官方 MCP
+schema 只有一个 `command`，没有按操作系统覆盖命令的字段。POSIX profile
+明确调用 `/bin/sh`；Windows profile 明确调用 `cmd.exe` 和带 `.cmd`
+扩展名的路径，不依赖 `PATHEXT`。两者都使用 `cwd = "."` 和包相对参数，
+与 Codex 自带 MCP 中将 `.` 解析为已安装插件根目录的惯例一致。这里不使用
+`${PLUGIN_ROOT}`，因为 Codex 只明确承诺为插件钩子注入它，并未为随包 MCP
+命令作同样承诺。所选 profile 不可用时，继续使用钩子提供的 CLI locator。
+
 ### 3. 注册钩子
 
 钩子是工作流可恢复的关键：它们在会话开始时重新注入当前任务，并拦截绕过控制器的写入和危险 Git 命令。没有钩子，控制器依然能用，但没有任何东西会提醒 Codex 去用它。
 
 **先试试插件自带的注册。** Codex 会按官方默认位置发现 `hooks/hooks.json`；插件清单不会加入不受支持的 `hooks` 字段。每个 handler 都同时提供 POSIX `command` 和 Windows `commandWindows`，且两者都会调用 `hooks/dev_flow_hook.py`：
 
-- macOS/Linux 的 `command` 通过 `python3 "$PLUGIN_ROOT/hooks/dev_flow_hook.py"` 启动；
+- macOS/Linux 的 `command` 通过随包
+  `"$PLUGIN_ROOT/scripts/dev_flow_python_launcher"` 启动
+  `"$PLUGIN_ROOT/hooks/dev_flow_hook.py"`；该 launcher 接受 Python
+  3.9–3.14，会跳过不受支持的版本，并为稀疏钩子环境探测少量常见绝对路径；
 - Windows 的 `commandWindows` 调用随包的 `hooks/dev_flow_hook.cmd`。该 shim 先尝试受支持的 `py -3`，再依次尝试明确的 `py -3.14` 至 `py -3.9`，最后尝试 `python`，并保留 stdin、stdout 和退出码；
 - 两条路径最终都运行同一个 `hooks/dev_flow_hook.py`，由 Codex 注入真实的 `PLUGIN_ROOT` 和 `PLUGIN_DATA`，因此 handler 语义一致。
 
@@ -118,7 +157,7 @@
 | `timeout` | Codex 放弃该钩子前等待的秒数 | `10` 足够。钩子按设计是故障时开放的——超时或出错时它不输出任何内容，而不会卡住你的会话 |
 | `statusMessage` | 钩子运行时显示的提示文字 | 纯装饰，可以省略 |
 
-`UserPromptSubmit` 没有 `matcher`——它在每次提交提示词时都会触发。`SessionStart` 始终注入完整的可恢复检查点。仅当当前 Codex 会话中的内容发生变化时，提示词才会接收一行精简检查点，其中包含任务、revision、流程、状态、剩余流程、索引、下一步动作和精简恢复命令。尽力写入的标记以 `sha256(session_id)` 分键，且只保存精简内容摘要；缺少 session ID，或标记读取、写入、损坏出现任何问题时，钩子都会继续输出而非错误抑制，从而保持故障时开放。命令守卫会以等价方式识别直接调用的 `git`/`git.exe`、绝对 Git 路径、受支持的 POSIX shell、`cmd.exe /c`、Windows PowerShell 和 `pwsh -Command` 包装；已识别但无法安全解析的包装载荷会带诊断拒绝。随包的 Windows shim 用于插件托管的自动发现；全局注册既拿不到 `PLUGIN_ROOT`，也拿不到 `PLUGIN_DATA`，因此应按上例使用经过验证的绝对解释器。改完这个文件后请开启新任务；Codex 可能还会要求你审查并信任这些钩子，拒绝则等于没有任何守卫。
+`UserPromptSubmit` 没有 `matcher`——它在每次提交提示词时都会触发。`SessionStart` 始终注入完整的可恢复检查点。`PostCompact` 会按当前宿主 wire contract 成功退出且不输出，因为该事件不能返回 `additionalContext`；紧接着的 `SessionStart(source = "compact")` 才执行实际恢复。仅当当前 Codex 会话中的内容发生变化时，提示词才会接收一行精简检查点，其中包含任务、revision、流程、状态、剩余流程、索引、下一步动作和精简恢复命令。尽力写入的标记以 `sha256(session_id)` 分键，且只保存精简内容摘要；缺少 session ID，或标记读取、写入、损坏出现任何问题时，钩子都会继续输出而非错误抑制，从而保持故障时开放。命令守卫会以等价方式识别直接调用的 `git`/`git.exe`、绝对 Git 路径、受支持的 POSIX shell、`cmd.exe /c`、Windows PowerShell 和 `pwsh -Command` 包装；已识别但无法安全解析的包装载荷会带诊断拒绝。随包的 Windows shim 用于插件托管的自动发现；全局注册既拿不到 `PLUGIN_ROOT`，也拿不到 `PLUGIN_DATA`，因此应按上例使用经过验证的绝对解释器。改完这个文件后请开启新任务；Codex 可能还会要求你审查并信任这些钩子，拒绝则等于没有任何守卫。
 
 ### 4. 指定数据目录
 
@@ -333,6 +372,142 @@ Schema-v2 状态确认默认要求显式确认，只有五条精确自动白名�
 
 生命周期钩子会在会话开始时注入完整上下文，并在精简检查点内容发生变化的提示词提交时保留确切的解释器、控制器绝对路径和私有数据目录参数；相同内容只会在同一会话内被抑制。主技能每次调用控制器时都会保留这组有序前缀；它不会把解释器替换成针对平台的猜测，也不会假定 `PLUGIN_DATA` 能传入后续执行工具。
 
+### 版本化工作流内核与 Codex 执行层
+
+控制器是确定性工作流内核，不是由 LLM 持有的状态机。位于
+`workflows/bundles/` 的包内不可变 bundle 声明节点、状态边、guard、
+reducer、gate、executor、Schema、本地化标签、上下文投影和有界
+playbook。密封 catalog 会在读取任务前校验完整图和精确 handler
+文件集合。schema-v3 任务终身固定 graph 与 bundle 的 SHA-256 身份；
+schema-v1/schema-v2 任务继续通过冻结的 legacy adapter 执行，绝不会
+被静默迁移。
+
+包内 activation manifest 是故障关闭的创建关卡。只有完整的流转和
+恢复测试通过后，才能分别启用单仓库和多仓库 profile。关闭 profile
+只影响未来创建；已有 v3 任务始终按其固定 bundle 继续完成。
+
+包内 activation manifest 已启用全部受支持的 V4 创建 profile：
+`lite@4` 单仓库，以及 `full@4` 单仓库和多仓库。新的 `start` 会根据
+工作方式与仓库数量选择精确 V4 bundle，并创建固定该 bundle 身份的
+schema-v3 任务。已有 schema-v1/schema-v2 任务继续使用冻结的 legacy
+adapter，绝不会原地迁移。
+
+任务状态、执行器状态和模型上下文刻意分离：
+
+- 控制器拥有 revision、锁、审批、证据、流转、租约、结果、屏障、
+  恢复和持久 outbox；
+- runtime handle 只标识可恢复的 Codex thread、外部 job 或 Agents
+  session，永远不是工作流事实；
+- 模型上下文可以 compact 或替换，因为必需事实位于任务级状态和
+  内容寻址制品中。
+
+已知的仓库依赖采用确定性 fan-out/fan-in。获批的
+`dev-flow-repository-plan/v1` DAG 计算 ready frontier；每个可写 worker
+只获得一个仓库、一个控制器持有的 worktree、精确路径、一个 attempt、
+非变更型租约凭据和有界 playbook。worker 不能调用控制器变更。manager
+通过任务锁、expected-revision CAS、证据校验和持久 outbox 串行接受
+权威 `dev-flow-node-result/v1`。只有主机能证明 manager secret、控制器
+数据、状态文件和变更工具均不在任何 worker 边界内时，才允许并行写；
+否则自动退回 manager 持有的串行路径。
+
+Codex 官方执行面都是该内核外围的适配器：
+
+| 执行面 | 适用场景 | 权限边界 |
+| --- | --- | --- |
+| Codex Skills | 渐进披露路由和精确的当前节点 playbook | 读取投影；控制器调用仍须显式 |
+| 原生 Codex 子代理 | 默认的交互式并行探索、实现、测试和审查 worker | 仅限作用域分配 |
+| `codex exec --json` | 开销最低的无头/CI 节点，输出 JSONL 用量与 Schema 约束结果 | 只产生候选结果 |
+| Codex SDK thread | 可恢复的仓库级编码 worker | 只持有 runtime handle |
+| `codex mcp-server` + Agents SDK | 可选的动态 handoff、HITL、trace 或跨系统编排 | 外部执行器；绝不拥有状态 |
+
+这些集成边界遵循官方
+[Skills](https://learn.chatgpt.com/docs/build-skills)、
+[子代理](https://learn.chatgpt.com/docs/agent-configuration/subagents)、
+[Hooks](https://learn.chatgpt.com/docs/hooks)、
+[`codex exec`](https://learn.chatgpt.com/docs/non-interactive-mode)、
+[Codex SDK](https://learn.chatgpt.com/docs/codex-sdk) 和
+[Codex MCP server](https://learn.chatgpt.com/docs/mcp-server) 合同。
+真正动态的外部编排遵循
+[Agents SDK 编排指南](https://developers.openai.com/api/docs/guides/agents/orchestration)，
+但不能取代包内 workflow graph 或提交权限。
+
+基础插件仅导入 Python 标准库；可选 SDK 留在控制器进程之外。因此这里
+有意不做全量 Agents Runtime 迁移：固定图由控制器直接调度更省 token、
+更易重放；真正需要动态编排时仍可外挂 Agents Runtime。
+
+随包 stdio MCP 只暴露六个强类型工具：`task-next`、
+`node-description`、`evidence-read`、`action-preview`、`action-apply`
+和 `worker-result`，并准确声明读、写和 destructive 属性。MCP 主机审批
+只是附加边界：写工具仍须通过与 CLI 完全相同的 revision、intent、
+gate、manager capability、防重放和证据校验。MCP 被禁用或不可用时，
+`scripts/dev_flow.py` 仍是完整的查看、变更与恢复入口。
+给 `task-next` 传入 `known_revision` 时，同一 revision 只返回极小的
+unchanged 回执；旧 checkpoint 会得到当前投影和中间持久事件的有界摘要。
+事件日志存在缺口时返回 `reset_required`，不会伪造完整 delta。
+
+模型可见 payload 使用可移植的 UTF-8 字节预算：
+
+| Payload | 常见路径上限 |
+| --- | ---: |
+| Hook checkpoint | 600 字节 |
+| `task-next` | 1 KiB |
+| 变更回执 | 1 KiB，加动作必需字段 |
+| 当前节点 playbook | 4 KiB |
+| manager 可见的权威 `NodeResult` | 2,048 字节 |
+| 内联结果摘要 | 512 字节 |
+| V4 操作员介入包 | 4,096 字节 |
+
+必需细节绝不会被静默截断。过大的任务投影会保存为任务级内容寻址制品，
+并返回经过校验的 locator；超出合同预算的权威 `NodeResult` 会直接被
+拒绝。
+稳定的不变量指令、bundle identity 和按节点选择的 playbook，可在当前
+Codex 或 API surface 提供 prompt caching 时保持重复前缀更容易命中缓存。
+控制器会记录宿主报告的 cached-input 用量，但绝不会把缓存命中当作正确性
+前提。对话 compact 同样安全：hook 只恢复当前 locator，所有权威事实仍在
+模型上下文之外。
+
+提交进包的当前尺寸 fixture 会用规范 UTF-8 序列化重放一个代表性的
+实现节点：
+
+| 代表性 payload | 实测字节 | 规划估算 | 合同预算 |
+| --- | ---: | ---: | ---: |
+| Hook checkpoint | 349 | 88 token | 600 字节 |
+| `task-next` | 687 | 172 token | 1,024 字节 |
+| 常见变更回执 | 236 | 59 token | 1,024 字节 |
+| 只选中的 IMPLEMENTING playbook 小节 | 189 | 48 token | 4,096 字节 |
+| 带一个制品和证据引用的权威 `NodeResult` | 1,677 | 420 token | 2,048 字节 |
+| 内联 `NodeResult` 摘要 | 10 | 3 token | 512 字节 |
+| V4 操作员介入包 | 603 | 151 token | 4,096 字节 |
+
+规划估算刻意使用与 tokenizer 无关的
+`ceil(UTF-8 字节 / 4)`，只用于稳定的回归规划；它既不是模型 tokenizer
+结果，也不是 API 上报用量。与原始字节清单中可比的 payload 相比，
+Hook checkpoint、`task-next` 和常见变更回执分别减少 66.4%、62.5% 和
+86.3% 字节；只加载 IMPLEMENTING 小节而不是完整 full-v4 playbook，
+输入字节减少 92.2%。这些是协议字节对比，不等同于精确 token 节省或
+任务质量结论。
+
+节点遥测在执行器提供数据时分别记录 input、cached-input、output
+和 reasoning-output token，并聚合重试浪费、编排开销、并行倍率、耗时
+与质量。遥测只用于观察，永远不能满足证据关卡。
+
+提交进包的确定性遥测 fixture 提供两组回归基线；它不是生产性能结论，
+其中的 token 数会像真实适配器上报值一样被原样接受：
+
+| 代表性 fixture | 总 token | 缓存输入 | 重试浪费 | manager 开销 | Token 倍率 | 墙钟加速 | 质量 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 单仓库完整流程 | 535 | 61.3% | 0% | 9.3% | 0.955x | 1.204x | 100% |
+| 多仓库并行流程 | 1,595 | 67.9% | 26.3% | 8.1% | 1.139x | 2.130x | 75% |
+
+报告同时保留实际墙钟毫秒、单代理基线毫秒、耗时比、加速比和带符号的
+节省时间，从而直接暴露关键取舍：并行可以缩短墙钟时间，但可能增加
+模型总 token，尤其是发生 worker 重试时。
+
+新增声明式节点或版本化执行合同请遵循
+[CONTRIBUTING.md](CONTRIBUTING.md)。新的运行时行为必须属于包内、静态
+列入清单、经过 capability audit，并由新的不可变 bundle 身份引用；
+目标仓库不能向控制器注入代码。
+
 ### 边界与限制
 
 钩子提供的是任务级防护措施，而非安全边界。只有在匹配的任务处于活动状态时，它们才会保护可识别的文件写入工具并拦截常见的危险 Git 命令；shell 脚本、嵌套工具、托管工具以及被禁用或不受信任的钩子都可能绕过这些防护。控制器状态、制品哈希、显式审批和最终独立审查仍然是事实依据。安装本插件不会全局限制无关的 Codex 任务。
@@ -343,7 +518,12 @@ Schema-v2 状态确认默认要求显式确认，只有五条精确自动白名�
 
 重复的测试与审查指纹保持完全相同的 v2 语义 payload 和哈希，但在每个任务中只保存一份 `task-local-json-v1` blob。状态中的条目是存储 locator，而非证据记录，因此会刻意省略 `evidence_contract_version`；当前控制器只有在完整校验 blob 后才接受其中的 v2 payload，旧控制器则会故障关闭，而不会信任一个未经校验的 locator。旧的 inline v2 指纹仍可读取。
 
-新任务使用任务状态 schema v2，其中确认契约和风险评估都是必填安全字段。当前控制器仍可读取并完成 schema-v1 任务；它们保留旧的直接 `transition`/`cancel` 行为和逐状态边人工提示，无法使用 v2 的 `--preview`/`--confirm-intent`。不要把 v1 状态手工改写成 v2，也不要伪造 intent 或风险快照。反过来，只理解 schema v1 的旧控制器会拒绝 schema-v2 任务，而不会静默丢弃这些安全字段。
+新任务使用由 `lite@4` 或 `full@4` 选定的活动 task-state schema v3。
+已有 schema-v2 任务通过冻结的 legacy adapter 保留其确认与风险契约，
+schema-v1 任务则保留旧的直接 `transition`/`cancel` 行为和逐状态边人工
+提示。不要把 v1/v2 任务手工改写成 v3，也不要伪造 intent、风险快照或
+workflow reference。旧控制器遇到不支持的新任务 schema 会拒绝读取，
+而不会静默丢弃字段。
 
 旧的 v1 证据不满足当前 v2 证据契约与能力配置摘要，会被下游关卡有意视为过期。任务继续前，必须在同一主机上用兼容的当前版本重新生成所需的预检、基线/工作区索引、计划绑定、测试记录和审查快照。若任务已经越过控制器允许刷新所需证据的状态，就不能原地迁移；应取消并新建任务，不能手工修改证据。缺少启动时 `branch_binding` 的旧 `branch` 工作方式任务仍可查看，但会在预检和精简关卡故障关闭；应取消并新建任务，不能人工伪造批准证据。不要给旧证据重新贴标签，也不要把基线 codebase-memory 项目当作工作区项目复用。反过来，使用不理解当前能力配置的旧版插件指向已经由本版本处理过的数据目录也不安全：应重装支持同一证据契约的版本，再重新生成失效证据。旧状态可读不代表语义兼容，更换平台也不是证据迁移路径。
 
@@ -352,6 +532,16 @@ Schema-v2 状态确认默认要求显式确认，只有五条精确自动白名�
 路径与工作区所有权检查会规范化 `/` 与 `\`、盘符与 UNC 拼写、大小写行为、Unicode 规范化及 symlink/junction 别名。尚不存在的目标会绑定到最近的现有祖先，以便探测文件系统行为。能力无法安全测量或身份存在歧义/冲突时，会在分配所有权前故障关闭；应避免仅大小写不同的工作区路径和分支覆盖值，也不要依赖特定平台才接受的别名。
 
 控制器在受保护变更期间拥有其启动的子进程：中断时先请求平台对应的终止，再按需升级并等待回收，确认静止后才释放锁。如果改变 Git 的子进程超时或无法证明已经静止，控制器会在仍持锁时写入持久化 `mutation-quarantine.json`；此后所有状态变更都会被阻止。不要删除或编辑该文件，也不要直接重试原操作。先只读检查报告的进程和仓库证据，再执行 `recover-quarantine --task <task-id> --expected-revision <revision>`；该命令会证明子进程已消失、校验记录的 Git/文件系统后置条件及当前证据契约，然后归档隔离记录。子进程仍存活或无法验证、revision 漂移或后置条件漂移时，恢复仍会故障关闭。
+
+V4 action recovery 遇到已经 claim、但无法确认结果的 effect 时，会返回
+`UNRESOLVED` 和有界的 `operator_intervention` 信息。Codex 必须展示确切的
+execution、effect ID、受影响范围、原因和恢复条件，然后停下来询问用户。
+此状态下控制器不会自动重新执行、补偿或解除隔离，用户或模型的一句话也
+不能充当恢复证明。只有重新读取后，控制器验证到原运行时已认证重连、
+存在可校验的持久回执，或未来接入了可信宿主恢复授权时，才能继续；否则
+受影响范围保持安全阻塞。
+完整人工介入投影的语义 JSON 上限为 4,096 字节，禁止截断。超限或持久
+目标损坏时仍保持阻塞，并返回 `action-recovery-inspect` locator 供只读诊断。
 
 控制器的每个状态文件都通过带回滚证据的原子替换写入。如果这次写入在清理之前被打断——`SIGKILL`、断电，或钩子在超时点被杀死——目标文件旁会残留一个 `.<name>.rollback-<suffix>` 文件，此后针对该文件的所有写入都会以 `ATOMIC_RECOVERY_REQUIRED` 故障关闭，并在 `details.rollback_candidates` 中列出残留路径。这是有意为之：控制器不会覆盖一个上次替换结果无法说明的目标文件。但它并非死路，手工删除也依然不是出路。执行 `recover-atomic-write` 可只读列出全部候选；加 `--apply` 只清除可证明安全的证据，即与已提交目标逐字节相同的副本，或从未提交过新文件时留下的空占位文件。内容与目标不一致意味着这是一个关于已提交状态的决定，因此会继续阻塞，并同时给出两侧的摘要（大小、SHA-256 与 schema 字段），直到你对某个 `--path` 明确选择 `--resolve keep-current` 或 `--resolve restore-rollback`，并用 `--rollback-sha256` 证明确实查看过该文件。该命令绝不替你做选择。
 
@@ -378,8 +568,13 @@ Schema-v2 状态确认默认要求显式确认，只有五条精确自动白名�
 | `show` | 两者 | 任意 | 输出精简、分区或完整任务快照 |
 | `recover-quarantine` | 两者 | 存在活动隔离记录 | 证明受中断子进程已消失、校验部分后置条件并归档持久化隔离记录 |
 | `recover-atomic-write` | 两者 | 无需任务 | 列出并清理原子状态写入被中断后残留的回滚证据 |
+| `action-recovery-inspect` | schema-v3/V4 | 动作隔离中 | 只读检查确切持久 journal、绑定和安全恢复 locator |
+| `action-recovery-preview` | schema-v3/V4 | 动作隔离中 | 只读协调并返回确切有界决策或操作员介入包 |
+| `action-recovery-apply` | schema-v3/V4 | 动作隔离中 | 仅在所需 manager authority 下应用控制器已验证的恢复结果 |
 | `list` | 两者 | 无需任务 | 列出任务摘要 |
 | `scope` | 两者 | 无需任务 | 查看或修改插件生效的目录范围 |
+| `manager-authorize` | schema-v3 | 任意活动状态 | 先预览，再签发一个短时、任务/session/action 作用域的 manager capability |
+| `manager-revoke` | schema-v3 | 任意活动状态 | 先预览，再撤销一条已持久化的 manager capability verifier |
 | `preflight` | 两者 | `INTAKE`、`PREFLIGHTED` | 先预览唯一状态边，再用确认令牌记录 Git 身份、远程/基准分支和工作树指纹 |
 | `baseline` | 完整 | `PREFLIGHTED`、`BASELINED` | 固定各仓库的远程基准提交；可选地实体化分析工作树 |
 | `record-index` | 完整 | `BASELINED`、`INDEXED`（基线）；`WORKSPACE_READY`、`PLANNING`、`IMPLEMENTING`、`VERIFYING`（工作区） | 记录基线或工作区角色的 codebase-memory 索引来源 |
@@ -394,7 +589,40 @@ Schema-v2 状态确认默认要求显式确认，只有五条精确自动白名�
 
 "任意活动状态"指既非终态（`DONE`、`CANCELLED`）也非 `BLOCKED` 的状态；具体的制品类型和关卡还会进一步收窄，详见下文。仅限完整流程的命令在精简任务上会以 `FLOW_MISMATCH` 失败，`approve --gate lite` 在完整任务上同样如此。此外，当任务是在预检阶段被阻塞时，`preflight` 也可从 `BLOCKED` 状态执行。
 
-这十七条中有三条不针对单个任务：`scope` 是 `config.json` 的唯一写入者；`recover-atomic-write` 处理控制器已拥有文件上那次被中断的写入；`list` 跨任务列出摘要。其余十四条针对单个任务的状态。加载旧状态时，`show` 或 `list` 还可能执行上文所述的一次性敏感信息清理。
+这二十二条中有三条不针对单个任务：`scope` 是 `config.json` 的唯一写入者；`recover-atomic-write` 处理控制器已拥有文件上那次被中断的写入；`list` 跨任务列出摘要。其余十九条针对单个任务的状态。加载旧状态时，`show` 或 `list` 还可能执行上文所述的一次性敏感信息清理。
+
+### Schema-v3 manager capability 通道
+
+Schema-v3 写入同时要求两份彼此独立的输入：公开的
+`dev-flow-manager-capability-request/v1` 身份，以及从 manager 专属继承
+pipe 或已连接本地 socket 读取的一帧二进制 proof。secret 字节绝不能
+进入 argv、JSON、环境变量值、stdout、日志、任务状态或 worker 上下文。
+MCP 进程使用 `DEV_FLOW_MANAGER_SECRET_FD` 时，其中只保存十进制文件
+描述符编号，不保存 secret。
+
+授权和撤销都使用显式两阶段操作：
+
+```text
+<controller> manager-authorize <task> --expected-revision N --manager-session-id SESSION --preview
+<controller> manager-authorize <task> --expected-revision N --manager-session-id SESSION --confirm-intent INTENT --manager-secret-fd WRITE_FD
+<controller> manager-revoke <task> --expected-revision N --capability-id ID --reason AUDIT_REASON --preview
+<controller> manager-revoke <task> --expected-revision N --capability-id ID --reason AUDIT_REASON --confirm-intent INTENT
+```
+
+主机或 manager 自有 broker 必须在所有可写 worker 边界之外创建该通道。
+授权只发布一帧有界 secret，状态中仅持久化 verifier。一次性 pipe 可服务
+一次 apply；长驻 MCP server 需要 manager 自有本地 broker，在每次获权
+写调用时通过继承的已连接 socket 提供一帧。每次 apply 还要通过 CLI 的
+`--manager-request-json` 或强类型 MCP 请求提交公开 request。nonce 会持久
+消费；若提交后只丢失响应，重试会返回完全相同的旧回执；同 nonce 配上
+不同规范输入则以 replay conflict 失败。
+
+所选的可选 `.mcp.json` 宿主 profile 有意不创建、也不拥有这条主机特定 secret 通道。缺少
+`DEV_FLOW_MANAGER_SECRET_FD` 时，`task-next`、`node-description`、
+`evidence-read` 和 `action-preview` 仍可用；`action-apply` 与
+`worker-result` 会在状态或 events 变化前故障关闭。显式控制器 CLI 是
+完整 fallback，但不会绕过相同的 revision、intent、capability、防重放
+和证据关卡。
 
 ### 任务创建与查看
 
@@ -460,9 +688,11 @@ Schema-v2 状态确认默认要求显式确认，只有五条精确自动白名�
 ```text
 dev-flow-orchestrator/
 ├── .gitattributes                    # canonical 候选的 LF 检出策略
+├── .mcp.json                         # 默认禁用的明确 POSIX/Windows MCP profiles
 ├── .github/workflows/
 │   └── cross-platform.yml            # Windows/macOS/Linux 原生验证矩阵
 ├── .codex-plugin/plugin.json        # 必需的插件清单
+├── CONTRIBUTING.md                   # 声明式节点/handler 扩展指南
 ├── INSTALL.md                        # 精确的个人/仓库安装位置映射
 ├── hooks/
 │   ├── hooks.json                   # POSIX/Windows 成对的钩子注册
@@ -470,7 +700,12 @@ dev-flow-orchestrator/
 │   └── dev_flow_hook.py             # 共享的状态注入和防护逻辑
 ├── scripts/
 │   ├── dev_flow.py                  # 稳定 CLI 门面与有序运行时加载器
-│   ├── dev_flow_parts/              # 十个不可拆分安装的控制器实现部件
+│   ├── dev_flow_mcp.py              # 强类型标准库 MCP 薄适配器
+│   ├── dev_flow_python_launcher     # 共享 POSIX Python 3.9–3.14 选择器
+│   ├── dev_flow_mcp_launcher        # POSIX MCP launcher
+│   ├── dev_flow_mcp_launcher.cmd    # 由 cmd.exe 明确调用的 Windows launcher
+│   ├── workflow_bundle_identity.py  # 精确的图/handler/bundle 身份合同
+│   ├── dev_flow_parts/              # 控制器、内核、适配器与服务
 │   ├── audit_runtime_imports.py      # 标准库依赖与隔离启动审计
 │   ├── candidate_identity.py         # canonical-v1 身份与确定性 handoff
 │   ├── validate_package.py          # 清单、默认钩子和包清单检查
@@ -483,6 +718,7 @@ dev-flow-orchestrator/
 │   └── review-dev-flow-change/      # 独立的完整变更审查
 ├── templates/marketplace-entry.json # 用于合并到本地市场的条目
 ├── templates/personal-marketplace.example.json # 完整的首个市场配置示例
+├── workflows/                        # 密封注册表和不可变 bundle
 └── tests/                            # 可移植的离线单元测试
 ```
 
@@ -490,17 +726,24 @@ dev-flow-orchestrator/
 
 ## 开发验证
 
-在插件源码根目录中运行。以下五条均为单行参数序列，可用于 Bash、PowerShell 或命令提示符；`<python>` 始终替换成受支持解释器的实际命令或绝对路径：
+在 macOS 的插件源码根目录中运行。`<direct-test-target>` 只替换为本次
+改动直接影响的 unittest 类或方法；禁止测试发现、全量测试和无关的大范围
+聚合：
 
 ```text
-<python> -m unittest discover -s tests -v
+<python> -m unittest <direct-test-target> -v
 <python> scripts/audit_runtime_imports.py
 <python> scripts/validate_package.py
 <python> scripts/run_bundled_validators.py --require-available
-openspec validate complete-cross-platform-support --strict
+openspec validate introduce-versioned-workflow-kernel --type change --strict
 ```
 
-这些检查依次覆盖完整单元测试、运行时仅标准库/隔离启动、插件清单与官方默认 `hooks/hooks.json` 发现及包内引用、三个随包技能与插件清单的官方 validators、以及严格 OpenSpec 变更校验。`scripts/audit_runtime_imports.py` 会解析所有随包运行时导入，并用隔离的 `-I -S` 启动控制器、钩子和 Windows 原生 runner；`scripts/validate_package.py` 独立验证默认钩子，因为 `.codex-plugin/plugin.json` 必须省略官方 plugin validator 尚不支持的 `hooks` 字段。
+记录每条定向测试的确切命令和结果。其余检查覆盖仅标准库运行时和
+macOS 隔离启动、插件清单与默认 `hooks/hooks.json` 发现及包内引用、随包
+Skill/plugin 官方 validators，以及严格 OpenSpec 校验。
+`scripts/validate_package.py` 会独立验证默认 hooks，因为
+`.codex-plugin/plugin.json` 必须省略官方 plugin validator 尚不支持的
+`hooks` 字段。
 
 `scripts/run_bundled_validators.py` 会在候选快照前后记录摘要，并尝试从 Codex home 自动发现官方 skill/plugin validators。必需 CI 会从固定的 `openai/codex` commit 取得这两个官方脚本，同时校验 Git blob ID 与 SHA-256，并用 `--require-available` 失败关闭。若本地开发环境中的脚本不存在或其依赖不能导入，省略严格参数的诊断运行会输出 JSON `status: "unavailable"`，使其余检查仍可继续，但这**不等于**官方 validator 已通过。最终交付必须在 validators 确实可用的环境中运行：
 
@@ -510,11 +753,16 @@ openspec validate complete-cross-platform-support --strict
 
 如需显式定位，可设置 `DEV_FLOW_SKILL_VALIDATOR`、`DEV_FLOW_PLUGIN_VALIDATOR` 和（必要时）`DEV_FLOW_VALIDATOR_PYTHON`。`--require-available` 会把任何 `unavailable` 当作失败，因此 handoff 不能用默认的软诊断替代真实通过记录。
 
-每个必需的 CI job 都会使用真实 Git，在其检出的确切 `github.sha` 上运行同一套完整验证：Python 3.9 和 3.14 覆盖原生 Windows、macOS、Linux，3.10–3.13 另在 Linux 覆盖。模拟 Windows 分支或仅启动 `commandWindows` 仍不足以声明完整 Windows 插件支持。发布前还必须在真实 Windows Codex 主机上，从已确认的本地市场安装候选插件并开启新任务；安装/来源路径须覆盖空格、Unicode、`&` 和括号，并记录默认发现 `hooks/hooks.json`、选择 `commandWindows`、真实 `PLUGIN_ROOT`/`PLUGIN_DATA` 注入、bootstrap/checkpoint 拾取，以及良性命令放行和受保护 Git 变更拒绝。没有这份实机 smoke 证据时，不得对外声明 Windows 支持已经完成验证。
+本次交付获准运行的 CI 只在原生 macOS 上执行与冻结候选直接相关的
+定向选择，并绑定确切候选摘要。它不运行全量测试，也不产生 Windows 或
+Linux 结论。
 
-### 跨主机 Windows 原生自测
+### 已退出本次范围的 Windows 原生自测
 
-跨主机绑定使用 `dev-flow-canonical-v1`，而不是本机完整快照摘要。canonical v1 按精确 UTF-8 POSIX 路径和原始文件字节哈希显式包清单，不纳入时间戳、所有者和可执行位，只从 canonical 摘要排除 OpenSpec 进度，并拒绝意外路径、符号链接和 reparse point，同时断言已发布的双文件黄金向量。`scripts/run_bundled_validators.py` 同时输出 `canonical_candidate_sha256` 与模式敏感的 `host_local_snapshot_sha256`；只有前者可跨操作系统比较。
+以下内容只用于解释包内保留的历史辅助脚本。本次 macOS-only V4 禁止
+执行这些命令，不把其结果作为发布证据，也不据此声明 Windows 支持。
+
+跨主机绑定使用 `dev-flow-canonical-v1`，而不是本机完整快照摘要。canonical v1 按精确 UTF-8 POSIX 路径和原始文件字节哈希显式包清单，不纳入时间戳、所有者和可执行位，并且只排除 `scripts/candidate_identity.py` 明确列出的规划、生成物与宿主本地条目。这些排除项包括 `openspec/`、控制器/运行时状态、根目录 `AGENTS.md`、`.claude/settings.local.json`、`pyproject.toml` 与 `uv.lock`；最后两项在仓库根目录被精确忽略，避免机器本地 Codex 工具元数据伪装成随包插件元数据。其他意外路径以及符号链接/reparse point 一律拒绝，同时断言已发布的双文件黄金向量。`scripts/run_bundled_validators.py` 同时输出 `canonical_candidate_sha256` 与模式敏感的 `host_local_snapshot_sha256`；只有前者可跨操作系统比较，后者仍让被 canonical 排除的规划与机器本地变更进入完整审查面。
 
 实现、文档、工作流和 cachebuster 全部冻结后，在精确候选根目录生成保字节 handoff。两个输出文件必须尚不存在、父目录必须已存在，且必须位于候选根目录之外。
 
@@ -543,9 +791,9 @@ Windows 命令提示符：
 scripts\windows_native_validation.cmd run --archive "C:\dev-flow-windows-handoff\dev-flow-candidate.zip" --manifest "C:\dev-flow-windows-handoff\dev-flow-candidate.json" --expected-canonical "<canonical-sha256-from-prepare>" --local-root "C:\dev-flow-share-parent\test-root" --unc-root "\\localhost\DevFlowNative\test-root" --code-page 936 --report "C:\dev-flow-windows-handoff\windows-native-report.json"
 ```
 
-`936` 是文档默认的非 UTF-8 代码页；如主机不支持，可改为另一个已安装的 legacy code page。报告路径必须是新文件，父目录须已存在，并位于候选及两条测试根路径之外。runner 会先验证 manifest、archive、成员路径与字节，使用二进制写入而非 `extractall`，证明本地/UNC 身份一致后才创建一个随机 sentinel 子目录。它只使用隔离控制器状态和仓库级 Git 配置，把 `chcp` 限定在子 `cmd.exe`，并且只清理 sentinel 完全匹配的自有子目录。它不会安装插件、复用活动 `<PLUGIN_DATA>`、修改机器/全局 Git 配置、发布、推送、创建/删除共享或覆盖报告。`--keep-owned-fixture-on-failure` 只保留该自有子目录，并强制结果为 `incomplete`。
+`936` 是文档默认的非 UTF-8 代码页；如主机不支持，可改为另一个已安装的 legacy code page。报告路径必须是新文件，父目录须已存在，并位于候选及两条测试根路径之外。runner 会先验证 manifest、archive、成员路径与字节，使用二进制写入而非 `extractall`，证明本地/UNC 身份一致后才创建一个随机 sentinel 子目录。它会从解压后的候选中按原样选择默认禁用的 `dev-flow-windows` profile，通过其中确切的 `cmd.exe` command、args 与 `cwd` 启动服务，完成有界 MCP `initialize` 与 `tools/list` 交互并核对全部六个工具名。它还会依次使用随包的确切 `commandWindows` 执行 `PreCompact`、`PostCompact`、`SessionStart(source = "compact")`，拒绝 PostCompact 中任何不受支持的 `hookSpecificOutput`，并要求最后恢复 checkpoint locator。它只使用隔离控制器状态和仓库级 Git 配置，把 `chcp` 限定在子 `cmd.exe`，并且只清理 sentinel 完全匹配的自有子目录。它不会安装插件、复用活动 `<PLUGIN_DATA>`、修改机器/全局 Git 配置、发布、推送、创建/删除共享或覆盖报告。`--keep-owned-fixture-on-failure` 只保留该自有子目录，并强制结果为 `incomplete`。
 
-请把新生成的 `windows-native-report.json` 原样返回审查。有效报告必须绑定相同的 expected/observed canonical 摘要，legacy code page 与 UNC/长路径/真实 worktree 检查均为 `passed`，cleanup 也为 `passed`。macOS/Linux 只能验证 prepare 和故障关闭逻辑，绝不能生成 Windows native `passed`。
+请把新生成的 `windows-native-report.json` 原样返回审查。有效报告必须绑定相同的 expected/observed canonical 摘要，`native-windows-mcp-launcher`、`native-windows-compact-hook-lifecycle`、legacy code page 与 UNC/长路径/真实 worktree 检查均为 `passed`，cleanup 也为 `passed`。macOS/Linux 只能验证 prepare 和故障关闭逻辑，绝不能生成 Windows native `passed`。
 
 项目内自测与真实 Windows Codex-host pickup smoke 是两个不同流程。运行自测不授权发布、原生 CI dispatch 或市场安装；这些动作仍需分别显式批准。获准发布时，`.github/workflows/cross-platform.yml` 要求传入已评审的 canonical 摘要，每个 Windows/macOS/Linux job 都校验其 64 位小写格式、canonical 黄金向量与本地摘要一致性；普通 push/pull request 检查不构成发布授权。
 

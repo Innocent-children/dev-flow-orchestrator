@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -60,6 +62,7 @@ class CrossPlatformSafetyTest(unittest.TestCase):
                 dev_flow.EVIDENCE_CONTRACT_VERSION
             ),
             "task_id": "safety-task",
+            "flow": "full",
             "status": "INTAKE",
             "revision": 1,
             "repositories": [],
@@ -72,8 +75,12 @@ class CrossPlatformSafetyTest(unittest.TestCase):
         dev_flow._atomic_write_json(
             self.task_dir / "state.json", self.state
         )
+        self.manager_credentials = {}
+        self.manager_nonce = 0
 
     def tearDown(self) -> None:
+        for credential in self.manager_credentials.values():
+            dev_flow._manager_zeroize(credential["secret"])
         self.temporary.cleanup()
 
     def make_repo(self, name: str) -> Path:
@@ -102,25 +109,23 @@ class CrossPlatformSafetyTest(unittest.TestCase):
         git(repository, "commit", "-q", "-m", "initial")
         return repository
 
-    def run_controller(self, *arguments: str) -> dict:
+    def _controller_process(
+        self,
+        arguments,
+        *,
+        inherited_fd=None,
+    ) -> subprocess.CompletedProcess:
         isolated_home = self.root / "isolated-controller-home"
         isolated_home.mkdir(exist_ok=True)
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                *arguments,
-                "--data-dir",
-                str(self.root / "state"),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
-            env={
+        options = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "check": False,
+            "text": True,
+            "encoding": "utf-8",
+            "timeout": 60,
+            "env": {
                 **os.environ,
                 "HOME": str(isolated_home),
                 "USERPROFILE": str(isolated_home),
@@ -128,11 +133,148 @@ class CrossPlatformSafetyTest(unittest.TestCase):
                 "GIT_TERMINAL_PROMPT": "0",
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
-        )
+        }
+        if inherited_fd is not None:
+            os.set_inheritable(inherited_fd, True)
+            if os.name == "nt":
+                options["close_fds"] = False
+            else:
+                options["pass_fds"] = (inherited_fd,)
+        try:
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    *arguments,
+                    "--data-dir",
+                    str(self.root / "state"),
+                ],
+                **options,
+            )
+        finally:
+            if inherited_fd is not None:
+                os.set_inheritable(inherited_fd, False)
+
+    def run_controller(
+        self,
+        *arguments: str,
+        manager_action=None,
+    ) -> dict:
+        inherited_fd = None
+        reader = None
+        values = list(arguments)
+        if manager_action is not None:
+            task_id = values[1]
+            revision = int(
+                values[values.index("--expected-revision") + 1]
+            )
+            credential = self.manager_credentials[task_id]
+            reader, publisher = os.pipe()
+            try:
+                dev_flow.publish_manager_secret(
+                    dev_flow.ManagerSecretChannelConfig(publisher),
+                    credential["secret"],
+                )
+            finally:
+                os.close(publisher)
+            self.manager_nonce += 1
+            request = {
+                "schema": dev_flow.MANAGER_CAPABILITY_REQUEST_SCHEMA,
+                "capability_id": credential["capability_id"],
+                "task_id": task_id,
+                "manager_session_id": credential[
+                    "manager_session_id"
+                ],
+                "action_id": manager_action,
+                "expected_revision": revision,
+                "request_nonce": hashlib.sha256(
+                    f"cross-platform-{self.manager_nonce}".encode(
+                        "utf-8"
+                    )
+                ).hexdigest(),
+            }
+            values.extend(
+                [
+                    "--manager-request-json",
+                    json.dumps(
+                        request,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "--manager-secret-fd",
+                    str(reader),
+                ]
+            )
+            inherited_fd = reader
+        try:
+            result = self._controller_process(
+                values,
+                inherited_fd=inherited_fd,
+            )
+        finally:
+            if reader is not None:
+                os.close(reader)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 1, result.stdout)
         return json.loads(lines[0])
+
+    def authorize_manager(self, task_id: str, revision: int) -> dict:
+        manager_session_id = "cross-platform-safety-manager"
+        preview = self.run_controller(
+            "manager-authorize",
+            task_id,
+            "--expected-revision",
+            str(revision),
+            "--manager-session-id",
+            manager_session_id,
+            "--ttl-seconds",
+            "900",
+            "--preview",
+        )
+        reader, publisher = os.pipe()
+        try:
+            result = self._controller_process(
+                [
+                    "manager-authorize",
+                    task_id,
+                    "--expected-revision",
+                    str(revision),
+                    "--manager-session-id",
+                    manager_session_id,
+                    "--ttl-seconds",
+                    "900",
+                    "--confirm-intent",
+                    preview["preview"]["intent_id"],
+                    "--manager-secret-fd",
+                    str(publisher),
+                ],
+                inherited_fd=publisher,
+            )
+        finally:
+            os.close(publisher)
+        try:
+            self.assertEqual(
+                result.returncode,
+                0,
+                result.stderr or result.stdout,
+            )
+            lines = result.stdout.splitlines()
+            self.assertEqual(len(lines), 1, result.stdout)
+            authorized = json.loads(lines[0])
+            secret = dev_flow.resolve_manager_secret(
+                dev_flow.ManagerSecretChannelConfig(reader)
+            )
+        finally:
+            os.close(reader)
+        self.manager_credentials[task_id] = {
+            "capability_id": authorized["capability"][
+                "capability_id"
+            ],
+            "manager_session_id": manager_session_id,
+            "secret": secret,
+        }
+        return authorized
 
     def test_baseline_fetch_disables_reference_transaction_hook(self) -> None:
         repository = self.make_repo("baseline-hook-source")

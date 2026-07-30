@@ -3,6 +3,8 @@
 # Responsibility: Task, recovery, scope, and preflight command handlers.
 from __future__ import annotations
 
+from typing import Mapping
+
 def _result(command: str, state_value: dict[str, Any], **extra: Any) -> dict[str, Any]:
     workflow = _workflow_progress(state_value)
     response: dict[str, Any] = {
@@ -19,6 +21,10 @@ def _result(command: str, state_value: dict[str, Any], **extra: Any) -> dict[str
         "workflow": workflow,
         "index_selection": _index_selection(state_value),
     }
+    if state_value.get("schema_version") == V3_TASK_SCHEMA_VERSION:
+        response["node_instances"] = state_value.get(
+            "node_instances", []
+        )
     response.update(extra)
     return response
 
@@ -414,6 +420,25 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                         ),
                     },
                 )
+        try:
+            creation = resolve_loaded_task_workflow(
+                {"flow": flow},
+                purpose="creation",
+                creation_task_id=task_id,
+                creation_repository_count=len(repositories),
+                require_schema_v3=bool(
+                    getattr(args, "require_schema_v3", False)
+                ),
+            )
+        except (
+            WorkflowCatalogError,
+            WorkflowStateError,
+        ) as exc:
+            raise FlowError(
+                exc.code,
+                exc.message,
+                details=exc.details,
+            ) from exc
         with _task_lock(task_dir):
             if (task_dir / "state.json").exists():
                 raise FlowError(
@@ -424,7 +449,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
             _ensure_private_dir(task_dir / "artifacts")
             created = utc_now()
             state_value: dict[str, Any] = {
-                "schema_version": TASK_SCHEMA_VERSION,
+                "schema_version": creation["schema_version"],
                 "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
                 "confirmation_contract_version": (
                     CONFIRMATION_CONTRACT_VERSION
@@ -454,6 +479,12 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 "blocked": None,
                 "cancelled": None,
             }
+            creation_fields = creation.get("creation_fields")
+            if isinstance(creation_fields, dict):
+                state_value.update(creation_fields)
+                resolve_loaded_task_workflow(
+                    state_value, purpose="inspection"
+                )
             _commit_state(
                 None,
                 state_value,
@@ -468,7 +499,67 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def command_show(args: argparse.Namespace) -> dict[str, Any]:
-    state_value = load_state(_task_arg(args), args.data_dir)
+    state_value, inspection = load_state_for_inspection(
+        _task_arg(args), args.data_dir
+    )
+    if getattr(args, "next", False) or getattr(args, "profile", None):
+        if inspection is not None and not inspection.get("supported", False):
+            raise FlowError(
+                "WORKFLOW_PROJECTION_UNAVAILABLE",
+                "unsupported task contracts cannot produce agent-v1",
+                details={"inspection": inspection},
+            )
+        try:
+            task_next = build_workflow_task_next(
+                state_value, data_dir=args.data_dir
+            )
+        except WorkflowProjectionError as exc:
+            raise FlowError(
+                exc.code, exc.message, details=exc.details
+            ) from exc
+        return {
+            "ok": True,
+            "command": "show",
+            "task_id": state_value.get("task_id"),
+            "revision": state_value.get("revision"),
+            "status": state_value.get("status"),
+            "flow": state_value.get("flow"),
+            "profile": WORKFLOW_AGENT_PROFILE,
+            "next": task_next,
+        }
+    if inspection is not None:
+        response: dict[str, Any] = {
+            "ok": True,
+            "command": "show",
+            "task_id": state_value.get("task_id"),
+            "revision": state_value.get("revision"),
+            "status": state_value.get("status"),
+            "flow": state_value.get("flow"),
+            "read_only": True,
+            "inspection": inspection,
+        }
+        if getattr(args, "compact", False):
+            response["summary"] = {
+                "schema_version": inspection.get("schema_version"),
+                "supported": inspection.get("supported"),
+                "valid": inspection.get("valid"),
+                "mutation_ready": inspection.get("mutation_ready"),
+                "workflow_ref": inspection.get("workflow_ref"),
+            }
+            return response
+        sections = getattr(args, "section", None)
+        if sections:
+            projection = _show_section_projection(
+                state_value, sections
+            )
+            projection["workflow_ref"] = state_value.get("workflow_ref")
+            response.update(
+                task=projection,
+                sections=list(sections),
+            )
+            return response
+        response["task"] = state_value
+        return response
     if getattr(args, "compact", False):
         return _result(
             "show",
@@ -484,6 +575,268 @@ def command_show(args: argparse.Namespace) -> dict[str, Any]:
             sections=list(sections),
         )
     return _result("show", state_value, task=state_value)
+
+
+def _manager_capability_record(
+    state_value: dict[str, Any],
+    capability_id: str,
+) -> ManagerCapabilityVerifier:
+    orchestration = state_value.get("orchestration")
+    capabilities = (
+        orchestration.get("manager_capabilities")
+        if isinstance(orchestration, dict)
+        else None
+    )
+    if not isinstance(capabilities, dict):
+        raise FlowError(
+            "MANAGER_CAPABILITY_REGISTRY_UNAVAILABLE",
+            "schema-v3 task has no manager capability registry",
+            details={"task_id": state_value.get("task_id")},
+        )
+    record = capabilities.get(capability_id)
+    if record is None:
+        raise FlowError(
+            "MANAGER_CAPABILITY_UNKNOWN",
+            "manager capability verifier is unknown",
+            details={"capability_id": capability_id},
+        )
+    try:
+        return validate_manager_capability_verifier(record)
+    except OrchestrationAuthorityError as exc:
+        raise FlowError(
+            exc.code, exc.message, details=exc.details
+        ) from exc
+
+
+def command_manager_authorize(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    task_id = _task_arg(args)
+    ttl_seconds = args.ttl_seconds
+    if (
+        isinstance(ttl_seconds, bool)
+        or not isinstance(ttl_seconds, int)
+        or ttl_seconds < 1
+        or ttl_seconds > MANAGER_CAPABILITY_DEFAULT_TTL_SECONDS
+    ):
+        raise FlowError(
+            "MANAGER_CAPABILITY_TTL_INVALID",
+            "manager capability TTL must be from 1 through 900 seconds",
+        )
+    with _locked_state(
+        task_id,
+        args.data_dir,
+        args.expected_revision,
+        manager_effect_policy="registry",
+    ) as (_task_dir_value, current):
+        actions = _manager_default_actions(current)
+        intent = _manager_intent(
+            operation="authorize",
+            facts={
+                "task_id": task_id,
+                "expected_revision": int(current["revision"]),
+                "workflow_bundle_sha256": current["workflow_ref"][
+                    "bundle_sha256"
+                ],
+                "manager_session_id": args.manager_session_id,
+                "allowed_actions": list(actions),
+                "ttl_seconds": ttl_seconds,
+                "secret_transport": "local-secret-channel",
+            },
+        )
+        if args.preview:
+            return {
+                "ok": True,
+                "command": "manager-authorize",
+                "task_id": task_id,
+                "revision": current["revision"],
+                "preview": {
+                    "intent_id": intent["intent_id"],
+                    **intent["facts"],
+                },
+            }
+    if not _manager_hmac.compare_digest(
+        str(args.confirm_intent), intent["intent_id"]
+    ):
+        raise FlowError(
+            "MANAGER_CAPABILITY_INTENT_STALE",
+            "manager authorization confirmation does not match current facts",
+        )
+    if args.manager_secret_fd is None:
+        raise FlowError(
+            "MANAGER_SECRET_CHANNEL_REQUIRED",
+            "manager authorization confirmation requires --manager-secret-fd",
+        )
+    channel = ManagerSecretChannelConfig(args.manager_secret_fd)
+    issued_at_wall_ns = time.time_ns()
+    issued_at_monotonic_ns = _manager_system_monotonic_ns()
+    issuance_audit_sha256 = hashlib.sha256(
+        b"dev-flow-manager-capability-issuance-v1\x00"
+        + _json_bytes(
+            {
+                **intent["facts"],
+                "issued_at_wall_ns": issued_at_wall_ns,
+                "issued_at_monotonic_ns": issued_at_monotonic_ns,
+            }
+        )
+    ).hexdigest()
+    service = manager_authority_transaction_service_v1(
+        secret_publisher=lambda _capability_id, secret: (
+            publish_manager_secret(channel, secret)
+        ),
+        random_bytes=lambda size: bytearray(
+            secrets.token_bytes(size)
+        ),
+        wall_time_ns=time.time_ns,
+        monotonic_ns=_manager_system_monotonic_ns,
+        clock_id=MANAGER_CAPABILITY_CLOCK_ID,
+    )
+    receipt = service.authorize_manager(
+        task_id,
+        expected_revision=args.expected_revision,
+        manager_session_id=args.manager_session_id,
+        allowed_actions=actions,
+        ttl_ns=ttl_seconds * 1_000_000_000,
+        operator_confirmed=True,
+        operator_confirmation_sha256=intent[
+            "confirmation_sha256"
+        ],
+        issuance_audit_sha256=issuance_audit_sha256,
+        secret_transport="local-secret-channel",
+        data_dir=args.data_dir,
+    )
+    persisted = load_state(task_id, args.data_dir)
+    return {
+        "ok": True,
+        "command": "manager-authorize",
+        "task_id": task_id,
+        "revision": receipt.revision,
+        "status": persisted["status"],
+        "capability": {
+            "capability_id": receipt.payload["capability_id"],
+            "manager_session_id": receipt.payload[
+                "manager_session_id"
+            ],
+            "allowed_actions": list(
+                receipt.payload["allowed_actions"]
+            ),
+            "expires_at_wall_ns": receipt.payload[
+                "expires_at_wall_ns"
+            ],
+            "secret_transport": receipt.payload[
+                "secret_transport"
+            ],
+        },
+    }
+
+
+def command_manager_revoke(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    task_id = _task_arg(args)
+    with _locked_state(
+        task_id,
+        args.data_dir,
+        args.expected_revision,
+        manager_effect_policy="registry",
+    ) as (_task_dir_value, current):
+        verifier = _manager_capability_record(
+            current, args.capability_id
+        )
+        if verifier.revoked_at_wall_ns is not None:
+            raise FlowError(
+                "MANAGER_CAPABILITY_REVOKED",
+                "manager capability has already been revoked",
+                details={"capability_id": verifier.capability_id},
+            )
+        try:
+            # Validate the stable reason through the same pure authority
+            # contract used by confirmation, without persisting its result.
+            revoke_manager_capability(
+                verifier,
+                revoked_at_wall_ns=max(
+                    verifier.issued_at_wall_ns, time.time_ns()
+                ),
+                reason=args.reason,
+                revocation_audit_sha256="0" * 64,
+            )
+        except OrchestrationAuthorityError as exc:
+            raise FlowError(
+                exc.code, exc.message, details=exc.details
+            ) from exc
+        intent = _manager_intent(
+            operation="revoke",
+            facts={
+                "task_id": task_id,
+                "expected_revision": int(current["revision"]),
+                "capability_id": verifier.capability_id,
+                "manager_session_id": verifier.manager_session_id,
+                "verifier_sha256": hashlib.sha256(
+                    _json_bytes(verifier.as_persistent_dict())
+                ).hexdigest(),
+                "reason": args.reason,
+            },
+        )
+        if args.preview:
+            return {
+                "ok": True,
+                "command": "manager-revoke",
+                "task_id": task_id,
+                "revision": current["revision"],
+                "preview": {
+                    "intent_id": intent["intent_id"],
+                    **intent["facts"],
+                },
+            }
+    if not _manager_hmac.compare_digest(
+        str(args.confirm_intent), intent["intent_id"]
+    ):
+        raise FlowError(
+            "MANAGER_CAPABILITY_INTENT_STALE",
+            "manager revocation confirmation does not match current facts",
+        )
+    revoked_at_wall_ns = time.time_ns()
+    revocation_audit_sha256 = hashlib.sha256(
+        b"dev-flow-manager-capability-revocation-v1\x00"
+        + _json_bytes(
+            {
+                **intent["facts"],
+                "revoked_at_wall_ns": revoked_at_wall_ns,
+            }
+        )
+    ).hexdigest()
+    service = manager_authority_transaction_service_v1(
+        wall_time_ns=lambda: revoked_at_wall_ns,
+        monotonic_ns=_manager_system_monotonic_ns,
+        clock_id=MANAGER_CAPABILITY_CLOCK_ID,
+    )
+    receipt = service.revoke_manager(
+        task_id,
+        expected_revision=args.expected_revision,
+        capability_id=args.capability_id,
+        reason=args.reason,
+        revocation_audit_sha256=revocation_audit_sha256,
+        operator_confirmed=True,
+        data_dir=args.data_dir,
+    )
+    persisted = load_state(task_id, args.data_dir)
+    return {
+        "ok": True,
+        "command": "manager-revoke",
+        "task_id": task_id,
+        "revision": receipt.revision,
+        "status": persisted["status"],
+        "capability": {
+            "capability_id": receipt.payload["capability_id"],
+            "manager_session_id": receipt.payload[
+                "manager_session_id"
+            ],
+            "revoked_at_wall_ns": receipt.payload[
+                "revoked_at_wall_ns"
+            ],
+            "revocation_reason": receipt.payload["reason"],
+        },
+    }
 
 
 def _archive_quarantine(
@@ -514,10 +867,13 @@ def command_recover_quarantine(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     task_id = _task_arg(args)
-    task_dir = _task_dir(task_id, args.data_dir)
-    with _task_lock(task_dir, allow_quarantine=True):
-        current = load_state(task_id, args.data_dir)
-        _check_revision(current, args.expected_revision)
+    with _locked_state(
+        task_id,
+        args.data_dir,
+        args.expected_revision,
+        manager_action_id="recovery.quarantine",
+        allow_quarantine=True,
+    ) as (task_dir, current):
         quarantine = _read_quarantine(task_dir)
         if quarantine is None:
             raise FlowError(
@@ -545,6 +901,44 @@ def command_recover_quarantine(
             and validated_revision == current.get("revision")
             and completed
         ):
+            if (
+                current.get("schema_version")
+                == V3_TASK_SCHEMA_VERSION
+            ):
+                retry_quarantine = {
+                    **quarantine,
+                    "recovery_validated_at": utc_now(),
+                    "recovery_validated_revision": int(
+                        current.get("revision", 0)
+                    )
+                    + 1,
+                }
+                _atomic_write_json(
+                    _quarantine_path(task_dir),
+                    retry_quarantine,
+                )
+                state_value = _copy_state(current)
+                _commit_state(
+                    current,
+                    state_value,
+                    task_dir,
+                    "mutation_quarantine_archive_retried",
+                    {
+                        "recovery_id": recovery_id,
+                        "quarantined_pid": quarantine.get("pid"),
+                    },
+                )
+                archive = _archive_quarantine(
+                    task_dir, retry_quarantine
+                )
+                return _result(
+                    "recover-quarantine",
+                    state_value,
+                    recovered=True,
+                    unchanged=True,
+                    recovery=completed,
+                    archive_path=str(archive),
+                )
             archive = _archive_quarantine(task_dir, quarantine)
             return _result(
                 "recover-quarantine",
@@ -1347,6 +1741,548 @@ def _apply_preflight_outcome(
         state_value["blocked"] = None
 
 
+_V3_PREFLIGHT_EVIDENCE_CONTRACT = (
+    "dev-flow-v3-preflight-complete-evidence/v1"
+)
+_V3_PREFLIGHT_EXECUTION_DOMAIN = (
+    b"dev-flow-v3-preflight-execution-v1\x00"
+)
+_V3_PREFLIGHT_ATTEMPT_DOMAIN = (
+    b"dev-flow-v3-preflight-attempt-v1\x00"
+)
+_V3_PREFLIGHT_RECEIPT_DOMAIN = (
+    b"dev-flow-v3-preflight-effect-receipt-v1\x00"
+)
+_V3_PREFLIGHT_COMPLETE_FIELDS = (
+    *PREFLIGHT_OBSERVATION_FIELDS,
+    "evidence_complete",
+    "capture_phase",
+    "worktree_fingerprint_sha256",
+    "capability_profile_sha256",
+    "tracked_worktree_manifest_sha256",
+)
+
+
+def _v3_preflight_complete_projection(
+    current: dict[str, Any],
+    state_value: dict[str, Any],
+    selected: list[dict[str, Any]],
+    authorization_edge: Mapping[str, object],
+    completion_edge: Mapping[str, object],
+    *,
+    selection_complete: bool,
+    blockers: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    return {
+        "contract": _V3_PREFLIGHT_EVIDENCE_CONTRACT,
+        "task_id": current["task_id"],
+        "revision": current["revision"],
+        "workflow_bundle_sha256": current["workflow_ref"][
+            "bundle_sha256"
+        ],
+        "authorization_action_edge_id": authorization_edge["id"],
+        "completion_edge_id": completion_edge["id"],
+        "from_status": current["status"],
+        "prospective_status": state_value["status"],
+        "repository_ids": sorted(repo["id"] for repo in selected),
+        "selection_complete": selection_complete,
+        "remote_override": args.remote,
+        "base_override": args.base,
+        "blockers": sorted(
+            (
+                {
+                    "repository_id": item["repository_id"],
+                    "blockers": sorted(item["blockers"]),
+                }
+                for item in blockers
+            ),
+            key=lambda item: str(item["repository_id"]),
+        ),
+        "repositories": _preflight_repository_projection(
+            selected, _V3_PREFLIGHT_COMPLETE_FIELDS
+        ),
+    }
+
+
+def _v3_preflight_candidate_repositories(
+    current: dict[str, Any],
+    state_value: dict[str, Any],
+    selected_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Remove receipt-time volatility from the immutable planned candidate."""
+
+    repositories = _copy_state(state_value["repositories"])
+    stable_checked_at = current.get("updated_at") or current.get(
+        "created_at"
+    )
+    for repository in repositories:
+        if repository.get("id") not in selected_ids:
+            continue
+        preflight = repository.get("preflight")
+        if isinstance(preflight, dict):
+            preflight["checked_at"] = stable_checked_at
+    return repositories
+
+
+def _v3_preflight_candidate_state(
+    current: dict[str, Any],
+    state_value: dict[str, Any],
+    selected_ids: set[str],
+) -> dict[str, Any]:
+    planned = _copy_state(state_value)
+    planned["repositories"] = _v3_preflight_candidate_repositories(
+        current, state_value, selected_ids
+    )
+    blocked = planned.get("blocked")
+    if isinstance(blocked, dict) and "at" in blocked:
+        blocked["at"] = current.get("updated_at") or current.get(
+            "created_at"
+        )
+    return planned
+
+
+def _v3_preflight_action_outcome(
+    authorization_edge: Mapping[str, object],
+    completion_edge: Mapping[str, object],
+    proposed_state_delta: Mapping[str, object],
+    *,
+    complete_evidence_sha256: str,
+) -> ActionOutcome:
+    trigger = completion_edge.get("trigger")
+    action_id = (
+        trigger.get("id") if isinstance(trigger, Mapping) else None
+    )
+    authorization_edge_id = authorization_edge.get("id")
+    completion_edge_id = completion_edge.get("id")
+    if (
+        not isinstance(action_id, str)
+        or not action_id
+        or not isinstance(authorization_edge_id, str)
+        or not authorization_edge_id
+        or not isinstance(completion_edge_id, str)
+        or not completion_edge_id
+    ):
+        raise FlowError(
+            "WORKFLOW_ACTION_EDGE_INVALID",
+            "pinned preflight action has no exact identity",
+        )
+    evidence = {
+        "contract": _V3_PREFLIGHT_EVIDENCE_CONTRACT,
+        "complete_evidence_sha256": complete_evidence_sha256,
+    }
+    return ActionOutcome(
+        action_id,
+        completion_edge_id,
+        evidence_records=(evidence,),
+        proposed_state_delta=_copy_state(proposed_state_delta),
+        audit_facts=(
+            AuditFact(
+                "preflight-complete-evidence-planned",
+                {
+                    "authorization_action_edge_id": (
+                        authorization_edge_id
+                    ),
+                    "completion_edge_id": completion_edge_id,
+                    "complete_evidence_sha256": (
+                        complete_evidence_sha256
+                    ),
+                },
+            ),
+        ),
+        external_postconditions=(evidence,),
+    )
+
+
+def _v3_preflight_invocation(
+    current: dict[str, Any],
+    task_dir: Path,
+    authorization_edge: Mapping[str, object],
+    completion_edge: Mapping[str, object],
+    outcome: ActionOutcome,
+    authorization: Any,
+    *,
+    mode: str,
+    preview_token: str,
+    decision_sha256: str,
+    observation_sha256: str,
+    complete_evidence_sha256: str,
+) -> WorkflowActionInvocation:
+    action_parameters = {
+        "mode": mode,
+        "preview_token_sha256": _sha256_bytes(
+            preview_token.encode("utf-8")
+        ),
+        "decision_sha256": decision_sha256,
+        "observation_sha256": observation_sha256,
+        "complete_evidence_sha256": complete_evidence_sha256,
+    }
+    evidence = {
+        "contract": _V3_PREFLIGHT_EVIDENCE_CONTRACT,
+        "authorization_action_edge_id": authorization_edge["id"],
+        "completion_edge_id": completion_edge["id"],
+        "complete_evidence_sha256": complete_evidence_sha256,
+    }
+    request = WorkflowActionInvocation(
+        kind="node",
+        public_command="preflight",
+        selector=mode,
+        action_outcome=outcome,
+        action_parameters=action_parameters,
+        evidence=evidence,
+    )
+    try:
+        preview = preview_v3_workflow_action_transaction(
+            current,
+            request,
+            authorization=authorization,
+            task_dir=task_dir,
+        )
+    except (
+        TransitionEngineError,
+        WorkflowActionTransactionError,
+    ) as exc:
+        details = _workflow_transition_public(exc.details)
+        raise FlowError(
+            exc.code,
+            exc.message,
+            details=details if isinstance(details, dict) else {},
+        ) from exc
+    return WorkflowActionInvocation(
+        kind=request.kind,
+        public_command=request.public_command,
+        selector=request.selector,
+        action_outcome=request.action_outcome,
+        action_parameters=request.action_parameters,
+        evidence=request.evidence,
+        confirm_intent=str(preview.intent["intent_id"]),
+    )
+
+
+def _v3_preflight_reobserve_complete_evidence(
+    current: dict[str, Any],
+    authorization_edge: Mapping[str, object],
+    completion_edge: Mapping[str, object],
+    selected_ids: set[str],
+    *,
+    selection_complete: bool,
+    args: argparse.Namespace,
+) -> str:
+    observed = _copy_state(current)
+    selected = [
+        repository
+        for repository in observed["repositories"]
+        if repository.get("id") in selected_ids
+    ]
+    if {repo.get("id") for repo in selected} != selected_ids:
+        raise FlowError(
+            "PREFLIGHT_RECEIPT_SCOPE_MISMATCH",
+            "claimed preflight scope no longer resolves every repository",
+        )
+    for repository in selected:
+        _assert_branch_checkout_binding(observed, repository)
+        repository["preflight"] = _preflight_repo(
+            repository,
+            args.remote,
+            args.base,
+            capture_fingerprint=True,
+        )
+        _guard_branch_workspace_base(
+            observed, repository, repository["preflight"]
+        )
+    all_checked = all(
+        repo.get("preflight") is not None
+        for repo in observed["repositories"]
+    )
+    blockers = _preflight_blockers(
+        observed, selected, selection_complete
+    )
+    _apply_preflight_outcome(
+        current,
+        observed,
+        selection_complete=selection_complete,
+        all_checked=all_checked,
+        blockers=blockers,
+    )
+    projection = _v3_preflight_complete_projection(
+        current,
+        observed,
+        selected,
+        authorization_edge,
+        completion_edge,
+        selection_complete=selection_complete,
+        blockers=blockers,
+        args=args,
+    )
+    return semantic_sha256(
+        _V3_PREFLIGHT_RECEIPT_DOMAIN, projection
+    )
+
+
+def _v3_preflight_transaction(
+    current: dict[str, Any],
+    task_dir: Path,
+    state_value: dict[str, Any],
+    selected: list[dict[str, Any]],
+    edge: Mapping[str, object],
+    *,
+    selection_complete: bool,
+    blockers: list[dict[str, Any]],
+    decision_sha256: str,
+    observation_sha256: str,
+    args: argparse.Namespace,
+) -> WorkflowActionTransactionResult:
+    selected_ids = {str(repo["id"]) for repo in selected}
+    planned_state = _v3_preflight_candidate_state(
+        current, state_value, selected_ids
+    )
+    try:
+        completion_edge = (
+            resolve_v3_workflow_action_completion_edge(
+                current,
+                edge,
+                public_command="preflight",
+                target=str(planned_state["status"]),
+            )
+        )
+    except WorkflowActionTransactionError as exc:
+        details = _workflow_transition_public(exc.details)
+        raise FlowError(
+            exc.code,
+            exc.message,
+            details=details if isinstance(details, dict) else {},
+        ) from exc
+    projection = _v3_preflight_complete_projection(
+        current,
+        planned_state,
+        selected,
+        edge,
+        completion_edge,
+        selection_complete=selection_complete,
+        blockers=blockers,
+        args=args,
+    )
+    complete_evidence_sha256 = semantic_sha256(
+        _V3_PREFLIGHT_RECEIPT_DOMAIN, projection
+    )
+    if completion_edge["id"] == edge["id"]:
+        proposed_state_delta = {
+            "set": {
+                "/repositories": _copy_state(
+                    planned_state["repositories"]
+                )
+            },
+            "remove": [],
+            "operations": [],
+        }
+    else:
+        proposed_state_delta = _workflow_transition_exact_state_delta(
+            current,
+            planned_state,
+            excluded_paths=(
+                "/node_instances",
+                "/revision",
+                "/updated_at",
+                "/orchestration",
+            ),
+        )
+    outcome = _v3_preflight_action_outcome(
+        edge,
+        completion_edge,
+        proposed_state_delta,
+        complete_evidence_sha256=complete_evidence_sha256,
+    )
+    authorization = _manager_workflow_action_authorization_v1(
+        current, event_type="preflight_recorded"
+    )
+    invocation = _v3_preflight_invocation(
+        current,
+        task_dir,
+        edge,
+        completion_edge,
+        outcome,
+        authorization,
+        mode=(
+            "initial"
+            if current["status"] == "INTAKE"
+            else (
+                "refresh"
+                if current["status"] == "PREFLIGHTED"
+                else "resume"
+            )
+        ),
+        preview_token=str(args.confirm_preview),
+        decision_sha256=decision_sha256,
+        observation_sha256=observation_sha256,
+        complete_evidence_sha256=complete_evidence_sha256,
+    )
+    execution_sha256 = semantic_sha256(
+        _V3_PREFLIGHT_EXECUTION_DOMAIN,
+        {
+            "task_id": current["task_id"],
+            "revision": current["revision"],
+            "workflow_bundle_sha256": current["workflow_ref"][
+                "bundle_sha256"
+            ],
+            "authorization_action_edge_id": edge["id"],
+            "completion_edge_id": completion_edge["id"],
+            "request_nonce_sha256": (
+                authorization.request_nonce_sha256
+            ),
+            "preview_intent": invocation.confirm_intent,
+            "complete_evidence_sha256": (
+                complete_evidence_sha256
+            ),
+        },
+    )
+    execution_id = "preflight-" + execution_sha256
+    effects = edge.get("effects")
+    effect = (
+        effects[0]
+        if isinstance(effects, (list, tuple)) and len(effects) == 1
+        else None
+    )
+    if not isinstance(effect, Mapping):
+        raise FlowError(
+            "WORKFLOW_ACTION_TRANSACTION_CATALOG_INVALID",
+            "pinned preflight action has no exact effect",
+        )
+    attempt_id = "attempt-" + semantic_sha256(
+        _V3_PREFLIGHT_ATTEMPT_DOMAIN,
+        {
+            "execution_id": execution_id,
+            "effect_id": effect["id"],
+        },
+    )
+    effect_binding = WorkflowActionEffectBinding(
+        effect_id=str(effect["id"]),
+        kind="git",
+        scope_kinds=tuple(effect["scopes"]),
+        scopes={
+            "repository_ids": sorted(selected_ids),
+            "node_ids": [],
+            "worktree_ids": [],
+            "lease_ids": [],
+            "paths": [],
+            "external_resources": [],
+        },
+        safe_inputs={
+            "repository_ids": sorted(selected_ids),
+            "remote_override": args.remote,
+            "base_override": args.base,
+            "complete_evidence_sha256": (
+                complete_evidence_sha256
+            ),
+            "authorization_action_edge_id": edge["id"],
+            "completion_edge_id": completion_edge["id"],
+        },
+        attempt_id=attempt_id,
+    )
+
+    def dispatch(
+        context: WorkflowActionDispatchContext,
+    ) -> WorkflowActionEffectObservation:
+        observed_sha256 = (
+            _v3_preflight_reobserve_complete_evidence(
+                current,
+                edge,
+                completion_edge,
+                selected_ids,
+                selection_complete=selection_complete,
+                args=args,
+            )
+        )
+        if not secrets.compare_digest(
+            observed_sha256, complete_evidence_sha256
+        ):
+            raise FlowError(
+                "PREFLIGHT_RECEIPT_MISMATCH",
+                "claimed preflight evidence differs from its planned candidate",
+                details={
+                    "execution_id": context.plan.execution_id,
+                    "expected_sha256": complete_evidence_sha256,
+                    "observed_sha256": observed_sha256,
+                },
+            )
+        receipt_sha256 = semantic_sha256(
+            _V3_PREFLIGHT_RECEIPT_DOMAIN,
+            {
+                "execution_id": context.plan.execution_id,
+                "effect_id": context.plan.effect_id,
+                "claim_id": context.plan.claim_id,
+                "attempt_id": context.plan.attempt_id,
+                "complete_evidence_sha256": observed_sha256,
+                "authorization_action_edge_id": edge["id"],
+                "completion_edge_id": completion_edge["id"],
+            },
+        )
+        return WorkflowActionEffectObservation(
+            task_id=context.plan.task_id,
+            execution_id=context.plan.execution_id,
+            effect_id=context.plan.effect_id,
+            claim_id=context.plan.claim_id,
+            attempt_id=context.plan.attempt_id,
+            settlement="QUIESCED",
+            receipt_sha256=receipt_sha256,
+        )
+
+    active = task_dir / action_execution_active_path(execution_id)
+    archived = task_dir / action_execution_archive_path(execution_id)
+    try:
+        if active.exists() or archived.exists():
+            result = recover_v3_workflow_action_transaction(
+                task_dir,
+                execution_id,
+                authorization=authorization,
+                invocation=invocation,
+            )
+        else:
+            result = execute_v3_workflow_action_transaction(
+                current,
+                task_dir,
+                invocation,
+                authorization=authorization,
+                effect_binding=effect_binding,
+                execution_id=execution_id,
+                dispatcher=dispatch,
+            )
+    except (
+        TransitionEngineError,
+        WorkflowActionTransactionError,
+    ) as exc:
+        details = _workflow_transition_public(exc.details)
+        raise FlowError(
+            exc.code,
+            exc.message,
+            details=details if isinstance(details, dict) else {},
+        ) from exc
+    if result.status in {
+        "COMMITTED",
+        "RECOVERED_COMMITTED",
+        "ALREADY_CLOSED",
+    }:
+        if result.state is None:
+            result = WorkflowActionTransactionResult(
+                status=result.status,
+                execution_id=result.execution_id,
+                state=load_state(current["task_id"], args.data_dir),
+                journal=result.journal,
+                index=result.index,
+                archive_path=result.archive_path,
+                dispatcher_invocations=result.dispatcher_invocations,
+            )
+        return result
+    raise FlowError(
+        "WORKFLOW_ACTION_TRANSACTION_RECOVERY_REQUIRED",
+        "preflight execution requires explicit safe recovery",
+        details={
+            "execution_id": execution_id,
+            "status": result.status,
+            "dispatcher_invocations": result.dispatcher_invocations,
+        },
+    )
+
+
 def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     if args.preview and args.confirm_preview:
@@ -1359,7 +2295,16 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
             "INVALID_ARGUMENT",
             "--accept-evidence-refresh requires --confirm-preview",
         )
-    with _locked_state(task_id, args.data_dir, args.expected_revision) as (task_dir, current):
+    with _locked_state(
+        task_id,
+        args.data_dir,
+        args.expected_revision,
+        manager_effect_policy=(
+            "preview" if args.preview else "generic"
+        ),
+        manager_action_id="task.preflight",
+        short_v3_effect_boundary=not args.preview,
+    ) as (task_dir, current):
         if not args.preview and not args.confirm_preview:
             raise FlowError(
                 "PREFLIGHT_PREVIEW_REQUIRED",
@@ -1372,6 +2317,30 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
         if current.get("status") == "BLOCKED" and (current.get("blocked") or {}).get("phase") == "preflight":
             allowed.add("BLOCKED")
         _assert_status(current, allowed, "preflight")
+        v3_preflight_edge = None
+        if current.get("schema_version") == V3_TASK_SCHEMA_VERSION:
+            selector = (
+                "initial"
+                if current.get("status") == "INTAKE"
+                else (
+                    "refresh"
+                    if current.get("status") == "PREFLIGHTED"
+                    else "resume"
+                )
+            )
+            try:
+                v3_preflight_edge = resolve_v3_node_action_edge(
+                    current, "preflight", selector=selector
+                )
+            except TransitionEngineError as exc:
+                details = _workflow_transition_public(exc.details)
+                raise FlowError(
+                    exc.code,
+                    exc.message,
+                    details=(
+                        details if isinstance(details, dict) else {}
+                    ),
+                ) from exc
         state_value = _copy_state(current)
         selected = _repo_by_selector(state_value, args.repo)
         selected_ids = {repo["id"] for repo in selected}
@@ -1766,32 +2735,58 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
         # preflight.
         state_value["approvals"].pop("baseline-fetch", None)
         state_value["approvals"].pop(LITE_GATE, None)
-        _commit_state(
-            current,
-            state_value,
-            task_dir,
-            "preflight_recorded",
-            {
-                "repository_ids": [repo["id"] for repo in selected],
-                "blockers": blockers,
-                "decision_sha256": post_decision_sha256,
-                "preview_observation_sha256": (
-                    approved_observation_sha256
-                ),
-                "captured_observation_sha256": (
-                    captured_observation_sha256
-                ),
-                "evidence_refreshed_since_preview": (
-                    evidence_refresh_observed
-                ),
-                "evidence_refresh_accepted": evidence_refresh_accepted,
-                "accepted_observation_sha256": (
-                    captured_observation_sha256
-                    if evidence_refresh_accepted
-                    else None
-                ),
-            },
-        )
+        if v3_preflight_edge is not None:
+            transaction = _v3_preflight_transaction(
+                current,
+                task_dir,
+                state_value,
+                selected,
+                v3_preflight_edge,
+                selection_complete=selection_complete,
+                blockers=blockers,
+                decision_sha256=post_decision_sha256,
+                observation_sha256=captured_observation_sha256,
+                args=args,
+            )
+            assert transaction.state is not None
+            state_value = _copy_state(transaction.state)
+            repositories = [
+                {
+                    "id": repo["id"],
+                    "preflight": repo["preflight"],
+                }
+                for repo in state_value["repositories"]
+                if repo["id"] in selected_ids
+            ]
+        else:
+            _commit_state(
+                current,
+                state_value,
+                task_dir,
+                "preflight_recorded",
+                {
+                    "repository_ids": [repo["id"] for repo in selected],
+                    "blockers": blockers,
+                    "decision_sha256": post_decision_sha256,
+                    "preview_observation_sha256": (
+                        approved_observation_sha256
+                    ),
+                    "captured_observation_sha256": (
+                        captured_observation_sha256
+                    ),
+                    "evidence_refreshed_since_preview": (
+                        evidence_refresh_observed
+                    ),
+                    "evidence_refresh_accepted": (
+                        evidence_refresh_accepted
+                    ),
+                    "accepted_observation_sha256": (
+                        captured_observation_sha256
+                        if evidence_refresh_accepted
+                        else None
+                    ),
+                },
+            )
     return _result(
         "preflight",
         state_value,

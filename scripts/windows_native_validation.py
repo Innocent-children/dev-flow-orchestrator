@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -12,9 +13,11 @@ import platform
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -31,6 +34,39 @@ REPORT_SCHEMA_VERSION = 1
 SENTINEL_NAME = ".dev-flow-native-validation.json"
 CHILD_PREFIX = "dev-flow-native-"
 HEX_RE = re.compile(r"^[0-9a-f]+$")
+MCP_PROTOCOL_VERSION = "2025-06-18"
+MCP_EXPECTED_TOOLS = (
+    "task-next",
+    "node-description",
+    "evidence-read",
+    "action-preview",
+    "action-apply",
+    "worker-result",
+)
+MCP_PROBE_MAX_STDOUT_BYTES = 96 * 1024
+HOOK_PROBE_MAX_STDOUT_BYTES = 32 * 1024
+POST_COMPACT_COMMON_FIELDS = {
+    "continue",
+    "stopReason",
+    "systemMessage",
+    "suppressOutput",
+}
+MANAGER_CAPABILITY_REQUEST_SCHEMA = (
+    "dev-flow-manager-capability-request/v1"
+)
+MANAGER_SECRET_CHANNEL_MIN_BYTES = 32
+MANAGER_SECRET_CHANNEL_MAX_BYTES = 1024
+CONTROLLER_MANAGER_TTL_SECONDS = 15 * 60
+CONTROLLER_ACTION_IDS = {
+    "approve": "gate.approve",
+    "baseline": "task.baseline",
+    "preflight": "task.preflight",
+    "prepare-workspace": "workspace.prepare",
+    "record-artifact": "evidence.artifact.record",
+    "record-index": "evidence.index.record",
+    "set-route": "task.route.set",
+    "transition": "task.transition",
+}
 
 
 class NativeValidationError(RuntimeError):
@@ -173,8 +209,37 @@ def _run(
     env: Optional[Mapping[str, str]] = None,
     stdin: Optional[bytes] = None,
     timeout: int = 120,
+    inherited_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess:
+    descriptors = tuple(dict.fromkeys(inherited_fds))
+    if any(
+        isinstance(descriptor, bool)
+        or not isinstance(descriptor, int)
+        or descriptor <= 2
+        for descriptor in descriptors
+    ):
+        raise NativeValidationError(
+            "CHILD_DESCRIPTOR_INVALID",
+            "native validation child descriptor must be an integer above 2",
+        )
+    run_options: dict[str, Any] = {}
+    windows_inheritability: list[tuple[int, bool]] = []
     try:
+        if descriptors:
+            if os.name == "nt":  # pragma: no cover - native Windows
+                # CPython preserves inheritable CRT descriptors only when
+                # CreateProcess is allowed to inherit handles. PEP 446 keeps
+                # every other descriptor non-inheritable by default; restore
+                # the bounded channel immediately after this synchronous spawn.
+                for descriptor in descriptors:
+                    inherited = os.get_inheritable(descriptor)
+                    windows_inheritability.append(
+                        (descriptor, inherited)
+                    )
+                    os.set_inheritable(descriptor, True)
+                run_options["close_fds"] = False
+            else:
+                run_options["pass_fds"] = descriptors
         return subprocess.run(
             list(arguments),
             cwd=cwd,
@@ -185,12 +250,19 @@ def _run(
             check=False,
             shell=False,
             timeout=timeout,
+            **run_options,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise NativeValidationError(
             "CHILD_SPAWN_FAILED",
             f"native validation child could not run: {exc.__class__.__name__}",
         ) from exc
+    finally:
+        for descriptor, inherited in windows_inheritability:
+            try:
+                os.set_inheritable(descriptor, inherited)
+            except OSError:
+                pass
 
 
 def _git(arguments: Sequence[str], cwd: Path) -> bytes:
@@ -268,6 +340,163 @@ def _parse_single_utf8_json(payload: bytes, label: str) -> dict[str, Any]:
             f"{label} output was not a JSON object",
         )
     return value
+
+
+def _mcp_probe_input() -> bytes:
+    messages = (
+        {
+            "jsonrpc": "2.0",
+            "id": "dev-flow-native-initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "dev-flow-native-validator",
+                    "version": "1.0.0",
+                },
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "dev-flow-native-tools",
+            "method": "tools/list",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "dev-flow-native-shutdown",
+            "method": "shutdown",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "exit",
+            "params": {},
+        },
+    )
+    return b"".join(_stable_json_bytes(message) for message in messages)
+
+
+def _validate_mcp_probe(
+    completed: subprocess.CompletedProcess,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    if completed.returncode != 0:
+        raise NativeValidationError(
+            "MCP_HANDSHAKE_FAILED",
+            f"{label} MCP handshake exited {completed.returncode}",
+        )
+    if completed.stderr:
+        raise NativeValidationError(
+            "MCP_STDERR_NOT_EMPTY",
+            f"{label} MCP handshake emitted stderr",
+        )
+    if len(completed.stdout) > MCP_PROBE_MAX_STDOUT_BYTES:
+        raise NativeValidationError(
+            "MCP_RESPONSE_BUDGET_EXCEEDED",
+            f"{label} MCP handshake exceeded its output budget",
+        )
+    raw_lines = completed.stdout.splitlines()
+    if len(raw_lines) != 3 or any(not line for line in raw_lines):
+        raise NativeValidationError(
+            "MCP_RESPONSE_FRAMING",
+            f"{label} MCP handshake did not emit exactly three JSON lines",
+        )
+    responses: dict[object, dict[str, Any]] = {}
+    for line in raw_lines:
+        if len(line) > 32 * 1024:
+            raise NativeValidationError(
+                "MCP_RESPONSE_BUDGET_EXCEEDED",
+                f"{label} MCP response line exceeded 32 KiB",
+            )
+        try:
+            value = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise NativeValidationError(
+                "MCP_RESPONSE_INVALID",
+                f"{label} MCP response was not UTF-8 JSON",
+            ) from exc
+        if (
+            not isinstance(value, dict)
+            or value.get("jsonrpc") != "2.0"
+            or value.get("id") in responses
+            or set(value) - {"jsonrpc", "id", "result", "error"}
+        ):
+            raise NativeValidationError(
+                "MCP_RESPONSE_INVALID",
+                f"{label} MCP response envelope was invalid",
+            )
+        responses[value.get("id")] = value
+    expected_ids = {
+        "dev-flow-native-initialize",
+        "dev-flow-native-tools",
+        "dev-flow-native-shutdown",
+    }
+    if set(responses) != expected_ids:
+        raise NativeValidationError(
+            "MCP_RESPONSE_INVALID",
+            f"{label} MCP response IDs differed from the probe",
+        )
+    if any("error" in response for response in responses.values()):
+        raise NativeValidationError(
+            "MCP_HANDSHAKE_FAILED",
+            f"{label} MCP handshake returned a JSON-RPC error",
+        )
+    initialize = responses["dev-flow-native-initialize"].get("result")
+    if (
+        not isinstance(initialize, dict)
+        or initialize.get("protocolVersion") != MCP_PROTOCOL_VERSION
+        or not isinstance(initialize.get("serverInfo"), dict)
+        or initialize["serverInfo"].get("name")
+        != "dev-flow-orchestrator"
+    ):
+        raise NativeValidationError(
+            "MCP_INITIALIZE_INVALID",
+            f"{label} MCP initialize response differed from the contract",
+        )
+    tool_result = responses["dev-flow-native-tools"].get("result")
+    tools = tool_result.get("tools") if isinstance(tool_result, dict) else None
+    if not isinstance(tools, list) or len(tools) != len(MCP_EXPECTED_TOOLS):
+        raise NativeValidationError(
+            "MCP_TOOL_LIST_INVALID",
+            f"{label} MCP tools/list result had an invalid bounded count",
+        )
+    names = []
+    for tool in tools:
+        name = tool.get("name") if isinstance(tool, dict) else None
+        if (
+            not isinstance(name, str)
+            or not name
+            or len(name.encode("utf-8")) > 64
+        ):
+            raise NativeValidationError(
+                "MCP_TOOL_LIST_INVALID",
+                f"{label} MCP tool name exceeded its contract",
+            )
+        names.append(name)
+    if tuple(names) != MCP_EXPECTED_TOOLS or len(set(names)) != len(names):
+        raise NativeValidationError(
+            "MCP_TOOL_LIST_INVALID",
+            f"{label} MCP tools/list names differed from the package surface",
+        )
+    shutdown = responses["dev-flow-native-shutdown"]
+    if shutdown.get("result", object()) is not None:
+        raise NativeValidationError(
+            "MCP_SHUTDOWN_INVALID",
+            f"{label} MCP shutdown response was invalid",
+        )
+    return {
+        "protocol_version": MCP_PROTOCOL_VERSION,
+        "tool_count": len(names),
+        "tool_names": names,
+    }
 
 
 def _initialize_repository(repo: Path) -> None:
@@ -389,6 +618,318 @@ def _check_code_page(
     }
 
 
+def _check_windows_mcp_launcher(candidate_root: Path) -> dict[str, Any]:
+    try:
+        document = json.loads(
+            (candidate_root / ".mcp.json").read_text(encoding="utf-8")
+        )
+        server = document["mcpServers"]["dev-flow-windows"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise NativeValidationError(
+            "WINDOWS_MCP_PROFILE_INVALID",
+            "the extracted candidate has no readable Windows MCP profile",
+        ) from exc
+    expected_args = [
+        "/d",
+        "/c",
+        ".\\scripts\\dev_flow_mcp_launcher.cmd",
+    ]
+    if (
+        not isinstance(server, dict)
+        or server.get("command") != "cmd.exe"
+        or server.get("args") != expected_args
+        or server.get("cwd") != "."
+        or server.get("enabled") is not False
+        or server.get("enabled_tools") != list(MCP_EXPECTED_TOOLS)
+    ):
+        raise NativeValidationError(
+            "WINDOWS_MCP_PROFILE_INVALID",
+            "the Windows MCP profile differs from the explicit host contract",
+        )
+    completed = _run(
+        [server["command"], *server["args"]],
+        cwd=candidate_root,
+        stdin=_mcp_probe_input(),
+        timeout=30,
+    )
+    observed = _validate_mcp_probe(
+        completed,
+        label="packaged Windows profile",
+    )
+    return {
+        "diagnostic": "WINDOWS_MCP_LAUNCH_OK",
+        "id": "native-windows-mcp-launcher",
+        "protocol_version": observed["protocol_version"],
+        "status": "passed",
+        "tool_count": observed["tool_count"],
+        "tool_names": observed["tool_names"],
+    }
+
+
+def _packaged_windows_hook_command(
+    candidate_root: Path,
+    event: str,
+) -> list[str]:
+    try:
+        document = json.loads(
+            (candidate_root / "hooks" / "hooks.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        groups = document["hooks"][event]
+        handlers = groups[0]["hooks"]
+        handler = handlers[0]
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        KeyError,
+        IndexError,
+        TypeError,
+    ) as exc:
+        raise NativeValidationError(
+            "WINDOWS_HOOK_PROFILE_INVALID",
+            f"the packaged {event} hook profile is unreadable",
+        ) from exc
+    expected = '"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd"'
+    if (
+        not isinstance(groups, list)
+        or len(groups) != 1
+        or not isinstance(handlers, list)
+        or len(handlers) != 1
+        or not isinstance(handler, dict)
+        or handler.get("type") != "command"
+        or handler.get("commandWindows") != expected
+    ):
+        raise NativeValidationError(
+            "WINDOWS_HOOK_PROFILE_INVALID",
+            f"the packaged {event} Windows command differs from the contract",
+        )
+    return ["cmd.exe", "/d", "/c", expected]
+
+
+def _compact_hook_payloads(
+    cwd: Path,
+    session_id: str,
+) -> tuple[tuple[str, dict[str, Any]], ...]:
+    common = {
+        "cwd": str(cwd),
+        "session_id": session_id,
+    }
+    return (
+        (
+            "PreCompact",
+            {
+                **common,
+                "hook_event_name": "PreCompact",
+                "trigger": "manual",
+            },
+        ),
+        (
+            "PostCompact",
+            {
+                **common,
+                "hook_event_name": "PostCompact",
+                "compaction_id": "native-compact-probe",
+            },
+        ),
+        (
+            "SessionStart",
+            {
+                **common,
+                "hook_event_name": "SessionStart",
+                "source": "compact",
+            },
+        ),
+    )
+
+
+def _validate_common_post_compact_output(value: Mapping[str, Any]) -> None:
+    if "hookSpecificOutput" in value or set(value) - POST_COMPACT_COMMON_FIELDS:
+        raise NativeValidationError(
+            "POST_COMPACT_OUTPUT_INVALID",
+            "PostCompact emitted unsupported hook-specific output",
+        )
+    expected_types = {
+        "continue": bool,
+        "stopReason": str,
+        "systemMessage": str,
+        "suppressOutput": bool,
+    }
+    for key, item in value.items():
+        if not isinstance(item, expected_types[key]):
+            raise NativeValidationError(
+                "POST_COMPACT_OUTPUT_INVALID",
+                f"PostCompact common field {key} has the wrong type",
+            )
+
+
+def _validate_compact_hook_outputs(
+    *,
+    pre_compact: bytes,
+    post_compact: bytes,
+    session_start: bytes,
+    expected_task_id: str,
+) -> dict[str, Any]:
+    for label, payload in (
+        ("PreCompact", pre_compact),
+        ("PostCompact", post_compact),
+        ("SessionStart(compact)", session_start),
+    ):
+        if len(payload) > HOOK_PROBE_MAX_STDOUT_BYTES:
+            raise NativeValidationError(
+                "HOOK_RESPONSE_BUDGET_EXCEEDED",
+                f"{label} exceeded the native hook output budget",
+            )
+    if _parse_single_utf8_json(pre_compact, "PreCompact") != {}:
+        raise NativeValidationError(
+            "PRE_COMPACT_OUTPUT_INVALID",
+            "PreCompact did not emit the expected empty JSON object",
+        )
+    if post_compact.strip():
+        post_value = _parse_single_utf8_json(
+            post_compact,
+            "PostCompact",
+        )
+        _validate_common_post_compact_output(post_value)
+        post_shape = "common"
+    else:
+        post_shape = "empty"
+    restored = _parse_single_utf8_json(
+        session_start,
+        "SessionStart(compact)",
+    )
+    specific = restored.get("hookSpecificOutput")
+    if (
+        not isinstance(specific, dict)
+        or specific.get("hookEventName") != "SessionStart"
+        or not isinstance(specific.get("additionalContext"), str)
+    ):
+        raise NativeValidationError(
+            "COMPACT_RESTORE_INVALID",
+            "SessionStart(compact) did not emit the SessionStart wire shape",
+        )
+    context = specific["additionalContext"]
+    if len(context.encode("utf-8")) > 4096:
+        raise NativeValidationError(
+            "HOOK_RESPONSE_BUDGET_EXCEEDED",
+            "SessionStart(compact) locator exceeded 4 KiB",
+        )
+    try:
+        locator = json.loads(context)
+    except json.JSONDecodeError as exc:
+        raise NativeValidationError(
+            "COMPACT_RESTORE_INVALID",
+            "SessionStart(compact) additionalContext was not a JSON locator",
+        ) from exc
+    if (
+        not isinstance(locator, dict)
+        or locator.get("contract") != "dev-flow-hook-checkpoint/v1"
+        or locator.get("task_id") != expected_task_id
+        or isinstance(locator.get("revision"), bool)
+        or not isinstance(locator.get("revision"), int)
+        or not isinstance(locator.get("controller"), str)
+    ):
+        raise NativeValidationError(
+            "COMPACT_RESTORE_INVALID",
+            "SessionStart(compact) locator differed from the task checkpoint",
+        )
+    serialized = json.dumps(
+        restored,
+        ensure_ascii=False,
+        sort_keys=True,
+    ).casefold()
+    if "manager_secret" in serialized or "manager-proof" in serialized:
+        raise NativeValidationError(
+            "COMPACT_RESTORE_SECRET_EXPOSURE",
+            "SessionStart(compact) exposed manager secret material",
+        )
+    return {
+        "post_compact_shape": post_shape,
+        "restored_contract": locator["contract"],
+        "task_id": locator["task_id"],
+    }
+
+
+def _check_windows_compact_hook_lifecycle(
+    candidate_root: Path,
+    child: Path,
+    code_page: int,
+) -> dict[str, Any]:
+    task_id = "native-hook-compact"
+    repo = child / "compact-hook-repository"
+    _initialize_repository(repo)
+    data_dir = child / "compact-hook-state"
+    environment = dict(os.environ)
+    environment["DEV_FLOW_ACTOR"] = "native-hook-validator"
+    environment["PYTHONUTF8"] = "0"
+    started = _cmd_python(
+        code_page,
+        [
+            str(candidate_root / "scripts" / "dev_flow.py"),
+            "--data-dir",
+            str(data_dir),
+            "start",
+            "--task-id",
+            task_id,
+            "--workspace-strategy",
+            "worktree",
+            "--repo",
+            str(repo),
+            "--requirement",
+            "validate packaged compact lifecycle",
+        ],
+        cwd=candidate_root,
+        env=environment,
+    )
+    if started.returncode != 0:
+        raise NativeValidationError(
+            "COMPACT_TASK_START_FAILED",
+            f"compact lifecycle task start exited {started.returncode}",
+        )
+    started_value = _parse_single_utf8_json(
+        started.stdout,
+        "compact lifecycle task start",
+    )
+    if started_value.get("ok") is not True:
+        raise NativeValidationError(
+            "COMPACT_TASK_START_FAILED",
+            "compact lifecycle task start was not successful",
+        )
+    hook_environment = dict(environment)
+    hook_environment["PLUGIN_ROOT"] = str(candidate_root)
+    hook_environment["PLUGIN_DATA"] = str(data_dir)
+    outputs: dict[str, bytes] = {}
+    session_id = "native-hook-compact-session"
+    for event, payload in _compact_hook_payloads(repo, session_id):
+        completed = _run(
+            _packaged_windows_hook_command(candidate_root, event),
+            cwd=candidate_root,
+            env=hook_environment,
+            stdin=_stable_json_bytes(payload),
+            timeout=30,
+        )
+        if completed.returncode != 0 or completed.stderr:
+            raise NativeValidationError(
+                "WINDOWS_HOOK_LAUNCH_FAILED",
+                f"packaged {event} hook failed its native launcher",
+            )
+        outputs[event] = completed.stdout
+    observed = _validate_compact_hook_outputs(
+        pre_compact=outputs["PreCompact"],
+        post_compact=outputs["PostCompact"],
+        session_start=outputs["SessionStart"],
+        expected_task_id=task_id,
+    )
+    return {
+        "diagnostic": "WINDOWS_COMPACT_HOOK_LIFECYCLE_OK",
+        "id": "native-windows-compact-hook-lifecycle",
+        "post_compact_shape": observed["post_compact_shape"],
+        "restored_contract": observed["restored_contract"],
+        "status": "passed",
+    }
+
+
 def _load_controller(candidate_root: Path):
     controller_path = candidate_root / "scripts" / "dev_flow.py"
     module_name = (
@@ -409,12 +950,120 @@ def _load_controller(candidate_root: Path):
     return module
 
 
+@dataclass
+class _ControllerManagerCapability:
+    task_id: str
+    manager_session_id: str
+    capability_id: str
+    secret: bytearray = field(repr=False)
+
+    def close(self) -> None:
+        for index in range(len(self.secret)):
+            self.secret[index] = 0
+
+
+def _close_descriptor(descriptor: Optional[int]) -> None:
+    if descriptor is None:
+        return
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _read_exact_descriptor(descriptor: int, size: int) -> bytearray:
+    value = bytearray()
+    try:
+        while len(value) < size:
+            chunk = os.read(descriptor, size - len(value))
+            if not chunk:
+                raise NativeValidationError(
+                    "MANAGER_SECRET_CHANNEL_TRUNCATED",
+                    "manager secret channel closed before its frame completed",
+                )
+            value.extend(chunk)
+        return value
+    except BaseException:
+        for index in range(len(value)):
+            value[index] = 0
+        raise
+
+
+def _receive_manager_secret(descriptor: int) -> bytearray:
+    header: Optional[bytearray] = None
+    secret: Optional[bytearray] = None
+    try:
+        header = _read_exact_descriptor(descriptor, 4)
+        (size,) = struct.unpack(">I", header)
+        if not (
+            MANAGER_SECRET_CHANNEL_MIN_BYTES
+            <= size
+            <= MANAGER_SECRET_CHANNEL_MAX_BYTES
+        ):
+            raise NativeValidationError(
+                "MANAGER_SECRET_CHANNEL_FRAME_INVALID",
+                "manager secret channel frame exceeded its fixed bounds",
+            )
+        secret = _read_exact_descriptor(descriptor, size)
+        if os.read(descriptor, 1):
+            raise NativeValidationError(
+                "MANAGER_SECRET_CHANNEL_FRAME_INVALID",
+                "manager authorization published more than one secret frame",
+            )
+        result = secret
+        secret = None
+        return result
+    finally:
+        if header is not None:
+            for index in range(len(header)):
+                header[index] = 0
+        if secret is not None:
+            for index in range(len(secret)):
+                secret[index] = 0
+
+
+def _publish_manager_secret(
+    descriptor: int,
+    secret: bytearray,
+) -> None:
+    if not (
+        MANAGER_SECRET_CHANNEL_MIN_BYTES
+        <= len(secret)
+        <= MANAGER_SECRET_CHANNEL_MAX_BYTES
+    ):
+        raise NativeValidationError(
+            "MANAGER_SECRET_CHANNEL_FRAME_INVALID",
+            "manager secret has an invalid bounded length",
+        )
+    frame = bytearray(struct.pack(">I", len(secret)))
+    frame.extend(secret)
+    try:
+        offset = 0
+        while offset < len(frame):
+            written = os.write(descriptor, frame[offset:])
+            if written <= 0:
+                raise NativeValidationError(
+                    "MANAGER_SECRET_CHANNEL_TRUNCATED",
+                    "manager secret frame could not be published",
+                )
+            offset += written
+    except OSError as exc:
+        raise NativeValidationError(
+            "MANAGER_SECRET_CHANNEL_UNAVAILABLE",
+            "manager secret channel could not publish a proof frame",
+        ) from exc
+    finally:
+        for index in range(len(frame)):
+            frame[index] = 0
+
+
 def _controller_call(
     candidate_root: Path,
     data_dir: Path,
     arguments: Sequence[str],
     *,
     expected_error: Optional[str] = None,
+    inherited_fds: Sequence[int] = (),
 ) -> dict[str, Any]:
     environment = dict(os.environ)
     environment.update(
@@ -435,6 +1084,7 @@ def _controller_call(
         ],
         cwd=candidate_root,
         env=environment,
+        inherited_fds=inherited_fds,
     )
     if not completed.stdout:
         raise NativeValidationError(
@@ -458,6 +1108,171 @@ def _controller_call(
     return value
 
 
+def _authorize_controller_manager(
+    candidate_root: Path,
+    data_dir: Path,
+    task_id: str,
+    revision: int,
+) -> tuple[int, _ControllerManagerCapability]:
+    manager_session_id = f"native-manager-{task_id}"
+    common_arguments = [
+        "manager-authorize",
+        task_id,
+        "--expected-revision",
+        str(revision),
+        "--manager-session-id",
+        manager_session_id,
+        "--ttl-seconds",
+        str(CONTROLLER_MANAGER_TTL_SECONDS),
+    ]
+    preview = _controller_call(
+        candidate_root,
+        data_dir,
+        [*common_arguments, "--preview"],
+    )
+    intent_id = str((preview.get("preview") or {}).get("intent_id") or "")
+    if not intent_id:
+        raise NativeValidationError(
+            "MANAGER_AUTHORIZATION_PREVIEW_INVALID",
+            "manager authorization preview returned no confirmation intent",
+        )
+
+    read_descriptor: Optional[int] = None
+    write_descriptor: Optional[int] = None
+    secret: Optional[bytearray] = None
+    try:
+        read_descriptor, write_descriptor = os.pipe()
+        confirmed = _controller_call(
+            candidate_root,
+            data_dir,
+            [
+                *common_arguments,
+                "--confirm-intent",
+                intent_id,
+                "--manager-secret-fd",
+                str(write_descriptor),
+            ],
+            inherited_fds=(write_descriptor,),
+        )
+        _close_descriptor(write_descriptor)
+        write_descriptor = None
+        secret = _receive_manager_secret(read_descriptor)
+        capability = confirmed.get("capability") or {}
+        capability_id = str(capability.get("capability_id") or "")
+        allowed_actions = capability.get("allowed_actions")
+        if (
+            not capability_id
+            or not isinstance(allowed_actions, list)
+            or not set(CONTROLLER_ACTION_IDS.values()).issubset(
+                set(allowed_actions)
+            )
+            or capability.get("manager_session_id") != manager_session_id
+            or capability.get("secret_transport")
+            != "local-secret-channel"
+        ):
+            raise NativeValidationError(
+                "MANAGER_AUTHORIZATION_INVALID",
+                "manager authorization response differed from the v3 contract",
+            )
+        result = _ControllerManagerCapability(
+            task_id=task_id,
+            manager_session_id=manager_session_id,
+            capability_id=capability_id,
+            secret=secret,
+        )
+        secret = None
+        return int(confirmed["revision"]), result
+    except OSError as exc:
+        raise NativeValidationError(
+            "MANAGER_SECRET_CHANNEL_UNAVAILABLE",
+            "manager authorization pipe could not be created",
+        ) from exc
+    finally:
+        _close_descriptor(read_descriptor)
+        _close_descriptor(write_descriptor)
+        if secret is not None:
+            for index in range(len(secret)):
+                secret[index] = 0
+
+
+def _controller_manager_request(
+    manager: _ControllerManagerCapability,
+    action_id: str,
+    revision: int,
+) -> str:
+    request = {
+        "schema": MANAGER_CAPABILITY_REQUEST_SCHEMA,
+        "capability_id": manager.capability_id,
+        "task_id": manager.task_id,
+        "manager_session_id": manager.manager_session_id,
+        "action_id": action_id,
+        "expected_revision": revision,
+        "request_nonce": secrets.token_hex(32),
+    }
+    return json.dumps(
+        request,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _controller_authorized_call(
+    candidate_root: Path,
+    data_dir: Path,
+    arguments: Sequence[str],
+    *,
+    manager: Optional[_ControllerManagerCapability],
+    action_id: str,
+    revision: int,
+    expected_error: Optional[str] = None,
+) -> dict[str, Any]:
+    if manager is None:
+        return _controller_call(
+            candidate_root,
+            data_dir,
+            arguments,
+            expected_error=expected_error,
+        )
+    if manager.task_id not in arguments:
+        raise NativeValidationError(
+            "MANAGER_AUTHORIZATION_SCOPE_INVALID",
+            "manager capability task differs from the controller mutation",
+        )
+    read_descriptor: Optional[int] = None
+    write_descriptor: Optional[int] = None
+    try:
+        read_descriptor, write_descriptor = os.pipe()
+        _publish_manager_secret(write_descriptor, manager.secret)
+        _close_descriptor(write_descriptor)
+        write_descriptor = None
+        return _controller_call(
+            candidate_root,
+            data_dir,
+            [
+                *arguments,
+                "--manager-request-json",
+                _controller_manager_request(
+                    manager,
+                    action_id,
+                    revision,
+                ),
+                "--manager-secret-fd",
+                str(read_descriptor),
+            ],
+            expected_error=expected_error,
+            inherited_fds=(read_descriptor,),
+        )
+    except OSError as exc:
+        raise NativeValidationError(
+            "MANAGER_SECRET_CHANNEL_UNAVAILABLE",
+            "manager mutation pipe could not be created",
+        ) from exc
+    finally:
+        _close_descriptor(read_descriptor)
+        _close_descriptor(write_descriptor)
+
+
 def _controller_mutation(
     candidate_root: Path,
     data_dir: Path,
@@ -465,8 +1280,16 @@ def _controller_mutation(
     task_id: str,
     revision: int,
     *arguments: str,
+    manager: Optional[_ControllerManagerCapability],
     expected_error: Optional[str] = None,
 ) -> dict[str, Any]:
+    try:
+        action_id = CONTROLLER_ACTION_IDS[command]
+    except KeyError as exc:
+        raise NativeValidationError(
+            "MANAGER_ACTION_UNKNOWN",
+            "controller mutation has no public manager action identity",
+        ) from exc
     if command == "preflight" and expected_error is None:
         preview = _controller_call(
             candidate_root,
@@ -480,7 +1303,7 @@ def _controller_mutation(
                 "--preview",
             ],
         )
-        return _controller_call(
+        return _controller_authorized_call(
             candidate_root,
             data_dir,
             [
@@ -492,8 +1315,31 @@ def _controller_mutation(
                 "--confirm-preview",
                 str(preview["transition_preview"]["token"]),
             ],
+            manager=manager,
+            action_id=action_id,
+            revision=revision,
         )
-    return _controller_call(
+    if command == "transition" and expected_error is None:
+        preview = _controller_call(
+            candidate_root,
+            data_dir,
+            [
+                command,
+                task_id,
+                "--expected-revision",
+                str(revision),
+                *arguments,
+                "--preview",
+            ],
+        )
+        intent_id = str((preview.get("preview") or {}).get("intent_id") or "")
+        if not intent_id:
+            raise NativeValidationError(
+                "CONTROLLER_TRANSITION_PREVIEW_INVALID",
+                "controller transition preview returned no confirmation intent",
+            )
+        arguments = (*arguments, "--confirm-intent", intent_id)
+    return _controller_authorized_call(
         candidate_root,
         data_dir,
         [
@@ -503,6 +1349,9 @@ def _controller_mutation(
             str(revision),
             *arguments,
         ],
+        manager=manager,
+        action_id=action_id,
+        revision=revision,
         expected_error=expected_error,
     )
 
@@ -526,7 +1375,7 @@ def _route_approved_controller_task(
     start_selector: Path,
     alternate_selector: Path,
     impact_path: Path,
-) -> tuple[int, str]:
+) -> tuple[int, str, Optional[_ControllerManagerCapability]]:
     started = _controller_call(
         candidate_root,
         data_dir,
@@ -561,110 +1410,170 @@ def _route_approved_controller_task(
             "controller repository selection did not retain filesystem identity",
         )
 
+    manager: Optional[_ControllerManagerCapability] = None
     revision = int(started["revision"])
-    response = _controller_mutation(
-        candidate_root,
-        data_dir,
-        "preflight",
-        task_id,
-        revision,
-        "--repo",
-        str(alternate_selector),
-    )
-    revision = int(response["revision"])
-    response = _controller_mutation(
-        candidate_root,
-        data_dir,
-        "approve",
-        task_id,
-        revision,
-        "--gate",
-        "baseline-fetch",
-        "--note",
-        "native fixture baseline approved without fetch",
-    )
-    revision = int(response["revision"])
-    response = _controller_mutation(
-        candidate_root,
-        data_dir,
-        "baseline",
-        task_id,
-        revision,
-        "--materialize",
-    )
-    revision = int(response["revision"])
-    response = _controller_mutation(
-        candidate_root,
-        data_dir,
-        "record-index",
-        task_id,
-        revision,
-        "--repo",
-        str(start_selector),
-        "--index-id",
-        f"native-baseline-{task_id}",
-    )
-    revision = int(response["revision"])
-    impact_path.write_text("Native managed-worktree impact.\n", encoding="utf-8")
-    response = _controller_mutation(
-        candidate_root,
-        data_dir,
-        "record-artifact",
-        task_id,
-        revision,
-        "--kind",
-        "impact",
-        "--path",
-        str(impact_path),
-    )
-    revision = int(response["revision"])
-    artifact_sha256 = str((response.get("artifact") or {}).get("sha256") or "")
-    if not candidate_identity.SHA256_RE.fullmatch(artifact_sha256):
-        raise NativeValidationError(
-            "CONTROLLER_IMPACT_IDENTITY_FAILED",
-            "controller did not return a valid impact identity",
+    if task.get("schema_version") == 3:
+        revision, manager = _authorize_controller_manager(
+            candidate_root,
+            data_dir,
+            task_id,
+            revision,
         )
-    response = _controller_mutation(
-        candidate_root,
-        data_dir,
-        "set-route",
-        task_id,
-        revision,
-        "direct",
-        "--reason",
-        "bounded native managed-worktree validation",
-    )
-    revision = int(response["revision"])
-    response = _controller_mutation(
-        candidate_root,
-        data_dir,
-        "approve",
-        task_id,
-        revision,
-        "--gate",
-        "route",
-        "--note",
-        "native fixture impact and route approved",
-        "--artifact-sha256",
-        artifact_sha256,
-    )
-    return int(response["revision"]), repository_id
+    try:
+        response = _controller_mutation(
+            candidate_root,
+            data_dir,
+            "preflight",
+            task_id,
+            revision,
+            "--repo",
+            str(alternate_selector),
+            manager=manager,
+        )
+        revision = int(response["revision"])
+        response = _controller_mutation(
+            candidate_root,
+            data_dir,
+            "approve",
+            task_id,
+            revision,
+            "--gate",
+            "baseline-fetch",
+            "--note",
+            "native fixture baseline approved without fetch",
+            manager=manager,
+        )
+        revision = int(response["revision"])
+        response = _controller_mutation(
+            candidate_root,
+            data_dir,
+            "baseline",
+            task_id,
+            revision,
+            "--materialize",
+            manager=manager,
+        )
+        revision = int(response["revision"])
+        index_id = f"native-baseline-{task_id}"
+        response = _controller_mutation(
+            candidate_root,
+            data_dir,
+            "record-index",
+            task_id,
+            revision,
+            "--repo",
+            str(start_selector),
+            "--index-id",
+            index_id,
+            manager=manager,
+        )
+        revision = int(response["revision"])
+        impact_path.write_text(
+            "Native managed-worktree impact.\n",
+            encoding="utf-8",
+        )
+        controller = _load_controller(candidate_root)
+        impact_metadata = {
+            "schema": "dev-flow-impact-analysis/v1",
+            "strategy": "funnel",
+            "coverage": "complete",
+            "budget_profile": "seed-v1",
+            "repositories": [
+                {
+                    "repository_id": repository_id,
+                    "index_id": index_id,
+                    "index_mode": "fast",
+                    "checks": {
+                        name: {"status": "complete"}
+                        for name in controller.IMPACT_CHECKS
+                    },
+                    "queries": {
+                        name: 0 for name in controller.IMPACT_QUERY_KEYS
+                    },
+                    "unresolved_truncations": [],
+                    "material_unknowns": [],
+                }
+            ],
+            "cross_repository": {
+                "status": "not_applicable",
+                "reason": "single repository native validation",
+            },
+        }
+        response = _controller_mutation(
+            candidate_root,
+            data_dir,
+            "record-artifact",
+            task_id,
+            revision,
+            "--kind",
+            "impact",
+            "--path",
+            str(impact_path),
+            "--metadata-json",
+            json.dumps(impact_metadata, sort_keys=True),
+            manager=manager,
+        )
+        revision = int(response["revision"])
+        artifact_sha256 = str(
+            (response.get("artifact") or {}).get("sha256") or ""
+        )
+        if not candidate_identity.SHA256_RE.fullmatch(artifact_sha256):
+            raise NativeValidationError(
+                "CONTROLLER_IMPACT_IDENTITY_FAILED",
+                "controller did not return a valid impact identity",
+            )
+        response = _controller_mutation(
+            candidate_root,
+            data_dir,
+            "set-route",
+            task_id,
+            revision,
+            "direct",
+            "--reason",
+            "bounded native managed-worktree validation",
+            manager=manager,
+        )
+        revision = int(response["revision"])
+        response = _controller_mutation(
+            candidate_root,
+            data_dir,
+            "approve",
+            task_id,
+            revision,
+            "--gate",
+            "route",
+            "--note",
+            "native fixture impact and route approved",
+            "--artifact-sha256",
+            artifact_sha256,
+            manager=manager,
+        )
+        return int(response["revision"]), repository_id, manager
+    except BaseException:
+        if manager is not None:
+            manager.close()
+        raise
 
 
-def exercise_controller_managed_worktree(
+def _exercise_controller_managed_worktree(
     candidate_root: Path,
     data_dir: Path,
     local_repo: Path,
     repository_alias: Path,
     worktree: Path,
     scratch: Path,
+    manager_stack: contextlib.ExitStack,
 ) -> dict[str, Any]:
     """Exercise the real controller CLI and its durable worktree contracts."""
 
     owner_task = "native-managed-owner"
     contender_task = "native-managed-contender"
     branch = "native/long-path-validation"
-    owner_revision, repository_id = _route_approved_controller_task(
+    (
+        owner_revision,
+        repository_id,
+        owner_manager,
+    ) = _route_approved_controller_task(
         candidate_root,
         data_dir,
         task_id=owner_task,
@@ -672,14 +1581,55 @@ def exercise_controller_managed_worktree(
         alternate_selector=local_repo,
         impact_path=scratch / "owner-impact.md",
     )
-    contender_revision, _ = _route_approved_controller_task(
+    if owner_manager is not None:
+        manager_stack.callback(owner_manager.close)
+    alias_claim = _controller_call(
+        candidate_root,
+        data_dir,
+        [
+            "start",
+            "--task-id",
+            "native-managed-alias-contender",
+            "--workspace-strategy",
+            "worktree",
+            "--repo",
+            str(local_repo),
+            "--requirement",
+            "Native repository alias ownership guard",
+        ],
+        expected_error="REPOSITORY_CLAIM_CONFLICT",
+    )
+    alias_claim_details = (alias_claim.get("error") or {}).get("details") or {}
+    if (
+        alias_claim_details.get("owner_task_id") != owner_task
+        or alias_claim_details.get("conflict") != "canonical_path"
+    ):
+        raise NativeValidationError(
+            "CONTROLLER_REPOSITORY_CLAIM_INEXACT",
+            "local and alias repository selectors did not share one exclusive claim",
+        )
+
+    contender_repo = scratch / "native-managed-contender-repository"
+    _initialize_repository(contender_repo)
+    _configure_local_origin(
+        candidate_root,
+        contender_repo,
+        scratch / "native-managed-contender-origin.git",
+    )
+    (
+        contender_revision,
+        _,
+        contender_manager,
+    ) = _route_approved_controller_task(
         candidate_root,
         data_dir,
         task_id=contender_task,
-        start_selector=local_repo,
-        alternate_selector=repository_alias,
+        start_selector=contender_repo,
+        alternate_selector=contender_repo,
         impact_path=scratch / "contender-impact.md",
     )
+    if contender_manager is not None:
+        manager_stack.callback(contender_manager.close)
 
     plan = _controller_mutation(
         candidate_root,
@@ -691,6 +1641,7 @@ def exercise_controller_managed_worktree(
         str(worktree),
         "--branch",
         branch,
+        manager=owner_manager,
     )
     owner_revision = int(plan["revision"])
     plan_artifact = plan.get("plan_artifact") or {}
@@ -710,14 +1661,15 @@ def exercise_controller_managed_worktree(
         "--path",
         str(worktree),
         "--branch",
-        "native/equivalent-alias-contender",
+        "native/independent-contender",
+        manager=contender_manager,
         expected_error="WORKSPACE_OWNERSHIP_CONFLICT",
     )
     conflict_details = (conflict.get("error") or {}).get("details") or {}
     if conflict_details.get("conflict") != "path":
         raise NativeValidationError(
             "CONTROLLER_OWNERSHIP_CONFLICT_INEXACT",
-            "equivalent repository alias did not produce an exact path claim conflict",
+            "independent repository did not produce an exact workspace path claim conflict",
         )
 
     approved = _controller_mutation(
@@ -732,6 +1684,7 @@ def exercise_controller_managed_worktree(
         "native durable workspace claim approved",
         "--artifact-sha256",
         plan_sha256,
+        manager=owner_manager,
     )
     owner_revision = int(approved["revision"])
     executed = _controller_mutation(
@@ -745,6 +1698,7 @@ def exercise_controller_managed_worktree(
         str(worktree),
         "--branch",
         branch,
+        manager=owner_manager,
     )
     owner_revision = int(executed["revision"])
     if executed.get("complete") is not True:
@@ -797,6 +1751,7 @@ def exercise_controller_managed_worktree(
         "native-workspace-index",
         "--metadata-json",
         '{"persistence":false}',
+        manager=owner_manager,
     )
     indexed_revision = int(indexed["revision"])
     tracked = worktree / "\u8ddf\u8e2a-bytes.txt"
@@ -809,6 +1764,7 @@ def exercise_controller_managed_worktree(
         owner_task,
         indexed_revision,
         "PLANNING",
+        manager=owner_manager,
         expected_error="STALE_WORKSPACE_INDEX",
     )
     stale_repositories = (
@@ -832,6 +1788,7 @@ def exercise_controller_managed_worktree(
         owner_task,
         indexed_revision,
         "PLANNING",
+        manager=owner_manager,
     )
     if restored.get("status") != "PLANNING":
         raise NativeValidationError(
@@ -843,6 +1800,31 @@ def exercise_controller_managed_worktree(
         "drift_guard": "STALE_WORKSPACE_INDEX",
         "postcondition": "WORKSPACE_READY",
     }
+
+
+def exercise_controller_managed_worktree(
+    candidate_root: Path,
+    data_dir: Path,
+    local_repo: Path,
+    repository_alias: Path,
+    worktree: Path,
+    scratch: Path,
+) -> dict[str, Any]:
+    """Exercise production schema-v3 controller and worktree guardrails."""
+
+    manager_stack = contextlib.ExitStack()
+    try:
+        return _exercise_controller_managed_worktree(
+            candidate_root,
+            data_dir,
+            local_repo,
+            repository_alias,
+            worktree,
+            scratch,
+            manager_stack,
+        )
+    finally:
+        manager_stack.close()
 
 
 def _check_paths_and_worktree(
@@ -1154,7 +2136,15 @@ def run_native(args: argparse.Namespace) -> int:
                 "CHILD_ALIAS_MISMATCH",
                 "runner-owned child is not reachable through both aliases",
             )
+        report["checks"].append(_check_windows_mcp_launcher(extraction))
         report["checks"].append(_check_code_page(extraction, child, args.code_page))
+        report["checks"].append(
+            _check_windows_compact_hook_lifecycle(
+                extraction,
+                child,
+                args.code_page,
+            )
+        )
         report["checks"].append(
             _check_paths_and_worktree(extraction, child, unc_child)
         )

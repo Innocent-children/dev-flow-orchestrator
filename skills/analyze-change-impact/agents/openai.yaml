@@ -7,3 +7,5 @@ dependencies:
     - type: "mcp"
       value: "codebase-memory-mcp"
       description: "Indexes pinned baselines and requires their explicit project IDs for architecture, search, and trace tools"
+policy:
+  allow_implicit_invocation: false

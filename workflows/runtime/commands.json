@@ -1,0 +1,1356 @@
+{
+  "manifest_version": "dev-flow-handler-registration-manifest/v1",
+  "audit_policy": "dev-flow-handler-audit/v1",
+  "registry": "commands",
+  "implementation_file_sets": {
+    "action-recovery-command-v1": [
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_action_recovery_commands.py",
+        "kind": "T"
+      }
+    ],
+    "cancel-v1": [
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      }
+    ],
+    "full-controller-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "manager-authority-v1": [
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/manager_channel.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/orchestration_authority.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      }
+    ],
+    "no-review-controller-v1": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "recovery-atomic-v1": [
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      }
+    ],
+    "summary-scope-v1": [
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      }
+    ]
+  },
+  "entries": [
+    {
+      "id": "command.action-recovery-apply/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "action-recovery-command-v1",
+      "symbols": {
+        "parser_factory": "_register_action_recovery_apply_parser",
+        "handler": "command_action_recovery_apply"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "workflow_action_recovery_apply_v1"
+        ],
+        "allowed_imports": [
+          "argparse"
+        ]
+      },
+      "command": "action-recovery-apply",
+      "action_id": "control.reconcile/v1",
+      "parser_order": 19
+    },
+    {
+      "id": "command.action-recovery-inspect/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-read"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "action-recovery-command-v1",
+      "symbols": {
+        "parser_factory": "_register_action_recovery_inspect_parser",
+        "handler": "command_action_recovery_inspect"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "workflow_action_recovery_inspect_v1"
+        ],
+        "allowed_imports": [
+          "argparse"
+        ]
+      },
+      "command": "action-recovery-inspect",
+      "action_id": "control.reconcile.inspect/v1",
+      "parser_order": 20
+    },
+    {
+      "id": "command.action-recovery-preview/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-read"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "action-recovery-command-v1",
+      "symbols": {
+        "parser_factory": "_register_action_recovery_preview_parser",
+        "handler": "command_action_recovery_preview"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "workflow_action_recovery_preview_v1"
+        ],
+        "allowed_imports": [
+          "argparse"
+        ]
+      },
+      "command": "action-recovery-preview",
+      "action_id": "control.reconcile.preview/v1",
+      "parser_order": 21
+    },
+    {
+      "id": "command.approve/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "full-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_approve_parser",
+        "handler": "command_approve"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "_v3_command_approve_commit",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "approve",
+      "action_id": "gate.approve",
+      "parser_order": 11
+    },
+    {
+      "id": "command.baseline/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "no-review-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_baseline_parser",
+        "handler": "command_baseline"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "baseline",
+      "action_id": "task.baseline",
+      "parser_order": 7
+    },
+    {
+      "id": "command.cancel/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "cancel-v1",
+      "symbols": {
+        "parser_factory": "_register_cancel_parser",
+        "handler": "command_cancel"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "v3_command_movement_commit_v1",
+          "v3_command_movement_evaluate_v1",
+          "v3_command_movement_preview_v1",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "secrets",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "cancel",
+      "action_id": "task.cancel",
+      "parser_order": 16
+    },
+    {
+      "id": "command.list/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-read"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "summary-scope-v1",
+      "symbols": {
+        "parser_factory": "_register_list_parser",
+        "handler": "command_list"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "resolve_loaded_task_workflow",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "urllib"
+        ]
+      },
+      "command": "list",
+      "action_id": "task.list",
+      "parser_order": 4
+    },
+    {
+      "id": "command.manager-authorize/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "operator-capability-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "manager-authority-v1",
+      "symbols": {
+        "parser_factory": "_register_manager_authorize_parser",
+        "handler": "command_manager_authorize"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_authority_transaction_service_v1",
+          "manager_command_action_ids_v1",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "dataclasses",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "hmac",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "secrets",
+          "shutil",
+          "socket",
+          "stat",
+          "struct",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "typing",
+          "urllib"
+        ]
+      },
+      "command": "manager-authorize",
+      "action_id": "manager.capability.authorize",
+      "parser_order": 17
+    },
+    {
+      "id": "command.manager-revoke/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "operator-capability-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "manager-authority-v1",
+      "symbols": {
+        "parser_factory": "_register_manager_revoke_parser",
+        "handler": "command_manager_revoke"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_authority_transaction_service_v1",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "dataclasses",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "hmac",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "struct",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "typing",
+          "unicodedata",
+          "urllib"
+        ]
+      },
+      "command": "manager-revoke",
+      "action_id": "manager.capability.revoke",
+      "parser_order": 18
+    },
+    {
+      "id": "command.preflight/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "no-review-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_preflight_parser",
+        "handler": "command_preflight"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "ActionOutcome",
+          "AuditFact",
+          "TransitionEngineError",
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowActionEffectBinding",
+          "WorkflowActionEffectObservation",
+          "WorkflowActionInvocation",
+          "WorkflowActionTransactionError",
+          "WorkflowActionTransactionResult",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "_manager_workflow_action_authorization_v1",
+          "_workflow_transition_exact_state_delta",
+          "_workflow_transition_public",
+          "action_execution_active_path",
+          "action_execution_archive_path",
+          "execute_v3_workflow_action_transaction",
+          "manager_process_commit_gate_v1",
+          "preview_v3_workflow_action_transaction",
+          "recover_v3_workflow_action_transaction",
+          "resolve_loaded_task_workflow",
+          "resolve_v3_node_action_edge",
+          "resolve_v3_workflow_action_completion_edge",
+          "semantic_sha256",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "secrets",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "typing",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "preflight",
+      "action_id": "task.preflight",
+      "parser_order": 6
+    },
+    {
+      "id": "command.prepare-workspace/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "full-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_prepare_workspace_parser",
+        "handler": "command_prepare_workspace"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "prepare-workspace",
+      "action_id": "workspace.prepare",
+      "parser_order": 13
+    },
+    {
+      "id": "command.record-artifact/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "full-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_record_artifact_parser",
+        "handler": "command_record_artifact"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "record-artifact",
+      "action_id": "evidence.artifact.record",
+      "parser_order": 9
+    },
+    {
+      "id": "command.record-index/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "full-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_record_index_parser",
+        "handler": "command_record_index"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "record-index",
+      "action_id": "evidence.index.record",
+      "parser_order": 8
+    },
+    {
+      "id": "command.record-test/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "full-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_record_test_parser",
+        "handler": "command_record_test"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "v3_record_test_command_v1",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "record-test",
+      "action_id": "evidence.test.record",
+      "parser_order": 14
+    },
+    {
+      "id": "command.recover-atomic-write/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-recovery-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "recovery-atomic-v1",
+      "symbols": {
+        "parser_factory": "_register_recover_atomic_write_parser",
+        "handler": "command_recover_atomic_write"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib"
+        ]
+      },
+      "command": "recover-atomic-write",
+      "action_id": "recovery.atomic-write",
+      "parser_order": 3
+    },
+    {
+      "id": "command.recover-quarantine/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-recovery-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "no-review-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_recover_quarantine_parser",
+        "handler": "command_recover_quarantine"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "recover-quarantine",
+      "action_id": "recovery.quarantine",
+      "parser_order": 2
+    },
+    {
+      "id": "command.review-snapshot/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "full-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_review_snapshot_parser",
+        "handler": "command_review_snapshot"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "v3_review_snapshot_command_v1",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tarfile",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "review-snapshot",
+      "action_id": "evidence.review-snapshot.record",
+      "parser_order": 15
+    },
+    {
+      "id": "command.scope/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-config-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "summary-scope-v1",
+      "symbols": {
+        "parser_factory": "_register_scope_parser",
+        "handler": "command_scope"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib"
+        ]
+      },
+      "command": "scope",
+      "action_id": "config.scope",
+      "parser_order": 5
+    },
+    {
+      "id": "command.set-route/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "full-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_set_route_parser",
+        "handler": "command_set_route"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "_v3_command_set_route_commit",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "set-route",
+      "action_id": "task.route.set",
+      "parser_order": 10
+    },
+    {
+      "id": "command.show/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-read"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "summary-scope-v1",
+      "symbols": {
+        "parser_factory": "_register_show_parser",
+        "handler": "command_show"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WORKFLOW_AGENT_PROFILE",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowProjectionError",
+          "WorkflowStateError",
+          "build_workflow_task_next",
+          "inspect_loaded_task_state",
+          "resolve_loaded_task_workflow",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "urllib"
+        ]
+      },
+      "command": "show",
+      "action_id": "task.show",
+      "parser_order": 1
+    },
+    {
+      "id": "command.start/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "no-review-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_start_parser",
+        "handler": "command_start"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "start",
+      "action_id": "task.start",
+      "parser_order": 0
+    },
+    {
+      "id": "command.transition/v1",
+      "contract_id": "dev-flow-command/v1",
+      "authority": [
+        "controller-mutation"
+      ],
+      "capabilities": [],
+      "input_schema_ref": "schema.command.arguments/v1",
+      "output_schema_ref": "schema.command.result/v1",
+      "implementation_file_set": "full-controller-v1",
+      "symbols": {
+        "parser_factory": "_register_transition_parser",
+        "handler": "command_transition"
+      },
+      "audit": {
+        "profile": "legacy-controller-v1",
+        "allowed_globals": [
+          "V3_TASK_SCHEMA_VERSION",
+          "WorkflowCatalogError",
+          "WorkflowHandlerAuditError",
+          "WorkflowStateError",
+          "manager_process_commit_gate_v1",
+          "resolve_loaded_task_workflow",
+          "v3_command_movement_commit_v1",
+          "v3_command_movement_evaluate_v1",
+          "v3_command_movement_preview_v1",
+          "validate_task_state_for_mutation",
+          "validate_v3_task_state"
+        ],
+        "allowed_imports": [
+          "argparse",
+          "contextlib",
+          "contextvars",
+          "datetime",
+          "errno",
+          "fcntl",
+          "hashlib",
+          "json",
+          "msvcrt",
+          "os",
+          "pathlib",
+          "re",
+          "secrets",
+          "shutil",
+          "stat",
+          "subprocess",
+          "sys",
+          "tempfile",
+          "threading",
+          "time",
+          "unicodedata",
+          "urllib",
+          "uuid"
+        ]
+      },
+      "command": "transition",
+      "action_id": "task.transition",
+      "parser_order": 12
+    }
+  ]
+}

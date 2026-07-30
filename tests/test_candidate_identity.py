@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -95,9 +98,51 @@ class CandidateIdentityTests(unittest.TestCase):
             transformed, _ = candidate_identity.candidate_digest(candidate)
         self.assertNotEqual(canonical_after, transformed)
 
+    def test_workflow_inventory_is_part_of_the_canonical_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = self._candidate(Path(temporary))
+            workflow_root = candidate / "workflows"
+            workflow_root.mkdir()
+            catalog = workflow_root / "catalog.json"
+            catalog.write_bytes(b'{"schema":"example/v1"}\n')
+            before, before_count = candidate_identity.candidate_digest(
+                candidate
+            )
+            catalog.write_bytes(b'{"schema":"example/v2"}\n')
+            after, after_count = candidate_identity.candidate_digest(candidate)
+        self.assertEqual(before_count, after_count)
+        self.assertNotEqual(before, after)
+
+    def test_mcp_configuration_is_part_of_the_canonical_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = self._candidate(Path(temporary))
+            configuration = candidate / ".mcp.json"
+            configuration.write_bytes(
+                b'{"dev-flow":{"enabled":true}}\n'
+            )
+            before, before_count = candidate_identity.candidate_digest(
+                candidate
+            )
+            configuration.write_bytes(
+                b'{"dev-flow":{"enabled":false}}\n'
+            )
+            after, after_count = candidate_identity.candidate_digest(
+                candidate
+            )
+        self.assertEqual(before_count, after_count)
+        self.assertNotEqual(before, after)
+
     def test_exclusions_are_narrow_and_unexpected_path_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             candidate = self._candidate(Path(temporary))
+            (candidate / "CONTRIBUTING.md").write_bytes(b"contract\n")
+            reports = candidate / "docs"
+            reports.mkdir()
+            (reports / "local-review.md").write_bytes(b"not shipped\n")
+            entries = candidate_identity.canonical_entries(candidate)
+            paths = {entry.path for entry in entries}
+            self.assertIn("CONTRIBUTING.md", paths)
+            self.assertNotIn("docs/local-review.md", paths)
             (candidate / "__pycache__").mkdir()
             (candidate / "__pycache__" / "ignored.pyc").write_bytes(b"x")
             (candidate / ".DS_Store").write_bytes(b"x")
@@ -108,6 +153,118 @@ class CandidateIdentityTests(unittest.TestCase):
                 "outside canonical allowlist",
             ):
                 candidate_identity.candidate_digest(candidate)
+
+    def test_host_local_exclusions_are_exact_not_directory_wildcards(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = self._candidate(Path(temporary))
+            local_settings = (
+                candidate / ".claude" / "settings.local.json"
+            )
+            local_settings.parent.mkdir()
+            local_settings.write_text(
+                '{"permissions":{"allow":[]}}\n', encoding="utf-8"
+            )
+            (candidate / "AGENTS.md").write_text(
+                "host-only instructions\n", encoding="utf-8"
+            )
+            (candidate / "pyproject.toml").write_text(
+                "[project]\nname='host-local'\n", encoding="utf-8"
+            )
+            (candidate / "uv.lock").write_text(
+                "version = 1\n", encoding="utf-8"
+            )
+            before, before_count = candidate_identity.candidate_digest(
+                candidate
+            )
+            local_settings.write_text("{}\n", encoding="utf-8")
+            (candidate / "AGENTS.md").write_text(
+                "changed host-only instructions\n", encoding="utf-8"
+            )
+            (candidate / "pyproject.toml").write_text(
+                "[project]\nname='changed'\n", encoding="utf-8"
+            )
+            (candidate / "uv.lock").write_text(
+                "version = 2\n", encoding="utf-8"
+            )
+            (candidate / ".venv").mkdir()
+            (candidate / ".venv" / "pyvenv.cfg").write_text(
+                "home = host-local\n", encoding="utf-8"
+            )
+            after, after_count = candidate_identity.candidate_digest(
+                candidate
+            )
+            self.assertEqual((before, before_count), (after, after_count))
+
+            nested = candidate / "scripts" / "pyproject.toml"
+            nested.write_text("shipped\n", encoding="utf-8")
+            nested_digest, nested_count = (
+                candidate_identity.candidate_digest(candidate)
+            )
+            self.assertNotEqual(after, nested_digest)
+            self.assertEqual(nested_count, after_count + 1)
+
+            nested_agents = candidate / "scripts" / "AGENTS.md"
+            nested_agents.write_text(
+                "shipped nested instructions\n", encoding="utf-8"
+            )
+            nested_agents_digest, nested_agents_count = (
+                candidate_identity.candidate_digest(candidate)
+            )
+            self.assertNotEqual(nested_digest, nested_agents_digest)
+            self.assertEqual(nested_agents_count, nested_count + 1)
+
+            unexpected_venv = candidate / ".venv-other"
+            unexpected_venv.mkdir()
+            with self.assertRaisesRegex(
+                candidate_identity.CandidateIdentityError,
+                "outside canonical allowlist",
+            ):
+                candidate_identity.candidate_digest(candidate)
+            unexpected_venv.rmdir()
+
+            (candidate / ".claude" / "settings.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                candidate_identity.CandidateIdentityError,
+                "outside canonical allowlist",
+            ):
+                candidate_identity.candidate_digest(candidate)
+
+    def test_release_tools_import_without_loading_controller_runtime(
+        self,
+    ) -> None:
+        plugin_root = Path(__file__).resolve().parents[1]
+        environment = {
+            **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        for script in (
+            "run_bundled_validators.py",
+            "windows_native_validation.py",
+        ):
+            with self.subTest(script=script):
+                module = f"scripts.{Path(script).stem}"
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        module,
+                        "--help",
+                    ],
+                    cwd=plugin_root,
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    completed.returncode, 0, completed.stderr
+                )
+                self.assertIn(b"usage:", completed.stdout.lower())
 
     @unittest.skipIf(os.name == "nt", "POSIX symlink creation is exercised here")
     def test_handoff_rejects_symlink(self) -> None:
@@ -382,6 +539,195 @@ class CandidateIdentityTests(unittest.TestCase):
             "NATIVE_WINDOWS_REQUIRED",
         )
 
+    def test_windows_mcp_profile_is_bound_to_native_runner(self) -> None:
+        candidate_root = Path(__file__).resolve().parents[1]
+        responses = (
+            {
+                "jsonrpc": "2.0",
+                "id": "dev-flow-native-initialize",
+                "result": {
+                    "protocolVersion": "2025-06-18",
+                    "serverInfo": {
+                        "name": "dev-flow-orchestrator",
+                        "version": "1.0.0",
+                    },
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "dev-flow-native-tools",
+                "result": {
+                    "tools": [
+                        {"name": name}
+                        for name in windows_native_validation.MCP_EXPECTED_TOOLS
+                    ]
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "dev-flow-native-shutdown",
+                "result": None,
+            },
+        )
+        completed = subprocess.CompletedProcess(
+            ["cmd.exe"],
+            0,
+            stdout=b"".join(
+                windows_native_validation._stable_json_bytes(response)
+                for response in responses
+            ),
+            stderr=b"",
+        )
+        with mock.patch.object(
+            windows_native_validation,
+            "_run",
+            return_value=completed,
+        ) as run:
+            check = windows_native_validation._check_windows_mcp_launcher(
+                candidate_root
+            )
+        self.assertEqual(check["status"], "passed")
+        arguments = run.call_args.args[0]
+        self.assertEqual(arguments[0:3], ["cmd.exe", "/d", "/c"])
+        self.assertTrue(arguments[3].endswith("dev_flow_mcp_launcher.cmd"))
+        self.assertEqual(run.call_args.kwargs["cwd"], candidate_root)
+        probe = [
+            json.loads(line)
+            for line in run.call_args.kwargs["stdin"].splitlines()
+        ]
+        self.assertEqual(
+            [message["method"] for message in probe],
+            [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "shutdown",
+                "exit",
+            ],
+        )
+        self.assertEqual(
+            check["tool_names"],
+            list(windows_native_validation.MCP_EXPECTED_TOOLS),
+        )
+
+    def test_mcp_probe_rejects_unbounded_or_changed_tool_surface(
+        self,
+    ) -> None:
+        responses = (
+            {
+                "jsonrpc": "2.0",
+                "id": "dev-flow-native-initialize",
+                "result": {
+                    "protocolVersion": "2025-06-18",
+                    "serverInfo": {"name": "dev-flow-orchestrator"},
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "dev-flow-native-tools",
+                "result": {
+                    "tools": [
+                        *[
+                            {"name": name}
+                            for name in windows_native_validation.MCP_EXPECTED_TOOLS
+                        ],
+                        {"name": "unexpected-tool"},
+                    ]
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "dev-flow-native-shutdown",
+                "result": None,
+            },
+        )
+        completed = subprocess.CompletedProcess(
+            ["cmd.exe"],
+            0,
+            stdout=b"".join(
+                windows_native_validation._stable_json_bytes(response)
+                for response in responses
+            ),
+            stderr=b"",
+        )
+        with self.assertRaisesRegex(
+            windows_native_validation.NativeValidationError,
+            "bounded count",
+        ):
+            windows_native_validation._validate_mcp_probe(
+                completed,
+                label="portable test",
+            )
+
+    def test_windows_compact_hook_lifecycle_contract_is_portable(
+        self,
+    ) -> None:
+        candidate_root = Path(__file__).resolve().parents[1]
+        payloads = windows_native_validation._compact_hook_payloads(
+            Path("C:/native fixture"),
+            "portable-session",
+        )
+        self.assertEqual(
+            [event for event, _ in payloads],
+            ["PreCompact", "PostCompact", "SessionStart"],
+        )
+        self.assertEqual(payloads[-1][1]["source"], "compact")
+        for event, _ in payloads:
+            self.assertEqual(
+                windows_native_validation._packaged_windows_hook_command(
+                    candidate_root,
+                    event,
+                ),
+                [
+                    "cmd.exe",
+                    "/d",
+                    "/c",
+                    '"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.cmd"',
+                ],
+            )
+        session_start = windows_native_validation._stable_json_bytes(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": json.dumps(
+                        {
+                            "contract": "dev-flow-hook-checkpoint/v1",
+                            "task_id": "native-hook-compact",
+                            "revision": 3,
+                            "controller": "cli:python controller",
+                        },
+                        separators=(",", ":"),
+                    ),
+                }
+            }
+        )
+        observed = (
+            windows_native_validation._validate_compact_hook_outputs(
+                pre_compact=b"{}\n",
+                post_compact=b"",
+                session_start=session_start,
+                expected_task_id="native-hook-compact",
+            )
+        )
+        self.assertEqual(observed["post_compact_shape"], "empty")
+        with self.assertRaisesRegex(
+            windows_native_validation.NativeValidationError,
+            "unsupported hook-specific",
+        ):
+            windows_native_validation._validate_compact_hook_outputs(
+                pre_compact=b"{}\n",
+                post_compact=windows_native_validation._stable_json_bytes(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PostCompact",
+                            "additionalContext": "unsupported",
+                        }
+                    }
+                ),
+                session_start=session_start,
+                expected_task_id="native-hook-compact",
+            )
+
     def test_cleanup_requires_exact_direct_child_and_sentinel(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -430,6 +776,71 @@ class CandidateIdentityTests(unittest.TestCase):
                     "postcondition": "WORKSPACE_READY",
                 },
             )
+            task_dir = (
+                root
+                / "controller-state"
+                / "tasks"
+                / "native-managed-owner"
+            )
+            state = json.loads(
+                (task_dir / "state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(state["schema_version"], 2)
+            self.assertNotIn("orchestration", state)
+            event_types = {
+                json.loads(line)["type"]
+                for line in (task_dir / "events.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            }
+            self.assertNotIn(
+                "manager_capability_authorized", event_types
+            )
+            self.assertNotIn(
+                "manager_capability_request_consumed", event_types
+            )
+
+    def test_manager_secret_pipe_is_inherited_without_text_transport(
+        self,
+    ) -> None:
+        read_descriptor, write_descriptor = os.pipe()
+        secret = bytearray(b"n" * 32)
+        try:
+            windows_native_validation._publish_manager_secret(
+                write_descriptor,
+                secret,
+            )
+            os.close(write_descriptor)
+            write_descriptor = -1
+            child = (
+                "import hashlib,os,struct,sys;"
+                "payload=os.fdopen(int(sys.argv[1]),'rb').read();"
+                "size=struct.unpack('>I',payload[:4])[0];"
+                "assert size==len(payload[4:]);"
+                "sys.stdout.write(hashlib.sha256(payload[4:]).hexdigest())"
+            )
+            completed = windows_native_validation._run(
+                [
+                    sys.executable,
+                    "-c",
+                    child,
+                    str(read_descriptor),
+                ],
+                inherited_fds=(read_descriptor,),
+            )
+        finally:
+            windows_native_validation._close_descriptor(read_descriptor)
+            if write_descriptor >= 0:
+                windows_native_validation._close_descriptor(
+                    write_descriptor
+                )
+            for index in range(len(secret)):
+                secret[index] = 0
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.stdout.decode("ascii"),
+            hashlib.sha256(b"n" * 32).hexdigest(),
+        )
 
     def test_release_workflow_binds_reviewed_canonical_in_every_matrix_job(self) -> None:
         workflow = (

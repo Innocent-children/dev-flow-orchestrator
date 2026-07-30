@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid
@@ -44,7 +45,11 @@ except ImportError:  # pragma: no cover - exercised only on POSIX
 # fields.
 SCHEMA_VERSION = 1
 TASK_SCHEMA_VERSION = 2
-SUPPORTED_TASK_SCHEMA_VERSIONS = {1, TASK_SCHEMA_VERSION}
+SUPPORTED_TASK_SCHEMA_VERSIONS = {
+    1,
+    TASK_SCHEMA_VERSION,
+    V3_TASK_SCHEMA_VERSION,
+}
 CONFIG_SCHEMA_VERSION = 2
 SUPPORTED_CONFIG_SCHEMA_VERSIONS = {1, CONFIG_SCHEMA_VERSION}
 EVIDENCE_CONTRACT_VERSION = 2
@@ -67,6 +72,8 @@ ORDERED_STATES = [
     "DONE",
 ]
 ALL_STATES = set(ORDERED_STATES) | {"BLOCKED", "CANCELLED"}
+# Frozen schema-v1/v2 compatibility topology.  Schema-v3 command handlers must
+# resolve movement from the task-pinned bundle and never consult these tables.
 FORWARD_EDGES = {
     state: {ORDERED_STATES[index + 1]}
     for index, state in enumerate(ORDERED_STATES[:-1])
@@ -225,6 +232,7 @@ LITE_ORDERED_STATES = [
     "VERIFYING",
     "DONE",
 ]
+# Frozen schema-v1/v2 lite adapter topology; not authoritative for schema v3.
 LITE_FORWARD_EDGES = {
     state: {LITE_ORDERED_STATES[index + 1]}
     for index, state in enumerate(LITE_ORDERED_STATES[:-1])
@@ -309,6 +317,8 @@ _FILESYSTEM_UNICODE_CACHE: dict[Any, bool] = {}
 _HELD_LOCK_DIRECTORIES: contextvars.ContextVar[tuple[str, ...]] = (
     contextvars.ContextVar("dev_flow_held_lock_directories", default=())
 )
+_IN_PROCESS_FILE_LOCKS_GUARD = threading.Lock()
+_IN_PROCESS_FILE_LOCKS: dict[str, tuple[Any, int]] = {}
 _ACTIVE_MUTATION_INTENTS: contextvars.ContextVar[tuple[str, ...]] = (
     contextvars.ContextVar("dev_flow_active_mutation_intents", default=())
 )
@@ -1417,7 +1427,9 @@ def _validate_v2_task_contract(path: Path, value: dict[str, Any]) -> None:
         )
 
 
-def _validate_task_state_snapshot(path: Path, value: Any) -> int:
+def _validate_task_state_structure(path: Path, value: Any) -> int:
+    """Validate only fields needed to identify a supported task snapshot."""
+
     schema_version = value.get("schema_version") if isinstance(value, dict) else None
     if (
         not isinstance(value, dict)
@@ -1444,11 +1456,128 @@ def _validate_task_state_snapshot(path: Path, value: Any) -> int:
             details={"path": str(path), "task_id": stored_task_id},
         )
     _validate_task_id(stored_task_id)
+    return schema_version
+
+
+def _validate_task_state_snapshot(
+    path: Path,
+    value: Any,
+    *,
+    resolve_workflow: bool = True,
+) -> int:
+    schema_version = _validate_task_state_structure(path, value)
+    if schema_version == V3_TASK_SCHEMA_VERSION:
+        try:
+            validate_v3_task_state(value)
+            if resolve_workflow:
+                resolve_loaded_task_workflow(
+                    value,
+                    purpose=(
+                        "recovery"
+                        if value.get("pending_event") is not None
+                        or value.get("pending_events") is not None
+                        else "inspection"
+                    ),
+                )
+        except (
+            WorkflowCatalogError,
+            WorkflowHandlerAuditError,
+            WorkflowStateError,
+        ) as exc:
+            raise FlowError(
+                getattr(exc, "code", "UNSUPPORTED_STATE"),
+                getattr(
+                    exc,
+                    "message",
+                    "task workflow contract is unsupported or invalid",
+                ),
+                details={
+                    "path": str(path),
+                    **dict(getattr(exc, "details", {})),
+                },
+            ) from exc
     _assert_supported_evidence_versions(value)
     if schema_version == TASK_SCHEMA_VERSION:
         _validate_v2_task_contract(path, value)
     _validate_pending_event_outbox(path.parent, value)
     return schema_version
+
+
+def _state_file_path(
+    task_id: str | os.PathLike[str],
+    data_dir: str | os.PathLike[str] | None = None,
+) -> Path:
+    supplied = Path(task_id)
+    if supplied.name == "state.json" or supplied.is_file():
+        return supplied.expanduser().resolve(strict=False)
+    return _state_path(str(task_id), data_dir)
+
+
+def _read_task_state_json(path: Path) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except FileNotFoundError as exc:
+        raise FlowError(
+            "TASK_NOT_FOUND",
+            f"task state does not exist: {path}",
+            details={"path": str(path)},
+        ) from exc
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise FlowError(
+            "STATE_READ_FAILED",
+            f"could not read task state: {path}",
+            details={"path": str(path), "error": str(exc)},
+        ) from exc
+
+
+def _read_task_state_snapshot(path: Path) -> dict[str, Any]:
+    value = _read_task_state_json(path)
+    _validate_task_state_snapshot(path, value)
+    return value
+
+
+def _read_task_state_structural_snapshot(
+    path: Path,
+) -> dict[str, Any]:
+    """Read validated state without resolving its pinned workflow.
+
+    Mutation callers use this narrow phase so the expected-revision CAS check
+    remains ahead of workflow resolution. Recovery and ordinary supported
+    reads continue to use ``_read_task_state_snapshot`` and therefore still
+    fail closed on an unavailable v3 bundle before delivering an outbox.
+    """
+
+    value = _read_task_state_json(path)
+    _validate_task_state_structure(path, value)
+    return value
+
+
+def _prepare_state_compatibility_view(
+    value: dict[str, Any],
+) -> dict[str, Any]:
+    # Schema v1 predates implementation-worktree indexes. Keep the schema
+    # number stable and expose additive defaults without rewriting merely
+    # because a task was read.
+    for repository in value.get("repositories", []):
+        if isinstance(repository, dict):
+            repository.setdefault("workspace_index", None)
+            repository.setdefault("index_history", [])
+    # Tasks recorded before flow selection are full-flow tasks by definition.
+    value.setdefault("flow", DEFAULT_FLOW)
+    return value
+
+
+def _finish_loaded_state(
+    path: Path, value: dict[str, Any]
+) -> dict[str, Any]:
+    if (
+        value.get("pending_event") is not None
+        or value.get("pending_events") is not None
+    ):
+        value = _recover_pending_event(path, value)
+    value = _migrate_sensitive_state(path, value)
+    return _prepare_state_compatibility_view(value)
 
 
 def load_state(
@@ -1457,43 +1586,73 @@ def load_state(
 ) -> dict[str, Any]:
     """Load a task snapshot by id, or load an explicit ``state.json`` path."""
 
-    supplied = Path(task_id)
-    if supplied.name == "state.json" or supplied.is_file():
-        path = supplied.expanduser().resolve(strict=False)
-    else:
-        path = _state_path(str(task_id), data_dir)
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
-    except FileNotFoundError as exc:
-        raise FlowError(
-            "TASK_NOT_FOUND",
-            f"task state does not exist: {path}",
-            details={"path": str(path)},
-        ) from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise FlowError(
-            "STATE_READ_FAILED",
-            f"could not read task state: {path}",
-            details={"path": str(path), "error": str(exc)},
-        ) from exc
-    _validate_task_state_snapshot(path, value)
+    path = _state_file_path(task_id, data_dir)
+    return _finish_loaded_state(
+        path, _read_task_state_snapshot(path)
+    )
+
+
+def _workflow_inspection_is_compatibility_only(
+    value: Any,
+    inspection: dict[str, object],
+) -> bool:
+    """Identify compatibility blockers that are safe to report read-only."""
+
+    if not isinstance(value, dict):
+        return False
+    schema_version = value.get("schema_version")
     if (
-        value.get("pending_event") is not None
-        or value.get("pending_events") is not None
+        isinstance(schema_version, int)
+        and not isinstance(schema_version, bool)
+        and schema_version > max(SUPPORTED_TASK_SCHEMA_VERSIONS)
+        and isinstance(value.get("task_id"), str)
+        and isinstance(value.get("revision"), int)
+        and not isinstance(value.get("revision"), bool)
+        and isinstance(value.get("status"), str)
     ):
-        value = _recover_pending_event(path, value)
-    value = _migrate_sensitive_state(path, value)
-    # Schema v1 predates implementation-worktree indexes.  Keep the schema
-    # number stable and make the additive field visible to old task snapshots
-    # without rewriting them merely because they were read.
-    for repository in value.get("repositories", []):
-        if isinstance(repository, dict):
-            repository.setdefault("workspace_index", None)
-            repository.setdefault("index_history", [])
-    # Tasks recorded before flow selection are full-flow tasks by definition.
-    value.setdefault("flow", DEFAULT_FLOW)
-    return value
+        return True
+    if schema_version != V3_TASK_SCHEMA_VERSION:
+        return False
+    if (
+        inspection.get("valid") is True
+        and inspection.get("mutation_ready") is not True
+    ):
+        return True
+    errors = inspection.get("errors")
+    if not isinstance(errors, list):
+        return False
+    compatibility_codes = {
+        "RESULT_REFERENCE_UNSUPPORTED",
+        "RUNTIME_HANDLE_UNSUPPORTED",
+        "WORKFLOW_REF_UNSUPPORTED",
+    }
+    return any(
+        isinstance(error, dict)
+        and error.get("code") in compatibility_codes
+        for error in errors
+    )
+
+
+def load_state_for_inspection(
+    task_id: str | os.PathLike[str],
+    data_dir: str | os.PathLike[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, object] | None]:
+    """Load known state normally or return an unsupported read-only view."""
+
+    path = _state_file_path(task_id, data_dir)
+    value = _read_task_state_json(path)
+    inspection = inspect_loaded_task_state(value)
+    if _workflow_inspection_is_compatibility_only(value, inspection):
+        safe = _redact_sensitive_value(value)
+        if not isinstance(safe, dict):
+            raise FlowError(
+                "UNSUPPORTED_STATE",
+                f"unsupported or invalid task state: {path}",
+                details={"path": str(path)},
+            )
+        return safe, inspection
+    _validate_task_state_snapshot(path, value)
+    return _finish_loaded_state(path, value), None
 
 
 def _is_within(path: Path, parent: Path) -> bool:
@@ -2277,7 +2436,10 @@ def _validate_pending_event_outbox(
             details={"path": str(task_dir / "state.json")},
         )
     if pending_batch is not None:
-        if state_value.get("schema_version") != TASK_SCHEMA_VERSION:
+        if state_value.get("schema_version") not in {
+            TASK_SCHEMA_VERSION,
+            V3_TASK_SCHEMA_VERSION,
+        }:
             raise FlowError(
                 "PENDING_EVENT_INVALID",
                 "batched event outboxes require task schema v2",
