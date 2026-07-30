@@ -274,6 +274,64 @@ def synthetic_namespace(root: Path) -> dict[str, object]:
 
 
 class WorkflowHandlerAuditTests(unittest.TestCase):
+    def test_package_symbol_audit_scans_each_ast_node_once_per_load(
+        self,
+    ) -> None:
+        observed: dict[str, set[int]] = {
+            "forbidden": set(),
+            "mutation": set(),
+            "references": set(),
+        }
+
+        def once(
+            label: str,
+            implementation: Callable[[ast.AST], object],
+        ) -> Callable[[ast.AST], object]:
+            def invoke(node: ast.AST) -> object:
+                identity = id(node)
+                self.assertNotIn(identity, observed[label])
+                observed[label].add(identity)
+                return implementation(node)
+
+            return invoke
+
+        with (
+            mock.patch.object(
+                handlers,
+                "_workflow_handlers_forbidden_operation",
+                side_effect=once(
+                    "forbidden",
+                    handlers._workflow_handlers_forbidden_operation,
+                ),
+            ),
+            mock.patch.object(
+                handlers,
+                "_workflow_handlers_input_mutation",
+                side_effect=once(
+                    "mutation",
+                    handlers._workflow_handlers_input_mutation,
+                ),
+            ),
+            mock.patch.object(
+                handlers,
+                "_workflow_handlers_global_references",
+                side_effect=once(
+                    "references",
+                    handlers._workflow_handlers_global_references,
+                ),
+            ),
+        ):
+            manifests = handlers.load_package_handler_manifests(
+                package_root=ROOT,
+                namespace=actual_namespace(),
+            )
+
+        self.assertEqual(
+            {manifest.registry_kind for manifest in manifests},
+            set(EXPECTED_IDS),
+        )
+        self.assertTrue(all(observed.values()))
+
     def test_package_inventory_matches_catalog_contract_ids(self) -> None:
         manifests = handlers.load_package_handler_manifests(
             package_root=ROOT,

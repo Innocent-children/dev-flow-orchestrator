@@ -2062,6 +2062,14 @@ def _workflow_handlers_audit_symbols(
     namespace: Mapping[str, object],
     trees: Mapping[str, ast.Module],
     package_root: Path,
+    node_audit_cache: MutableMapping[
+        ast.AST,
+        Tuple[
+            Optional[Tuple[str, int]],
+            Optional[Tuple[str, int]],
+            frozenset[str],
+        ],
+    ],
 ) -> None:
     origins, imports, _file_imports = (
         _workflow_handlers_top_level_origins(trees)
@@ -2194,7 +2202,15 @@ def _workflow_handlers_audit_symbols(
             continue
         visited.add(visit_key)
         reachable_paths.add(path)
-        forbidden = _workflow_handlers_forbidden_operation(node)
+        node_audit = node_audit_cache.get(node)
+        if node_audit is None:
+            node_audit = (
+                _workflow_handlers_forbidden_operation(node),
+                _workflow_handlers_input_mutation(node),
+                frozenset(_workflow_handlers_global_references(node)),
+            )
+            node_audit_cache[node] = node_audit
+        forbidden, mutation, references = node_audit
         if (
             not trusted_kernel
             and spec.registry_kind in {"guards", "reducers"}
@@ -2211,7 +2227,6 @@ def _workflow_handlers_audit_symbols(
                     "name": name,
                 },
             )
-        mutation = _workflow_handlers_input_mutation(node)
         if (
             not trusted_kernel
             and spec.registry_kind in {"guards", "reducers"}
@@ -2228,7 +2243,6 @@ def _workflow_handlers_audit_symbols(
                     "argument": name,
                 },
             )
-        references = _workflow_handlers_global_references(node)
         for reference in references:
             if (
                 not trusted_kernel
@@ -2635,6 +2649,14 @@ def _workflow_handlers_parse_entry(
     source_cache: MutableMapping[str, bytes],
     payload_cache: MutableMapping[Tuple[str, str], bytes],
     tree_cache: MutableMapping[str, ast.Module],
+    node_audit_cache: MutableMapping[
+        ast.AST,
+        Tuple[
+            Optional[Tuple[str, int]],
+            Optional[Tuple[str, int]],
+            frozenset[str],
+        ],
+    ],
 ) -> HandlerRegistrationSpec:
     entry_path = f"{manifest_path}/entries/{index}"
     entry = _workflow_handlers_require_object(raw, path=entry_path)
@@ -2910,6 +2932,7 @@ def _workflow_handlers_parse_entry(
         namespace=namespace,
         trees=trees,
         package_root=package_root,
+        node_audit_cache=node_audit_cache,
     )
     return spec
 
@@ -2949,6 +2972,14 @@ def load_package_handler_manifests(
     source_cache: dict[str, bytes] = {}
     payload_cache: dict[Tuple[str, str], bytes] = {}
     tree_cache: dict[str, ast.Module] = {}
+    node_audit_cache: dict[
+        ast.AST,
+        Tuple[
+            Optional[Tuple[str, int]],
+            Optional[Tuple[str, int]],
+            frozenset[str],
+        ],
+    ] = {}
     manifests: list[HandlerRegistrationManifest] = []
     observed_ids: set[str] = set()
 
@@ -3020,6 +3051,7 @@ def load_package_handler_manifests(
                 source_cache=source_cache,
                 payload_cache=payload_cache,
                 tree_cache=tree_cache,
+                node_audit_cache=node_audit_cache,
             )
             if spec.handler_id in observed_ids:
                 raise WorkflowHandlerAuditError(
