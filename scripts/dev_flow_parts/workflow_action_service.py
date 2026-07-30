@@ -19,13 +19,13 @@ _workflow_action_safe_movement_effects = frozenset(
     }
 )
 _workflow_action_engine_proof_binding_contract = (
-    "dev-flow-v3-engine-commit-proof-binding/v1"
+    "dev-flow-v4-engine-commit-proof-binding/v1"
 )
 _workflow_action_engine_proof_binding_domain = (
-    b"dev-flow-v3-engine-commit-proof-binding-v1\0"
+    b"dev-flow-v4-engine-commit-proof-binding-v1\0"
 )
 _workflow_action_scoped_candidate_domain = (
-    b"dev-flow-v3-scoped-candidate-projection-v1\0"
+    b"dev-flow-v4-scoped-candidate-projection-v1\0"
 )
 _workflow_action_quarantined_receipt_authority = object()
 
@@ -82,10 +82,10 @@ def _workflow_action_public_mapping(
 def _workflow_action_bundle(
     state: Mapping[str, object],
 ) -> object:
-    if state.get("schema_version") != V3_TASK_SCHEMA_VERSION:
+    if state.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         raise _workflow_action_error(
-            "V3_ACTION_SERVICE_REQUIRED",
-            "catalog action service requires a schema-v3 task",
+            "V4_ACTION_SERVICE_REQUIRED",
+            "catalog action service requires a schema-v4 task",
         )
     status = state.get("status")
     if not isinstance(status, str) or not status:
@@ -96,7 +96,7 @@ def _workflow_action_bundle(
     return _workflow_transition_bundle(state)
 
 
-def resolve_v3_node_action_edge(
+def resolve_v4_node_action_edge(
     state: Mapping[str, object],
     public_command: str,
     *,
@@ -151,7 +151,7 @@ def _workflow_action_movement_trigger(
     )
 
 
-def resolve_v3_movement_action_edge(
+def resolve_v4_movement_action_edge(
     state: Mapping[str, object],
     public_command: str,
     *,
@@ -381,7 +381,7 @@ def _workflow_action_graph(
     node_action: bool,
 ) -> dict[str, object]:
     if not node_action:
-        return _workflow_transition_v3_graph(bundle)
+        return _workflow_transition_v4_graph(bundle)
     graph = _workflow_transition_graph(bundle)
     movement_edges = tuple(getattr(bundle, "movement_edges", ()))
     action_edges = tuple(getattr(bundle, "action_edges", ()))
@@ -1451,11 +1451,11 @@ def _workflow_action_evaluate_selected(
             request_evidence.get("contract")
             in {
                 (
-                    "dev-flow-v3-workflow-action-abandonment-"
+                    "dev-flow-v4-workflow-action-abandonment-"
                     "evaluation/v1"
                 ),
                 (
-                    "dev-flow-v3-workflow-action-compensated-"
+                    "dev-flow-v4-workflow-action-compensated-"
                     "evaluation/v1"
                 ),
             }
@@ -1582,7 +1582,7 @@ def _workflow_action_evaluate_selected(
             "catalog action produced a non-object task candidate",
         )
     try:
-        validate_v3_task_state_against_bundle(candidate, bundle)
+        validate_v4_task_state_against_bundle(candidate, bundle)
     except WorkflowStateError as exc:
         raise _workflow_action_error(
             exc.code, exc.message, details=exc.details
@@ -1590,7 +1590,7 @@ def _workflow_action_evaluate_selected(
     return evaluation
 
 
-def evaluate_v3_node_action(
+def evaluate_v4_node_action(
     state: Mapping[str, object],
     *,
     public_command: str,
@@ -1603,9 +1603,9 @@ def evaluate_v3_node_action(
     preview: bool = False,
     receipt_context: WorkflowActionReceiptContext | None = None,
 ) -> TransitionEvaluation:
-    """Evaluate one exact compiled same-node action without legacy fallback."""
+    """Evaluate one exact compiled same-node V4 action."""
 
-    edge = resolve_v3_node_action_edge(
+    edge = resolve_v4_node_action_edge(
         state, public_command, selector=selector
     )
     bundle = _workflow_action_bundle(state)
@@ -1627,7 +1627,7 @@ def evaluate_v3_node_action(
     )
 
 
-def evaluate_v3_movement_action(
+def evaluate_v4_movement_action(
     state: Mapping[str, object],
     *,
     public_command: str,
@@ -1643,7 +1643,7 @@ def evaluate_v3_movement_action(
 ) -> TransitionEvaluation:
     """Evaluate one exact transition/cancel movement through the same engine."""
 
-    edge = resolve_v3_movement_action_edge(
+    edge = resolve_v4_movement_action_edge(
         state,
         public_command,
         target=target,
@@ -1674,7 +1674,7 @@ def _workflow_action_resolve_evaluation_edge(
 ) -> tuple[object, Mapping[str, object], Mapping[str, object]]:
     if type(evaluation) is not TransitionEvaluation:
         raise _workflow_action_error(
-            "V3_ENGINE_EVALUATION_UNREGISTERED",
+            "V4_ENGINE_EVALUATION_UNREGISTERED",
             "commit requires the exact kernel-issued action evaluation",
         )
     bundle = _workflow_action_bundle(state)
@@ -1714,7 +1714,7 @@ def _workflow_action_resolve_evaluation_edge(
             "evaluation public command binding is invalid",
         )
     if kind == "node-action":
-        selected = resolve_v3_node_action_edge(
+        selected = resolve_v4_node_action_edge(
             state,
             public_command,
             selector=(
@@ -1730,7 +1730,7 @@ def _workflow_action_resolve_evaluation_edge(
                 "WORKFLOW_ACTION_REQUEST_INVALID",
                 "movement evaluation target binding is invalid",
             )
-        selected = resolve_v3_movement_action_edge(
+        selected = resolve_v4_movement_action_edge(
             state,
             public_command,
             target=target,
@@ -1770,7 +1770,7 @@ def _workflow_action_resolve_evaluation_edge(
                 "WORKFLOW_ACTION_REQUEST_INVALID",
                 "node-action completion selection is incomplete",
             )
-        authorization_edge = resolve_v3_node_action_edge(
+        authorization_edge = resolve_v4_node_action_edge(
             state,
             public_command,
             selector=(
@@ -1824,7 +1824,7 @@ def _workflow_action_resolve_evaluation_edge(
         or evaluation.intent.get("action_id") != trigger.get("id")
     ):
         raise _workflow_action_error(
-            "V3_ENGINE_EVALUATION_MISMATCH",
+            "V4_ENGINE_EVALUATION_MISMATCH",
             "evaluation does not bind the current exact pinned action edge",
             details={"edge_id": evaluation.edge_id},
         )
@@ -1909,7 +1909,7 @@ def _workflow_action_event_payload(
                 "action event execution binding is invalid",
             )
         payload["execution"] = {
-            "schema": "dev-flow-v3-action-event-binding/v1",
+            "schema": "dev-flow-v4-action-event-binding/v1",
             "execution_id": execution_id,
             "receipt_sha256": receipt_sha256,
         }
@@ -2106,7 +2106,7 @@ def workflow_action_engine_proof_binding_sha256(
     )
 
 
-def build_v3_workflow_action_receipt(
+def build_v4_workflow_action_receipt(
     old_state: Mapping[str, object],
     evaluation: TransitionEvaluation,
     task_dir: object,
@@ -2192,7 +2192,7 @@ def build_v3_workflow_action_receipt(
     return receipt
 
 
-def commit_v3_workflow_action(
+def commit_v4_workflow_action(
     old_state: dict[str, object],
     evaluation: TransitionEvaluation,
     task_dir: object,

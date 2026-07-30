@@ -83,14 +83,6 @@ def _register_start_parser(subparsers, registration, handler) -> None:
     start.add_argument("--repo", action="append", required=True, help="Git repository path; repeat for multiple repositories")
     start.add_argument("--task-id", help="stable task id (generated when omitted)")
     start.add_argument(
-        "--flow",
-        choices=sorted(FLOW_MODES),
-        help=(
-            "optional compatibility assertion; the flow is inferred from "
-            "--workspace-strategy"
-        ),
-    )
-    start.add_argument(
         "--workspace-strategy",
         choices=sorted(WORKSPACE_STRATEGIES),
         help=(
@@ -594,7 +586,7 @@ def _register_manager_authorize_parser(
     authorize = subparsers.add_parser(
         registration.command,
         help=(
-            "preview or issue one verifier-only schema-v3 manager capability"
+            "preview or issue one verifier-only schema-v4 manager capability"
         ),
     )
     _add_task(authorize)
@@ -644,7 +636,7 @@ def _register_manager_revoke_parser(
 ) -> None:
     revoke = subparsers.add_parser(
         registration.command,
-        help="preview or revoke one persisted schema-v3 manager verifier",
+        help="preview or revoke one persisted schema-v4 manager verifier",
     )
     _add_task(revoke)
     revoke.add_argument(
@@ -683,7 +675,7 @@ def _register_action_recovery_inspect_parser(
     inspect = subparsers.add_parser(
         registration.command,
         help=(
-            "inspect one schema-v3 action execution without granting "
+            "inspect one schema-v4 action execution without granting "
             "reconciliation authority"
         ),
     )
@@ -745,7 +737,7 @@ def _register_action_recovery_apply_parser(
     apply = subparsers.add_parser(
         registration.command,
         help=(
-            "apply or recover one manager-authorized schema-v3 action "
+            "apply or recover one manager-authorized schema-v4 action "
             "reconciliation"
         ),
     )
@@ -871,7 +863,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _extract_manager_cli_authority_options(
     arguments: Sequence[str],
 ) -> tuple[list[str], str | None, int | None]:
-    """Parse v3-only proof transport outside the frozen legacy grammar."""
+    """Parse the V4 proof transport used by current commands."""
 
     remaining: list[str] = []
     request_json: str | None = None

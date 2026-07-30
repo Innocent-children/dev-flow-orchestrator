@@ -1,0 +1,33 @@
+name: V4 focused validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  focused-v4:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Provision pinned OpenSpec validator
+        run: npm install --global @fission-ai/openspec@1.6.0
+      - name: Provision pinned validation-only YAML parser
+        run: python3 -m pip install PyYAML==6.0.2
+      - name: Bounded release validators
+        run: |
+          python3 scripts/run_bundled_validators.py
+      - name: Focused current V4 suites
+        run: |
+          python3 -m unittest \
+            tests.test_v4_static_closure \
+            tests.test_v4_core_runtime \
+            tests.test_v4_effect_recovery \
+            tests.test_v4_external_tools \
+            tests.test_v4_multi_repository \
+            tests.test_v4_package

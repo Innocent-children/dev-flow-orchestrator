@@ -58,9 +58,7 @@ def _has_exact_workspace_claim(
     path: Path,
     branch: str,
 ) -> bool:
-    registry = _load_workspace_registry(
-        data_root, allow_legacy_container=True
-    )
+    registry = _load_workspace_registry(data_root)
     generation = int((state_value.get("workspace") or {}).get("generation", 0))
     return any(
         isinstance(claim, dict)
@@ -540,40 +538,40 @@ def _workspace_plan_evidence(
     }
 
 
-_V3_WORKSPACE_EFFECT_PLAN_SCHEMA = (
-    "dev-flow-v3-workspace-effect-plan/v1"
+_V4_WORKSPACE_EFFECT_PLAN_SCHEMA = (
+    "dev-flow-v4-workspace-effect-plan/v1"
 )
-_V3_WORKSPACE_EFFECT_OBSERVATION_SCHEMA = (
-    "dev-flow-v3-workspace-effect-observation/v1"
+_V4_WORKSPACE_EFFECT_OBSERVATION_SCHEMA = (
+    "dev-flow-v4-workspace-effect-observation/v1"
 )
-_V3_WORKSPACE_EFFECT_RECEIPT_SCHEMA = (
-    "dev-flow-v3-workspace-effect-receipt/v1"
+_V4_WORKSPACE_EFFECT_RECEIPT_SCHEMA = (
+    "dev-flow-v4-workspace-effect-receipt/v1"
 )
-_V3_WORKSPACE_PLAN_ARTIFACT_AUTHORIZATION_SCHEMA = (
-    "dev-flow-v3-workspace-plan-artifact-authorization/v1"
+_V4_WORKSPACE_PLAN_ARTIFACT_AUTHORIZATION_SCHEMA = (
+    "dev-flow-v4-workspace-plan-artifact-authorization/v1"
 )
-_V3_WORKSPACE_EFFECT_PLAN_DOMAIN = (
-    b"dev-flow-v3-workspace-effect-plan-v1\x00"
+_V4_WORKSPACE_EFFECT_PLAN_DOMAIN = (
+    b"dev-flow-v4-workspace-effect-plan-v1\x00"
 )
-_V3_WORKSPACE_EFFECT_OBSERVATION_DOMAIN = (
-    b"dev-flow-v3-workspace-effect-observation-v1\x00"
+_V4_WORKSPACE_EFFECT_OBSERVATION_DOMAIN = (
+    b"dev-flow-v4-workspace-effect-observation-v1\x00"
 )
-_V3_WORKSPACE_EFFECT_RECEIPT_DOMAIN = (
-    b"dev-flow-v3-workspace-effect-receipt-v1\x00"
+_V4_WORKSPACE_EFFECT_RECEIPT_DOMAIN = (
+    b"dev-flow-v4-workspace-effect-receipt-v1\x00"
 )
-_V3_WORKSPACE_APPROVAL_BINDING_DOMAIN = (
-    b"dev-flow-v3-workspace-approval-binding-v1\x00"
+_V4_WORKSPACE_APPROVAL_BINDING_DOMAIN = (
+    b"dev-flow-v4-workspace-approval-binding-v1\x00"
 )
-_V3_WORKSPACE_SOURCE_BINDING_DOMAIN = (
-    b"dev-flow-v3-workspace-source-binding-v1\x00"
+_V4_WORKSPACE_SOURCE_BINDING_DOMAIN = (
+    b"dev-flow-v4-workspace-source-binding-v1\x00"
 )
-_V3_WORKSPACE_ACTIONS = frozenset({"plan", "execute"})
-_V3_WORKSPACE_EXPECTED_EFFECT_IDS = {
+_V4_WORKSPACE_ACTIONS = frozenset({"plan", "execute"})
+_V4_WORKSPACE_EXPECTED_EFFECT_IDS = {
     "plan": "full.route-approved.plan-workspace.v1.effect",
     "execute": "full.route-approved.prepare-workspace.v1.effect",
 }
-_V3_WORKSPACE_SHA256 = _workspace_re.compile(r"[0-9a-f]{64}")
-_V3_WORKSPACE_SECRET_FIELDS = frozenset(
+_V4_WORKSPACE_SHA256 = _workspace_re.compile(r"[0-9a-f]{64}")
+_V4_WORKSPACE_SECRET_FIELDS = frozenset(
     {
         "access_token",
         "api_key",
@@ -586,14 +584,14 @@ _V3_WORKSPACE_SECRET_FIELDS = frozenset(
         "token",
     }
 )
-_v3_workspace_readonly_git_lock = _workspace_threading.RLock()
+_v4_workspace_readonly_git_lock = _workspace_threading.RLock()
 
 
 @_workspace_contextmanager
-def _v3_workspace_readonly_git():
+def _v4_workspace_readonly_git():
     """Prevent read-only Git evidence from refreshing mutable index caches."""
 
-    with _v3_workspace_readonly_git_lock:
+    with _v4_workspace_readonly_git_lock:
         marker = object()
         previous = _workspace_os.environ.get(
             "GIT_OPTIONAL_LOCKS", marker
@@ -610,7 +608,7 @@ def _v3_workspace_readonly_git():
                 )
 
 
-def _v3_workspace_seed_filesystem_facts(
+def _v4_workspace_seed_filesystem_facts(
     path: _WorkspacePath,
     filesystem: _WorkspaceMapping[str, object],
 ) -> None:
@@ -623,26 +621,15 @@ def _v3_workspace_seed_filesystem_facts(
     if not isinstance(case_sensitive, bool) or not isinstance(
         unicode_distinct, bool
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_FILESYSTEM_FACTS_INVALID",
             "approved filesystem facts are incomplete",
             details={"path": str(path)},
         )
     ancestor, _suffix = _nearest_existing_path(path)
     stable = _stable_existing_identity(ancestor)
-    if _workspace_os.name == "nt":  # pragma: no cover - native Windows
-        case_key: object = (
-            "windows-directory",
-            stable.get("volume_serial"),
-            stable.get("file_index"),
-        )
-        unicode_key: object = (
-            "windows-volume",
-            stable.get("volume_serial"),
-        )
-    else:
-        case_key = ("posix-device", stable.get("device"))
-        unicode_key = ("posix-device", stable.get("device"))
+    case_key: object = ("macos-device", stable.get("device"))
+    unicode_key: object = ("macos-device", stable.get("device"))
     for cache, key, approved, role in (
         (
             _FILESYSTEM_CASE_CACHE,
@@ -659,7 +646,7 @@ def _v3_workspace_seed_filesystem_facts(
     ):
         cached = cache.get(key)
         if cached is not None and cached != approved:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "GIT_CAPABILITY_CHANGED",
                 "approved filesystem facts conflict with live cached facts",
                 details={"path": str(path), "fact": role},
@@ -667,7 +654,7 @@ def _v3_workspace_seed_filesystem_facts(
         cache[key] = approved
 
 
-def _v3_workspace_readonly_recorded_path_matches(
+def _v4_workspace_readonly_recorded_path_matches(
     recorded_identity: object,
     recorded_path: object,
     candidate: _WorkspacePath,
@@ -705,7 +692,7 @@ def _v3_workspace_readonly_recorded_path_matches(
     return True
 
 
-def _v3_workspace_error(
+def _v4_workspace_error(
     code: str,
     message: str,
     *,
@@ -714,29 +701,29 @@ def _v3_workspace_error(
     return FlowError(code, message, details=dict(details or {}))
 
 
-def _v3_workspace_public(value: object) -> object:
+def _v4_workspace_public(value: object) -> object:
     """Copy and validate one strict semantic-JSON value."""
 
     if isinstance(value, _WorkspaceMapping):
         candidate = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise _v3_workspace_error(
+                raise _v4_workspace_error(
                     "WORKSPACE_EFFECT_SEMANTIC_JSON_INVALID",
                     "workspace semantic object keys must be text",
                 )
-            candidate[key] = _v3_workspace_public(item)
+            candidate[key] = _v4_workspace_public(item)
     elif isinstance(value, tuple):
-        candidate = [_v3_workspace_public(item) for item in value]
+        candidate = [_v4_workspace_public(item) for item in value]
     elif isinstance(value, list):
-        candidate = [_v3_workspace_public(item) for item in value]
+        candidate = [_v4_workspace_public(item) for item in value]
     else:
         candidate = _workspace_copy.deepcopy(value)
     try:
         canonical = semantic_json_bytes(candidate)
         return parse_semantic_json(canonical)
     except Exception as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_SEMANTIC_JSON_INVALID",
             "workspace effect values must use strict NFC semantic JSON",
             details={
@@ -747,32 +734,32 @@ def _v3_workspace_public(value: object) -> object:
         ) from None
 
 
-def _v3_workspace_freeze(value: object) -> object:
-    public = _v3_workspace_public(value)
+def _v4_workspace_freeze(value: object) -> object:
+    public = _v4_workspace_public(value)
     if isinstance(public, dict):
         return _WorkspaceMappingProxyType(
             {
-                key: _v3_workspace_freeze(item)
+                key: _v4_workspace_freeze(item)
                 for key, item in public.items()
             }
         )
     if isinstance(public, list):
-        return tuple(_v3_workspace_freeze(item) for item in public)
+        return tuple(_v4_workspace_freeze(item) for item in public)
     return public
 
 
-def _v3_workspace_thaw(value: object) -> object:
+def _v4_workspace_thaw(value: object) -> object:
     if isinstance(value, _WorkspaceMapping):
         return {
-            str(key): _v3_workspace_thaw(item)
+            str(key): _v4_workspace_thaw(item)
             for key, item in value.items()
         }
     if isinstance(value, tuple):
-        return [_v3_workspace_thaw(item) for item in value]
+        return [_v4_workspace_thaw(item) for item in value]
     return _workspace_copy.deepcopy(value)
 
 
-def _v3_workspace_reject_secrets(
+def _v4_workspace_reject_secrets(
     value: object,
     *,
     pointer: str = "",
@@ -780,69 +767,69 @@ def _v3_workspace_reject_secrets(
     if isinstance(value, _WorkspaceMapping):
         for key, item in value.items():
             folded = str(key).casefold().replace("-", "_")
-            if folded in _V3_WORKSPACE_SECRET_FIELDS or any(
+            if folded in _V4_WORKSPACE_SECRET_FIELDS or any(
                 folded.endswith("_" + secret)
-                for secret in _V3_WORKSPACE_SECRET_FIELDS
+                for secret in _V4_WORKSPACE_SECRET_FIELDS
             ):
-                raise _v3_workspace_error(
+                raise _v4_workspace_error(
                     "WORKSPACE_EFFECT_SECRET_FORBIDDEN",
                     "workspace plans and receipts cannot contain secrets",
                     details={"pointer": pointer + "/" + str(key)},
                 )
-            _v3_workspace_reject_secrets(
+            _v4_workspace_reject_secrets(
                 item, pointer=pointer + "/" + str(key)
             )
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            _v3_workspace_reject_secrets(
+            _v4_workspace_reject_secrets(
                 item, pointer=f"{pointer}/{index}"
             )
 
 
-def _v3_workspace_sha256(
+def _v4_workspace_sha256(
     domain: bytes, value: object
 ) -> str:
-    public = _v3_workspace_public(value)
+    public = _v4_workspace_public(value)
     return semantic_sha256(domain, public)
 
 
-def _v3_workspace_require_text(value: object, role: str) -> str:
+def _v4_workspace_require_text(value: object, role: str) -> str:
     if not isinstance(value, str) or not value:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_BINDING_INVALID",
             f"{role} must be non-empty text",
         )
-    _v3_workspace_public(value)
+    _v4_workspace_public(value)
     return value
 
 
-def _v3_workspace_require_revision(value: object) -> int:
+def _v4_workspace_require_revision(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_BINDING_INVALID",
             "task revision must be a non-negative integer",
         )
     return value
 
 
-def _v3_workspace_sorted_text(
+def _v4_workspace_sorted_text(
     values: Sequence[object], role: str
 ) -> tuple[str, ...]:
     normalized = tuple(
-        _v3_workspace_require_text(item, role) for item in values
+        _v4_workspace_require_text(item, role) for item in values
     )
     expected = tuple(
         sorted(set(normalized), key=lambda item: item.encode("utf-8"))
     )
     if normalized != expected:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_BINDING_INVALID",
             f"{role} must be sorted and unique",
         )
     return normalized
 
 
-def _v3_workspace_plan_core(
+def _v4_workspace_plan_core(
     action: str,
     expected_effect_id: str,
     task_id: str,
@@ -853,7 +840,7 @@ def _v3_workspace_plan_core(
     bindings: _WorkspaceMapping[str, object],
 ) -> dict[str, object]:
     return {
-        "schema": _V3_WORKSPACE_EFFECT_PLAN_SCHEMA,
+        "schema": _V4_WORKSPACE_EFFECT_PLAN_SCHEMA,
         "action": action,
         "expected_effect_id": expected_effect_id,
         "task_id": task_id,
@@ -866,7 +853,7 @@ def _v3_workspace_plan_core(
 
 
 @_workspace_dataclass(frozen=True)
-class V3WorkspaceEffectPlan:
+class V4WorkspaceEffectPlan:
     """Immutable authorization-independent workspace effect description."""
 
     action: str
@@ -881,20 +868,20 @@ class V3WorkspaceEffectPlan:
 
     def __post_init__(self) -> None:
         expected_type = {
-            "plan": "V3WorkspacePlanEffectPlan",
-            "execute": "V3WorkspaceExecuteEffectPlan",
+            "plan": "V4WorkspacePlanEffectPlan",
+            "execute": "V4WorkspaceExecuteEffectPlan",
         }.get(self.action)
         if expected_type is None or type(self).__name__ != expected_type:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_PLAN_TYPE_INVALID",
                 "typed workspace plan class does not match its action",
                 details={"action": self.action},
             )
-        expected_effect_id = _V3_WORKSPACE_EXPECTED_EFFECT_IDS[
+        expected_effect_id = _V4_WORKSPACE_EXPECTED_EFFECT_IDS[
             self.action
         ]
         if self.expected_effect_id != expected_effect_id:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_ID_MISMATCH",
                 "typed workspace plan does not bind its sealed effect ID",
                 details={
@@ -902,39 +889,39 @@ class V3WorkspaceEffectPlan:
                     "actual_effect_id": self.expected_effect_id,
                 },
             )
-        _v3_workspace_require_text(self.task_id, "task_id")
-        _v3_workspace_require_revision(self.task_revision)
+        _v4_workspace_require_text(self.task_id, "task_id")
+        _v4_workspace_require_revision(self.task_revision)
         if (
             isinstance(self.workspace_generation, bool)
             or not isinstance(self.workspace_generation, int)
             or self.workspace_generation < 0
         ):
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_BINDING_INVALID",
                 "workspace generation must be a non-negative integer",
             )
-        repository_ids = _v3_workspace_sorted_text(
+        repository_ids = _v4_workspace_sorted_text(
             self.repository_ids, "repository_ids"
         )
         if not repository_ids:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_BINDING_INVALID",
                 "workspace effects require at least one repository",
             )
         if (
             not isinstance(self.approved_binding_sha256, str)
-            or not _V3_WORKSPACE_SHA256.fullmatch(
+            or not _V4_WORKSPACE_SHA256.fullmatch(
                 self.approved_binding_sha256
             )
         ):
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_BINDING_INVALID",
                 "approved binding digest must be lowercase SHA-256",
             )
-        public_bindings = _v3_workspace_public(dict(self.bindings))
+        public_bindings = _v4_workspace_public(dict(self.bindings))
         assert isinstance(public_bindings, dict)
-        _v3_workspace_reject_secrets(public_bindings)
-        core = _v3_workspace_plan_core(
+        _v4_workspace_reject_secrets(public_bindings)
+        core = _v4_workspace_plan_core(
             self.action,
             self.expected_effect_id,
             self.task_id,
@@ -944,21 +931,21 @@ class V3WorkspaceEffectPlan:
             self.approved_binding_sha256,
             public_bindings,
         )
-        expected = _v3_workspace_sha256(
-            _V3_WORKSPACE_EFFECT_PLAN_DOMAIN, core
+        expected = _v4_workspace_sha256(
+            _V4_WORKSPACE_EFFECT_PLAN_DOMAIN, core
         )
         if expected != self.semantic_sha256:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_PLAN_DIGEST_MISMATCH",
                 "workspace plan digest differs from its semantic bindings",
             )
         object.__setattr__(self, "repository_ids", repository_ids)
         object.__setattr__(
-            self, "bindings", _v3_workspace_freeze(public_bindings)
+            self, "bindings", _v4_workspace_freeze(public_bindings)
         )
 
     def as_dict(self) -> dict[str, object]:
-        core = _v3_workspace_plan_core(
+        core = _v4_workspace_plan_core(
             self.action,
             self.expected_effect_id,
             self.task_id,
@@ -966,29 +953,29 @@ class V3WorkspaceEffectPlan:
             self.workspace_generation,
             self.repository_ids,
             self.approved_binding_sha256,
-            _v3_workspace_thaw(self.bindings),
+            _v4_workspace_thaw(self.bindings),
         )
         core["semantic_sha256"] = self.semantic_sha256
         return core
 
 
 @_workspace_dataclass(frozen=True)
-class V3WorkspacePlanEffectPlan(V3WorkspaceEffectPlan):
+class V4WorkspacePlanEffectPlan(V4WorkspaceEffectPlan):
     pass
 
 
 @_workspace_dataclass(frozen=True)
-class V3WorkspaceExecuteEffectPlan(V3WorkspaceEffectPlan):
+class V4WorkspaceExecuteEffectPlan(V4WorkspaceEffectPlan):
     pass
 
 
-_V3_WORKSPACE_PLAN_TYPES = {
-    "plan": V3WorkspacePlanEffectPlan,
-    "execute": V3WorkspaceExecuteEffectPlan,
+_V4_WORKSPACE_PLAN_TYPES = {
+    "plan": V4WorkspacePlanEffectPlan,
+    "execute": V4WorkspaceExecuteEffectPlan,
 }
 
 
-def _v3_workspace_build_plan(
+def _v4_workspace_build_plan(
     action: str,
     *,
     task_id: str,
@@ -997,46 +984,46 @@ def _v3_workspace_build_plan(
     repository_ids: Sequence[str],
     approved_binding_sha256: str,
     bindings: _WorkspaceMapping[str, object],
-) -> V3WorkspaceEffectPlan:
+) -> V4WorkspaceEffectPlan:
     ids = tuple(
         sorted(
             {
-                _v3_workspace_require_text(item, "repository_id")
+                _v4_workspace_require_text(item, "repository_id")
                 for item in repository_ids
             },
             key=lambda item: item.encode("utf-8"),
         )
     )
-    public = _v3_workspace_public(dict(bindings))
+    public = _v4_workspace_public(dict(bindings))
     assert isinstance(public, dict)
-    _v3_workspace_reject_secrets(public)
-    core = _v3_workspace_plan_core(
+    _v4_workspace_reject_secrets(public)
+    core = _v4_workspace_plan_core(
         action,
-        _V3_WORKSPACE_EXPECTED_EFFECT_IDS[action],
-        _v3_workspace_require_text(task_id, "task_id"),
-        _v3_workspace_require_revision(task_revision),
+        _V4_WORKSPACE_EXPECTED_EFFECT_IDS[action],
+        _v4_workspace_require_text(task_id, "task_id"),
+        _v4_workspace_require_revision(task_revision),
         workspace_generation,
         ids,
         approved_binding_sha256,
         public,
     )
-    plan_type = _V3_WORKSPACE_PLAN_TYPES[action]
+    plan_type = _V4_WORKSPACE_PLAN_TYPES[action]
     return plan_type(
         action,
-        _V3_WORKSPACE_EXPECTED_EFFECT_IDS[action],
+        _V4_WORKSPACE_EXPECTED_EFFECT_IDS[action],
         task_id,
         task_revision,
         workspace_generation,
         ids,
         approved_binding_sha256,
         public,
-        _v3_workspace_sha256(
-            _V3_WORKSPACE_EFFECT_PLAN_DOMAIN, core
+        _v4_workspace_sha256(
+            _V4_WORKSPACE_EFFECT_PLAN_DOMAIN, core
         ),
     )
 
 
-def _v3_workspace_task_paths(
+def _v4_workspace_task_paths(
     task_id: str,
     data_root: str | _WorkspacePath,
     task_dir: str | _WorkspacePath,
@@ -1051,7 +1038,7 @@ def _v3_workspace_task_paths(
         strict=False
     )
     if not _same_path(resolved_task, expected_task):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_TASK_PATH_MISMATCH",
             "workspace task directory is outside its controller namespace",
             details={
@@ -1062,7 +1049,7 @@ def _v3_workspace_task_paths(
         )
     state_path = resolved_task / "state.json"
     if not state_path.is_file():
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_STATE_UNAVAILABLE",
             "workspace effect requires a durable task state",
             details={"path": str(state_path)},
@@ -1070,41 +1057,41 @@ def _v3_workspace_task_paths(
     return resolved_data, resolved_task, state_path
 
 
-def _v3_workspace_route_approval_binding(
+def _v4_workspace_route_approval_binding(
     state_value: dict[str, Any],
 ) -> dict[str, object]:
     impact = _latest_artifact(state_value, "impact")
     if not isinstance(impact, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_APPROVAL_MISMATCH",
             "workspace planning requires a current impact artifact",
         )
     impact_path = _WorkspacePath(str(impact.get("path")))
-    if not _v3_workspace_readonly_recorded_path_matches(
+    if not _v4_workspace_readonly_recorded_path_matches(
         impact.get("path_identity"),
         impact.get("path"),
         impact_path,
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_APPROVAL_MISMATCH",
             "impact artifact path identity changed",
         )
     try:
         current_hash = _hash_artifact(impact_path)
     except (FlowError, OSError) as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_APPROVAL_MISMATCH",
             "impact artifact cannot be revalidated",
             details={"cause_code": getattr(exc, "code", "OSError")},
         ) from None
     if current_hash.get("sha256") != impact.get("sha256"):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_APPROVAL_MISMATCH",
             "impact artifact bytes changed",
         )
     approval = (state_value.get("approvals") or {}).get("route")
     if not isinstance(approval, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_APPROVAL_MISMATCH",
             "workspace planning requires route approval",
         )
@@ -1114,7 +1101,7 @@ def _v3_workspace_route_approval_binding(
         "direct",
         "openspec",
     }:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_APPROVAL_MISMATCH",
             "workspace route selection is unavailable",
         )
@@ -1185,7 +1172,7 @@ def _v3_workspace_route_approval_binding(
         ):
             mismatches.append("approval.impact_analysis_sha256")
     if mismatches:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_APPROVAL_MISMATCH",
             "route approval is not bound to the current impact record",
             details={"fields": sorted(mismatches)},
@@ -1205,7 +1192,7 @@ def _v3_workspace_route_approval_binding(
     }
 
 
-def _v3_workspace_approved_plan_binding(
+def _v4_workspace_approved_plan_binding(
     state_value: dict[str, Any],
 ) -> tuple[dict[str, object], dict[str, Any]]:
     approval, artifact = _require_gate_for_latest_artifact(
@@ -1234,7 +1221,7 @@ def _v3_workspace_approved_plan_binding(
     if metadata.get("workspace_generation") != generation:
         mismatches.append("artifact.workspace_generation")
     if mismatches:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "STALE_WORKSPACE_PLAN",
             "workspace approval, artifact, and controller plan disagree",
             details={"fields": sorted(mismatches)},
@@ -1251,7 +1238,7 @@ def _v3_workspace_approved_plan_binding(
     return binding, artifact
 
 
-def _v3_workspace_capture_source_unlocked(
+def _v4_workspace_capture_source_unlocked(
     repo: dict[str, Any],
 ) -> dict[str, object]:
     baseline = _require_current_evidence(
@@ -1263,21 +1250,21 @@ def _v3_workspace_capture_source_unlocked(
         repo.get("path"),
         source,
     ) and repo.get("path_identity") is not None:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_SOURCE_MISMATCH",
             "repository source identity differs from controller state",
             details={"repository_id": repo.get("id")},
         )
     approved_profile = baseline.get("capability_profile")
     if not isinstance(approved_profile, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_SOURCE_MISMATCH",
             "baseline has no approved capability profile",
             details={"repository_id": repo.get("id")},
         )
     filesystem_capabilities = approved_profile.get("filesystem")
     if not isinstance(filesystem_capabilities, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_SOURCE_MISMATCH",
             "baseline has no approved filesystem capability facts",
             details={"repository_id": repo.get("id")},
@@ -1291,7 +1278,7 @@ def _v3_workspace_capture_source_unlocked(
         filesystem_capabilities=filesystem_capabilities,
     )
     if first.get("sha256") != second.get("sha256"):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "SOURCE_WORKTREE_CHANGED",
             "source changed during read-only workspace planning",
             details={"repository_id": repo.get("id")},
@@ -1300,7 +1287,7 @@ def _v3_workspace_capture_source_unlocked(
         "capability_profile_sha256"
     )
     if second.get("capability_profile_sha256") != approved_capability:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "GIT_CAPABILITY_CHANGED",
             "source capabilities differ from the approved baseline",
             details={"repository_id": repo.get("id")},
@@ -1316,7 +1303,7 @@ def _v3_workspace_capture_source_unlocked(
         )
         != base_sha
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_BASE_MISMATCH",
             "approved workspace base object is unavailable",
             details={"repository_id": repo.get("id")},
@@ -1336,13 +1323,13 @@ def _v3_workspace_capture_source_unlocked(
         "source_capability_profile_sha256": approved_capability,
         "source_filesystem_capabilities": filesystem_capabilities,
     }
-    binding["source_binding_sha256"] = _v3_workspace_sha256(
-        _V3_WORKSPACE_SOURCE_BINDING_DOMAIN, binding
+    binding["source_binding_sha256"] = _v4_workspace_sha256(
+        _V4_WORKSPACE_SOURCE_BINDING_DOMAIN, binding
     )
     return binding
 
 
-def _v3_workspace_capture_source(
+def _v4_workspace_capture_source(
     repo: dict[str, Any],
 ) -> dict[str, object]:
     baseline = _require_current_evidence(
@@ -1355,19 +1342,19 @@ def _v3_workspace_capture_source(
         else None
     )
     if not isinstance(filesystem, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_SOURCE_MISMATCH",
             "baseline has no approved filesystem capability facts",
             details={"repository_id": repo.get("id")},
         )
-    _v3_workspace_seed_filesystem_facts(
+    _v4_workspace_seed_filesystem_facts(
         _WorkspacePath(str(repo["path"])), filesystem
     )
-    with _v3_workspace_readonly_git():
-        return _v3_workspace_capture_source_unlocked(repo)
+    with _v4_workspace_readonly_git():
+        return _v4_workspace_capture_source_unlocked(repo)
 
 
-def _v3_workspace_capture_sources(
+def _v4_workspace_capture_sources(
     state_value: dict[str, Any],
     repository_ids: Sequence[str],
 ) -> list[dict[str, object]]:
@@ -1378,18 +1365,18 @@ def _v3_workspace_capture_sources(
     }
     missing = sorted(set(repository_ids) - set(by_id))
     if missing:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_REPOSITORY_MISMATCH",
             "workspace effect references an unknown repository",
             details={"repository_ids": missing},
         )
     return [
-        _v3_workspace_capture_source(by_id[repository_id])
+        _v4_workspace_capture_source(by_id[repository_id])
         for repository_id in repository_ids
     ]
 
 
-def _v3_workspace_normalize_override_map(
+def _v4_workspace_normalize_override_map(
     value: _WorkspaceMapping[str, object] | None,
     repository_ids: Sequence[str],
     *,
@@ -1399,18 +1386,18 @@ def _v3_workspace_normalize_override_map(
     normalized: dict[str, str] = {}
     for repository_id, supplied in (value or {}).items():
         if repository_id not in allowed:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_REPOSITORY_MISMATCH",
                 "workspace override targets an unselected repository",
                 details={"repository_id": repository_id},
             )
-        text = _v3_workspace_require_text(
+        text = _v4_workspace_require_text(
             supplied, "workspace_override"
         )
         if paths:
             candidate = _WorkspacePath(text).expanduser()
             if not candidate.is_absolute():
-                raise _v3_workspace_error(
+                raise _v4_workspace_error(
                     "WORKSPACE_EFFECT_PATH_INVALID",
                     "workspace path overrides must be absolute",
                     details={"repository_id": repository_id},
@@ -1423,7 +1410,7 @@ def _v3_workspace_normalize_override_map(
     }
 
 
-def plan_v3_workspace_plan_effect(
+def plan_v4_workspace_plan_effect(
     *,
     state_value: dict[str, Any],
     data_root: str | _WorkspacePath,
@@ -1433,22 +1420,22 @@ def plan_v3_workspace_plan_effect(
     path_override: str | _WorkspacePath | None = None,
     branch_overrides: _WorkspaceMapping[str, object] | None = None,
     path_overrides: _WorkspaceMapping[str, object] | None = None,
-) -> V3WorkspacePlanEffectPlan:
+) -> V4WorkspacePlanEffectPlan:
     """Build a read-only plan for claiming and recording a workspace plan."""
 
-    if state_value.get("schema_version") != V3_TASK_SCHEMA_VERSION:
-        raise _v3_workspace_error(
+    if state_value.get("schema_version") != V4_TASK_SCHEMA_VERSION:
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_SCHEMA_REQUIRED",
-            "typed workspace effects require a schema-v3 task",
+            "typed workspace effects require a schema-v4 task",
         )
-    task_id = _v3_workspace_require_text(
+    task_id = _v4_workspace_require_text(
         state_value.get("task_id"), "task_id"
     )
-    revision = _v3_workspace_require_revision(
+    revision = _v4_workspace_require_revision(
         state_value.get("revision")
     )
     resolved_data, resolved_task, state_path = (
-        _v3_workspace_task_paths(task_id, data_root, task_dir)
+        _v4_workspace_task_paths(task_id, data_root, task_dir)
     )
     configured_ids = {
         str(repo.get("id"))
@@ -1461,7 +1448,7 @@ def plan_v3_workspace_plan_effect(
                 configured_ids
                 if repository_ids is None
                 else {
-                    _v3_workspace_require_text(
+                    _v4_workspace_require_text(
                         item, "repository_id"
                     )
                     for item in repository_ids
@@ -1471,54 +1458,54 @@ def plan_v3_workspace_plan_effect(
         )
     )
     if set(selected_ids) != configured_ids or not selected_ids:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "INCOMPLETE_WORKSPACE_PLAN",
-            "schema-v3 workspace plans must cover every repository",
+            "schema-v4 workspace plans must cover every repository",
             details={
                 "required_repository_ids": sorted(configured_ids),
                 "selected_repository_ids": list(selected_ids),
             },
         )
-    route_binding = _v3_workspace_route_approval_binding(state_value)
-    route_binding_sha = _v3_workspace_sha256(
-        _V3_WORKSPACE_APPROVAL_BINDING_DOMAIN, route_binding
+    route_binding = _v4_workspace_route_approval_binding(state_value)
+    route_binding_sha = _v4_workspace_sha256(
+        _V4_WORKSPACE_APPROVAL_BINDING_DOMAIN, route_binding
     )
     generation = int(
         (state_value.get("workspace") or {}).get("generation", 0)
     )
-    branches = _v3_workspace_normalize_override_map(
+    branches = _v4_workspace_normalize_override_map(
         branch_overrides, selected_ids, paths=False
     )
-    paths = _v3_workspace_normalize_override_map(
+    paths = _v4_workspace_normalize_override_map(
         path_overrides, selected_ids, paths=True
     )
     branch_value = (
         None
         if branch_override is None
-        else _v3_workspace_require_text(
+        else _v4_workspace_require_text(
             branch_override, "branch_override"
         )
     )
     path_value = None
     if path_override is not None:
         if len(selected_ids) != 1:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_PATH_INVALID",
                 "single path override requires exactly one repository",
             )
         supplied = _WorkspacePath(path_override).expanduser()
         if not supplied.is_absolute():
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_PATH_INVALID",
                 "workspace path override must be absolute",
             )
         path_value = str(supplied.resolve(strict=False))
     if path_value is not None and paths:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_PATH_INVALID",
             "single and per-repository path overrides cannot be combined",
         )
-    source_bindings = _v3_workspace_capture_sources(
+    source_bindings = _v4_workspace_capture_sources(
         state_value, selected_ids
     )
     bindings = {
@@ -1536,7 +1523,7 @@ def plan_v3_workspace_plan_effect(
         "path_overrides": paths,
         "source_repositories": source_bindings,
     }
-    result = _v3_workspace_build_plan(
+    result = _v4_workspace_build_plan(
         "plan",
         task_id=task_id,
         task_revision=revision,
@@ -1545,33 +1532,33 @@ def plan_v3_workspace_plan_effect(
         approved_binding_sha256=route_binding_sha,
         bindings=bindings,
     )
-    assert isinstance(result, V3WorkspacePlanEffectPlan)
+    assert isinstance(result, V4WorkspacePlanEffectPlan)
     return result
 
 
-def _v3_workspace_read_artifact_bytes(
+def _v4_workspace_read_artifact_bytes(
     path: _WorkspacePath,
     expected_sha256: str,
 ) -> tuple[bytes, dict[str, object]]:
     if (
         not isinstance(expected_sha256, str)
-        or not _V3_WORKSPACE_SHA256.fullmatch(expected_sha256)
+        or not _V4_WORKSPACE_SHA256.fullmatch(expected_sha256)
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace artifact digest is invalid",
         )
     try:
         source = path.read_bytes()
     except OSError as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace plan artifact cannot be read",
             details={"path": str(path), "error": str(exc)},
         ) from exc
     actual = _workspace_hashlib.sha256(source).hexdigest()
     if actual != expected_sha256:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace plan artifact bytes changed",
             details={
@@ -1585,7 +1572,7 @@ def _v3_workspace_read_artifact_bytes(
         if semantic_json_bytes(parsed) != source:
             raise ValueError("non-canonical semantic JSON")
     except Exception as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace plan artifact is not canonical semantic JSON",
             details={
@@ -1596,14 +1583,14 @@ def _v3_workspace_read_artifact_bytes(
             },
         ) from None
     if not isinstance(parsed, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace plan artifact must be an object",
         )
     return source, parsed
 
 
-def _v3_workspace_validate_plan_artifact(
+def _v4_workspace_validate_plan_artifact(
     evidence: dict[str, object],
     *,
     expected_sha256: str,
@@ -1636,7 +1623,7 @@ def _v3_workspace_validate_plan_artifact(
     else:
         if (
             authorization.get("schema")
-            != _V3_WORKSPACE_PLAN_ARTIFACT_AUTHORIZATION_SCHEMA
+            != _V4_WORKSPACE_PLAN_ARTIFACT_AUTHORIZATION_SCHEMA
         ):
             mismatches.append("authorization.schema")
         if authorization.get("mode") != "plan":
@@ -1652,7 +1639,7 @@ def _v3_workspace_validate_plan_artifact(
         ):
             mismatches.append("authorization.effect_plan_sha256")
     if mismatches:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace plan artifact differs from its exact authorization",
             details={
@@ -1662,7 +1649,7 @@ def _v3_workspace_validate_plan_artifact(
         )
 
 
-def _v3_workspace_seed_evidence_filesystems_at(
+def _v4_workspace_seed_evidence_filesystems_at(
     data_root: _WorkspacePath,
     task_dir: _WorkspacePath,
     evidence: dict[str, object],
@@ -1674,7 +1661,7 @@ def _v3_workspace_seed_evidence_filesystems_at(
         else None
     )
     if not isinstance(controller, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace evidence has no controller filesystem facts",
         )
@@ -1683,16 +1670,16 @@ def _v3_workspace_seed_evidence_filesystems_at(
         task_dir,
         data_root / "workspace-registry.json",
     ):
-        _v3_workspace_seed_filesystem_facts(path, controller)
+        _v4_workspace_seed_filesystem_facts(path, controller)
     repositories = evidence.get("repositories")
     if not isinstance(repositories, list):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace evidence has no repository records",
         )
     for record in repositories:
         if not isinstance(record, dict):
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_PLAN_INVALID",
                 "workspace evidence repository record is invalid",
             )
@@ -1708,42 +1695,42 @@ def _v3_workspace_seed_evidence_filesystems_at(
         if not isinstance(workspace_filesystem, dict) or not isinstance(
             source_filesystem, dict
         ):
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_PLAN_INVALID",
                 "workspace evidence has incomplete filesystem facts",
                 details={
                     "repository_id": record.get("repository_id")
                 },
             )
-        _v3_workspace_seed_filesystem_facts(
+        _v4_workspace_seed_filesystem_facts(
             _WorkspacePath(str(record["path"])),
             workspace_filesystem,
         )
-        _v3_workspace_seed_filesystem_facts(
+        _v4_workspace_seed_filesystem_facts(
             _WorkspacePath(str(record["source_path"])),
             source_filesystem,
         )
 
 
-def _v3_workspace_seed_evidence_filesystems(
-    plan: V3WorkspaceEffectPlan,
+def _v4_workspace_seed_evidence_filesystems(
+    plan: V4WorkspaceEffectPlan,
     evidence: dict[str, object],
 ) -> None:
-    _v3_workspace_seed_evidence_filesystems_at(
+    _v4_workspace_seed_evidence_filesystems_at(
         _WorkspacePath(str(plan.bindings["data_root"])),
         _WorkspacePath(str(plan.bindings["task_dir"])),
         evidence,
     )
 
 
-def _v3_workspace_execution_plan_from_evidence(
+def _v4_workspace_execution_plan_from_evidence(
     state_value: dict[str, Any],
     evidence: dict[str, object],
     repository_id: str,
 ) -> dict[str, object]:
     repositories = evidence.get("repositories")
     if not isinstance(repositories, list):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "approved workspace plan has no repository records",
         )
@@ -1766,7 +1753,7 @@ def _v3_workspace_execution_plan_from_evidence(
         None,
     )
     if not isinstance(record, dict) or not isinstance(repo, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_REPOSITORY_MISMATCH",
             "approved plan does not bind the requested repository",
             details={"repository_id": repository_id},
@@ -1793,7 +1780,7 @@ def _v3_workspace_execution_plan_from_evidence(
     ):
         mismatches.append("capability_profile_sha256")
     if mismatches:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_MISMATCH",
             "approved repository workspace plan is stale",
             details={
@@ -1822,51 +1809,51 @@ def _v3_workspace_execution_plan_from_evidence(
     }
 
 
-def plan_v3_workspace_execute_effect(
+def plan_v4_workspace_execute_effect(
     *,
     state_value: dict[str, Any],
     data_root: str | _WorkspacePath,
     task_dir: str | _WorkspacePath,
     repository_ids: Sequence[str] | None = None,
-) -> V3WorkspaceExecuteEffectPlan:
+) -> V4WorkspaceExecuteEffectPlan:
     """Build the one catalog-fixed, all-repository execution effect."""
 
-    if state_value.get("schema_version") != V3_TASK_SCHEMA_VERSION:
-        raise _v3_workspace_error(
+    if state_value.get("schema_version") != V4_TASK_SCHEMA_VERSION:
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_SCHEMA_REQUIRED",
-            "typed workspace effects require a schema-v3 task",
+            "typed workspace effects require a schema-v4 task",
         )
-    task_id = _v3_workspace_require_text(
+    task_id = _v4_workspace_require_text(
         state_value.get("task_id"), "task_id"
     )
-    revision = _v3_workspace_require_revision(
+    revision = _v4_workspace_require_revision(
         state_value.get("revision")
     )
     resolved_data, resolved_task, state_path = (
-        _v3_workspace_task_paths(task_id, data_root, task_dir)
+        _v4_workspace_task_paths(task_id, data_root, task_dir)
     )
     seed_artifact = _latest_artifact(
         state_value, "workspace-plan"
     )
     if not isinstance(seed_artifact, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "execute effect requires a workspace plan artifact",
         )
     artifact_path = _WorkspacePath(
         str(seed_artifact.get("path"))
     ).resolve(strict=True)
-    _source, evidence = _v3_workspace_read_artifact_bytes(
+    _source, evidence = _v4_workspace_read_artifact_bytes(
         artifact_path, str(seed_artifact.get("sha256"))
     )
-    _v3_workspace_seed_evidence_filesystems_at(
+    _v4_workspace_seed_evidence_filesystems_at(
         resolved_data, resolved_task, evidence
     )
-    approved_binding, artifact = _v3_workspace_approved_plan_binding(
+    approved_binding, artifact = _v4_workspace_approved_plan_binding(
         state_value
     )
-    approved_binding_sha = _v3_workspace_sha256(
-        _V3_WORKSPACE_APPROVAL_BINDING_DOMAIN, approved_binding
+    approved_binding_sha = _v4_workspace_sha256(
+        _V4_WORKSPACE_APPROVAL_BINDING_DOMAIN, approved_binding
     )
     if (
         artifact.get("artifact_id")
@@ -1874,7 +1861,7 @@ def plan_v3_workspace_execute_effect(
         or artifact.get("sha256") != seed_artifact.get("sha256")
         or artifact.get("path") != seed_artifact.get("path")
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace plan changed during read-only planning",
         )
@@ -1884,7 +1871,7 @@ def plan_v3_workspace_execute_effect(
         / f"{artifact['sha256']}.json"
     ).resolve(strict=False)
     if not _same_path(artifact_path, expected_path):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "approved workspace plan path is not digest-derived",
             details={
@@ -1908,7 +1895,7 @@ def plan_v3_workspace_execute_effect(
                 configured_ids
                 if repository_ids is None
                 else {
-                    _v3_workspace_require_text(
+                    _v4_workspace_require_text(
                         item, "repository_id"
                     )
                     for item in repository_ids
@@ -1918,7 +1905,7 @@ def plan_v3_workspace_execute_effect(
         )
     )
     if not configured_ids or selected_ids != configured_ids:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "INCOMPLETE_WORKSPACE_PLAN",
             "the catalog-fixed execute effect must cover every repository",
             details={
@@ -1929,19 +1916,19 @@ def plan_v3_workspace_execute_effect(
     generation = int(
         (state_value.get("workspace") or {}).get("generation", 0)
     )
-    _v3_workspace_validate_plan_artifact(
+    _v4_workspace_validate_plan_artifact(
         evidence,
         expected_sha256=str(artifact["sha256"]),
         expected_generation=generation,
         expected_repository_ids=configured_ids,
     )
     execution_plans = [
-        _v3_workspace_execution_plan_from_evidence(
+        _v4_workspace_execution_plan_from_evidence(
             state_value, evidence, repository_id
         )
         for repository_id in configured_ids
     ]
-    source_bindings = _v3_workspace_capture_sources(
+    source_bindings = _v4_workspace_capture_sources(
         state_value, configured_ids
     )
     evidence_by_id = {
@@ -1957,7 +1944,7 @@ def plan_v3_workspace_execute_effect(
         )
     ]
     if drifted:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "SOURCE_WORKTREE_CHANGED",
             "a source differs from the plan-time fingerprint",
             details={"repository_ids": drifted},
@@ -1974,7 +1961,7 @@ def plan_v3_workspace_execute_effect(
         "repository_plans": execution_plans,
         "source_repositories": source_bindings,
     }
-    result = _v3_workspace_build_plan(
+    result = _v4_workspace_build_plan(
         "execute",
         task_id=task_id,
         task_revision=revision,
@@ -1983,22 +1970,22 @@ def plan_v3_workspace_execute_effect(
         approved_binding_sha256=approved_binding_sha,
         bindings=bindings,
     )
-    assert isinstance(result, V3WorkspaceExecuteEffectPlan)
+    assert isinstance(result, V4WorkspaceExecuteEffectPlan)
     return result
 
 
-def v3_workspace_effect_safe_inputs(
-    plan: V3WorkspaceEffectPlan,
+def v4_workspace_effect_safe_inputs(
+    plan: V4WorkspaceEffectPlan,
 ) -> dict[str, object]:
     """Return only the durable semantic summary allowed in the journal."""
 
-    if type(plan) not in set(_V3_WORKSPACE_PLAN_TYPES.values()):
-        raise _v3_workspace_error(
+    if type(plan) not in set(_V4_WORKSPACE_PLAN_TYPES.values()):
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_PLAN_TYPE_INVALID",
             "safe inputs require an exact typed workspace plan",
         )
     return {
-        "workspace_plan_schema": _V3_WORKSPACE_EFFECT_PLAN_SCHEMA,
+        "workspace_plan_schema": _V4_WORKSPACE_EFFECT_PLAN_SCHEMA,
         "workspace_action": plan.action,
         "workspace_mode": str(plan.bindings["mode"]),
         "workspace_expected_effect_id": plan.expected_effect_id,
@@ -2010,13 +1997,13 @@ def v3_workspace_effect_safe_inputs(
     }
 
 
-def v3_workspace_effect_scopes(
-    plan: V3WorkspaceEffectPlan,
+def v4_workspace_effect_scopes(
+    plan: V4WorkspaceEffectPlan,
 ) -> dict[str, list[str]]:
     """Return exact all-repository scopes for the fixed catalog effect."""
 
-    if type(plan) not in set(_V3_WORKSPACE_PLAN_TYPES.values()):
-        raise _v3_workspace_error(
+    if type(plan) not in set(_V4_WORKSPACE_PLAN_TYPES.values()):
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_PLAN_TYPE_INVALID",
             "scopes require an exact typed workspace plan",
         )
@@ -2085,29 +2072,29 @@ def v3_workspace_effect_scopes(
     )
 
 
-def _v3_workspace_validate_transaction_permit(
-    plan: V3WorkspaceEffectPlan,
+def _v4_workspace_validate_transaction_permit(
+    plan: V4WorkspaceEffectPlan,
     permit: object,
 ) -> ActionDispatchPlan:
     """Accept only Transaction's exact active callback-stack context."""
 
     if type(permit) is not WorkflowActionDispatchContext:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_TRANSACTION_PERMIT_REQUIRED",
             "workspace dispatch requires a transaction context",
         )
     verifier = globals().get(
-        "verify_active_v3_workflow_action_dispatch_context"
+        "verify_active_v4_workflow_action_dispatch_context"
     )
     if not callable(verifier):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_TRANSACTION_AUTHORITY_UNAVAILABLE",
             "transaction active-dispatch verifier is unavailable",
         )
     try:
         verifier(permit)
     except Exception as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_TRANSACTION_PERMIT_INACTIVE",
             "transaction context is forged, copied, replayed, or inactive",
             details={
@@ -2129,7 +2116,7 @@ def _v3_workspace_validate_transaction_permit(
             mismatches.append("effect_id")
         if (
             transaction_plan.safe_inputs
-            != v3_workspace_effect_safe_inputs(plan)
+            != v4_workspace_effect_safe_inputs(plan)
         ):
             mismatches.append("safe_inputs")
         for field, value in (
@@ -2144,24 +2131,24 @@ def _v3_workspace_validate_transaction_permit(
         ):
             if (
                 not isinstance(value, str)
-                or not _V3_WORKSPACE_SHA256.fullmatch(value)
+                or not _V4_WORKSPACE_SHA256.fullmatch(value)
             ):
                 mismatches.append(field)
     if permit.effect_kind != "filesystem":
         mismatches.append("effect_kind")
     if permit.settlement != "synchronous-quiescence":
         mismatches.append("settlement")
-    if permit.scopes != v3_workspace_effect_scopes(plan):
+    if permit.scopes != v4_workspace_effect_scopes(plan):
         mismatches.append("scopes")
     if (
         not isinstance(permit.catalog_contract_sha256, str)
-        or not _V3_WORKSPACE_SHA256.fullmatch(
+        or not _V4_WORKSPACE_SHA256.fullmatch(
             permit.catalog_contract_sha256
         )
     ):
         mismatches.append("catalog_contract_sha256")
     if mismatches:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_TRANSACTION_PERMIT_MISMATCH",
             "transaction dispatch context differs from the typed plan",
             details={"fields": sorted(set(mismatches))},
@@ -2170,29 +2157,29 @@ def _v3_workspace_validate_transaction_permit(
     return transaction_plan
 
 
-def _v3_workspace_validate_observe_context(
-    plan: V3WorkspaceEffectPlan,
+def _v4_workspace_validate_observe_context(
+    plan: V4WorkspaceEffectPlan,
     context: object,
 ) -> _WorkspaceMapping[str, object]:
     """Accept only Transaction's exact active observe-only context."""
 
     if type(context) is not WorkflowActionObserveContext:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_OBSERVE_CONTEXT_REQUIRED",
             "observation requires Transaction's exact observe-only context",
         )
     verifier = globals().get(
-        "verify_active_v3_workflow_action_observe_context"
+        "verify_active_v4_workflow_action_observe_context"
     )
     if not callable(verifier):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_TRANSACTION_AUTHORITY_UNAVAILABLE",
             "transaction active-observe verifier is unavailable",
         )
     try:
         facts = verifier(context)
     except Exception as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_OBSERVE_CONTEXT_INACTIVE",
             "observe context is forged, copied, replayed, or inactive",
             details={
@@ -2204,7 +2191,7 @@ def _v3_workspace_validate_observe_context(
             },
         ) from None
     if not isinstance(facts, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_OBSERVE_CONTEXT_MISMATCH",
             "transaction observe verifier returned invalid facts",
             details={"fields": ["facts"]},
@@ -2214,11 +2201,11 @@ def _v3_workspace_validate_observe_context(
         mismatches.append("task_id")
     if facts.get("effect_id") != plan.expected_effect_id:
         mismatches.append("effect_id")
-    if facts.get("safe_inputs") != v3_workspace_effect_safe_inputs(
+    if facts.get("safe_inputs") != v4_workspace_effect_safe_inputs(
         plan
     ):
         mismatches.append("safe_inputs")
-    if facts.get("scopes") != v3_workspace_effect_scopes(plan):
+    if facts.get("scopes") != v4_workspace_effect_scopes(plan):
         mismatches.append("scopes")
     if facts.get("effect_kind") != "filesystem":
         mismatches.append("effect_kind")
@@ -2243,11 +2230,11 @@ def _v3_workspace_validate_observe_context(
         value = facts.get(field)
         if (
             not isinstance(value, str)
-            or not _V3_WORKSPACE_SHA256.fullmatch(value)
+            or not _V4_WORKSPACE_SHA256.fullmatch(value)
         ):
             mismatches.append(field)
     if mismatches:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_OBSERVE_CONTEXT_MISMATCH",
             "observe context differs from the immutable workspace plan",
             details={"fields": sorted(set(mismatches))},
@@ -2256,7 +2243,7 @@ def _v3_workspace_validate_observe_context(
 
 
 @_workspace_dataclass(frozen=True)
-class V3WorkspaceEffectObservation:
+class V4WorkspaceEffectObservation:
     action: str
     plan_sha256: str
     task_id: str
@@ -2268,8 +2255,8 @@ class V3WorkspaceEffectObservation:
     semantic_sha256: str
 
     def __post_init__(self) -> None:
-        if self.action not in _V3_WORKSPACE_ACTIONS:
-            raise _v3_workspace_error(
+        if self.action not in _V4_WORKSPACE_ACTIONS:
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_OBSERVATION_INVALID",
                 "workspace observation action is invalid",
             )
@@ -2281,12 +2268,12 @@ class V3WorkspaceEffectObservation:
             "claim_id",
             "attempt_id",
         ):
-            _v3_workspace_require_text(getattr(self, field), field)
-        public = _v3_workspace_public(dict(self.result))
+            _v4_workspace_require_text(getattr(self, field), field)
+        public = _v4_workspace_public(dict(self.result))
         assert isinstance(public, dict)
-        _v3_workspace_reject_secrets(public)
+        _v4_workspace_reject_secrets(public)
         core = {
-            "schema": _V3_WORKSPACE_EFFECT_OBSERVATION_SCHEMA,
+            "schema": _V4_WORKSPACE_EFFECT_OBSERVATION_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "task_id": self.task_id,
@@ -2296,28 +2283,28 @@ class V3WorkspaceEffectObservation:
             "attempt_id": self.attempt_id,
             "result": public,
         }
-        expected = _v3_workspace_sha256(
-            _V3_WORKSPACE_EFFECT_OBSERVATION_DOMAIN, core
+        expected = _v4_workspace_sha256(
+            _V4_WORKSPACE_EFFECT_OBSERVATION_DOMAIN, core
         )
         if expected != self.semantic_sha256:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_OBSERVATION_DIGEST_MISMATCH",
                 "workspace dispatch observation digest is invalid",
             )
         object.__setattr__(
-            self, "result", _v3_workspace_freeze(public)
+            self, "result", _v4_workspace_freeze(public)
         )
 
 
-def _v3_workspace_build_observation(
-    plan: V3WorkspaceEffectPlan,
+def _v4_workspace_build_observation(
+    plan: V4WorkspaceEffectPlan,
     transaction_plan: ActionDispatchPlan,
     result: _WorkspaceMapping[str, object],
-) -> V3WorkspaceEffectObservation:
-    public = _v3_workspace_public(dict(result))
+) -> V4WorkspaceEffectObservation:
+    public = _v4_workspace_public(dict(result))
     assert isinstance(public, dict)
     core = {
-        "schema": _V3_WORKSPACE_EFFECT_OBSERVATION_SCHEMA,
+        "schema": _V4_WORKSPACE_EFFECT_OBSERVATION_SCHEMA,
         "action": plan.action,
         "plan_sha256": plan.semantic_sha256,
         "task_id": transaction_plan.task_id,
@@ -2327,7 +2314,7 @@ def _v3_workspace_build_observation(
         "attempt_id": transaction_plan.attempt_id,
         "result": public,
     }
-    return V3WorkspaceEffectObservation(
+    return V4WorkspaceEffectObservation(
         plan.action,
         plan.semantic_sha256,
         transaction_plan.task_id,
@@ -2336,14 +2323,14 @@ def _v3_workspace_build_observation(
         transaction_plan.claim_id,
         transaction_plan.attempt_id,
         public,
-        _v3_workspace_sha256(
-            _V3_WORKSPACE_EFFECT_OBSERVATION_DOMAIN, core
+        _v4_workspace_sha256(
+            _V4_WORKSPACE_EFFECT_OBSERVATION_DOMAIN, core
         ),
     )
 
 
-def _v3_workspace_load_bound_state(
-    plan: V3WorkspaceEffectPlan,
+def _v4_workspace_load_bound_state(
+    plan: V4WorkspaceEffectPlan,
 ) -> dict[str, Any]:
     bindings = plan.bindings
     state_path = _WorkspacePath(str(bindings["state_path"]))
@@ -2351,20 +2338,20 @@ def _v3_workspace_load_bound_state(
         state_path,
         _WorkspacePath(str(bindings["task_dir"])) / "state.json",
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_STATE_MISMATCH",
             "typed plan state path is outside the bound task directory",
         )
     try:
         state_value = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_STATE_UNAVAILABLE",
             "durable task state cannot be revalidated",
             details={"path": str(state_path), "error": str(exc)},
         ) from exc
     if not isinstance(state_value, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_STATE_UNAVAILABLE",
             "durable task state must be an object",
         )
@@ -2382,7 +2369,7 @@ def _v3_workspace_load_bound_state(
         )
     )
     mismatches = []
-    if state_value.get("schema_version") != V3_TASK_SCHEMA_VERSION:
+    if state_value.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         mismatches.append("schema_version")
     if state_value.get("task_id") != plan.task_id:
         mismatches.append("task_id")
@@ -2393,36 +2380,36 @@ def _v3_workspace_load_bound_state(
     if configured_ids != plan.repository_ids:
         mismatches.append("repository_ids")
     if mismatches:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_STATE_MISMATCH",
             "durable task state changed after effect planning",
             details={"fields": sorted(mismatches)},
         )
-    current_sources = _v3_workspace_capture_sources(
+    current_sources = _v4_workspace_capture_sources(
         state_value, plan.repository_ids
     )
-    if current_sources != _v3_workspace_thaw(
+    if current_sources != _v4_workspace_thaw(
         bindings["source_repositories"]
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "SOURCE_WORKTREE_CHANGED",
             "source fingerprint changed after workspace effect planning",
         )
     if plan.action == "plan":
-        current_binding = _v3_workspace_route_approval_binding(
+        current_binding = _v4_workspace_route_approval_binding(
             state_value
         )
     else:
         current_binding, _artifact = (
-            _v3_workspace_approved_plan_binding(state_value)
+            _v4_workspace_approved_plan_binding(state_value)
         )
-    current_binding_sha = _v3_workspace_sha256(
-        _V3_WORKSPACE_APPROVAL_BINDING_DOMAIN, current_binding
+    current_binding_sha = _v4_workspace_sha256(
+        _V4_WORKSPACE_APPROVAL_BINDING_DOMAIN, current_binding
     )
     if (
         current_binding_sha != plan.approved_binding_sha256
         or current_binding
-        != _v3_workspace_thaw(
+        != _v4_workspace_thaw(
             (
                 bindings["route_binding"]
                 if plan.action == "plan"
@@ -2430,20 +2417,20 @@ def _v3_workspace_load_bound_state(
             )
         )
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_APPROVAL_MISMATCH",
             "approved binding changed after effect planning",
         )
     return state_value
 
 
-def _v3_workspace_evidence_authorization(
-    plan: V3WorkspacePlanEffectPlan,
+def _v4_workspace_evidence_authorization(
+    plan: V4WorkspacePlanEffectPlan,
     controller_filesystem_capabilities: dict[str, Any],
 ) -> dict[str, object]:
     return {
         "schema": (
-            _V3_WORKSPACE_PLAN_ARTIFACT_AUTHORIZATION_SCHEMA
+            _V4_WORKSPACE_PLAN_ARTIFACT_AUTHORIZATION_SCHEMA
         ),
         "mode": "plan",
         "expected_effect_id": plan.expected_effect_id,
@@ -2460,21 +2447,21 @@ def _v3_workspace_evidence_authorization(
     }
 
 
-def dispatch_v3_workspace_plan_effect(
-    plan: V3WorkspacePlanEffectPlan,
+def dispatch_v4_workspace_plan_effect(
+    plan: V4WorkspacePlanEffectPlan,
     permit: object,
-) -> V3WorkspaceEffectObservation:
+) -> V4WorkspaceEffectObservation:
     """Claim ownership and write one digest-addressed plan artifact."""
 
-    if type(plan) is not V3WorkspacePlanEffectPlan:
-        raise _v3_workspace_error(
+    if type(plan) is not V4WorkspacePlanEffectPlan:
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_PLAN_TYPE_INVALID",
             "plan dispatch requires its exact typed plan",
         )
-    transaction_plan = _v3_workspace_validate_transaction_permit(
+    transaction_plan = _v4_workspace_validate_transaction_permit(
         plan, permit
     )
-    current = _v3_workspace_load_bound_state(plan)
+    current = _v4_workspace_load_bound_state(plan)
     bindings = plan.bindings
     by_id = {
         str(repo["id"]): repo for repo in current["repositories"]
@@ -2527,13 +2514,13 @@ def dispatch_v3_workspace_plan_effect(
             repository_id
         ]["source_fingerprint_sha256"]
         item["source_filesystem_capabilities"] = (
-            _v3_workspace_thaw(
+            _v4_workspace_thaw(
                 source_by_id[repository_id][
                     "source_filesystem_capabilities"
                 ]
             )
         )
-    evidence["authorization"] = _v3_workspace_evidence_authorization(
+    evidence["authorization"] = _v4_workspace_evidence_authorization(
         plan,
         _probe_worktree_capabilities(
             _WorkspacePath(str(bindings["task_dir"]))
@@ -2559,7 +2546,7 @@ def dispatch_v3_workspace_plan_effect(
         / f"{evidence_sha}.json"
     )
     if not _same_path(artifact_path, expected_path):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_PATH_MISMATCH",
             "workspace artifact path is not digest-derived",
         )
@@ -2583,23 +2570,23 @@ def dispatch_v3_workspace_plan_effect(
             for repository_id in plan.repository_ids
         ],
     }
-    return _v3_workspace_build_observation(
+    return _v4_workspace_build_observation(
         plan, transaction_plan, result
     )
 
 
-def _v3_workspace_load_execute_evidence(
-    plan: V3WorkspaceExecuteEffectPlan,
+def _v4_workspace_load_execute_evidence(
+    plan: V4WorkspaceExecuteEffectPlan,
 ) -> dict[str, object]:
     bindings = plan.bindings
     artifact_path = _WorkspacePath(
         str(bindings["approved_artifact_path"])
     )
-    _source, evidence = _v3_workspace_read_artifact_bytes(
+    _source, evidence = _v4_workspace_read_artifact_bytes(
         artifact_path, str(bindings["approved_artifact_sha256"])
     )
-    _v3_workspace_seed_evidence_filesystems(plan, evidence)
-    _v3_workspace_validate_plan_artifact(
+    _v4_workspace_seed_evidence_filesystems(plan, evidence)
+    _v4_workspace_validate_plan_artifact(
         evidence,
         expected_sha256=str(
             bindings["approved_artifact_sha256"]
@@ -2610,34 +2597,34 @@ def _v3_workspace_load_execute_evidence(
     return evidence
 
 
-def dispatch_v3_workspace_execute_effect(
-    plan: V3WorkspaceExecuteEffectPlan,
+def dispatch_v4_workspace_execute_effect(
+    plan: V4WorkspaceExecuteEffectPlan,
     permit: object,
-) -> V3WorkspaceEffectObservation:
+) -> V4WorkspaceEffectObservation:
     """Materialize every configured repository in canonical order."""
 
-    if type(plan) is not V3WorkspaceExecuteEffectPlan:
-        raise _v3_workspace_error(
+    if type(plan) is not V4WorkspaceExecuteEffectPlan:
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_PLAN_TYPE_INVALID",
             "execute dispatch requires its exact typed plan",
         )
-    transaction_plan = _v3_workspace_validate_transaction_permit(
+    transaction_plan = _v4_workspace_validate_transaction_permit(
         plan, permit
     )
-    current = _v3_workspace_load_bound_state(plan)
-    evidence = _v3_workspace_load_execute_evidence(plan)
+    current = _v4_workspace_load_bound_state(plan)
+    evidence = _v4_workspace_load_execute_evidence(plan)
     bindings = plan.bindings
     evidence_sha = str(bindings["approved_artifact_sha256"])
     low_level_plans = [
         _workspace_copy.deepcopy(
-            _v3_workspace_thaw(item)
+            _v4_workspace_thaw(item)
         )
         for item in bindings["repository_plans"]
     ]
     if [
         item["repository_id"] for item in low_level_plans
     ] != list(plan.repository_ids):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "INCOMPLETE_WORKSPACE_PLAN",
             "execute plan lost its canonical all-repository order",
         )
@@ -2655,7 +2642,7 @@ def dispatch_v3_workspace_execute_effect(
             or item["base_sha"]
             != evidence_by_id[item["repository_id"]].get("base_sha")
         ):
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_PLAN_MISMATCH",
                 "execute plan differs from approved artifact",
                 details={"repository_id": item["repository_id"]},
@@ -2671,7 +2658,7 @@ def dispatch_v3_workspace_execute_effect(
         # A thrown exception deliberately prevents a typed observation for the
         # entire fixed effect. Transaction will quarantine any partial result.
         outcomes.append(_execute_worktree(item))
-    return _v3_workspace_build_observation(
+    return _v4_workspace_build_observation(
         plan,
         transaction_plan,
         {"outcomes": outcomes},
@@ -3149,8 +3136,8 @@ def _execute_worktree(plan: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _v3_workspace_registry_claims(
-    plan: V3WorkspaceEffectPlan,
+def _v4_workspace_registry_claims(
+    plan: V4WorkspaceEffectPlan,
     *,
     evidence_sha256: str,
     evidence: dict[str, object],
@@ -3160,7 +3147,7 @@ def _v3_workspace_registry_claims(
     data_root = _WorkspacePath(str(plan.bindings["data_root"]))
     registry_path = data_root / "workspace-registry.json"
     if registry_path.is_symlink():
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_REGISTRY_INVALID",
             "workspace registry cannot be a symbolic link",
             details={"path": str(registry_path)},
@@ -3168,7 +3155,7 @@ def _v3_workspace_registry_claims(
     try:
         registry = json.loads(registry_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_REGISTRY_INVALID",
             "workspace ownership registry cannot be revalidated",
             details={"path": str(registry_path), "error": str(exc)},
@@ -3178,7 +3165,7 @@ def _v3_workspace_registry_claims(
         or registry.get("schema_version") != SCHEMA_VERSION
         or not isinstance(registry.get("claims"), list)
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_REGISTRY_INVALID",
             "workspace ownership registry has invalid structure",
         )
@@ -3186,7 +3173,7 @@ def _v3_workspace_registry_claims(
     _require_current_evidence(registry, "workspace registry")
     evidence_repositories = evidence.get("repositories")
     if not isinstance(evidence_repositories, list):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "workspace evidence lost repository records",
         )
@@ -3201,7 +3188,7 @@ def _v3_workspace_registry_claims(
     for repository_id in plan.repository_ids:
         record = evidence_by_id.get(repository_id)
         if not isinstance(record, dict):
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_PLAN_INVALID",
                 "workspace evidence does not cover every repository",
                 details={"repository_id": repository_id},
@@ -3259,7 +3246,7 @@ def _v3_workspace_registry_claims(
             ):
                 matches.append(candidate)
         if len(matches) != 1:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_OWNERSHIP_CONFLICT",
                 "workspace registry has no unique exact claim",
                 details={
@@ -3274,7 +3261,7 @@ def _v3_workspace_registry_claims(
             or not claim_id
             or claim_id in seen_claim_ids
         ):
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_REGISTRY_INVALID",
                 "workspace claim identities must be non-empty and unique",
                 details={"repository_id": repository_id},
@@ -3284,9 +3271,9 @@ def _v3_workspace_registry_claims(
     return selected
 
 
-def _v3_workspace_plan_artifact_candidates(
-    plan: V3WorkspacePlanEffectPlan,
-    observation: V3WorkspaceEffectObservation | None,
+def _v4_workspace_plan_artifact_candidates(
+    plan: V4WorkspacePlanEffectPlan,
+    observation: V4WorkspaceEffectObservation | None,
 ) -> list[tuple[_WorkspacePath, bytes, dict[str, object]]]:
     artifact_directory = _WorkspacePath(
         str(plan.bindings["artifact_directory"])
@@ -3311,7 +3298,7 @@ def _v3_workspace_plan_artifact_candidates(
         stem = path.stem
         if (
             path.suffix != ".json"
-            or not _V3_WORKSPACE_SHA256.fullmatch(stem)
+            or not _V4_WORKSPACE_SHA256.fullmatch(stem)
             or path.is_symlink()
         ):
             continue
@@ -3321,11 +3308,11 @@ def _v3_workspace_plan_artifact_candidates(
         if not _same_path(path, expected):
             continue
         try:
-            source, evidence = _v3_workspace_read_artifact_bytes(
+            source, evidence = _v4_workspace_read_artifact_bytes(
                 path, stem
             )
-            _v3_workspace_seed_evidence_filesystems(plan, evidence)
-            _v3_workspace_validate_plan_artifact(
+            _v4_workspace_seed_evidence_filesystems(plan, evidence)
+            _v4_workspace_validate_plan_artifact(
                 evidence,
                 expected_sha256=stem,
                 expected_generation=plan.workspace_generation,
@@ -3351,15 +3338,15 @@ def _v3_workspace_plan_artifact_candidates(
     return candidates
 
 
-def _v3_workspace_verify_observation_identity(
-    plan: V3WorkspaceEffectPlan,
+def _v4_workspace_verify_observation_identity(
+    plan: V4WorkspaceEffectPlan,
     claim: _WorkspaceMapping[str, object],
-    observation: V3WorkspaceEffectObservation | None,
+    observation: V4WorkspaceEffectObservation | None,
 ) -> None:
     if observation is None:
         return
-    if type(observation) is not V3WorkspaceEffectObservation:
-        raise _v3_workspace_error(
+    if type(observation) is not V4WorkspaceEffectObservation:
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_OBSERVATION_INVALID",
             "observer requires the exact typed dispatch observation",
         )
@@ -3385,7 +3372,7 @@ def _v3_workspace_verify_observation_identity(
         if actual != expected
     ]
     if mismatches:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_OBSERVATION_MISMATCH",
             "dispatch observation differs from the durable claim",
             details={"fields": mismatches},
@@ -3393,7 +3380,7 @@ def _v3_workspace_verify_observation_identity(
 
 
 @_workspace_dataclass(frozen=True)
-class V3WorkspaceEffectReceipt:
+class V4WorkspaceEffectReceipt:
     action: str
     plan_sha256: str
     claim_id: str
@@ -3409,16 +3396,16 @@ class V3WorkspaceEffectReceipt:
 
     def __post_init__(self) -> None:
         expected_type = {
-            "plan": "V3WorkspacePlanEffectReceipt",
-            "execute": "V3WorkspaceExecuteEffectReceipt",
+            "plan": "V4WorkspacePlanEffectReceipt",
+            "execute": "V4WorkspaceExecuteEffectReceipt",
         }.get(self.action)
         if expected_type is None or type(self).__name__ != expected_type:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_RECEIPT_TYPE_INVALID",
                 "typed receipt class does not match its action",
             )
-        _v3_workspace_require_text(self.claim_id, "claim_id")
-        _v3_workspace_require_text(self.attempt_id, "attempt_id")
+        _v4_workspace_require_text(self.claim_id, "claim_id")
+        _v4_workspace_require_text(self.attempt_id, "attempt_id")
         for field_name in (
             "journal_record_sha256",
             "index_record_sha256",
@@ -3428,20 +3415,20 @@ class V3WorkspaceEffectReceipt:
             value = getattr(self, field_name)
             if (
                 not isinstance(value, str)
-                or not _V3_WORKSPACE_SHA256.fullmatch(value)
+                or not _V4_WORKSPACE_SHA256.fullmatch(value)
             ):
-                raise _v3_workspace_error(
+                raise _v4_workspace_error(
                     "WORKSPACE_EFFECT_RECEIPT_BINDING_INVALID",
                     f"{field_name} must be lowercase SHA-256",
                 )
-        repository_ids = _v3_workspace_sorted_text(
+        repository_ids = _v4_workspace_sorted_text(
             self.repository_ids, "repository_ids"
         )
-        public = _v3_workspace_public(dict(self.observation))
+        public = _v4_workspace_public(dict(self.observation))
         assert isinstance(public, dict)
-        _v3_workspace_reject_secrets(public)
+        _v4_workspace_reject_secrets(public)
         core = {
-            "schema": _V3_WORKSPACE_EFFECT_RECEIPT_SCHEMA,
+            "schema": _V4_WORKSPACE_EFFECT_RECEIPT_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "claim_id": self.claim_id,
@@ -3458,22 +3445,22 @@ class V3WorkspaceEffectReceipt:
             "recovered_lost_response": self.recovered_lost_response,
             "observation": public,
         }
-        expected = _v3_workspace_sha256(
-            _V3_WORKSPACE_EFFECT_RECEIPT_DOMAIN, core
+        expected = _v4_workspace_sha256(
+            _V4_WORKSPACE_EFFECT_RECEIPT_DOMAIN, core
         )
         if expected != self.semantic_sha256:
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_RECEIPT_DIGEST_MISMATCH",
                 "workspace receipt digest is invalid",
             )
         object.__setattr__(self, "repository_ids", repository_ids)
         object.__setattr__(
-            self, "observation", _v3_workspace_freeze(public)
+            self, "observation", _v4_workspace_freeze(public)
         )
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema": _V3_WORKSPACE_EFFECT_RECEIPT_SCHEMA,
+            "schema": _V4_WORKSPACE_EFFECT_RECEIPT_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "claim_id": self.claim_id,
@@ -3490,38 +3477,38 @@ class V3WorkspaceEffectReceipt:
             "recovered_lost_response": (
                 self.recovered_lost_response
             ),
-            "observation": _v3_workspace_thaw(self.observation),
+            "observation": _v4_workspace_thaw(self.observation),
             "semantic_sha256": self.semantic_sha256,
         }
 
 
 @_workspace_dataclass(frozen=True)
-class V3WorkspacePlanEffectReceipt(V3WorkspaceEffectReceipt):
+class V4WorkspacePlanEffectReceipt(V4WorkspaceEffectReceipt):
     pass
 
 
 @_workspace_dataclass(frozen=True)
-class V3WorkspaceExecuteEffectReceipt(V3WorkspaceEffectReceipt):
+class V4WorkspaceExecuteEffectReceipt(V4WorkspaceEffectReceipt):
     pass
 
 
-_V3_WORKSPACE_RECEIPT_TYPES = {
-    "plan": V3WorkspacePlanEffectReceipt,
-    "execute": V3WorkspaceExecuteEffectReceipt,
+_V4_WORKSPACE_RECEIPT_TYPES = {
+    "plan": V4WorkspacePlanEffectReceipt,
+    "execute": V4WorkspaceExecuteEffectReceipt,
 }
 
 
-def _v3_workspace_build_receipt(
-    plan: V3WorkspaceEffectPlan,
+def _v4_workspace_build_receipt(
+    plan: V4WorkspaceEffectPlan,
     claim: _WorkspaceMapping[str, object],
     *,
     recovered_lost_response: bool,
     observation: _WorkspaceMapping[str, object],
-) -> V3WorkspaceEffectReceipt:
-    public = _v3_workspace_public(dict(observation))
+) -> V4WorkspaceEffectReceipt:
+    public = _v4_workspace_public(dict(observation))
     assert isinstance(public, dict)
     core = {
-        "schema": _V3_WORKSPACE_EFFECT_RECEIPT_SCHEMA,
+        "schema": _V4_WORKSPACE_EFFECT_RECEIPT_SCHEMA,
         "action": plan.action,
         "plan_sha256": plan.semantic_sha256,
         "claim_id": claim["claim_id"],
@@ -3538,7 +3525,7 @@ def _v3_workspace_build_receipt(
         "recovered_lost_response": recovered_lost_response,
         "observation": public,
     }
-    receipt_type = _V3_WORKSPACE_RECEIPT_TYPES[plan.action]
+    receipt_type = _V4_WORKSPACE_RECEIPT_TYPES[plan.action]
     return receipt_type(
         plan.action,
         plan.semantic_sha256,
@@ -3551,43 +3538,43 @@ def _v3_workspace_build_receipt(
         plan.repository_ids,
         recovered_lost_response,
         public,
-        _v3_workspace_sha256(
-            _V3_WORKSPACE_EFFECT_RECEIPT_DOMAIN, core
+        _v4_workspace_sha256(
+            _V4_WORKSPACE_EFFECT_RECEIPT_DOMAIN, core
         ),
     )
 
 
-def observe_v3_workspace_plan_effect(
-    plan: V3WorkspacePlanEffectPlan,
+def observe_v4_workspace_plan_effect(
+    plan: V4WorkspacePlanEffectPlan,
     observe_context: object,
-    observation: V3WorkspaceEffectObservation | None = None,
-) -> V3WorkspacePlanEffectReceipt:
+    observation: V4WorkspaceEffectObservation | None = None,
+) -> V4WorkspacePlanEffectReceipt:
     """Read artifact and registry only; never re-plan or re-dispatch."""
 
-    if type(plan) is not V3WorkspacePlanEffectPlan:
-        raise _v3_workspace_error(
+    if type(plan) is not V4WorkspacePlanEffectPlan:
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_PLAN_TYPE_INVALID",
             "plan observer requires its exact typed plan",
         )
-    claim = _v3_workspace_validate_observe_context(
+    claim = _v4_workspace_validate_observe_context(
         plan, observe_context
     )
-    _v3_workspace_verify_observation_identity(
+    _v4_workspace_verify_observation_identity(
         plan, claim, observation
     )
-    _v3_workspace_load_bound_state(plan)
-    candidates = _v3_workspace_plan_artifact_candidates(
+    _v4_workspace_load_bound_state(plan)
+    candidates = _v4_workspace_plan_artifact_candidates(
         plan, observation
     )
     if len(candidates) != 1:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_INVALID",
             "observer found no unique exact digest-addressed plan",
             details={"candidate_count": len(candidates)},
         )
     path, source, evidence = candidates[0]
     evidence_sha = _workspace_hashlib.sha256(source).hexdigest()
-    claims = _v3_workspace_registry_claims(
+    claims = _v4_workspace_registry_claims(
         plan,
         evidence_sha256=evidence_sha,
         evidence=evidence,
@@ -3611,24 +3598,24 @@ def observe_v3_workspace_plan_effect(
     }
     if (
         observation is not None
-        and _v3_workspace_thaw(observation.result) != observed
+        and _v4_workspace_thaw(observation.result) != observed
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_OBSERVATION_MISMATCH",
             "plan dispatch result differs from durable artifact/registry",
         )
-    receipt = _v3_workspace_build_receipt(
+    receipt = _v4_workspace_build_receipt(
         plan,
         claim,
         recovered_lost_response=observation is None,
         observation=observed,
     )
-    assert isinstance(receipt, V3WorkspacePlanEffectReceipt)
+    assert isinstance(receipt, V4WorkspacePlanEffectReceipt)
     return receipt
 
 
-def _v3_workspace_observe_materialized_unlocked(
-    plan: V3WorkspaceExecuteEffectPlan,
+def _v4_workspace_observe_materialized_unlocked(
+    plan: V4WorkspaceExecuteEffectPlan,
     repository_plan: dict[str, object],
     source_binding: dict[str, object],
     claim: dict[str, object],
@@ -3645,7 +3632,7 @@ def _v3_workspace_observe_materialized_unlocked(
         or source_binding.get("source_capability_profile_sha256")
         != repository_plan.get("source_capability_profile_sha256")
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_PLAN_MISMATCH",
             "execute source binding differs from the approved repo plan",
             details={"repository_id": repository_id},
@@ -3658,7 +3645,7 @@ def _v3_workspace_observe_materialized_unlocked(
             str(repository_plan["path"])
         ).resolve(strict=True)
     except (OSError, RuntimeError) as exc:
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_VERIFY_FAILED",
             "one approved worktree is not materialized",
             details={
@@ -3779,7 +3766,7 @@ def _v3_workspace_observe_materialized_unlocked(
             _git_common_dir(source),
         )
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_VERIFY_FAILED",
             "materialized worktree differs from the exact approved plan",
             details={
@@ -3798,7 +3785,7 @@ def _v3_workspace_observe_materialized_unlocked(
         else None
     )
     if not isinstance(filesystem_capabilities, dict):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_VERIFY_FAILED",
             "approved workspace capability facts are unavailable",
             details={"repository_id": repository_id},
@@ -3816,7 +3803,7 @@ def _v3_workspace_observe_materialized_unlocked(
         or second.get("capability_profile_sha256")
         != repository_plan.get("capability_profile_sha256")
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_VERIFY_FAILED",
             "worktree fingerprint or capability profile drifted",
             details={"repository_id": repository_id},
@@ -3845,8 +3832,8 @@ def _v3_workspace_observe_materialized_unlocked(
     }
 
 
-def _v3_workspace_observe_materialized(
-    plan: V3WorkspaceExecuteEffectPlan,
+def _v4_workspace_observe_materialized(
+    plan: V4WorkspaceExecuteEffectPlan,
     repository_plan: dict[str, object],
     source_binding: dict[str, object],
     claim: dict[str, object],
@@ -3867,20 +3854,20 @@ def _v3_workspace_observe_materialized(
     if not isinstance(source_filesystem, dict) or not isinstance(
         workspace_filesystem, dict
     ):
-        raise _v3_workspace_error(
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_FILESYSTEM_FACTS_INVALID",
             "observer requires approved source and workspace facts",
         )
-    _v3_workspace_seed_filesystem_facts(
+    _v4_workspace_seed_filesystem_facts(
         _WorkspacePath(str(repository_plan["source_path"])),
         source_filesystem,
     )
-    _v3_workspace_seed_filesystem_facts(
+    _v4_workspace_seed_filesystem_facts(
         _WorkspacePath(str(repository_plan["path"])),
         workspace_filesystem,
     )
-    with _v3_workspace_readonly_git():
-        return _v3_workspace_observe_materialized_unlocked(
+    with _v4_workspace_readonly_git():
+        return _v4_workspace_observe_materialized_unlocked(
             plan,
             repository_plan,
             source_binding,
@@ -3889,7 +3876,7 @@ def _v3_workspace_observe_materialized(
         )
 
 
-def _v3_workspace_execute_observation_projection(
+def _v4_workspace_execute_observation_projection(
     outcome: _WorkspaceMapping[str, object],
 ) -> dict[str, object]:
     claim = outcome.get("workspace_claim")
@@ -3921,42 +3908,42 @@ def _v3_workspace_execute_observation_projection(
     }
 
 
-def observe_v3_workspace_execute_effect(
-    plan: V3WorkspaceExecuteEffectPlan,
+def observe_v4_workspace_execute_effect(
+    plan: V4WorkspaceExecuteEffectPlan,
     observe_context: object,
-    observation: V3WorkspaceEffectObservation | None = None,
-) -> V3WorkspaceExecuteEffectReceipt:
+    observation: V4WorkspaceEffectObservation | None = None,
+) -> V4WorkspaceExecuteEffectReceipt:
     """Read-only all-repository postcondition verification."""
 
-    if type(plan) is not V3WorkspaceExecuteEffectPlan:
-        raise _v3_workspace_error(
+    if type(plan) is not V4WorkspaceExecuteEffectPlan:
+        raise _v4_workspace_error(
             "WORKSPACE_EFFECT_PLAN_TYPE_INVALID",
             "execute observer requires its exact typed plan",
         )
-    claim = _v3_workspace_validate_observe_context(
+    claim = _v4_workspace_validate_observe_context(
         plan, observe_context
     )
-    _v3_workspace_verify_observation_identity(
+    _v4_workspace_verify_observation_identity(
         plan, claim, observation
     )
-    _v3_workspace_load_bound_state(plan)
-    evidence = _v3_workspace_load_execute_evidence(plan)
+    _v4_workspace_load_bound_state(plan)
+    evidence = _v4_workspace_load_execute_evidence(plan)
     evidence_sha = str(plan.bindings["approved_artifact_sha256"])
-    claims = _v3_workspace_registry_claims(
+    claims = _v4_workspace_registry_claims(
         plan,
         evidence_sha256=evidence_sha,
         evidence=evidence,
     )
     repository_plans = [
-        _v3_workspace_thaw(item)
+        _v4_workspace_thaw(item)
         for item in plan.bindings["repository_plans"]
     ]
     source_by_id = {
-        str(item["repository_id"]): _v3_workspace_thaw(item)
+        str(item["repository_id"]): _v4_workspace_thaw(item)
         for item in plan.bindings["source_repositories"]
     }
     results = [
-        _v3_workspace_observe_materialized(
+        _v4_workspace_observe_materialized(
             plan,
             repository_plan,
             source_by_id[str(repository_plan["repository_id"])],
@@ -3966,10 +3953,10 @@ def observe_v3_workspace_execute_effect(
         for repository_plan in repository_plans
     ]
     # Close the read-only TOCTOU window across the whole canonical repo set.
-    _v3_workspace_load_bound_state(plan)
+    _v4_workspace_load_bound_state(plan)
     observed = {"workspaces": results}
     if observation is not None:
-        dispatched = _v3_workspace_thaw(observation.result)
+        dispatched = _v4_workspace_thaw(observation.result)
         outcomes = (
             dispatched.get("outcomes")
             if isinstance(dispatched, dict)
@@ -3978,23 +3965,23 @@ def observe_v3_workspace_execute_effect(
         if (
             not isinstance(outcomes, list)
             or [
-                _v3_workspace_execute_observation_projection(item)
+                _v4_workspace_execute_observation_projection(item)
                 for item in outcomes
                 if isinstance(item, dict)
             ]
             != results
         ):
-            raise _v3_workspace_error(
+            raise _v4_workspace_error(
                 "WORKSPACE_EFFECT_OBSERVATION_MISMATCH",
                 "execute dispatch result differs from all-repository observation",
             )
-    receipt = _v3_workspace_build_receipt(
+    receipt = _v4_workspace_build_receipt(
         plan,
         claim,
         recovered_lost_response=observation is None,
         observation=observed,
     )
-    assert isinstance(receipt, V3WorkspaceExecuteEffectReceipt)
+    assert isinstance(receipt, V4WorkspaceExecuteEffectReceipt)
     return receipt
 
 

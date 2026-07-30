@@ -11,51 +11,33 @@ from types import MappingProxyType
 from typing import Mapping
 
 
-WORKFLOW_V3_SINGLE_REPOSITORY_SUITES = frozenset(
+WORKFLOW_V4_REQUIRED_SUITES = MappingProxyType(
     {
-        "compatibility",
-        "legacy-golden-equivalence",
-        "recovery",
-        "rollback-rehearsal",
-        "transition-shadow-equivalence",
-    }
-)
-WORKFLOW_V3_MULTI_REPOSITORY_SUITES = frozenset(
-    {
-        *WORKFLOW_V3_SINGLE_REPOSITORY_SUITES,
-        "barrier",
-        "capability",
-        "integration",
-        "lease",
-        "node-result",
-        "orchestration-action-matrix",
-        "quiescence",
-        "repository-plan",
-    }
-)
-WORKFLOW_V3_REQUIRED_SUITES = MappingProxyType(
-    {
-        "single-repository": WORKFLOW_V3_SINGLE_REPOSITORY_SUITES,
-        "multi-repository": WORKFLOW_V3_MULTI_REPOSITORY_SUITES,
-    }
-)
-
-WORKFLOW_RESERVED_UNEXPOSED_V3 = MappingProxyType(
-    {
-        ("full", 3): (
-            "dev-flow-workflow/v1",
-            "46b18d375f3159d9fef1d9f5f6fb19c06663edf49949952cce3d4d189fbb7423",
-            "31b82d3774c56546b9d28237a0dd68226ff0516d247cc0b18457294a0d3b4a12",
+        ("full", "single-repository"): frozenset(
+            {
+                "v4-static-closure",
+                "v4-core-runtime",
+                "v4-effect-recovery",
+                "v4-external-tools",
+            }
         ),
-        ("lite", 3): (
-            "dev-flow-workflow/v1",
-            "9bfd642610f6ff6eca9e164ea3544044f979606e2d36a9a6543d5a13e0a929f2",
-            "111791bb7dd660dbb22842411cd8af87b8bc103478d0d6414900a993ef326bf3",
+        ("full", "multi-repository"): frozenset(
+            {
+                "v4-static-closure",
+                "v4-core-runtime",
+                "v4-effect-recovery",
+                "v4-external-tools",
+                "v4-multi-repository",
+            }
+        ),
+        ("lite", "single-repository"): frozenset(
+            {
+                "v4-static-closure",
+                "v4-core-runtime",
+                "v4-effect-recovery",
+            }
         ),
     }
-)
-WORKFLOW_RESERVED_UNEXPOSED_BLOCKER = (
-    "WORKFLOW_RESERVED_UNEXPOSED"
 )
 WORKFLOW_V4_VERSION = 4
 
@@ -311,7 +293,7 @@ class WorkflowStoreService:
     def persist_state_transaction(
         self, *args: object, **kwargs: object
     ) -> object:
-        """Persist through the raw boundary; schema-v3 still needs its proof."""
+        """Persist through the raw boundary; schema-v4 still needs its proof."""
 
         return self._persist_state_transaction(*args, **kwargs)
 
@@ -620,7 +602,6 @@ class WorkflowRuntimeServices:
     handler_manifests: tuple[object, ...]
     handler_resolver: object
     catalog: object
-    legacy_adapters: Mapping[tuple[int, str], Mapping[str, object]]
     store: WorkflowStoreService
     locks: WorkflowLockService
     evidence: WorkflowEvidenceService
@@ -636,86 +617,6 @@ def _workflow_runtime_default_package_root() -> Path:
     if runtime_file.name == "dev_flow.py":
         return runtime_file.parent.parent
     return runtime_file.parents[2]
-
-
-def _workflow_runtime_legacy_adapters(
-    catalog: object,
-) -> Mapping[tuple[int, str], Mapping[str, object]]:
-    bundles = getattr(catalog, "bundles", None)
-    if not isinstance(bundles, Mapping):
-        raise WorkflowCatalogError(
-            "WORKFLOW_RUNTIME_CATALOG_INVALID",
-            "sealed workflow catalog does not expose bundle identities",
-        )
-    result: dict[tuple[int, str], Mapping[str, object]] = {}
-    for bundle in bundles.values():
-        graph = getattr(bundle, "graph", None)
-        if not isinstance(graph, Mapping) or graph.get(
-            "legacy_adapter"
-        ) is not True:
-            continue
-        flow = graph.get("flow")
-        versions = graph.get("task_schema_versions")
-        if flow not in {"full", "lite"} or not isinstance(
-            versions, tuple
-        ):
-            raise WorkflowCatalogError(
-                "WORKFLOW_LEGACY_ADAPTER_INVALID",
-                "legacy bundle lacks a valid flow or task schema list",
-            )
-        descriptor = MappingProxyType(
-            {
-                "workflow_id": getattr(bundle, "workflow_id", None),
-                "workflow_version": getattr(
-                    bundle, "workflow_version", None
-                ),
-                "schema": graph.get("schema"),
-                "graph_sha256": getattr(bundle, "graph_sha256", None),
-                "bundle_sha256": getattr(bundle, "bundle_sha256", None),
-                "adapter": (
-                    f"{getattr(bundle, 'workflow_id', '')}"
-                    f"@v{getattr(bundle, 'workflow_version', '')}"
-                ),
-            }
-        )
-        for schema_version in versions:
-            if (
-                isinstance(schema_version, bool)
-                or not isinstance(schema_version, int)
-                or schema_version not in LEGACY_TASK_SCHEMA_VERSIONS
-            ):
-                raise WorkflowCatalogError(
-                    "WORKFLOW_LEGACY_ADAPTER_INVALID",
-                    "legacy bundle declares an unsupported task schema",
-                    details={"schema_version": schema_version},
-                )
-            key = (schema_version, str(flow))
-            if key in result:
-                raise WorkflowCatalogError(
-                    "WORKFLOW_LEGACY_ADAPTER_AMBIGUOUS",
-                    "more than one frozen adapter matches a legacy task",
-                    details={
-                        "schema_version": schema_version,
-                        "flow": flow,
-                    },
-                )
-            result[key] = descriptor
-    expected = {
-        (schema_version, flow)
-        for schema_version in LEGACY_TASK_SCHEMA_VERSIONS
-        for flow in ("full", "lite")
-    }
-    if set(result) != expected:
-        raise WorkflowCatalogError(
-            "WORKFLOW_LEGACY_ADAPTER_INCOMPLETE",
-            "catalog must retain one frozen adapter for every legacy task",
-            details={
-                "missing": [
-                    list(item) for item in sorted(expected - set(result))
-                ]
-            },
-        )
-    return MappingProxyType(result)
 
 
 def _workflow_runtime_operation(
@@ -913,7 +814,6 @@ def build_workflow_runtime(
         handler_manifests=tuple(manifests),
         handler_resolver=resolver,
         catalog=catalog,
-        legacy_adapters=_workflow_runtime_legacy_adapters(catalog),
         store=_workflow_runtime_store_service(namespace),
         locks=_workflow_runtime_lock_service(namespace),
         evidence=_workflow_runtime_evidence_service(namespace),
@@ -938,11 +838,9 @@ def initialize_workflow_runtime(
     services = build_workflow_runtime(
         namespace, package_root=package_root
     )
-    install_engine_lock_capability_wrapper(namespace)
     install_transition_engine_evaluation_lock_observer(
         _workflow_transition_evaluation_lock_binding
     )
-    install_v3_transition_commit_wrapper(namespace)
     _workflow_runtime_services = services
     return services
 
@@ -957,7 +855,7 @@ def workflow_runtime_services() -> WorkflowRuntimeServices:
 
 
 def manager_command_action_ids_v1() -> tuple[str, ...]:
-    """Project the exact schema-v3 CLI mutation scope from the sealed registry."""
+    """Project the exact schema-v4 CLI mutation scope from the sealed registry."""
 
     services = workflow_runtime_services()
     commands = services.registries.commands
@@ -1309,25 +1207,33 @@ def _workflow_runtime_validate_repository_action_matrix(
     nodes: Mapping[str, object],
     action_edges: tuple[Mapping[str, object], ...],
 ) -> None:
+    """Validate the exact full@4 repository operation closure."""
+
     metadata = getattr(bundle, "repository_orchestration", None)
     profiles = tuple(getattr(bundle, "execution_profiles", ()))
     if "multi-repository" not in profiles:
         if metadata is not None:
             raise _workflow_runtime_creation_error(
                 "WORKFLOW_ACTIVATION_INCOMPLETE",
-                "single-only workflow exposes repository orchestration metadata",
+                "single-repository workflow exposes repository orchestration",
             )
         return
-    if not isinstance(metadata, Mapping) or set(metadata) != (
-        _workflow_catalog_repository_orchestration_fields
-    ):
+    expected_fields = {
+        "schema",
+        "execution_profile",
+        "action_nodes",
+        "map",
+        "join",
+        "operation_ids",
+        "operation_matrix",
+    }
+    if not isinstance(metadata, Mapping) or set(metadata) != expected_fields:
         raise _workflow_runtime_creation_error(
             "WORKFLOW_ACTIVATION_INCOMPLETE",
-            "multi-repository workflow lacks an exact orchestration matrix",
+            "full@4 lacks its exact repository orchestration contract",
         )
     operation_ids = metadata.get("operation_ids")
     matrix = metadata.get("operation_matrix")
-    aliases = metadata.get("legacy_aliases")
     expected_operations = tuple(
         sorted(
             _workflow_catalog_repository_required_operation_ids,
@@ -1335,288 +1241,101 @@ def _workflow_runtime_validate_repository_action_matrix(
         )
     )
     if (
-        not isinstance(operation_ids, tuple)
+        metadata.get("schema")
+        != "dev-flow-repository-orchestration/v1"
+        or metadata.get("execution_profile") != "multi-repository"
         or operation_ids != expected_operations
         or not isinstance(matrix, tuple)
         or len(matrix) != len(expected_operations)
-        or not isinstance(aliases, tuple)
     ):
         raise _workflow_runtime_creation_error(
             "WORKFLOW_ACTIVATION_INCOMPLETE",
-            "orchestration operation inventory is incomplete or non-canonical",
-        )
-    observed_aliases: dict[str, tuple[str, ...]] = {}
-    for alias in aliases:
-        if (
-            not isinstance(alias, Mapping)
-            or set(alias)
-            != _workflow_catalog_repository_legacy_alias_fields
-            or not isinstance(alias.get("alias_id"), str)
-            or not isinstance(alias.get("operation_ids"), tuple)
-        ):
-            raise _workflow_runtime_creation_error(
-                "WORKFLOW_ACTIVATION_INCOMPLETE",
-                "orchestration legacy alias closure is malformed",
-            )
-        observed_aliases[str(alias["alias_id"])] = tuple(
-            alias["operation_ids"]
-        )
-    if observed_aliases != dict(
-        _workflow_catalog_repository_legacy_alias_targets
-    ):
-        raise _workflow_runtime_creation_error(
-            "WORKFLOW_ACTIVATION_INCOMPLETE",
-            "orchestration legacy aliases differ from the frozen input surface",
+            "full@4 repository operation inventory is incomplete",
         )
     action_nodes_value = metadata.get("action_nodes")
     action_nodes = frozenset(
-        str(node_id)
-        for node_id in (
+        item
+        for item in (
             action_nodes_value
             if isinstance(action_nodes_value, tuple)
             else ()
         )
+        if isinstance(item, str)
     )
     if (
         not action_nodes
-        or len(action_nodes)
-        != len(action_nodes_value)
+        or len(action_nodes) != len(action_nodes_value)
         or any(
             node_id not in nodes
-            or not isinstance(nodes[node_id], Mapping)
             or nodes[node_id].get("terminal") is True
             for node_id in action_nodes
         )
     ):
         raise _workflow_runtime_creation_error(
             "WORKFLOW_ACTIVATION_INCOMPLETE",
-            "orchestration action-node placement policy is invalid",
+            "full@4 repository action-node closure is invalid",
         )
-    seen_semantic_ids: set[str] = set()
-    matrix_operations: list[str] = []
+    observed_operations: list[str] = []
+    observed_semantic_ids: set[str] = set()
     for item in matrix:
-        if (
-            not isinstance(item, Mapping)
-            or set(item)
-            != _workflow_catalog_repository_operation_contract_fields
-        ):
+        if not isinstance(item, Mapping):
             raise _workflow_runtime_creation_error(
                 "WORKFLOW_ACTIVATION_INCOMPLETE",
-                "orchestration semantic operation contract is malformed",
+                "repository operation identity must be immutable",
             )
         operation_id = item.get("operation_id")
         if not isinstance(operation_id, str):
             raise _workflow_runtime_creation_error(
                 "WORKFLOW_ACTIVATION_INCOMPLETE",
-                "orchestration operation identity is missing",
+                "repository operation identity is missing",
             )
         expected = _workflow_catalog_repository_semantic_identities(
             operation_id
         )
-        effect_ids = item.get("effect_ids")
-        if not isinstance(effect_ids, tuple):
+        if dict(item) != dict(expected):
             raise _workflow_runtime_creation_error(
                 "WORKFLOW_ACTIVATION_INCOMPLETE",
-                "orchestration operation effect identities are not immutable",
+                "repository operation identity differs from full@4",
                 details={"operation_id": operation_id},
             )
-        semantic_values = (
-            str(item.get("action_id")),
-            str(item.get("validator_id")),
-            str(item.get("event_id")),
-            str(item.get("write_set_id")),
-            *(str(value) for value in effect_ids),
-        )
-        if (
-            any(value in seen_semantic_ids for value in semantic_values)
-            or item.get("action_id") != expected["action_id"]
-            or item.get("validator_id") != expected["validator_id"]
-            or item.get("event_id") != expected["event_id"]
-            or item.get("write_set_id") != expected["write_set_id"]
-            or effect_ids != expected["effect_ids"]
-        ):
+        semantic_ids = {
+            str(item["action_id"]),
+            str(item["validator_id"]),
+            str(item["event_id"]),
+            str(item["write_set_id"]),
+            *(str(value) for value in item["effect_ids"]),
+        }
+        if observed_semantic_ids.intersection(semantic_ids):
             raise _workflow_runtime_creation_error(
                 "WORKFLOW_ACTIVATION_INCOMPLETE",
-                "orchestration action, validator, event, write-set, or effect identity is overloaded",
+                "repository semantic identity is overloaded",
                 details={"operation_id": operation_id},
             )
-        seen_semantic_ids.update(semantic_values)
-        matrix_operations.append(operation_id)
+        observed_semantic_ids.update(semantic_ids)
+        observed_operations.append(operation_id)
         action_id = str(item["action_id"])
         matches = tuple(
             edge
             for edge in action_edges
             if isinstance(edge.get("trigger"), Mapping)
             and edge["trigger"].get("id") == action_id
-        )
-        sources = {
-            str(edge.get("source"))
-            for edge in matches
-            if edge.get("source") == edge.get("target")
-        }
-        expected_public = (
-            {
-                "id": "manager-authorize",
-                "selector": "authority",
-                "values": ("operator",),
-            }
-            if operation_id == "manager.capability.authorize/v1"
-            else (
-                {
-                    "id": "manager-revoke",
-                    "selector": "authority",
-                    "values": ("operator",),
-                }
-                if operation_id == "manager.capability.revoke/v1"
-                else {
-                    "id": "orchestration",
-                    "selector": "operation",
-                    "values": (operation_id,),
-                }
-            )
-        )
-        expected_event = (
-            _workflow_catalog_repository_manager_canonical_events.get(
-                operation_id, item["event_id"]
-            )
-        )
-        expected_writes = (
-            _workflow_catalog_repository_operation_write_sets[operation_id]
-        )
-        expected_policy = _workflow_catalog_repository_action_policy(
-            operation_id
+            and edge.get("source") == edge.get("target")
         )
         if (
             len(matches) != len(action_nodes)
-            or sources != set(action_nodes)
+            or {str(edge.get("source")) for edge in matches}
+            != set(action_nodes)
         ):
             raise _workflow_runtime_creation_error(
                 "WORKFLOW_ACTIVATION_INCOMPLETE",
-                "orchestration action placement does not cover every live node",
+                "repository action is not available at every live node",
                 details={"operation_id": operation_id},
             )
-        for edge in matches:
-            public = edge.get("public_command")
-            effects = edge.get("effects")
-            handler = edge.get("handler")
-            guards = edge.get("guards")
-            reducers = edge.get("reducers")
-            effect = (
-                effects[0]
-                if isinstance(effects, tuple)
-                and len(effects) == 1
-                and isinstance(effects[0], Mapping)
-                else None
-            )
-            quarantine = (
-                effect.get("quarantine")
-                if isinstance(effect, Mapping)
-                else None
-            )
-            recovery = (
-                effect.get("recovery")
-                if isinstance(effect, Mapping)
-                else None
-            )
-            observed_public = (
-                {
-                    "id": public.get("id"),
-                    "selector": public.get("selector"),
-                    "values": tuple(public.get("values", ())),
-                }
-                if isinstance(public, Mapping)
-                else None
-            )
-            if (
-                observed_public != expected_public
-                or edge.get("canonical_event") != expected_event
-                or tuple(edge.get("kernel_state_writes", ()))
-                != expected_writes
-                or not isinstance(effects, tuple)
-                or tuple(
-                    str(effect.get("id"))
-                    for effect in effects
-                    if isinstance(effect, Mapping)
-                )
-                != effect_ids
-                or not isinstance(handler, Mapping)
-                or handler.get("id") != expected_policy["handler_id"]
-                or not isinstance(guards, tuple)
-                or tuple(
-                    str(reference.get("id"))
-                    for reference in guards
-                    if isinstance(reference, Mapping)
-                )
-                != expected_policy["guard_ids"]
-                or not isinstance(reducers, tuple)
-                or tuple(
-                    str(reference.get("id"))
-                    for reference in reducers
-                    if isinstance(reference, Mapping)
-                )
-                != expected_policy["reducer_ids"]
-                or edge.get("gate") is not None
-                or edge.get("confirmation") != "action-explicit"
-                or edge.get("requires_note") is not False
-                or tuple(edge.get("allowed_state_writes", ()))
-                or tuple(edge.get("kernel_effects", ()))
-                != expected_policy["kernel_effects"]
-                or tuple(edge.get("kernel_invalidates", ()))
-                or tuple(edge.get("side_effects", ()))
-                != expected_policy["side_effects"]
-                or edge.get("effect_classification")
-                != expected_policy["classification"]
-                or tuple(edge.get("allowed_artifact_kinds", ()))
-                or edge.get("resume_policy") is not None
-                or edge.get("tool_policy") is not None
-                or tuple(edge.get("required_suites", ()))
-                != (
-                    "action-policy",
-                    "action-recovery",
-                    "orchestration-action-matrix",
-                )
-                or not isinstance(effect, Mapping)
-                or tuple(effect.get("scopes", ()))
-                != expected_policy["scopes"]
-                or effect.get("concurrency")
-                != expected_policy["concurrency"]
-                or tuple(effect.get("dependencies", ()))
-                or effect.get("parallel_group") is not None
-                or effect.get("settlement")
-                != expected_policy["settlement"]
-                or effect.get("receipt")
-                != "dev-flow-action-receipt/v1"
-                or effect.get("dispatch") != expected_policy["dispatch"]
-                or effect.get("idempotency")
-                != expected_policy["idempotency"]
-                or tuple(effect.get("target_controls", ()))
-                != expected_policy["target_controls"]
-                or not isinstance(quarantine, Mapping)
-                or quarantine.get("reconciliation")
-                != expected_policy["reconciliation"]
-                or quarantine.get("compensation")
-                != expected_policy["compensation"]
-                or not isinstance(recovery, Mapping)
-                or recovery.get("mode")
-                != expected_policy["recovery_mode"]
-                or recovery.get("on_uncertain")
-                != expected_policy["on_uncertain"]
-                or recovery.get("redispatch") != "forbidden"
-            ):
-                raise _workflow_runtime_creation_error(
-                    "WORKFLOW_ACTIVATION_INCOMPLETE",
-                    "orchestration compiled edge differs from its sealed semantic contract",
-                    details={
-                        "operation_id": operation_id,
-                        "edge_id": edge.get("id"),
-                    },
-                )
-    if tuple(matrix_operations) != expected_operations:
+    if tuple(observed_operations) != expected_operations:
         raise _workflow_runtime_creation_error(
             "WORKFLOW_ACTIVATION_INCOMPLETE",
-            "orchestration semantic matrix is incomplete or out of order",
+            "repository operation matrix is not canonical",
         )
-
 
 def _workflow_runtime_validate_action_closure(
     services: WorkflowRuntimeServices,
@@ -2031,14 +1750,17 @@ def _workflow_runtime_validate_action_closure(
                     details={"edge_id": edge_id, "field": field},
                 )
         suites = set(edge["required_suites"])
-        if not {"action-policy", "action-recovery"}.issubset(suites):
+        if not {
+            "v4-static-closure",
+            "v4-effect-recovery",
+        }.issubset(suites):
             raise _workflow_runtime_creation_error(
                 "WORKFLOW_ACTIVATION_INCOMPLETE",
                 "action omits a required policy or recovery suite",
                 details={"edge_id": edge_id},
             )
         if edge.get("tool_policy") is not None and (
-            "external-tool-capability-evidence" not in suites
+            "v4-external-tools" not in suites
         ):
             raise _workflow_runtime_creation_error(
                 "WORKFLOW_ACTIVATION_INCOMPLETE",
@@ -2084,7 +1806,7 @@ def _workflow_runtime_validate_activation_readiness(
     if activation.get("active") is not True:
         raise _workflow_runtime_creation_error(
             "WORKFLOW_CREATION_INACTIVE",
-            "schema-v3 creation is inactive for this workflow profile",
+            "schema-v4 creation is inactive for this workflow profile",
             details={
                 "workflow_id": getattr(bundle, "workflow_id", None),
                 "workflow_version": getattr(
@@ -2124,7 +1846,9 @@ def _workflow_runtime_validate_activation_readiness(
                 "supported_profiles": list(profiles),
             },
         )
-    required = WORKFLOW_V3_REQUIRED_SUITES.get(execution_profile)
+    required = WORKFLOW_V4_REQUIRED_SUITES.get(
+        (getattr(bundle, "workflow_id", None), execution_profile)
+    )
     if required is None:
         raise _workflow_runtime_creation_error(
             "WORKFLOW_CREATION_PROFILE_UNSUPPORTED",
@@ -2167,12 +1891,12 @@ def _workflow_runtime_validate_activation_readiness(
         not isinstance(nodes, Mapping)
         or not isinstance(edges, tuple)
         or not isinstance(graph, Mapping)
-        or V3_TASK_SCHEMA_VERSION
+        or V4_TASK_SCHEMA_VERSION
         not in tuple(graph.get("task_schema_versions", ()))
     ):
         raise _workflow_runtime_creation_error(
             "WORKFLOW_ACTIVATION_INCOMPLETE",
-            "selected bundle lacks a complete schema-v3 graph",
+            "selected bundle lacks a complete schema-v4 graph",
             details={"execution_profile": execution_profile},
         )
     for node_id, node in nodes.items():
@@ -2227,6 +1951,12 @@ def _workflow_runtime_validate_activation_readiness(
     action_required_suites = _workflow_runtime_validate_action_closure(
         services, bundle, nodes, graph
     )
+    if execution_profile == "single-repository":
+        action_required_suites = frozenset(
+            suite
+            for suite in action_required_suites
+            if suite != "v4-multi-repository"
+        )
     missing_action_suites = sorted(
         action_required_suites - completed
     )
@@ -2323,15 +2053,9 @@ def select_task_creation_workflow(
     flow: str,
     repository_count: int,
     *,
-    require_schema_v3: bool = False,
     services: WorkflowRuntimeServices | None = None,
 ) -> Mapping[str, object]:
-    """Select schema-v3 V4 only through an exact active profile, else v2.
-
-    `require_schema_v3` is an internal fail-closed surface used by controller
-    APIs and activation tests.  The unchanged CLI may use the supported v2
-    fallback while the package manifest remains inactive.
-    """
+    """Select one exact active schema-v4 workflow profile."""
 
     if flow not in {"full", "lite"}:
         raise _workflow_runtime_creation_error(
@@ -2344,40 +2068,16 @@ def select_task_creation_workflow(
     )
     runtime = services or workflow_runtime_services()
 
-    def legacy_fallback() -> Mapping[str, object]:
-        return MappingProxyType(
-            {
-                "schema_version": TASK_SCHEMA_VERSION,
-                "kind": "legacy",
-                "flow": flow,
-                "execution_profile": execution_profile,
-                "bundle": None,
-            }
-        )
-
-    try:
-        bundle = runtime.catalog.resolve(flow, WORKFLOW_V4_VERSION)
-        activation = _workflow_runtime_activation_entry(
-            runtime.catalog, bundle, execution_profile
-        )
-    except WorkflowCatalogError:
-        if require_schema_v3:
-            raise
-        return legacy_fallback()
-    if activation.get("active") is not True:
-        if require_schema_v3:
-            _workflow_runtime_validate_activation_readiness(
-                runtime, bundle, activation, execution_profile
-            )
-        return legacy_fallback()
-    # Once a profile claims activation, incomplete readiness is a package
-    # integrity failure and must never silently downgrade to another engine.
+    bundle = runtime.catalog.resolve(flow, WORKFLOW_V4_VERSION)
+    activation = _workflow_runtime_activation_entry(
+        runtime.catalog, bundle, execution_profile
+    )
     _workflow_runtime_validate_activation_readiness(
         runtime, bundle, activation, execution_profile
     )
     return MappingProxyType(
         {
-            "schema_version": V3_TASK_SCHEMA_VERSION,
+            "schema_version": V4_TASK_SCHEMA_VERSION,
             "kind": "bundle",
             "flow": flow,
             "execution_profile": execution_profile,
@@ -2410,7 +2110,7 @@ def _workflow_runtime_node_instance_id(
     return f"node:{node_id.lower()}:{occurrence}:{digest}"
 
 
-def build_v3_task_creation_fields(
+def build_v4_task_creation_fields(
     task_id: str,
     bundle: object,
     *,
@@ -2427,12 +2127,13 @@ def build_v3_task_creation_fields(
         )
     profiles = tuple(getattr(bundle, "execution_profiles", ()))
     if (
-        execution_profile not in WORKFLOW_V3_REQUIRED_SUITES
+        (getattr(bundle, "workflow_id", None), execution_profile)
+        not in WORKFLOW_V4_REQUIRED_SUITES
         or execution_profile not in profiles
     ):
         raise _workflow_runtime_creation_error(
             "WORKFLOW_CREATION_PROFILE_UNSUPPORTED",
-            "v3 creation fields require an exact bundle execution profile",
+            "v4 creation fields require an exact bundle execution profile",
             details={
                 "execution_profile": execution_profile,
                 "supported_profiles": list(profiles),
@@ -2554,191 +2255,6 @@ def _workflow_runtime_bundle_resolver(
     return bundle
 
 
-def _workflow_runtime_reserved_unexposed_v3(
-    state: Mapping[str, object],
-    resolution: Mapping[str, object] | None = None,
-) -> dict[str, object] | None:
-    """Classify only the two exact, historically reserved V3 identities."""
-
-    if state.get("schema_version") != V3_TASK_SCHEMA_VERSION:
-        return None
-    reference = state.get("workflow_ref")
-    if not isinstance(reference, Mapping):
-        return None
-    workflow_id = reference.get("id")
-    workflow_version = reference.get("version")
-    bundle_sha256 = reference.get("bundle_sha256")
-    expected_identity = WORKFLOW_RESERVED_UNEXPOSED_V3.get(
-        (workflow_id, workflow_version)
-    )
-    if expected_identity is None:
-        return None
-    expected_schema, expected_graph_sha256, expected_bundle_sha256 = (
-        expected_identity
-    )
-    if (
-        reference.get("schema") != expected_schema
-        or reference.get("graph_sha256") != expected_graph_sha256
-        or bundle_sha256 != expected_bundle_sha256
-    ):
-        return None
-    if resolution is not None and any(
-        resolution.get(field) != reference.get(field)
-        for field in (
-            "id",
-            "version",
-            "schema",
-            "graph_sha256",
-            "bundle_sha256",
-        )
-    ):
-        return None
-    return {
-        "kind": "reserved-unexposed",
-        "code": WORKFLOW_RESERVED_UNEXPOSED_BLOCKER,
-        "workflow": {
-            field: reference[field]
-            for field in (
-                "id",
-                "version",
-                "schema",
-                "graph_sha256",
-                "bundle_sha256",
-            )
-        },
-        "inspection": "available",
-        "ordinary_mutation": "denied",
-        "outbox_completion": "idempotent-only",
-        "safety_control": {
-            "available": False,
-            "reason": "v3-transitive-identity-closure-incomplete",
-        },
-    }
-
-
-def _workflow_runtime_claims_reserved_unexposed_v3(
-    state: Mapping[str, object],
-) -> bool:
-    reference = state.get("workflow_ref")
-    return (
-        state.get("schema_version") == V3_TASK_SCHEMA_VERSION
-        and isinstance(reference, Mapping)
-        and (
-            reference.get("id"),
-            reference.get("version"),
-        )
-        in WORKFLOW_RESERVED_UNEXPOSED_V3
-    )
-
-
-def _workflow_runtime_reserved_unexposed_identity_error(
-) -> WorkflowStateError:
-    return WorkflowStateError(
-        "WORKFLOW_RESERVED_UNEXPOSED_IDENTITY_MISMATCH",
-        (
-            "reserved-unexposed V3 workflow identity must match its fixed "
-            "schema, graph, and bundle digests before delivery"
-        ),
-    )
-
-
-def _workflow_runtime_reserved_unexposed_error(
-    status: Mapping[str, object],
-) -> WorkflowStateError:
-    return WorkflowStateError(
-        WORKFLOW_RESERVED_UNEXPOSED_BLOCKER,
-        (
-            "reserved-unexposed V3 workflow permits inspection and exact "
-            "committed-outbox completion only"
-        ),
-        details={
-            "historical_status": _workflow_runtime_public_value(status),
-        },
-    )
-
-
-def install_reserved_unexposed_v3_loader_policy(
-    namespace: Mapping[str, object],
-) -> None:
-    """Limit historical V3 loads to inspection and exact outbox completion."""
-
-    if not isinstance(namespace, dict):
-        raise WorkflowStateError(
-            "WORKFLOW_RUNTIME_NAMESPACE_INVALID",
-            "reserved-unexposed loader policy requires the shared namespace",
-        )
-    original_finish = namespace.get("_finish_loaded_state")
-    original_validate = namespace.get("_validate_task_state_snapshot")
-    if not callable(original_finish) or not callable(original_validate):
-        raise WorkflowStateError(
-            "WORKFLOW_RUNTIME_NAMESPACE_INVALID",
-            "task-state validation or completion boundary is unavailable",
-        )
-    if getattr(
-        original_finish, "_dev_flow_reserved_unexposed_v3_wrapper", False
-    ):
-        return
-
-    def validate_task_state_with_reserved_v3_policy(
-        path: Path,
-        value: object,
-        *,
-        resolve_workflow: bool = True,
-    ) -> int:
-        if (
-            isinstance(value, Mapping)
-            and _workflow_runtime_claims_reserved_unexposed_v3(value)
-            and _workflow_runtime_reserved_unexposed_v3(value) is None
-        ):
-            error = _workflow_runtime_reserved_unexposed_identity_error()
-            raise FlowError(
-                error.code,
-                error.message,
-                details={"path": str(path)},
-            )
-        return original_validate(
-            path, value, resolve_workflow=resolve_workflow
-        )
-
-    def finish_loaded_state_with_reserved_v3_policy(
-        path: Path,
-        value: dict[str, object],
-    ) -> dict[str, object]:
-        historical = _workflow_runtime_reserved_unexposed_v3(value)
-        if (
-            _workflow_runtime_claims_reserved_unexposed_v3(value)
-            and historical is None
-        ):
-            raise _workflow_runtime_reserved_unexposed_identity_error()
-        if historical is None:
-            return original_finish(path, value)
-        if (
-            value.get("pending_event") is not None
-            or value.get("pending_events") is not None
-        ):
-            value = _recover_pending_event(path, value)
-        # Do not turn an unrelated sensitive-state or compatibility rewrite
-        # into a mutation of historical reserved bytes.
-        return _prepare_state_compatibility_view(value)
-
-    (
-        finish_loaded_state_with_reserved_v3_policy
-        ._dev_flow_reserved_unexposed_v3_wrapper
-    ) = True
-    finish_loaded_state_with_reserved_v3_policy.__name__ = (
-        "_finish_loaded_state"
-    )
-    validate_task_state_with_reserved_v3_policy.__name__ = (
-        "_validate_task_state_snapshot"
-    )
-    namespace["_validate_task_state_snapshot"] = (
-        validate_task_state_with_reserved_v3_policy
-    )
-    namespace["_finish_loaded_state"] = (
-        finish_loaded_state_with_reserved_v3_policy
-    )
-
-
 def resolve_loaded_task_workflow(
     state: Mapping[str, object],
     *,
@@ -2748,7 +2264,6 @@ def resolve_loaded_task_workflow(
     payload: Mapping[str, object] | None = None,
     creation_task_id: str | None = None,
     creation_repository_count: int | None = None,
-    require_schema_v3: bool = False,
 ) -> Mapping[str, object]:
     """Resolve a persisted task only through the sealed process catalog."""
 
@@ -2768,7 +2283,6 @@ def resolve_loaded_task_workflow(
         selection = select_task_creation_workflow(
             flow,
             creation_repository_count,
-            require_schema_v3=require_schema_v3,
             services=services,
         )
         result = {
@@ -2778,31 +2292,17 @@ def resolve_loaded_task_workflow(
         }
         bundle = selection.get("bundle")
         if bundle is not None:
-            result["creation_fields"] = build_v3_task_creation_fields(
+            result["creation_fields"] = build_v4_task_creation_fields(
                 creation_task_id,
                 bundle,
                 execution_profile=str(selection["execution_profile"]),
             )
         return _workflow_runtime_public_value(result)  # type: ignore[return-value]
-    claimed_reserved_v3 = (
-        _workflow_runtime_claims_reserved_unexposed_v3(state)
-    )
-    exact_reserved_v3 = _workflow_runtime_reserved_unexposed_v3(state)
-    if claimed_reserved_v3 and exact_reserved_v3 is None:
-        raise _workflow_runtime_reserved_unexposed_identity_error()
     resolution = resolve_task_workflow(
         state,
-        legacy_resolver=services.legacy_adapters,
         bundle_resolver=_workflow_runtime_bundle_resolver,
         purpose=purpose,
     )
-    reserved_unexposed = _workflow_runtime_reserved_unexposed_v3(
-        state, resolution
-    )
-    if purpose == "mutation" and reserved_unexposed is not None:
-        raise _workflow_runtime_reserved_unexposed_error(
-            reserved_unexposed
-        )
     if candidate_state is not None:
         if purpose != "mutation" or not isinstance(
             candidate_event_type, str
@@ -2812,19 +2312,12 @@ def resolve_loaded_task_workflow(
                 "candidate movement requires a mutation event identity",
             )
         try:
-            if state.get("schema_version") == V3_TASK_SCHEMA_VERSION:
-                raise TransitionEngineError(
-                    "V3_ENGINE_COMMIT_PROOF_REQUIRED",
-                    (
-                        "schema-v3 candidates must be evaluated and committed "
-                        "through the one-shot engine proof boundary"
-                    ),
-                )
-            validate_workflow_movement_candidate(
-                state,
-                candidate_state,
-                event_type=candidate_event_type,
-                payload=payload,
+            raise TransitionEngineError(
+                "V4_ENGINE_COMMIT_PROOF_REQUIRED",
+                (
+                    "schema-v4 candidates must be evaluated and committed "
+                    "through the one-shot engine proof boundary"
+                ),
             )
         except TransitionEngineError as exc:
             raise WorkflowStateError(
@@ -2857,23 +2350,6 @@ def inspect_loaded_task_state(
         state,
         resolver=resolve_loaded_task_workflow,
     )
-    if isinstance(state, Mapping):
-        workflow = inspection.get("workflow")
-        historical_status = (
-            _workflow_runtime_reserved_unexposed_v3(state, workflow)
-            if isinstance(workflow, Mapping)
-            else None
-        )
-        if historical_status is not None:
-            inspection["mutation_ready"] = False
-            inspection["historical_status"] = historical_status
-            errors = inspection.get("errors")
-            if isinstance(errors, list):
-                errors.append(
-                    _workflow_runtime_reserved_unexposed_error(
-                        historical_status
-                    ).as_dict()
-                )
     public = _workflow_runtime_public_value(inspection)
     if not isinstance(public, dict):  # Defensive: helper returns an object.
         raise TypeError("workflow inspection did not produce an object")

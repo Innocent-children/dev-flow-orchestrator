@@ -1,7 +1,7 @@
 interface:
   display_name: "Review Dev Flow Change"
   short_description: "Independently gate the complete Git change snapshot"
-  default_prompt: "Use $review-dev-flow-change to independently review the completed change before handoff."
+  default_prompt: "Use $review-dev-flow-change to independently review this frozen V4 candidate before handoff."
 dependencies:
   tools:
     - type: "mcp"

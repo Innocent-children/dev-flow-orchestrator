@@ -21,7 +21,7 @@ def _result(command: str, state_value: dict[str, Any], **extra: Any) -> dict[str
         "workflow": workflow,
         "index_selection": _index_selection(state_value),
     }
-    if state_value.get("schema_version") == V3_TASK_SCHEMA_VERSION:
+    if state_value.get("schema_version") == V4_TASK_SCHEMA_VERSION:
         response["node_instances"] = state_value.get(
             "node_instances", []
         )
@@ -186,34 +186,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
             details={"workspace_strategy": workspace_strategy},
         )
     inferred_flow = FLOW_BY_WORKSPACE_STRATEGY[workspace_strategy]
-    requested_flow = getattr(args, "flow", None)
-    if requested_flow is not None and requested_flow not in FLOW_MODES:
-        raise FlowError(
-            "INVALID_ARGUMENT",
-            f"flow must be one of: {', '.join(FLOW_MODES)}",
-            details={"flow": requested_flow},
-        )
-    flow = requested_flow or inferred_flow
-    if flow != inferred_flow:
-        raise FlowError(
-            "FLOW_WORKSPACE_STRATEGY_MISMATCH",
-            (
-                f"workspace strategy {workspace_strategy!r} is not valid "
-                f"for the {flow} flow"
-            ),
-            details={
-                "flow": flow,
-                "workspace_strategy": workspace_strategy,
-                "inferred_flow": inferred_flow,
-                "allowed": [
-                    strategy
-                    for strategy, strategy_flow in (
-                        FLOW_BY_WORKSPACE_STRATEGY.items()
-                    )
-                    if strategy_flow == flow
-                ],
-            },
-        )
+    flow = inferred_flow
     task_id = args.task_id or f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
     _validate_task_id(task_id)
     if not args.repo:
@@ -366,7 +339,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 try:
                     candidate_identity = _task_identity(candidate.name)
                 except FlowError:
-                    # Non-portable legacy directories are not adoptable by a
+                    # Non-portable directories are not adoptable by a
                     # new task, but still reserve their literal case-folded
                     # spelling so creation cannot alias them.
                     candidate_identity = candidate.name.lower()
@@ -426,9 +399,6 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
                 purpose="creation",
                 creation_task_id=task_id,
                 creation_repository_count=len(repositories),
-                require_schema_v3=bool(
-                    getattr(args, "require_schema_v3", False)
-                ),
             )
         except (
             WorkflowCatalogError,
@@ -590,7 +560,7 @@ def _manager_capability_record(
     if not isinstance(capabilities, dict):
         raise FlowError(
             "MANAGER_CAPABILITY_REGISTRY_UNAVAILABLE",
-            "schema-v3 task has no manager capability registry",
+            "schema-v4 task has no manager capability registry",
             details={"task_id": state_value.get("task_id")},
         )
     record = capabilities.get(capability_id)
@@ -903,7 +873,7 @@ def command_recover_quarantine(
         ):
             if (
                 current.get("schema_version")
-                == V3_TASK_SCHEMA_VERSION
+                == V4_TASK_SCHEMA_VERSION
             ):
                 retry_quarantine = {
                     **quarantine,
@@ -1461,7 +1431,7 @@ def command_scope(args: argparse.Namespace) -> dict[str, Any]:
     return response
 
 
-PREFLIGHT_PREVIEW_TOKEN_VERSION = "v3"
+PREFLIGHT_PREVIEW_TOKEN_VERSION = "v4"
 PREFLIGHT_DECISION_FIELDS = (
     "evidence_contract_version",
     "repository_root",
@@ -1741,19 +1711,19 @@ def _apply_preflight_outcome(
         state_value["blocked"] = None
 
 
-_V3_PREFLIGHT_EVIDENCE_CONTRACT = (
-    "dev-flow-v3-preflight-complete-evidence/v1"
+_V4_PREFLIGHT_EVIDENCE_CONTRACT = (
+    "dev-flow-v4-preflight-complete-evidence/v1"
 )
-_V3_PREFLIGHT_EXECUTION_DOMAIN = (
-    b"dev-flow-v3-preflight-execution-v1\x00"
+_V4_PREFLIGHT_EXECUTION_DOMAIN = (
+    b"dev-flow-v4-preflight-execution-v1\x00"
 )
-_V3_PREFLIGHT_ATTEMPT_DOMAIN = (
-    b"dev-flow-v3-preflight-attempt-v1\x00"
+_V4_PREFLIGHT_ATTEMPT_DOMAIN = (
+    b"dev-flow-v4-preflight-attempt-v1\x00"
 )
-_V3_PREFLIGHT_RECEIPT_DOMAIN = (
-    b"dev-flow-v3-preflight-effect-receipt-v1\x00"
+_V4_PREFLIGHT_RECEIPT_DOMAIN = (
+    b"dev-flow-v4-preflight-effect-receipt-v1\x00"
 )
-_V3_PREFLIGHT_COMPLETE_FIELDS = (
+_V4_PREFLIGHT_COMPLETE_FIELDS = (
     *PREFLIGHT_OBSERVATION_FIELDS,
     "evidence_complete",
     "capture_phase",
@@ -1763,7 +1733,7 @@ _V3_PREFLIGHT_COMPLETE_FIELDS = (
 )
 
 
-def _v3_preflight_complete_projection(
+def _v4_preflight_complete_projection(
     current: dict[str, Any],
     state_value: dict[str, Any],
     selected: list[dict[str, Any]],
@@ -1775,7 +1745,7 @@ def _v3_preflight_complete_projection(
     args: argparse.Namespace,
 ) -> dict[str, object]:
     return {
-        "contract": _V3_PREFLIGHT_EVIDENCE_CONTRACT,
+        "contract": _V4_PREFLIGHT_EVIDENCE_CONTRACT,
         "task_id": current["task_id"],
         "revision": current["revision"],
         "workflow_bundle_sha256": current["workflow_ref"][
@@ -1800,12 +1770,12 @@ def _v3_preflight_complete_projection(
             key=lambda item: str(item["repository_id"]),
         ),
         "repositories": _preflight_repository_projection(
-            selected, _V3_PREFLIGHT_COMPLETE_FIELDS
+            selected, _V4_PREFLIGHT_COMPLETE_FIELDS
         ),
     }
 
 
-def _v3_preflight_candidate_repositories(
+def _v4_preflight_candidate_repositories(
     current: dict[str, Any],
     state_value: dict[str, Any],
     selected_ids: set[str],
@@ -1825,13 +1795,13 @@ def _v3_preflight_candidate_repositories(
     return repositories
 
 
-def _v3_preflight_candidate_state(
+def _v4_preflight_candidate_state(
     current: dict[str, Any],
     state_value: dict[str, Any],
     selected_ids: set[str],
 ) -> dict[str, Any]:
     planned = _copy_state(state_value)
-    planned["repositories"] = _v3_preflight_candidate_repositories(
+    planned["repositories"] = _v4_preflight_candidate_repositories(
         current, state_value, selected_ids
     )
     blocked = planned.get("blocked")
@@ -1842,7 +1812,7 @@ def _v3_preflight_candidate_state(
     return planned
 
 
-def _v3_preflight_action_outcome(
+def _v4_preflight_action_outcome(
     authorization_edge: Mapping[str, object],
     completion_edge: Mapping[str, object],
     proposed_state_delta: Mapping[str, object],
@@ -1868,7 +1838,7 @@ def _v3_preflight_action_outcome(
             "pinned preflight action has no exact identity",
         )
     evidence = {
-        "contract": _V3_PREFLIGHT_EVIDENCE_CONTRACT,
+        "contract": _V4_PREFLIGHT_EVIDENCE_CONTRACT,
         "complete_evidence_sha256": complete_evidence_sha256,
     }
     return ActionOutcome(
@@ -1894,7 +1864,7 @@ def _v3_preflight_action_outcome(
     )
 
 
-def _v3_preflight_invocation(
+def _v4_preflight_invocation(
     current: dict[str, Any],
     task_dir: Path,
     authorization_edge: Mapping[str, object],
@@ -1918,7 +1888,7 @@ def _v3_preflight_invocation(
         "complete_evidence_sha256": complete_evidence_sha256,
     }
     evidence = {
-        "contract": _V3_PREFLIGHT_EVIDENCE_CONTRACT,
+        "contract": _V4_PREFLIGHT_EVIDENCE_CONTRACT,
         "authorization_action_edge_id": authorization_edge["id"],
         "completion_edge_id": completion_edge["id"],
         "complete_evidence_sha256": complete_evidence_sha256,
@@ -1932,7 +1902,7 @@ def _v3_preflight_invocation(
         evidence=evidence,
     )
     try:
-        preview = preview_v3_workflow_action_transaction(
+        preview = preview_v4_workflow_action_transaction(
             current,
             request,
             authorization=authorization,
@@ -1959,7 +1929,7 @@ def _v3_preflight_invocation(
     )
 
 
-def _v3_preflight_reobserve_complete_evidence(
+def _v4_preflight_reobserve_complete_evidence(
     current: dict[str, Any],
     authorization_edge: Mapping[str, object],
     completion_edge: Mapping[str, object],
@@ -2004,7 +1974,7 @@ def _v3_preflight_reobserve_complete_evidence(
         all_checked=all_checked,
         blockers=blockers,
     )
-    projection = _v3_preflight_complete_projection(
+    projection = _v4_preflight_complete_projection(
         current,
         observed,
         selected,
@@ -2015,11 +1985,11 @@ def _v3_preflight_reobserve_complete_evidence(
         args=args,
     )
     return semantic_sha256(
-        _V3_PREFLIGHT_RECEIPT_DOMAIN, projection
+        _V4_PREFLIGHT_RECEIPT_DOMAIN, projection
     )
 
 
-def _v3_preflight_transaction(
+def _v4_preflight_transaction(
     current: dict[str, Any],
     task_dir: Path,
     state_value: dict[str, Any],
@@ -2033,12 +2003,12 @@ def _v3_preflight_transaction(
     args: argparse.Namespace,
 ) -> WorkflowActionTransactionResult:
     selected_ids = {str(repo["id"]) for repo in selected}
-    planned_state = _v3_preflight_candidate_state(
+    planned_state = _v4_preflight_candidate_state(
         current, state_value, selected_ids
     )
     try:
         completion_edge = (
-            resolve_v3_workflow_action_completion_edge(
+            resolve_v4_workflow_action_completion_edge(
                 current,
                 edge,
                 public_command="preflight",
@@ -2052,7 +2022,7 @@ def _v3_preflight_transaction(
             exc.message,
             details=details if isinstance(details, dict) else {},
         ) from exc
-    projection = _v3_preflight_complete_projection(
+    projection = _v4_preflight_complete_projection(
         current,
         planned_state,
         selected,
@@ -2063,7 +2033,7 @@ def _v3_preflight_transaction(
         args=args,
     )
     complete_evidence_sha256 = semantic_sha256(
-        _V3_PREFLIGHT_RECEIPT_DOMAIN, projection
+        _V4_PREFLIGHT_RECEIPT_DOMAIN, projection
     )
     if completion_edge["id"] == edge["id"]:
         proposed_state_delta = {
@@ -2086,7 +2056,7 @@ def _v3_preflight_transaction(
                 "/orchestration",
             ),
         )
-    outcome = _v3_preflight_action_outcome(
+    outcome = _v4_preflight_action_outcome(
         edge,
         completion_edge,
         proposed_state_delta,
@@ -2095,7 +2065,7 @@ def _v3_preflight_transaction(
     authorization = _manager_workflow_action_authorization_v1(
         current, event_type="preflight_recorded"
     )
-    invocation = _v3_preflight_invocation(
+    invocation = _v4_preflight_invocation(
         current,
         task_dir,
         edge,
@@ -2117,7 +2087,7 @@ def _v3_preflight_transaction(
         complete_evidence_sha256=complete_evidence_sha256,
     )
     execution_sha256 = semantic_sha256(
-        _V3_PREFLIGHT_EXECUTION_DOMAIN,
+        _V4_PREFLIGHT_EXECUTION_DOMAIN,
         {
             "task_id": current["task_id"],
             "revision": current["revision"],
@@ -2148,7 +2118,7 @@ def _v3_preflight_transaction(
             "pinned preflight action has no exact effect",
         )
     attempt_id = "attempt-" + semantic_sha256(
-        _V3_PREFLIGHT_ATTEMPT_DOMAIN,
+        _V4_PREFLIGHT_ATTEMPT_DOMAIN,
         {
             "execution_id": execution_id,
             "effect_id": effect["id"],
@@ -2183,7 +2153,7 @@ def _v3_preflight_transaction(
         context: WorkflowActionDispatchContext,
     ) -> WorkflowActionEffectObservation:
         observed_sha256 = (
-            _v3_preflight_reobserve_complete_evidence(
+            _v4_preflight_reobserve_complete_evidence(
                 current,
                 edge,
                 completion_edge,
@@ -2205,7 +2175,7 @@ def _v3_preflight_transaction(
                 },
             )
         receipt_sha256 = semantic_sha256(
-            _V3_PREFLIGHT_RECEIPT_DOMAIN,
+            _V4_PREFLIGHT_RECEIPT_DOMAIN,
             {
                 "execution_id": context.plan.execution_id,
                 "effect_id": context.plan.effect_id,
@@ -2230,14 +2200,14 @@ def _v3_preflight_transaction(
     archived = task_dir / action_execution_archive_path(execution_id)
     try:
         if active.exists() or archived.exists():
-            result = recover_v3_workflow_action_transaction(
+            result = recover_v4_workflow_action_transaction(
                 task_dir,
                 execution_id,
                 authorization=authorization,
                 invocation=invocation,
             )
         else:
-            result = execute_v3_workflow_action_transaction(
+            result = execute_v4_workflow_action_transaction(
                 current,
                 task_dir,
                 invocation,
@@ -2303,7 +2273,7 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
             "preview" if args.preview else "generic"
         ),
         manager_action_id="task.preflight",
-        short_v3_effect_boundary=not args.preview,
+        short_v4_effect_boundary=not args.preview,
     ) as (task_dir, current):
         if not args.preview and not args.confirm_preview:
             raise FlowError(
@@ -2317,8 +2287,8 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
         if current.get("status") == "BLOCKED" and (current.get("blocked") or {}).get("phase") == "preflight":
             allowed.add("BLOCKED")
         _assert_status(current, allowed, "preflight")
-        v3_preflight_edge = None
-        if current.get("schema_version") == V3_TASK_SCHEMA_VERSION:
+        v4_preflight_edge = None
+        if current.get("schema_version") == V4_TASK_SCHEMA_VERSION:
             selector = (
                 "initial"
                 if current.get("status") == "INTAKE"
@@ -2329,7 +2299,7 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
                 )
             )
             try:
-                v3_preflight_edge = resolve_v3_node_action_edge(
+                v4_preflight_edge = resolve_v4_node_action_edge(
                     current, "preflight", selector=selector
                 )
             except TransitionEngineError as exc:
@@ -2735,13 +2705,13 @@ def command_preflight(args: argparse.Namespace) -> dict[str, Any]:
         # preflight.
         state_value["approvals"].pop("baseline-fetch", None)
         state_value["approvals"].pop(LITE_GATE, None)
-        if v3_preflight_edge is not None:
-            transaction = _v3_preflight_transaction(
+        if v4_preflight_edge is not None:
+            transaction = _v4_preflight_transaction(
                 current,
                 task_dir,
                 state_value,
                 selected,
-                v3_preflight_edge,
+                v4_preflight_edge,
                 selection_complete=selection_complete,
                 blockers=blockers,
                 decision_sha256=post_decision_sha256,

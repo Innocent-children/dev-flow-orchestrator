@@ -19,7 +19,6 @@ _orchestration_action_adapter_metadata_fields = frozenset(
         "action_nodes",
         "execution_profile",
         "join",
-        "legacy_aliases",
         "map",
         "operation_ids",
         "operation_matrix",
@@ -35,9 +34,6 @@ _orchestration_action_adapter_matrix_fields = frozenset(
         "validator_id",
         "write_set_id",
     }
-)
-_orchestration_action_adapter_alias_fields = frozenset(
-    {"alias_id", "operation_ids"}
 )
 _orchestration_action_adapter_workflow_ref_fields = frozenset(
     {"bundle_sha256", "graph_sha256", "id", "schema", "version"}
@@ -863,10 +859,10 @@ def _orchestration_action_adapter_pinned_bundle(
             "ORCHESTRATION_ACTION_STATE_INVALID",
             "orchestration action state must be an object",
         )
-    if state.get("schema_version") != 3:
+    if state.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         raise _orchestration_action_adapter_error(
-            "ORCHESTRATION_ACTION_V3_REQUIRED",
-            "orchestration action adapter accepts only schema-v3 tasks",
+            "ORCHESTRATION_ACTION_V4_REQUIRED",
+            "orchestration action adapter accepts only schema-v4 tasks",
         )
     execution_profile = state.get("execution_profile")
     manager_registry_operation = (
@@ -934,8 +930,8 @@ def _orchestration_action_adapter_pinned_bundle(
         or getattr(bundle, "graph_sha256", None)
         != workflow_ref.get("graph_sha256")
         or not isinstance(graph, Mapping)
-        or graph.get("legacy_adapter") is not False
-        or tuple(graph.get("task_schema_versions", ())) != (3,)
+        or tuple(graph.get("task_schema_versions", ()))
+        != (V4_TASK_SCHEMA_VERSION,)
         or graph.get("flow") != workflow_id
         or execution_profile
         not in tuple(
@@ -951,30 +947,24 @@ def _orchestration_action_adapter_pinned_bundle(
 
 def _orchestration_action_adapter_matrix(
     bundle: object,
-) -> tuple[
-    Mapping[str, Mapping[str, object]],
-    frozenset[str],
-]:
+) -> Mapping[str, Mapping[str, object]]:
+    """Return the exact full@4 repository operation matrix."""
+
     metadata = getattr(bundle, "repository_orchestration", None)
-    if not isinstance(metadata, Mapping) or set(metadata) != (
-        _orchestration_action_adapter_metadata_fields
-    ):
-        raise _orchestration_action_adapter_error(
-            "ORCHESTRATION_ACTION_MATRIX_INVALID",
-            "pinned bundle has no exact repository orchestration metadata",
-        )
     if (
-        metadata.get("schema")
+        not isinstance(metadata, Mapping)
+        or set(metadata)
+        != _orchestration_action_adapter_metadata_fields
+        or metadata.get("schema")
         != "dev-flow-repository-orchestration/v1"
         or metadata.get("execution_profile") != "multi-repository"
     ):
         raise _orchestration_action_adapter_error(
             "ORCHESTRATION_ACTION_MATRIX_INVALID",
-            "repository orchestration metadata has the wrong schema or profile",
+            "pinned bundle has no exact repository orchestration contract",
         )
     operation_ids = metadata.get("operation_ids")
     matrix_values = metadata.get("operation_matrix")
-    alias_values = metadata.get("legacy_aliases")
     action_nodes = metadata.get("action_nodes")
     required_operation_ids = globals().get(
         "_workflow_catalog_repository_required_operation_ids"
@@ -982,103 +972,27 @@ def _orchestration_action_adapter_matrix(
     identity_provider = globals().get(
         "_workflow_catalog_repository_semantic_identities"
     )
-    expected_alias_targets = globals().get(
-        "_workflow_catalog_repository_legacy_alias_targets"
-    )
     if (
         not isinstance(required_operation_ids, frozenset)
         or not callable(identity_provider)
-        or not isinstance(expected_alias_targets, Mapping)
         or not isinstance(operation_ids, tuple)
         or not isinstance(matrix_values, tuple)
-        or not isinstance(alias_values, tuple)
         or not isinstance(action_nodes, tuple)
         or not action_nodes
-        or any(
-            not isinstance(item, str) or not item
-            for item in operation_ids
-        )
-        or any(
-            not isinstance(item, str) or not item
-            for item in action_nodes
-        )
-        or len(operation_ids) != len(matrix_values)
         or tuple(
             sorted(operation_ids, key=lambda item: item.encode("utf-8"))
         )
         != operation_ids
         or len(operation_ids) != len(set(operation_ids))
-        or len(action_nodes) != len(set(action_nodes))
+        or len(operation_ids) != len(matrix_values)
         or set(operation_ids) != required_operation_ids
     ):
         raise _orchestration_action_adapter_error(
             "ORCHESTRATION_ACTION_MATRIX_INVALID",
-            "repository orchestration operation inventory is incomplete or non-canonical",
-        )
-    aliases: set[str] = set()
-    ordered_aliases: list[str] = []
-    alias_targets: dict[str, tuple[str, ...]] = {}
-    for alias in alias_values:
-        if (
-            not isinstance(alias, Mapping)
-            or set(alias) != _orchestration_action_adapter_alias_fields
-            or not isinstance(alias.get("operation_ids"), tuple)
-            or not alias.get("operation_ids")
-            or any(
-                not isinstance(target, str) or not target
-                for target in alias.get("operation_ids", ())
-            )
-            or len(alias.get("operation_ids", ()))
-            != len(set(alias.get("operation_ids", ())))
-            or tuple(
-                sorted(
-                    alias.get("operation_ids", ()),
-                    key=lambda item: item.encode("utf-8"),
-                )
-            )
-            != alias.get("operation_ids")
-            or any(
-                target not in operation_ids
-                for target in alias.get("operation_ids", ())
-            )
-        ):
-            raise _orchestration_action_adapter_error(
-                "ORCHESTRATION_ACTION_MATRIX_INVALID",
-                "repository orchestration legacy alias is malformed",
-            )
-        alias_id = _orchestration_action_adapter_string(
-            alias.get("alias_id"), field="legacy_aliases.alias_id"
-        )
-        if alias_id in aliases or alias_id in operation_ids:
-            raise _orchestration_action_adapter_error(
-                "ORCHESTRATION_ACTION_SEMANTIC_OVERLOAD",
-                "legacy aliases cannot be authoritative operation identities",
-                details={"alias_id": alias_id},
-            )
-        aliases.add(alias_id)
-        ordered_aliases.append(alias_id)
-        alias_targets[alias_id] = tuple(alias["operation_ids"])
-    if tuple(ordered_aliases) != tuple(
-        sorted(ordered_aliases, key=lambda item: item.encode("utf-8"))
-    ) or alias_targets != {
-        str(alias_id): tuple(targets)
-        for alias_id, targets in expected_alias_targets.items()
-    }:
-        raise _orchestration_action_adapter_error(
-            "ORCHESTRATION_ACTION_MATRIX_INVALID",
-            "repository orchestration aliases must use canonical order",
+            "repository operation inventory is incomplete or non-canonical",
         )
     by_operation: dict[str, Mapping[str, object]] = {}
-    semantic_owners: dict[str, tuple[str, str]] = {
-        operation_id: (operation_id, "operation_id")
-        for operation_id in operation_ids
-    }
-    semantic_owners.update(
-        {
-            alias_id: (alias_id, "legacy_alias")
-            for alias_id in aliases
-        }
-    )
+    semantic_owners: set[str] = set(operation_ids)
     for index, item in enumerate(matrix_values):
         if (
             not isinstance(item, Mapping)
@@ -1086,113 +1000,42 @@ def _orchestration_action_adapter_matrix(
         ):
             raise _orchestration_action_adapter_error(
                 "ORCHESTRATION_ACTION_MATRIX_INVALID",
-                "repository operation matrix entry has unknown or missing fields",
+                "repository operation identity is malformed",
                 details={"index": index},
             )
         operation_id = _orchestration_action_adapter_string(
             item.get("operation_id"), field="operation_id"
         )
-        if operation_id != operation_ids[index] or operation_id in aliases:
+        expected = identity_provider(operation_id)
+        if (
+            operation_id != operation_ids[index]
+            or dict(item) != dict(expected)
+        ):
             raise _orchestration_action_adapter_error(
                 "ORCHESTRATION_ACTION_MATRIX_INVALID",
-                "operation matrix order differs from its authoritative inventory",
-                details={"operation_id": operation_id, "index": index},
+                "repository operation differs from the full@4 contract",
+                details={"operation_id": operation_id},
             )
-        normalized: dict[str, object] = {
-            "operation_id": operation_id
+        semantic_ids = {
+            str(item["action_id"]),
+            str(item["validator_id"]),
+            str(item["event_id"]),
+            str(item["write_set_id"]),
+            *(str(value) for value in item["effect_ids"]),
         }
-        for field in (
-            "action_id",
-            "validator_id",
-            "event_id",
-            "write_set_id",
-        ):
-            semantic_id = _orchestration_action_adapter_string(
-                item.get(field), field=field
-            )
-            previous = semantic_owners.get(semantic_id)
-            if previous is not None:
-                raise _orchestration_action_adapter_error(
-                    "ORCHESTRATION_ACTION_SEMANTIC_OVERLOAD",
-                    "one semantic identity cannot name two operation roles",
-                    details={
-                        "semantic_id": semantic_id,
-                        "first": list(previous),
-                        "second": [operation_id, field],
-                    },
-                )
-            semantic_owners[semantic_id] = (operation_id, field)
-            normalized[field] = semantic_id
-        raw_effect_ids = item.get("effect_ids")
-        if (
-            not isinstance(raw_effect_ids, tuple)
-            or not raw_effect_ids
-            or len(raw_effect_ids) != len(set(raw_effect_ids))
-        ):
+        if semantic_owners.intersection(semantic_ids):
             raise _orchestration_action_adapter_error(
-                "ORCHESTRATION_ACTION_MATRIX_INVALID",
-                "operation matrix requires unique immutable effect identities",
+                "ORCHESTRATION_ACTION_SEMANTIC_OVERLOAD",
+                "repository semantic identity is overloaded",
                 details={"operation_id": operation_id},
             )
-        effect_ids: list[str] = []
-        for effect_id_value in raw_effect_ids:
-            effect_id = _orchestration_action_adapter_string(
-                effect_id_value, field="effect_ids"
-            )
-            previous = semantic_owners.get(effect_id)
-            if previous is not None:
-                raise _orchestration_action_adapter_error(
-                    "ORCHESTRATION_ACTION_SEMANTIC_OVERLOAD",
-                    "one effect identity cannot be shared across operations",
-                    details={
-                        "effect_id": effect_id,
-                        "first": list(previous),
-                        "second": [operation_id, "effect_ids"],
-                    },
-                )
-            semantic_owners[effect_id] = (
-                operation_id,
-                "effect_ids",
-            )
-            effect_ids.append(effect_id)
-        normalized["effect_ids"] = tuple(effect_ids)
-        expected_identities = identity_provider(operation_id)
-        if (
-            not isinstance(expected_identities, Mapping)
-            or {
-                "action_id": normalized["action_id"],
-                "validator_id": normalized["validator_id"],
-                "event_id": normalized["event_id"],
-                "write_set_id": normalized["write_set_id"],
-                "effect_ids": normalized["effect_ids"],
-            }
-            != {
-                "action_id": expected_identities.get("action_id"),
-                "validator_id": expected_identities.get("validator_id"),
-                "event_id": expected_identities.get("event_id"),
-                "write_set_id": expected_identities.get("write_set_id"),
-                "effect_ids": tuple(
-                    expected_identities.get("effect_ids", ())
-                ),
-            }
-        ):
-            raise _orchestration_action_adapter_error(
-                "ORCHESTRATION_ACTION_MATRIX_INVALID",
-                "operation matrix differs from its package-owned exact semantic identities",
-                details={"operation_id": operation_id},
-            )
+        semantic_owners.update(semantic_ids)
         frozen = _orchestration_action_adapter_freeze(
-            normalized, f"$matrix/{index}"
+            dict(item), f"$matrix/{index}"
         )
         assert isinstance(frozen, Mapping)
         by_operation[operation_id] = frozen
-    if tuple(by_operation) != operation_ids:
-        raise _orchestration_action_adapter_error(
-            "ORCHESTRATION_ACTION_MATRIX_INVALID",
-            "operation matrix does not exactly cover its operation inventory",
-        )
-    return MappingProxyType(by_operation), frozenset(aliases)
-
+    return MappingProxyType(by_operation)
 
 def _orchestration_action_adapter_select(
     state: Mapping[str, object],
@@ -1224,15 +1067,7 @@ def _orchestration_action_adapter_select(
                 "ORCHESTRATION_ACTION_MATRIX_INVALID",
                 "manager registry contract source is unavailable",
             ) from exc
-    matrix, aliases = _orchestration_action_adapter_matrix(
-        contract_bundle
-    )
-    if operation_id in aliases:
-        raise _orchestration_action_adapter_error(
-            "ORCHESTRATION_ACTION_LEGACY_ALIAS_FORBIDDEN",
-            "frozen legacy orchestration aliases cannot authorize schema-v3 actions",
-            details={"operation_id": operation_id},
-        )
+    matrix = _orchestration_action_adapter_matrix(contract_bundle)
     contract = matrix.get(operation_id)
     if contract is None:
         raise _orchestration_action_adapter_error(

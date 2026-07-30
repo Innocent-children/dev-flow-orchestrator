@@ -63,14 +63,12 @@ _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _POSIX_CONTROL_CHARS = set(";&|()\n{}")
 _GIT_TOKEN = re.compile(
-    r"(?:^|[^A-Za-z0-9_.-])git(?:\.exe)?(?=$|[^A-Za-z0-9_.-])",
+    r"(?:^|[^A-Za-z0-9_.-])git(?=$|[^A-Za-z0-9_.-])",
     re.IGNORECASE,
 )
 _LEADING_WORDS = {"!", "if", "then", "elif", "while", "until", "do"}
-_WRAPPERS = {"call", "command", "env", "exec", "nice", "nohup", "sudo", "time"}
+_WRAPPERS = {"command", "env", "exec", "nice", "nohup", "sudo", "time"}
 _SHELLS = {"bash", "dash", "ksh", "sh", "zsh"}
-_CMD_SHELLS = {"cmd"}
-_POWERSHELLS = {"powershell", "pwsh"}
 _WRAPPER_VALUE_OPTIONS = {
     "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
     "nice": {"-n", "--adjustment"},
@@ -226,16 +224,14 @@ def _controller_workflow_view(
             candidate = dict(task)
             candidate["status"] = origin
             progress_state = candidate
-    protocol_state = task
     revision = task.get("revision")
     if (
         not isinstance(revision, int)
         or isinstance(revision, bool)
         or revision < 0
     ):
-        compatible = dict(task)
-        compatible["revision"] = 0
-        protocol_state = compatible
+        raise ValueError("V4 task revision is invalid")
+    protocol_state = task
     node_description = workflow_node_description(task)
     node = node_description.get("node")
     actions: list[dict[str, object]] = []
@@ -272,7 +268,7 @@ def _controller_workflow_view(
         frontier=_workflow_projection_frontier(protocol_state, bundle),
         # A compact Hook locator includes a next action only when the
         # controller projects exactly one unambiguous choice.  Keep the full
-        # catalog action set separately for the legacy human-readable
+        # catalog action set separately for the human-readable
         # projection helpers; serializing every legal edge can exceed the
         # agent-v1 task-next budget and would require an artifact write.
         actions=actions if len(actions) == 1 else (),
@@ -300,14 +296,7 @@ def _localized_label(value: object, fallback: str) -> str:
 def _workflow_name(view: _WorkflowView, fallback: str) -> str:
     graph = getattr(view.bundle, "graph", None)
     labels = graph.get("labels") if isinstance(graph, Mapping) else None
-    label = _localized_label(labels, fallback)
-    # Frozen legacy adapter labels deliberately announce their provenance.
-    # Preserve the established Hook display wording without a second label
-    # table by removing only those provenance markers.
-    if view.resolution.get("adapter") is not None:
-        compatible = label.replace("冻结", "").replace("旧版", "")
-        return compatible or fallback
-    return label
+    return _localized_label(labels, fallback)
 
 
 def _node_label(view: _WorkflowView, fallback: str) -> str:
@@ -413,36 +402,12 @@ def _index_selection_context(
 
 
 def _quote(value: str) -> str:
-    """Quote one argument for the shell family native to this platform."""
-    if os.name == "nt":
-        needs_quotes = (
-            not value
-            or any(char in value for char in " \t&|<>()^")
-        )
-        if not needs_quotes:
-            return value
-        rendered = ['"']
-        backslashes = 0
-        for char in value:
-            if char == "\\":
-                backslashes += 1
-                continue
-            if char == '"':
-                rendered.append("\\" * (backslashes * 2 + 1))
-                rendered.append('"')
-            else:
-                rendered.append("\\" * backslashes)
-                rendered.append(char)
-            backslashes = 0
-        rendered.append("\\" * (backslashes * 2))
-        rendered.append('"')
-        return "".join(rendered)
+    """Quote one argument for the macOS shell."""
     return shlex.quote(value)
 
 
 def _controller_prefix(data_dir: Path, controller: Path = CONTROLLER) -> str:
-    # sys.executable, not "python3": the interpreter running this hook is the
-    # one the registration chose, and "python3" does not exist on stock Windows.
+    # Preserve the interpreter selected by the Hook registration.
     return (
         f"{_quote(sys.executable)} {_quote(str(controller))} "
         f"--data-dir {_quote(str(data_dir))}"
@@ -482,24 +447,9 @@ def build_compact_bootstrap_context(
     )
 
 
-def _uses_v2_confirmation_contract(task: Mapping[str, Any]) -> bool:
-    schema_version = task.get("schema_version")
-    return (
-        isinstance(schema_version, int)
-        and not isinstance(schema_version, bool)
-        and schema_version >= 2
-        and task.get("confirmation_contract_version") == 1
-    )
-
-
 def _confirmation_checkpoint(
     task: Mapping[str, Any], view: _WorkflowView
 ) -> str:
-    if not _uses_v2_confirmation_contract(task):
-        return (
-            "状态切换确认（schema v1）：每条状态边仍须单独用中文展示并取得"
-            "明确确认；transition/cancel 使用旧的直接调用"
-        )
     automatic_edges: list[str] = []
     for source in _ordered_node_ids(view):
         for edge in view.bundle.legal_edges(source):
@@ -516,7 +466,7 @@ def _confirmation_checkpoint(
                 automatic_edges.append(f"{action_id} {source}→{target}")
     automatic = "、".join(automatic_edges) or "none"
     return (
-        f"状态切换确认（schema v2）：自动边仅 {automatic}；其他 "
+        f"状态切换确认（schema v4）：自动边仅 {automatic}；其他 "
         "transition/cancel 必须先 --preview，再用同一 revision 的 "
         "--confirm-intent；DONE/CANCELLED 永远显式确认"
     )
@@ -707,43 +657,7 @@ def _stage_allows_writes(
     )
     if isinstance(effects, (list, tuple)) and "repository-write" in effects:
         return True
-    # Frozen adapters preserve the legacy source-write window. Derive its
-    # boundary from catalog metadata rather than Hook-local stage constants:
-    # full flow starts at the first workspace-index node; lite flow starts at
-    # the first destination reached through an approval-gated edge.
-    if view.resolution.get("adapter") is None:
-        return False
-    if bool(view.progress.get("terminal")) or bool(
-        view.progress.get("waiting")
-    ):
-        return False
-    if view.progress.get("index_role") == "workspace":
-        return True
-    ordered = _ordered_node_ids(view)
-    if any(
-        isinstance(view.bundle.node(node_id), Mapping)
-        and view.bundle.node(node_id).get("index_role") == "workspace"
-        for node_id in ordered
-    ):
-        return False
-    current = view.progress.get("position")
-    if (
-        not isinstance(current, int)
-        or isinstance(current, bool)
-        or current < 0
-    ):
-        return False
-    gate_destinations: list[int] = []
-    for source in ordered:
-        for edge in view.bundle.legal_edges(source):
-            if not isinstance(edge, Mapping) or not isinstance(
-                edge.get("gate"), Mapping
-            ):
-                continue
-            target = edge.get("target")
-            if isinstance(target, str) and target in ordered:
-                gate_destinations.append(ordered.index(target))
-    return bool(gate_destinations) and current >= min(gate_destinations)
+    return False
 
 
 def _evidence_root(task: Mapping[str, Any], data_dir: Path) -> Optional[Path]:
@@ -1096,145 +1010,8 @@ def _posix_segments(command: str) -> tuple[list[list[str]], Optional[str]]:
     return parsed.segments, parsed.error
 
 
-def _cmd_segments(command: str) -> tuple[list[list[str]], Optional[str]]:
-    """Tokenize the conservative cmd.exe subset used by command hooks."""
-
-    result: list[list[str]] = []
-    current: list[str] = []
-    token: list[str] = []
-    quoted = False
-    index = 0
-
-    def finish_token() -> None:
-        if token:
-            current.append("".join(token))
-            token.clear()
-
-    def finish_segment() -> None:
-        finish_token()
-        if current:
-            result.append(list(current))
-            current.clear()
-
-    while index < len(command):
-        char = command[index]
-        if char == "^":
-            index += 1
-            if index >= len(command):
-                return [], "cmd.exe payload ends with an incomplete caret escape"
-            token.append(command[index])
-            index += 1
-            continue
-        if char == '"':
-            quoted = not quoted
-            index += 1
-            continue
-        if not quoted and char in " \t\r":
-            finish_token()
-            index += 1
-            continue
-        if not quoted and char in "&|()\n":
-            finish_segment()
-            index += 1
-            while index < len(command) and command[index] == char:
-                index += 1
-            continue
-        token.append(char)
-        index += 1
-    if quoted:
-        return [], "cmd.exe payload has an unmatched double quote"
-    finish_segment()
-    return result, None
-
-
-def _powershell_segments(command: str) -> tuple[list[list[str]], Optional[str]]:
-    """Tokenize a static PowerShell command payload without evaluating it."""
-
-    result: list[list[str]] = []
-    current: list[str] = []
-    token: list[str] = []
-    quote: Optional[str] = None
-    index = 0
-
-    def finish_token() -> None:
-        if token:
-            current.append("".join(token))
-            token.clear()
-
-    def finish_segment() -> None:
-        finish_token()
-        if current:
-            result.append(list(current))
-            current.clear()
-
-    while index < len(command):
-        char = command[index]
-        if quote == "'" and char == "'" and index + 1 < len(command) and command[index + 1] == "'":
-            token.append("'")
-            index += 2
-            continue
-        if char == "`" and quote != "'":
-            index += 1
-            if index >= len(command):
-                return [], "PowerShell payload ends with an incomplete backtick escape"
-            token.append(command[index])
-            index += 1
-            continue
-        if char in {"'", '"'}:
-            if quote is None:
-                quote = char
-                index += 1
-                continue
-            if quote == char:
-                quote = None
-                index += 1
-                continue
-        if quote is None and char in " \t\r":
-            finish_token()
-            index += 1
-            continue
-        if quote is None and char == "#":
-            finish_segment()
-            newline = command.find("\n", index)
-            if newline < 0:
-                index = len(command)
-            else:
-                index = newline
-            continue
-        if quote is None and char in ";|(){}\n":
-            if char in "({" and current == ["&"] and not token:
-                return [], (
-                    "PowerShell call operator targets a computed expression "
-                    "or script block"
-                )
-            finish_segment()
-            index += 1
-            while index < len(command) and command[index] == char:
-                index += 1
-            continue
-        if quote is None and char == "&":
-            if not current and not token:
-                current.append("&")
-            else:
-                finish_segment()
-            index += 1
-            if index < len(command) and command[index] == "&":
-                index += 1
-            continue
-        token.append(char)
-        index += 1
-    if quote is not None:
-        return [], f"PowerShell payload has an unmatched {quote} quote"
-    finish_segment()
-    return result, None
-
-
 def _basename(token: str) -> str:
-    basename = re.split(r"[\\/]", token)[-1].lower()
-    for suffix in (".exe", ".cmd", ".bat", ".com"):
-        if basename.endswith(suffix):
-            return basename[: -len(suffix)]
-    return basename
+    return token.rsplit("/", 1)[-1].lower()
 
 
 def _simple_command(tokens: Sequence[str]) -> tuple[Optional[str], list[str]]:
@@ -1278,28 +1055,7 @@ def _payload_has_dynamic_expansion(command: str, dialect: str) -> bool:
     index = 0
     while index < len(command):
         char = command[index]
-        if dialect == "cmd":
-            if char == "^":
-                index += 2
-                continue
-            if char in {"%", "!"}:
-                return True
-            index += 1
-            continue
-
-        if dialect == "powershell":
-            if (
-                quote == "'"
-                and char == "'"
-                and index + 1 < len(command)
-                and command[index + 1] == "'"
-            ):
-                index += 2
-                continue
-            if char == "`" and quote != "'":
-                index += 2
-                continue
-        elif char == "\\" and quote != "'":
+        if char == "\\" and quote != "'":
             index += 2
             continue
 
@@ -1313,7 +1069,7 @@ def _payload_has_dynamic_expansion(command: str, dialect: str) -> bool:
                 index += 1
                 continue
         if quote != "'" and (
-            char == "$" or (dialect == "posix" and char == "`")
+            char == "$" or char == "`"
         ):
             return True
         index += 1
@@ -1333,48 +1089,6 @@ def _posix_shell_payload(args: Sequence[str]) -> tuple[Optional[str], Optional[s
     return None, "POSIX shell invocation has no inspectable command payload"
 
 
-def _cmd_shell_payload(args: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
-    matches: list[tuple[int, str]] = []
-    for index, argument in enumerate(args):
-        lowered = argument.lower()
-        if lowered == "/c":
-            matches.append((index, ""))
-        elif lowered.startswith("/c") and len(argument) > 2:
-            matches.append((index, argument[2:]))
-    if len(matches) > 1:
-        return None, "cmd.exe payload has more than one /c option"
-    if not matches:
-        return None, "cmd.exe invocation has no supported static /c payload"
-    index, attached = matches[0]
-    parts = ([attached] if attached else []) + list(args[index + 1 :])
-    if not parts or not any(part.strip() for part in parts):
-        return None, "cmd.exe /c option has no payload"
-    return " ".join(parts), None
-
-
-def _powershell_payload(args: Sequence[str]) -> tuple[Optional[str], Optional[str]]:
-    matches: list[tuple[int, str]] = []
-    for index, argument in enumerate(args):
-        lowered = argument.lower()
-        if lowered in {"-encodedcommand", "-enc", "-e"}:
-            return None, "encoded PowerShell commands cannot be inspected safely"
-        if lowered in {"-file", "-f"}:
-            return None, "PowerShell -File commands cannot be inspected safely"
-        if lowered in {"-command", "-c", "/command", "/c"}:
-            matches.append((index, ""))
-        elif lowered.startswith(("-command:", "/command:")):
-            matches.append((index, argument.split(":", 1)[1]))
-    if len(matches) > 1:
-        return None, "PowerShell payload has more than one command option"
-    if not matches:
-        return None, "PowerShell invocation has no supported static -Command payload"
-    index, attached = matches[0]
-    parts = ([attached] if attached else []) + list(args[index + 1 :])
-    if not parts or not any(part.strip() for part in parts) or parts[0] == "-":
-        return None, "PowerShell command option has no static payload"
-    return " ".join(parts), None
-
-
 def _inspection_error(wrapper: str, detail: str) -> str:
     return (
         f"Dev Flow blocked a recognized {wrapper} wrapper because its payload "
@@ -1391,11 +1105,7 @@ def _inspect_tokens(
 ) -> _Inspection:
     invocations: list[tuple[str, list[str], Path]] = []
     recognized = False
-    ambiguous_commands = {
-        "posix": {"eval", "source", "."},
-        "cmd": {"for", "if"},
-        "powershell": {"iex", "invoke-expression"},
-    }
+    ambiguous_commands = {"posix": {"eval", "source", "."}}
     for segment in segments:
         name, args = _simple_command(segment)
         if name is None:
@@ -1419,16 +1129,6 @@ def _inspect_tokens(
             payload, error = _posix_shell_payload(args)
             wrapper = f"{name} POSIX shell"
             child_dialect = "posix"
-        elif name in _CMD_SHELLS:
-            recognized = True
-            payload, error = _cmd_shell_payload(args)
-            wrapper = "cmd.exe"
-            child_dialect = "cmd"
-        elif name in _POWERSHELLS:
-            recognized = True
-            payload, error = _powershell_payload(args)
-            wrapper = f"{name} PowerShell"
-            child_dialect = "powershell"
         else:
             continue
         if error is not None:
@@ -1472,15 +1172,9 @@ def _inspect_payload(
             False,
             False,
         )
-    has_posix_heredoc = False
-    if dialect == "cmd":
-        segments, error = _cmd_segments(command)
-    elif dialect == "powershell":
-        segments, error = _powershell_segments(command)
-    else:
-        parsed = _parse_posix_segments(command)
-        segments, error = parsed.segments, parsed.error
-        has_posix_heredoc = parsed.has_heredoc
+    parsed = _parse_posix_segments(command)
+    segments, error = parsed.segments, parsed.error
+    has_posix_heredoc = parsed.has_heredoc
     if error is not None:
         diagnostic = _inspection_error(dialect, error) if strict else None
         return _Inspection([], diagnostic, False, True)
@@ -1507,24 +1201,9 @@ def _recognized_wrapper_prefix(command: str) -> Optional[str]:
     else:
         token = raw.split(None, 1)[0]
     name = _basename(token)
-    if name in _SHELLS | _CMD_SHELLS | _POWERSHELLS:
+    if name in _SHELLS:
         return name
     return None
-
-
-def _raw_cmd_prefix_payload(command: str) -> tuple[Optional[str], Optional[str]]:
-    match = re.search(r"(?i)(?:^|\s)/c(?=\s|$)", command)
-    if match is None:
-        return None, None
-    payload = command[match.end() :].lstrip()
-    if not payload:
-        return None, "cmd.exe /c option has no payload"
-    # With /s /c, Command Prompt conventionally wraps a quoted executable and
-    # its arguments in one extra pair of quotes:
-    #   cmd.exe /s /c ""C:\Program Files\Git\cmd\git.exe" status"
-    if len(payload) >= 2 and payload[0] == payload[-1] == '"':
-        payload = payload[1:-1]
-    return payload, None
 
 
 def _parse_git(args: Sequence[str], cwd: Path) -> Optional[tuple[str, list[str], Path]]:
@@ -1566,17 +1245,7 @@ def _may_contain_git(command: str) -> bool:
 def _git_invocations(
     command: str, cwd: Path
 ) -> tuple[list[tuple[str, list[str], Path]], Optional[str]]:
-    # Codex's canonical command tool is named Bash on every platform, but its
-    # payload may contain native Windows executables.  Inspect once with POSIX
-    # rules and once with cmd rules so unquoted backslash paths are not damaged.
     prefix = _recognized_wrapper_prefix(command)
-    if prefix == "cmd":
-        payload, error = _raw_cmd_prefix_payload(command)
-        if error is not None:
-            return [], _inspection_error("cmd.exe", error)
-        if payload is not None:
-            inspection = _inspect_payload(payload, cwd, "cmd", 1, True)
-            return inspection.invocations, inspection.diagnostic
 
     primary = _inspect_payload(command, cwd, "posix", 0, False)
     if primary.parse_failed and _may_contain_git(command):
@@ -1585,8 +1254,6 @@ def _git_invocations(
             "the command may invoke Git but its POSIX syntax could not be inspected safely",
         )
     inspections = [primary]
-    if not primary.recognized_wrapper and not primary.has_posix_heredoc:
-        inspections.append(_inspect_payload(command, cwd, "cmd", 0, False))
     result: list[tuple[str, list[str], Path]] = []
     seen: set[tuple[str, tuple[str, ...], str]] = set()
     for inspection in inspections:

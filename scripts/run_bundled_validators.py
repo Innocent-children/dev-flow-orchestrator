@@ -1,510 +1,152 @@
 #!/usr/bin/env python3
-"""Run available Codex-bundled validators against one exact plugin snapshot."""
-
+"""Run every bounded V4 release validator; never aggregate unit tests here."""
 from __future__ import annotations
 
-import argparse
+import base64
+import gzip
 import hashlib
 import json
-import os
-import platform
-import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
-
-try:
-    from scripts import candidate_identity
-except ImportError:  # Direct script execution puts scripts/ on sys.path.
-    import candidate_identity  # type: ignore
 
 
-EXCLUDED_PARTS = {".git", ".codex", ".idea", "__pycache__"}
-SKILL_VALIDATOR_RELATIVE = Path(
-    "skills/.system/skill-creator/scripts/quick_validate.py"
+SKILL_DIRECTORIES = (
+    Path("skills/analyze-change-impact"),
+    Path("skills/follow-dev-flow"),
+    Path("skills/review-dev-flow-change"),
 )
-PLUGIN_VALIDATOR_RELATIVE = Path(
-    "skills/.system/plugin-creator/scripts/validate_plugin.py"
-)
-UNAVAILABLE_MARKERS = (
-    "modulenotfounderror",
-    "no module named",
-    "cannot import name",
-    "failed to import",
-    "syntaxerror",
-)
+VALIDATOR_SNAPSHOTS = {
+    "quick_validate.py": (
+        "6cc9dc3199c935916cf6f73fcbbbb0e3bb1b58c8f5109fefa499978908164f51",
+        "H4sIAAAAAAACA61XYW/bNhD9rl9x0QZE2mwlaYsBC5IMGZp2xZxsw1JgQ9sJjETbXCRKI6k0muH/3jtKlijZToGt+RBL9N27d3fvSPqrg6NKq6M7IY+4fICyNstCPvd83/d+q0RyDw8sEykzopCgEyVKA/NCgb4XWaZhCrmQImcZPHCl0cY6eiIvC2VA8c2TrrU3V0UOJTPLTNxBu/4rvnbmNcszz7u+/CP+/ec3s1l8c3l9Fc+ubl7f/gTn8N0Lz/NSPt8Q4rHlENj/MeGGpx7gHzL4kWmRuMyLObCGM/Ejq94NsYmGC+Q5JnmKBo71EfiWXpSnDZKYgyxMZx3xR6GNDlo29Ke4qZSEVyzTfNK7W7d5UUkEsrZJIQ2XpouHYIqzNDb80QShG6y1jLRhyuiPAun70+nU3x/0poA/L69ngF2QJmfGcDWIjUsJlULxyD4Gyv8LEd/LIPrmh/C9JPTJJu6EzF7+cns5mw1oWc+9FN5I25ERBYVPLQfnC5sz0rGI0UIVVRmctH0xqu5juGDnVkKRZnMeZwVLgzFg2Lm1hIUWEmsoE+7aTiAViXFquSOZV07cvNIG7jhKzJaYnFF0TNWNQPhjwstG3hEZXCmFE8Q08H2lmne1soBCummewoqv24qxLCs+8jQuVVFyZQTXWISVL1nOsVt+ypuRRTb0momES22/aR2npigyTQs5NwyHhfnrBrmS/LHkiUHwe14TrObGLVJEy0EY4h6wzWIjihFKn2/rgrAUPPq7EDLQuAnwNNhGC/u+9YC7XEfhHL+2vsGgpU21B0tz/20fATECHVL5u5Ed9qGPt47gsk3J6QVTHK3ahNZ+H6pVMlao6VUjxmGb943RtdCo2gUckufhyKvbkga9/0/wDsB2FOtNBLANrigWKJJOfv5gc3BmjQwmoI0K90/ADYH3k4XGyGoCC0RambpsQMIojukzjte+S4k+InIpnX0T107HG4C73b1j03+Pp99PP3z7NbK38Du3gKGI9gipEZNN4nBFWOtD0MuiylLKZ1mXSy6nCdMcAlKHso8ZpyJq2n8WwuAnk2lrq6GQWR36wyjDDa1J2jkR/BBwp7HrXKbDVTwvfGrrsCxfIs2ESXsgEhO8VKRAcds0KDIdIgwj46fmSWXEw6Yg+qn0Mi6bnsMF7LwkfJEshAbcEyErcASCVRdzDcmSKZZQe8II/B3u1+xR5FVOCKud/FyMaCtT++rM3K7BGu3ne+fLsfvcmL10Ij41bQ7k1tANWTtv4xF0vhpMon9mpejikEIvxqtPnshuJq0EN0pjcpFxuMPa33OjITgj+IvQH8vLTRJVdnL87MX/FZXLaltbbsCRxBw5EY/Pa6fldqsqe8mkGyQ523vEAe7YHia5aRyc4+kZxzkWJ479U8+pAV7VI6YWDyEcnMOzPv0SFYESfKvZAg+15ncC/EM/EeLNjTwqazhrrq6pUHguFqq+8PshJmi8HZvuJmcdJ5BzTaionfHdvuXy7uRDg9KQaO2bpQ70mDJobk0cmwEY5BNKqqcZ3QwAAA==",
+    ),
+    "validate_plugin.py": (
+        "ebda00d55d7518b127f675f062fb5c6e7a1ffdc0a99df1a55ac594400d7d3228",
+        "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",
+    ),
+}
 
 
-def _json_line(event: str, **values: Any) -> None:
+def _write_validator_snapshot(directory: Path, name: str) -> Path:
+    expected, encoded = VALIDATOR_SNAPSHOTS[name]
+    payload = gzip.decompress(base64.b64decode(encoded))
+    observed = hashlib.sha256(payload).hexdigest()
+    if observed != expected:
+        raise ValueError(f"bundled validator snapshot digest mismatch: {name}")
+    path = directory / name
+    path.write_bytes(payload)
+    return path
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix="dev-flow-v4-validators-") as temporary:
+        validator_root = Path(temporary)
+        skill_validator = _write_validator_snapshot(
+            validator_root, "quick_validate.py"
+        )
+        plugin_validator = _write_validator_snapshot(
+            validator_root, "validate_plugin.py"
+        )
+        commands = [
+        *(
+            [sys.executable, str(skill_validator), str(root / relative)]
+            for relative in SKILL_DIRECTORIES
+        ),
+        [sys.executable, str(plugin_validator), str(root)],
+        [sys.executable, "scripts/audit_runtime_imports.py", "--root", str(root)],
+        [sys.executable, "scripts/validate_package.py", "--root", str(root)],
+        [
+            sys.executable,
+            "scripts/candidate_identity.py",
+            "--root",
+            str(root),
+            "verify",
+            "--l0-allowlist",
+            "workflows/provenance/l0-allowlist.json",
+            "--l2-allowlist",
+            "workflows/provenance/l2-allowlist.json",
+            "--genesis",
+            "workflows/provenance/v4-genesis.json",
+        ],
+        [
+            sys.executable,
+            "scripts/candidate_identity.py",
+            "--root",
+            str(root),
+            "vector",
+        ],
+        [
+            "openspec",
+            "validate",
+            "establish-v4-only-runtime",
+            "--strict",
+            "--json",
+        ],
+        ]
+        results: list[dict[str, object]] = []
+        for command in commands:
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=root,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+            except OSError as exc:
+                results.append(
+                    {
+                        "command": command,
+                        "returncode": 127,
+                        "stdout": "",
+                        "stderr": str(exc),
+                        "ok": False,
+                    }
+                )
+                continue
+            results.append(
+                {
+                    "command": command,
+                    "returncode": completed.returncode,
+                    "stdout": completed.stdout.strip(),
+                    "stderr": completed.stderr.strip(),
+                    "ok": completed.returncode == 0,
+                }
+            )
+    ok = all(result.get("ok") is True for result in results)
+    identity = next(
+        (
+            json.loads(str(result["stdout"]))
+            for result in results
+            if any(
+                str(part).endswith("candidate_identity.py")
+                for part in result["command"]
+            )
+            and "verify" in result["command"]
+            and result.get("returncode") == 0
+        ),
+        {},
+    )
     print(
         json.dumps(
-            {"event": event, **values},
+            {
+                "schema": "dev-flow-v4-bundled-validation/v1",
+                "ok": ok,
+                "canonical_candidate_sha256": identity.get(
+                    "canonical_candidate_sha256"
+                ),
+                "results": results,
+            },
             ensure_ascii=False,
             sort_keys=True,
-            separators=(",", ":"),
         )
     )
-
-
-def _candidate_paths(plugin_root: Path) -> list[Path]:
-    result: list[Path] = []
-    for path in plugin_root.rglob("*"):
-        relative = path.relative_to(plugin_root)
-        if any(part in EXCLUDED_PARTS for part in relative.parts):
-            continue
-        result.append(path)
-    return sorted(result, key=lambda item: item.relative_to(plugin_root).as_posix())
-
-
-def snapshot_digest(plugin_root: Path) -> tuple[str, int]:
-    """Hash path identities, kinds, executable bits, symlink targets, and file bytes."""
-
-    digest = hashlib.sha256()
-    count = 0
-    for path in _candidate_paths(plugin_root):
-        relative = path.relative_to(plugin_root).as_posix()
-        try:
-            metadata = path.lstat()
-        except OSError as exc:
-            raise RuntimeError(f"cannot inspect candidate path {relative}: {exc}") from exc
-        if stat.S_ISLNK(metadata.st_mode):
-            kind = b"link"
-            try:
-                payload = os.readlink(path).encode("utf-8", "surrogateescape")
-            except OSError as exc:
-                raise RuntimeError(
-                    f"cannot read candidate symlink {relative}: {exc}"
-                ) from exc
-        elif stat.S_ISREG(metadata.st_mode):
-            kind = b"file+x" if metadata.st_mode & stat.S_IXUSR else b"file"
-            try:
-                payload = path.read_bytes()
-            except OSError as exc:
-                raise RuntimeError(
-                    f"cannot read candidate file {relative}: {exc}"
-                ) from exc
-        elif stat.S_ISDIR(metadata.st_mode):
-            kind = b"directory"
-            payload = b""
-        else:
-            raise RuntimeError(f"unsupported candidate path kind: {relative}")
-        encoded_path = relative.encode("utf-8", "surrogateescape")
-        digest.update(len(encoded_path).to_bytes(8, "big"))
-        digest.update(encoded_path)
-        digest.update(len(kind).to_bytes(2, "big"))
-        digest.update(kind)
-        digest.update(len(payload).to_bytes(8, "big"))
-        digest.update(payload)
-        count += 1
-    return digest.hexdigest(), count
-
-
-def _run_git(plugin_root: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *arguments],
-        cwd=plugin_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        encoding="utf-8",
-        errors="backslashreplace",
-        timeout=30,
-    )
-
-
-def source_diagnostics(
-    plugin_root: Path,
-    expected_revision: Optional[str],
-    expected_canonical: Optional[str] = None,
-) -> tuple[dict[str, Any], list[str]]:
-    errors: list[str] = []
-    try:
-        host_digest, host_path_count = snapshot_digest(plugin_root)
-        canonical_digest, canonical_path_count = candidate_identity.candidate_digest(
-            plugin_root
-        )
-    except (RuntimeError, candidate_identity.CandidateIdentityError) as exc:
-        return (
-            {
-                "candidate_sha256": None,
-                "candidate_path_count": None,
-                "canonical_candidate_sha256": None,
-                "canonical_candidate_path_count": None,
-                "canonical_contract": candidate_identity.CONTRACT_VERSION,
-                "host_local_snapshot_sha256": None,
-                "host_local_snapshot_path_count": None,
-                "git_head": None,
-                "git_clean": None,
-            },
-            [str(exc)],
-        )
-    try:
-        head_result = _run_git(plugin_root, ["rev-parse", "HEAD"])
-        status_result = _run_git(
-            plugin_root,
-            ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=no"],
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        head = None
-        clean = None
-        status = ""
-        errors.append(f"real Git source diagnostics could not run: {exc}")
-    else:
-        head = head_result.stdout.strip() if head_result.returncode == 0 else None
-        if head is None:
-            errors.append(
-                "git rev-parse HEAD failed: "
-                + (head_result.stderr.strip() or f"exit {head_result.returncode}")
-            )
-        clean = status_result.returncode == 0 and not status_result.stdout.strip()
-        status = status_result.stdout.strip()
-        if status_result.returncode != 0:
-            errors.append(
-                "git status failed: "
-                + (status_result.stderr.strip() or f"exit {status_result.returncode}")
-            )
-    normalized_expected = expected_revision.strip() if expected_revision else None
-    normalized_canonical = (
-        expected_canonical.strip() if expected_canonical else None
-    )
-    if normalized_canonical and not candidate_identity.SHA256_RE.fullmatch(
-        normalized_canonical
-    ):
-        errors.append(
-            "expected canonical candidate must be exactly 64 lowercase "
-            "hexadecimal characters"
-        )
-    elif normalized_canonical and canonical_digest != normalized_canonical:
-        errors.append(
-            "canonical candidate SHA-256 does not match reviewed input: "
-            f"expected {normalized_canonical}, observed {canonical_digest}"
-        )
-    if normalized_expected and head != normalized_expected:
-        errors.append(
-            f"candidate Git HEAD {head!r} does not match expected revision "
-            f"{normalized_expected!r}"
-        )
-    if normalized_expected and clean is False:
-        errors.append(
-            "candidate worktree differs from the expected Git revision: "
-            + (status or "Git reported an unspecified difference")
-        )
-    return (
-        {
-            # Keep the legacy names as the mode-sensitive host-local identity.
-            "candidate_sha256": host_digest,
-            "candidate_path_count": host_path_count,
-            "canonical_candidate_sha256": canonical_digest,
-            "canonical_candidate_path_count": canonical_path_count,
-            "canonical_contract": candidate_identity.CONTRACT_VERSION,
-            "canonical_golden_sha256": candidate_identity.GOLDEN_SHA256,
-            "expected_canonical_candidate_sha256": normalized_canonical,
-            "host_local_snapshot_sha256": host_digest,
-            "host_local_snapshot_path_count": host_path_count,
-            "git_head": head,
-            "git_clean": clean,
-            "expected_revision": normalized_expected,
-            "github_sha": os.environ.get("GITHUB_SHA"),
-            "runner_os": os.environ.get("RUNNER_OS"),
-            "os": platform.system(),
-            "python": platform.python_version(),
-        },
-        errors,
-    )
-
-
-def _codex_homes() -> Iterable[Path]:
-    configured = os.environ.get("CODEX_HOME", "").strip()
-    if configured:
-        yield Path(configured).expanduser()
-    yield Path.home() / ".codex"
-
-
-def _validator_path(
-    environment_name: str,
-    relative: Path,
-) -> tuple[Optional[Path], bool, Optional[str]]:
-    configured = os.environ.get(environment_name, "").strip()
-    if configured:
-        path = Path(configured).expanduser().resolve()
-        if not path.is_file():
-            return None, True, f"{environment_name} does not name a file: {path}"
-        return path, True, None
-    seen: set[str] = set()
-    for root in _codex_homes():
-        path = root.expanduser().resolve() / relative
-        identity = os.path.normcase(str(path))
-        if identity in seen:
-            continue
-        seen.add(identity)
-        if path.is_file():
-            return path, False, None
-    return None, False, None
-
-
-def _validator_python() -> tuple[Optional[Path], Optional[str]]:
-    configured = os.environ.get("DEV_FLOW_VALIDATOR_PYTHON", "").strip()
-    if not configured:
-        return Path(os.path.abspath(sys.executable)), None
-    # Do not resolve the final executable symlink: a virtual environment's
-    # ``python`` commonly points at its base interpreter, but launching through
-    # the venv path is what activates that environment's site-packages.
-    interpreter = Path(
-        os.path.abspath(os.fspath(Path(configured).expanduser()))
-    )
-    if not interpreter.is_file():
-        return None, (
-            "DEV_FLOW_VALIDATOR_PYTHON does not name an interpreter file: "
-            f"{interpreter}"
-        )
-    return interpreter, None
-
-
-def _unavailable_reason(completed: subprocess.CompletedProcess) -> Optional[str]:
-    combined = f"{completed.stdout}\n{completed.stderr}".strip()
-    lowered = combined.casefold()
-    if any(marker in lowered for marker in UNAVAILABLE_MARKERS):
-        last_lines = [line.strip() for line in combined.splitlines() if line.strip()]
-        return last_lines[-1] if last_lines else "validator dependency is unavailable"
-    return None
-
-
-def _run_validator(
-    *,
-    validator_kind: str,
-    validator_path: Path,
-    interpreter: Path,
-    target: Path,
-) -> tuple[str, Optional[str]]:
-    command = [str(interpreter), str(validator_path), str(target)]
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=target if target.is_dir() else target.parent,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            encoding="utf-8",
-            errors="backslashreplace",
-            timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        detail = f"could not start validator: {exc}"
-        _json_line(
-            "bundled_validator",
-            validator=validator_kind,
-            target=str(target),
-            status="failed",
-            detail=detail,
-        )
-        return "failed", detail
-    unavailable = _unavailable_reason(completed)
-    if unavailable is not None:
-        _json_line(
-            "bundled_validator",
-            validator=validator_kind,
-            target=str(target),
-            validator_path=str(validator_path),
-            interpreter=str(interpreter),
-            status="unavailable",
-            detail=unavailable,
-        )
-        return "unavailable", unavailable
-    output = completed.stdout.strip()
-    error_output = completed.stderr.strip()
-    if completed.returncode != 0:
-        detail = error_output or output or f"validator exited {completed.returncode}"
-        _json_line(
-            "bundled_validator",
-            validator=validator_kind,
-            target=str(target),
-            validator_path=str(validator_path),
-            interpreter=str(interpreter),
-            status="failed",
-            exit_code=completed.returncode,
-            detail=detail,
-        )
-        return "failed", detail
-    _json_line(
-        "bundled_validator",
-        validator=validator_kind,
-        target=str(target),
-        validator_path=str(validator_path),
-        interpreter=str(interpreter),
-        status="passed",
-        detail=output or "validator exited successfully",
-    )
-    return "passed", None
-
-
-def validate_with_bundled_tools(
-    plugin_root: Path,
-    *,
-    require_available: bool,
-) -> list[str]:
-    errors: list[str] = []
-    interpreter, interpreter_error = _validator_python()
-    if interpreter_error is not None or interpreter is None:
-        return [interpreter_error or "validator interpreter is unavailable"]
-    skill_validator, skill_explicit, skill_error = _validator_path(
-        "DEV_FLOW_SKILL_VALIDATOR",
-        SKILL_VALIDATOR_RELATIVE,
-    )
-    plugin_validator, plugin_explicit, plugin_error = _validator_path(
-        "DEV_FLOW_PLUGIN_VALIDATOR",
-        PLUGIN_VALIDATOR_RELATIVE,
-    )
-    for kind, path, explicit, discovery_error in (
-        ("skill", skill_validator, skill_explicit, skill_error),
-        ("plugin-manifest", plugin_validator, plugin_explicit, plugin_error),
-    ):
-        if discovery_error is not None:
-            errors.append(discovery_error)
-            _json_line(
-                "bundled_validator",
-                validator=kind,
-                status="failed",
-                detail=discovery_error,
-            )
-        elif path is None:
-            detail = (
-                "Codex-bundled validator was not found; set "
-                + (
-                    "DEV_FLOW_SKILL_VALIDATOR"
-                    if kind == "skill"
-                    else "DEV_FLOW_PLUGIN_VALIDATOR"
-                )
-                + " to an explicit validator path"
-            )
-            _json_line(
-                "bundled_validator",
-                validator=kind,
-                status="unavailable",
-                detail=detail,
-            )
-            if require_available:
-                errors.append(f"{kind}: {detail}")
-        elif explicit:
-            _json_line(
-                "bundled_validator_discovery",
-                validator=kind,
-                source="explicit-environment",
-                path=str(path),
-            )
-        else:
-            _json_line(
-                "bundled_validator_discovery",
-                validator=kind,
-                source="codex-home",
-                path=str(path),
-            )
-    if skill_validator is not None and skill_error is None:
-        skill_roots = sorted(
-            path.parent
-            for path in (plugin_root / "skills").glob("*/SKILL.md")
-            if path.is_file()
-        )
-        if not skill_roots:
-            errors.append("package contains no shipped skills to validate")
-        for skill_root in skill_roots:
-            status, detail = _run_validator(
-                validator_kind=f"skill:{skill_root.name}",
-                validator_path=skill_validator,
-                interpreter=interpreter,
-                target=skill_root,
-            )
-            if status == "failed" or (status == "unavailable" and require_available):
-                errors.append(f"skill:{skill_root.name}: {detail}")
-    if plugin_validator is not None and plugin_error is None:
-        status, detail = _run_validator(
-            validator_kind="plugin-manifest",
-            validator_path=plugin_validator,
-            interpreter=interpreter,
-            target=plugin_root,
-        )
-        if status == "failed" or (status == "unavailable" and require_available):
-            errors.append(f"plugin-manifest: {detail}")
-    return errors
-
-
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Record one exact candidate snapshot, then run Codex-bundled skill and "
-            "plugin manifest validators when their official scripts are available."
-        )
-    )
-    parser.add_argument(
-        "plugin_root",
-        nargs="?",
-        default=str(Path(__file__).resolve().parents[1]),
-        help="plugin source root (defaults to this script's parent plugin)",
-    )
-    parser.add_argument(
-        "--require-available",
-        action="store_true",
-        help="fail when either official bundled validator cannot run",
-    )
-    parser.add_argument(
-        "--snapshot-only",
-        action="store_true",
-        help="record and verify the candidate snapshot without invoking validators",
-    )
-    return parser
-
-
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = _parser().parse_args(argv)
-    plugin_root = Path(args.plugin_root).expanduser().resolve()
-    expected_revision = (
-        os.environ.get("DEV_FLOW_EXPECTED_GIT_SHA", "").strip()
-        or os.environ.get("GITHUB_SHA", "").strip()
-        or None
-    )
-    expected_canonical = (
-        os.environ.get("DEV_FLOW_EXPECTED_CANONICAL_SHA256", "").strip() or None
-    )
-    before, errors = source_diagnostics(
-        plugin_root,
-        expected_revision,
-        expected_canonical,
-    )
-    _json_line("candidate_snapshot", phase="before", **before)
-    if not args.snapshot_only:
-        errors.extend(
-            validate_with_bundled_tools(
-                plugin_root,
-                require_available=args.require_available,
-            )
-        )
-    after, after_errors = source_diagnostics(
-        plugin_root,
-        expected_revision,
-        expected_canonical,
-    )
-    errors.extend(after_errors)
-    _json_line("candidate_snapshot", phase="after", **after)
-    if before.get("candidate_sha256") != after.get("candidate_sha256"):
-        errors.append(
-            "candidate package snapshot changed while bundled validators were running: "
-            f"{before.get('candidate_sha256')} -> {after.get('candidate_sha256')}"
-        )
-    if before.get("canonical_candidate_sha256") != after.get(
-        "canonical_candidate_sha256"
-    ):
-        errors.append(
-            "canonical candidate changed while bundled validators were running: "
-            f"{before.get('canonical_candidate_sha256')} -> "
-            f"{after.get('canonical_candidate_sha256')}"
-        )
-    if errors:
-        for error in errors:
-            _json_line("validation_error", detail=error)
-        _json_line("bundled_validation_summary", status="failed", error_count=len(errors))
-        return 1
-    _json_line("bundled_validation_summary", status="passed", error_count=0)
-    return 0
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

@@ -1,1 +1,0 @@
-{"artifacts":["tests/test_workflow_legacy_golden.py","tests/test_cli_compatibility_golden.py"],"status":"completed","summary":"Implemented compatibility golden baselines for full and lite workflows; focused tests pass.","tests":{"command":"python3 -m unittest tests.test_workflow_legacy_golden tests.test_cli_compatibility_golden -v","passed":true}}

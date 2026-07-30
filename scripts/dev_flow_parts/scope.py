@@ -402,9 +402,7 @@ def _assert_path_in_scope(
     )
 
 
-def _load_workspace_registry(
-    data_root: Path, *, allow_legacy_container: bool = False
-) -> dict[str, Any]:
+def _load_workspace_registry(data_root: Path) -> dict[str, Any]:
     path = data_root / "workspace-registry.json"
     if not path.exists():
         return {
@@ -431,17 +429,10 @@ def _load_workspace_registry(
             details={"path": str(path)},
         )
     _assert_supported_evidence_versions(value)
-    if (
-        value.get("evidence_contract_version")
-        != EVIDENCE_CONTRACT_VERSION
-        and not allow_legacy_container
-    ):
+    if value.get("evidence_contract_version") != EVIDENCE_CONTRACT_VERSION:
         raise FlowError(
-            "EVIDENCE_REGENERATION_REQUIRED",
-            (
-                "legacy workspace registry evidence must be regenerated from "
-                "a current approved workspace plan"
-            ),
+            "WORKSPACE_REGISTRY_INVALID",
+            "workspace registry uses the wrong evidence contract",
             details={
                 "path": str(path),
                 "required_version": EVIDENCE_CONTRACT_VERSION,
@@ -605,21 +596,16 @@ def _repository_claim(root: Path, git_common_dir: Path) -> dict[str, Any]:
 
 
 def _recorded_repository_claim(repo: dict[str, Any]) -> dict[str, Any]:
-    """Load a durable repository claim, deriving a safe legacy equivalent."""
+    """Load the exact repository claim written by V4 task creation."""
 
     stored = repo.get("repository_claim")
-    if stored is not None and not isinstance(stored, dict):
+    if not isinstance(stored, dict):
         raise FlowError(
             "REPOSITORY_CLAIM_UNAVAILABLE",
-            "repository ownership claim has an invalid structure",
+            "repository ownership claim is missing or invalid",
             details={"repository_id": repo.get("id")},
         )
-    stored = stored or {}
-    root_value = (
-        stored.get("canonical_path")
-        or repo.get("canonical_path")
-        or repo.get("path")
-    )
+    root_value = stored.get("canonical_path")
     if not isinstance(root_value, str) or not root_value:
         raise FlowError(
             "REPOSITORY_CLAIM_UNAVAILABLE",
@@ -628,21 +614,13 @@ def _recorded_repository_claim(repo: dict[str, Any]) -> dict[str, Any]:
         )
     root = Path(root_value).expanduser().resolve(strict=False)
     common_value = stored.get("git_common_dir")
-    if isinstance(common_value, str) and common_value:
-        common_dir = Path(common_value).expanduser().resolve(strict=False)
-    else:
-        try:
-            common_dir = _git_evidence_path(root, "--git-common-dir")
-        except (FlowError, OSError, ValueError) as exc:
-            raise FlowError(
-                "REPOSITORY_CLAIM_UNAVAILABLE",
-                "active repository Git common directory cannot be verified",
-                details={
-                    "repository_id": repo.get("id"),
-                    "repository": str(root),
-                    "error": str(exc),
-                },
-            ) from exc
+    if not isinstance(common_value, str) or not common_value:
+        raise FlowError(
+            "REPOSITORY_CLAIM_UNAVAILABLE",
+            "repository claim has no Git common directory",
+            details={"repository_id": repo.get("id")},
+        )
+    common_dir = Path(common_value).expanduser().resolve(strict=False)
     claim = _repository_claim(root, common_dir)
     for key in ("canonical_path_identity", "git_common_dir_identity"):
         candidate = stored.get(key)
@@ -785,9 +763,7 @@ def _claim_workspace_plan(
         else _workspace_registry_lock(data_root)
     )
     with lock_context:
-        registry = _load_workspace_registry(
-            data_root, allow_legacy_container=True
-        )
+        registry = _load_workspace_registry(data_root)
         existing_claims = [*registry["claims"], *_state_workspace_claims(data_root)]
         proposed: list[dict[str, Any]] = []
         for plan in plans:
@@ -866,23 +842,6 @@ def _claim_workspace_plan(
                     and claimed.get("plan_sha256") == candidate["plan_sha256"]
                 )
                 if exact_retry:
-                    continue
-                regenerating_same_legacy_claim = (
-                    claimed.get("evidence_contract_version")
-                    != EVIDENCE_CONTRACT_VERSION
-                    and claimed.get("task_id") == candidate["task_id"]
-                    and claimed.get("repository_id")
-                    == candidate["repository_id"]
-                    and claimed.get("workspace_generation")
-                    == candidate["workspace_generation"]
-                    and _recorded_path_matches(
-                        claimed.get("path_identity"),
-                        claimed.get("path"),
-                        candidate_path,
-                    )
-                    and claimed.get("branch") == candidate["branch"]
-                )
-                if regenerating_same_legacy_claim:
                     continue
                 claimed_path_value = claimed.get("path")
                 claimed_path = (

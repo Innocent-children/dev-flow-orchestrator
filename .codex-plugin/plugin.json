@@ -1,7 +1,7 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "1.0.0+codex.20260730013845",
-  "description": "A guarded, resumable macOS workflow for Codex, OpenSpec, Git, and codebase-memory; retained Windows and Linux artifacts are unvalidated.",
+  "version": "4.0.0+codex.20260730040000",
+  "description": "A guarded, resumable V4 development workflow for Codex on macOS.",
   "author": {
     "name": "Local developer"
   },
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Dev Flow Orchestrator",
     "shortDescription": "Guard and resume Git-to-OpenSpec development work",
-    "longDescription": "Runs the guarded state machine on the validated macOS host; checks repository baselines, routes explicit baseline/workspace codebase-memory indexes by phase, guides direct or OpenSpec planning, and verifies the complete change before handoff. Retained Windows and Linux artifacts are not a support claim.",
+    "longDescription": "Runs the V4 task-state controller on macOS, resolves full@4 or lite@4 directly, keeps baseline and workspace codebase-memory indexes distinct, gates Git effects, and produces focused verification and review evidence.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [

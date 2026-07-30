@@ -79,10 +79,9 @@ def _probe_worktree_capabilities(repo: Path) -> dict[str, Any]:
         regular.write_bytes(b"mode")
         before = stat.S_IMODE(regular.stat().st_mode)
         file_mode = False
-        if os.name != "nt":
-            regular.chmod(before ^ stat.S_IXUSR)
-            after = stat.S_IMODE(regular.stat().st_mode)
-            file_mode = bool((before ^ after) & stat.S_IXUSR)
+        regular.chmod(before ^ stat.S_IXUSR)
+        after = stat.S_IMODE(regular.stat().st_mode)
+        file_mode = bool((before ^ after) & stat.S_IXUSR)
         target = probe_root / "symlink-target"
         link = probe_root / "symlink-probe"
         target.write_bytes(b"target")
@@ -185,7 +184,7 @@ def _git_capability_profile(
         )
     profile: dict[str, Any] = {
         "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
-        "platform": _platform_family(),
+        "platform": "macos",
         "core_file_mode": core_file_mode,
         "core_symlinks": core_symlinks,
         "core_ignore_case": core_ignore_case,
@@ -691,17 +690,8 @@ def _selector_is_path_like(selector: str) -> bool:
 
 
 def _selector_path(selector: str) -> Path | None:
-    windows_drive = bool(re.match(r"^[A-Za-z]:[\\/]", selector))
-    windows_unc = selector.startswith("\\\\")
-    if os.name != "nt" and (windows_drive or windows_unc):
-        # A foreign Windows absolute path is still path-like, and therefore
-        # must never fall back to a basename selector on a POSIX host.
-        return None
-    normalized = selector
-    if os.name != "nt" and "\\" in normalized:
-        normalized = normalized.replace("\\", "/")
     try:
-        return Path(normalized).expanduser().resolve(strict=False)
+        return Path(selector).expanduser().resolve(strict=False)
     except (OSError, RuntimeError, ValueError) as exc:
         raise FlowError(
             "PATH_IDENTITY_UNAVAILABLE",
@@ -1858,12 +1848,12 @@ def _capture_lite_change_assessment(
     repositories = state_value.get("repositories")
     try:
         if (
-            int(state_value.get("schema_version", 1)) < TASK_SCHEMA_VERSION
+            state_value.get("schema_version") != V4_TASK_SCHEMA_VERSION
             or not isinstance(risk, dict)
         ):
             raise FlowError(
                 "RISK_CONTRACT_MISSING",
-                "lite task does not contain a v2 risk contract",
+                "lite task does not contain its current V4 risk contract",
             )
         if not isinstance(repositories, list) or len(repositories) != 1:
             raise FlowError(

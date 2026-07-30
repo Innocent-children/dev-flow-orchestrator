@@ -1,11 +1,11 @@
 interface:
   display_name: "Analyze Change Impact"
   short_description: "Map change impact with source-backed graph evidence"
-  default_prompt: "Use $analyze-change-impact to map this requirement across the affected repositories before implementation."
+  default_prompt: "Use $analyze-change-impact to produce a read-only, source-confirmed V4 impact report for this requirement."
 dependencies:
   tools:
     - type: "mcp"
       value: "codebase-memory-mcp"
-      description: "Indexes pinned baselines and requires their explicit project IDs for architecture, search, and trace tools"
+      description: "Indexes pinned baselines and uses explicit project IDs for architecture, search, and trace tools"
 policy:
   allow_implicit_invocation: false

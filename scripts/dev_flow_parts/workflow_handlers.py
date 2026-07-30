@@ -1,14 +1,14 @@
 # Loaded by the future bundle-aware controller into the same shared namespace
-# as the legacy runtime fragments.  It is also intentionally importable in
+# as the shared runtime fragments.  It is also intentionally importable in
 # isolation for package validation.  Keep this module standard-library only.
 """Static package handler manifests, binding audit, and registry initialization.
 
 The loader has one deliberately narrow source of registrations: the five
 package-relative manifests named by its private fixed inventory. It does not inspect
 target repositories, task data, environment variables, Python entry points,
-or importable modules.  Handler bindings are late-bound by one shared-runtime
-global name so the first registry migration does not change monkeypatch or
-ordered-fragment behavior.
+or importable modules. Handler bindings are late-bound by one shared-runtime
+global name so isolated facades preserve monkeypatch and ordered-fragment
+behavior.
 """
 
 from __future__ import annotations
@@ -133,16 +133,16 @@ _workflow_handlers_effect_classifications = frozenset(
 )
 _workflow_handlers_audit_profiles_by_kind = MappingProxyType(
     {
-        "commands": frozenset({"legacy-controller-v1"}),
+        "commands": frozenset({"controller-v1"}),
         "guards": frozenset(
-            {"legacy-read-only-wrapper-v1", "pure-v1"}
+            {"controller-read-only-v1", "pure-v1"}
         ),
         "reducers": frozenset({"pure-v1"}),
-        "gates": frozenset({"legacy-controller-v1", "pure-v1"}),
+        "gates": frozenset({"controller-v1", "pure-v1"}),
         "executors": frozenset({"pure-v1"}),
     }
 )
-_workflow_handlers_legacy_runtime_allowed_imports = frozenset(
+_workflow_handlers_controller_runtime_allowed_imports = frozenset(
     {
         "__future__",
         "argparse",
@@ -156,7 +156,6 @@ _workflow_handlers_legacy_runtime_allowed_imports = frozenset(
         "hashlib",
         "hmac",
         "json",
-        "msvcrt",
         "os",
         "pathlib",
         "re",
@@ -172,16 +171,17 @@ _workflow_handlers_legacy_runtime_allowed_imports = frozenset(
         "tempfile",
         "threading",
         "time",
+        "types",
         "typing",
         "unicodedata",
         "urllib",
         "uuid",
     }
 )
-_workflow_handlers_legacy_kernel_globals = frozenset(
+_workflow_handlers_controller_kernel_globals = frozenset(
     {
         "__file__",
-        "V3_TASK_SCHEMA_VERSION",
+        "V4_TASK_SCHEMA_VERSION",
         "WorkflowCatalogError",
         "WorkflowHandlerAuditError",
         "WorkflowProjectionError",
@@ -198,40 +198,41 @@ _workflow_handlers_legacy_kernel_globals = frozenset(
         "WorkflowActionInvocation",
         "WorkflowActionTransactionError",
         "WorkflowActionTransactionResult",
-        "_v3_command_approve_commit",
-        "_v3_command_set_route_commit",
+        "_v4_command_approve_commit",
+        "_v4_command_set_route_commit",
         "_manager_workflow_action_authorization_v1",
+        "_manager_engine_evaluation_state_v1",
         "_workflow_transition_exact_state_delta",
         "_workflow_transition_public",
         "action_execution_active_path",
         "action_execution_archive_path",
         "build_workflow_task_next",
-        "commit_v3_workflow_action",
-        "evaluate_v3_node_action",
-        "execute_v3_workflow_action_transaction",
+        "commit_v4_workflow_action",
+        "evaluate_v4_node_action",
+        "execute_v4_workflow_action_transaction",
         "inspect_loaded_task_state",
         "manager_command_action_ids_v1",
         "manager_authority_transaction_service_v1",
         "manager_process_commit_gate_v1",
-        "preview_v3_workflow_action_transaction",
-        "recover_v3_workflow_action_transaction",
-        "resolve_v3_node_action_edge",
-        "resolve_v3_workflow_action_completion_edge",
+        "preview_v4_workflow_action_transaction",
+        "recover_v4_workflow_action_transaction",
+        "resolve_v4_node_action_edge",
+        "resolve_v4_workflow_action_completion_edge",
         "resolve_loaded_task_workflow",
         "semantic_sha256",
-        "v3_command_movement_commit_v1",
-        "v3_command_movement_evaluate_v1",
-        "v3_command_movement_preview_v1",
+        "v4_command_movement_commit_v1",
+        "v4_command_movement_evaluate_v1",
+        "v4_command_movement_preview_v1",
         "validate_task_state_for_mutation",
-        "validate_v3_task_state",
-        "v3_record_test_command_v1",
-        "v3_review_snapshot_command_v1",
+        "validate_v4_task_state",
+        "v4_record_test_command_v1",
+        "v4_review_snapshot_command_v1",
         "workflow_action_recovery_apply_v1",
         "workflow_action_recovery_inspect_v1",
         "workflow_action_recovery_preview_v1",
     }
 )
-_workflow_handlers_legacy_read_only_kernel_globals = frozenset(
+_workflow_handlers_controller_read_only_kernel_globals = frozenset(
     {
         "EVIDENCE_CONTRACT_VERSION",
         "FlowError",
@@ -394,7 +395,7 @@ _workflow_handlers_mutating_input_methods = frozenset(
     }
 )
 _workflow_handlers_allowed_guard_capabilities = frozenset(
-    {"legacy.kernel-evidence-read"}
+    {"controller.kernel-evidence-read"}
 )
 # Annotation nodes are deliberately skipped by the private reference visitor;
 # a typing name used in executable code remains an audited global.
@@ -2246,7 +2247,7 @@ def _workflow_handlers_audit_symbols(
         for reference in references:
             if (
                 not trusted_kernel
-                and spec.audit_profile == "legacy-controller-v1"
+                and spec.audit_profile == "controller-v1"
                 and reference in spec.allowed_globals
             ):
                 boundary_globals.add(reference)
@@ -2331,7 +2332,7 @@ def _workflow_handlers_audit_symbols(
             if (
                 trusted_kernel
                 and reference
-                in _workflow_handlers_legacy_kernel_globals
+                in _workflow_handlers_controller_kernel_globals
             ):
                 continue
             raise WorkflowHandlerAuditError(
@@ -2377,20 +2378,20 @@ def _workflow_handlers_audit_symbols(
             },
         )
     allowed_kernel_globals = (
-        _workflow_handlers_legacy_kernel_globals
-        if spec.audit_profile == "legacy-controller-v1"
-        else _workflow_handlers_legacy_read_only_kernel_globals
-        if spec.audit_profile == "legacy-read-only-wrapper-v1"
+        _workflow_handlers_controller_kernel_globals
+        if spec.audit_profile == "controller-v1"
+        else _workflow_handlers_controller_read_only_kernel_globals
+        if spec.audit_profile == "controller-read-only-v1"
         else frozenset()
     )
     if (
         spec.audit_profile
-        in {"legacy-controller-v1", "legacy-read-only-wrapper-v1"}
+        in {"controller-v1", "controller-read-only-v1"}
         and declared_globals - allowed_kernel_globals
     ):
         raise WorkflowHandlerAuditError(
             "HANDLER_GLOBAL_BOUNDARY_FORBIDDEN",
-            "legacy global boundaries must be versioned kernel capabilities",
+            "controller global boundaries must be versioned kernel capabilities",
             details={
                 "handler_id": spec.handler_id,
                 "globals": sorted(
@@ -2409,15 +2410,15 @@ def _workflow_handlers_audit_symbols(
                 "unused": sorted(declared_imports - used_imports),
             },
         )
-    if spec.audit_profile == "legacy-controller-v1":
+    if spec.audit_profile == "controller-v1":
         forbidden_imports = (
             used_imports
-            - _workflow_handlers_legacy_runtime_allowed_imports
+            - _workflow_handlers_controller_runtime_allowed_imports
         )
         if forbidden_imports:
             raise WorkflowHandlerAuditError(
                 "HANDLER_IMPORT_FORBIDDEN",
-                "legacy handler imports a module outside its runtime policy",
+                "controller handler imports a module outside its runtime policy",
                 details={
                     "handler_id": spec.handler_id,
                     "imports": sorted(forbidden_imports),

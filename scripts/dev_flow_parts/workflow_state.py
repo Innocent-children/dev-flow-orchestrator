@@ -8,11 +8,8 @@ from types import MappingProxyType
 from typing import Callable, Mapping
 
 
-V3_TASK_SCHEMA_VERSION = 3
-LEGACY_TASK_SCHEMA_VERSIONS = frozenset({1, 2})
-SUPPORTED_TASK_SCHEMA_VERSIONS = frozenset(
-    {*LEGACY_TASK_SCHEMA_VERSIONS, V3_TASK_SCHEMA_VERSION}
-)
+V4_TASK_SCHEMA_VERSION = 4
+SUPPORTED_TASK_SCHEMA_VERSIONS = frozenset({V4_TASK_SCHEMA_VERSION})
 
 _workflow_state_workflow_schema = "dev-flow-workflow/v1"
 _workflow_state_result_reference_schema = (
@@ -357,7 +354,7 @@ def _workflow_state_unsupported_resolution(
 
 
 def validate_workflow_ref(value: object) -> Mapping[str, object]:
-    """Validate and return an immutable schema-v3 pinned workflow identity."""
+    """Validate and return an immutable schema-v4 pinned workflow identity."""
 
     reference = _workflow_state_require_mapping(
         value, "/workflow_ref", code="WORKFLOW_REF_INVALID"
@@ -620,7 +617,7 @@ def _workflow_state_validate_attempt(
         if "previous_attempt" in attempt_value:
             raise _workflow_state_error(
                 "NODE_ATTEMPT_INVALID",
-                "the first attempt cannot reference a predecessor attempt",
+                "the first attempt cannot reference a previous attempt",
                 pointer=f"{pointer}/previous_attempt",
             )
     elif attempt_value.get("previous_attempt") != attempt - 1:
@@ -760,16 +757,16 @@ def _workflow_state_validate_node_instance(
     return _workflow_state_freeze(node)  # type: ignore[return-value]
 
 
-def validate_v3_task_state(state: object) -> Mapping[str, object]:
-    """Strictly validate schema-v3 workflow-owned persisted structures."""
+def validate_v4_task_state(state: object) -> Mapping[str, object]:
+    """Strictly validate schema-v4 workflow-owned persisted structures."""
 
     task = _workflow_state_require_mapping(
         state, "", code="TASK_STATE_INVALID"
     )
-    if task.get("schema_version") != V3_TASK_SCHEMA_VERSION:
+    if task.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         raise _workflow_state_error(
             "TASK_SCHEMA_UNSUPPORTED",
-            "task is not a supported schema-v3 state",
+            "task is not a supported schema-v4 state",
             pointer="/schema_version",
             value=task.get("schema_version"),
             details={
@@ -791,7 +788,7 @@ def validate_v3_task_state(state: object) -> Mapping[str, object]:
     if flow not in {"full", "lite"}:
         raise _workflow_state_error(
             "TASK_STATE_INVALID",
-            "v3 flow compatibility projection must be full or lite",
+            "V4 flow must be full or lite",
             pointer="/flow",
             value=flow,
         )
@@ -799,7 +796,7 @@ def validate_v3_task_state(state: object) -> Mapping[str, object]:
     if execution_profile not in _workflow_state_execution_profiles:
         raise _workflow_state_error(
             "TASK_EXECUTION_PROFILE_INVALID",
-            "schema-v3 tasks must persist one supported execution profile",
+            "schema-v4 tasks must persist one supported execution profile",
             pointer="/execution_profile",
             value=execution_profile,
             details={
@@ -968,17 +965,17 @@ def _workflow_state_validate_expansion_child(
     return _workflow_state_freeze(child)  # type: ignore[return-value]
 
 
-def validate_v3_task_state_against_bundle(
+def validate_v4_task_state_against_bundle(
     state: object, bundle: object
 ) -> Mapping[str, object]:
-    """Cross-check schema-v3 state against its already resolved bundle.
+    """Cross-check schema-v4 state against its already resolved bundle.
 
     This pure boundary consumes only the persisted task and an injected,
     package-validated bundle descriptor.  It performs no file, Git, catalog,
     controller, or global lookup.
     """
 
-    task = validate_v3_task_state(state)
+    task = validate_v4_task_state(state)
     graph = _workflow_state_bundle_graph(bundle)
     nodes = _workflow_state_bundle_nodes(bundle, graph)
     bundle_flow = graph.get("flow")
@@ -1449,33 +1446,6 @@ def _workflow_state_schema_version(state: object) -> object:
     return state.get("schema_version")
 
 
-def _workflow_state_validate_legacy_identity(
-    state: object,
-) -> tuple[int, str]:
-    task = _workflow_state_require_mapping(
-        state, "", code="TASK_STATE_INVALID"
-    )
-    schema_version = task.get("schema_version")
-    if schema_version not in LEGACY_TASK_SCHEMA_VERSIONS or isinstance(
-        schema_version, bool
-    ):
-        raise _workflow_state_error(
-            "TASK_SCHEMA_UNSUPPORTED",
-            "task schema is not a supported frozen legacy version",
-            pointer="/schema_version",
-            value=schema_version,
-        )
-    flow = task.get("flow")
-    if flow not in {"full", "lite"}:
-        raise _workflow_state_error(
-            "LEGACY_WORKFLOW_AMBIGUOUS",
-            "legacy task does not identify exactly one flow adapter",
-            pointer="/flow",
-            value=flow,
-        )
-    return int(schema_version), str(flow)
-
-
 def _workflow_state_resolver_lookup(
     resolver: object,
     key: object,
@@ -1539,7 +1509,7 @@ def _workflow_state_resolution_descriptor(
     if isinstance(descriptor, (list, tuple, set, frozenset)):
         if len(descriptor) != 1:
             raise WorkflowStateError(
-                "LEGACY_WORKFLOW_AMBIGUOUS",
+                "WORKFLOW_RESOLUTION_AMBIGUOUS",
                 "workflow resolver returned an ambiguous definition set",
                 details={"matches": len(descriptor)},
             )
@@ -1556,21 +1526,12 @@ def _workflow_state_resolution_descriptor(
         "schema_version": schema_version,
         "flow": flow,
     }
-    if workflow_ref is not None:
-        result.update(workflow_ref)
-    else:
-        field_names = {
-            "id": ("id", "workflow_id"),
-            "version": ("version", "workflow_version"),
-            "schema": ("schema",),
-            "graph_sha256": ("graph_sha256",),
-            "bundle_sha256": ("bundle_sha256",),
-            "adapter": ("adapter", "legacy_adapter"),
-        }
-        for field, names in field_names.items():
-            item = _workflow_state_descriptor_value(descriptor, *names)
-            if item is not None:
-                result[field] = _workflow_state_freeze(item)
+    if workflow_ref is None:
+        raise WorkflowStateError(
+            "WORKFLOW_RESOLUTION_INVALID",
+            "V4 resolution requires an exact workflow reference",
+        )
+    result.update(workflow_ref)
     return MappingProxyType(result)
 
 
@@ -1619,7 +1580,6 @@ def _workflow_state_verify_bundle_resolution(
 def resolve_task_workflow(
     state: object,
     *,
-    legacy_resolver: object,
     bundle_resolver: object,
     purpose: str,
 ) -> Mapping[str, object]:
@@ -1640,11 +1600,9 @@ def resolve_task_workflow(
         or not isinstance(schema_version, int)
         or schema_version not in SUPPORTED_TASK_SCHEMA_VERSIONS
     ):
-        if purpose == "inspection":
-            return _workflow_state_unsupported_resolution(state)
         raise WorkflowStateError(
             "TASK_SCHEMA_UNSUPPORTED",
-            "task schema is unsupported for workflow mutation or recovery",
+            "task schema is not the current V4 schema",
             details={
                 "schema_version": schema_version,
                 "supported_schema_versions": sorted(
@@ -1652,24 +1610,7 @@ def resolve_task_workflow(
                 ),
             },
         )
-    if schema_version in LEGACY_TASK_SCHEMA_VERSIONS:
-        legacy_version, flow = _workflow_state_validate_legacy_identity(state)
-        descriptor = _workflow_state_resolver_lookup(
-            legacy_resolver,
-            (legacy_version, flow),
-            alternate_key=None,
-            call_arguments=(legacy_version, flow),
-            resolver_name="legacy",
-            missing_code="LEGACY_WORKFLOW_AMBIGUOUS",
-        )
-        return _workflow_state_resolution_descriptor(
-            kind="legacy",
-            schema_version=legacy_version,
-            flow=flow,
-            descriptor=descriptor,
-            workflow_ref=None,
-        )
-    task = validate_v3_task_state(state)
+    task = validate_v4_task_state(state)
     workflow_ref = task["workflow_ref"]
     descriptor = _workflow_state_resolver_lookup(
         bundle_resolver,
@@ -1684,10 +1625,10 @@ def resolve_task_workflow(
         missing_code="WORKFLOW_RESOLUTION_FAILED",
     )
     _workflow_state_verify_bundle_resolution(descriptor, workflow_ref)
-    validate_v3_task_state_against_bundle(state, descriptor)
+    validate_v4_task_state_against_bundle(state, descriptor)
     return _workflow_state_resolution_descriptor(
         kind="bundle",
-        schema_version=V3_TASK_SCHEMA_VERSION,
+        schema_version=V4_TASK_SCHEMA_VERSION,
         flow=str(task["flow"]),
         descriptor=descriptor,
         workflow_ref=workflow_ref,
@@ -1717,10 +1658,7 @@ def validate_task_state_for_mutation(
                 ),
             },
         )
-    if schema_version == V3_TASK_SCHEMA_VERSION:
-        validate_v3_task_state(state)
-    else:
-        _workflow_state_validate_legacy_identity(state)
+    validate_v4_task_state(state)
     if not callable(resolver):
         raise WorkflowStateError(
             "WORKFLOW_RESOLUTION_REQUIRED",
@@ -1789,10 +1727,7 @@ def inspect_task_state(
         )
         return result
     try:
-        if schema_version == V3_TASK_SCHEMA_VERSION:
-            validate_v3_task_state(state)
-        else:
-            _workflow_state_validate_legacy_identity(state)
+        validate_v4_task_state(state)
         result["valid"] = True
     except WorkflowStateError as exc:
         errors.append(exc.as_dict())
@@ -1822,14 +1757,13 @@ def inspect_task_state(
 
 
 __all__ = [
-    "LEGACY_TASK_SCHEMA_VERSIONS",
     "SUPPORTED_TASK_SCHEMA_VERSIONS",
-    "V3_TASK_SCHEMA_VERSION",
+    "V4_TASK_SCHEMA_VERSION",
     "WorkflowStateError",
     "inspect_task_state",
     "resolve_task_workflow",
     "validate_task_state_for_mutation",
-    "validate_v3_task_state",
-    "validate_v3_task_state_against_bundle",
+    "validate_v4_task_state",
+    "validate_v4_task_state_against_bundle",
     "validate_workflow_ref",
 ]

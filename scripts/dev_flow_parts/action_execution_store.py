@@ -418,7 +418,7 @@ class _ActionStoreRoot:
         flags |= getattr(_action_store_os, "O_NOFOLLOW", 0)
         flags |= getattr(_action_store_os, "O_CLOEXEC", 0)
         try:
-            if self._dir_fd and _action_store_os.name != "nt":
+            if self._dir_fd:
                 anchor = _ActionStorePath(self.path.anchor)
                 descriptor = _action_store_os.open(anchor, flags)
                 current_path = anchor
@@ -541,8 +541,7 @@ class _ActionStoreRoot:
                     _action_store_os.mkdir(
                         component, 0o700, dir_fd=parent_descriptor
                     )
-                    if _action_store_os.name != "nt":
-                        _action_store_os.fsync(parent_descriptor)
+                    _action_store_os.fsync(parent_descriptor)
                 except FileExistsError:
                     pass
             flags = _action_store_os.O_RDONLY
@@ -936,8 +935,7 @@ class _ActionStoreRoot:
                         "atomic write temporary is not a regular file",
                         details={"path": str(parent_path / temporary_name)},
                     )
-                if _action_store_os.name != "nt":
-                    _action_store_os.fchmod(descriptor, 0o600)
+                _action_store_os.fchmod(descriptor, 0o600)
                 self._write_all(descriptor, content)
                 _action_store_os.fsync(descriptor)
                 _action_store_os.close(descriptor)
@@ -1012,8 +1010,7 @@ class _ActionStoreRoot:
                 _action_store_hook(
                     failure_hook, f"{stage_prefix}:after-replace"
                 )
-                if _action_store_os.name != "nt":
-                    _action_store_os.fsync(parent_descriptor)
+                _action_store_os.fsync(parent_descriptor)
                 _action_store_hook(
                     failure_hook, f"{stage_prefix}:after-dir-fsync"
                 )
@@ -1093,8 +1090,7 @@ class _ActionStoreRoot:
                 _action_store_hook(
                     failure_hook, f"{stage_prefix}:after-unlink"
                 )
-                if _action_store_os.name != "nt":
-                    _action_store_os.fsync(parent_descriptor)
+                _action_store_os.fsync(parent_descriptor)
                 _action_store_hook(
                     failure_hook, f"{stage_prefix}:after-dir-fsync"
                 )

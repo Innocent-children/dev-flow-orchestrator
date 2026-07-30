@@ -35,6 +35,10 @@
       {
         "path": "scripts/dev_flow_parts/process.py",
         "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
       }
     ],
     "full-transition-read-v1": [
@@ -71,6 +75,10 @@
         "kind": "T"
       },
       {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
         "path": "scripts/dev_flow_parts/workspace.py",
         "kind": "T"
       }
@@ -94,6 +102,10 @@
       },
       {
         "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
         "kind": "T"
       },
       {
@@ -129,6 +141,10 @@
       {
         "path": "scripts/dev_flow_parts/review.py",
         "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
       }
     ],
     "lite-risk-v1": [
@@ -150,6 +166,10 @@
       },
       {
         "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
         "kind": "T"
       }
     ],
@@ -186,6 +206,10 @@
       },
       {
         "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
         "kind": "T"
       },
       {
@@ -235,6 +259,10 @@
         "kind": "T"
       },
       {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
         "path": "scripts/dev_flow_parts/workspace.py",
         "kind": "T"
       }
@@ -265,6 +293,10 @@
         "kind": "T"
       },
       {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
         "path": "scripts/dev_flow_parts/workspace.py",
         "kind": "T"
       }
@@ -278,7 +310,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -287,7 +319,7 @@
         "evaluator": "_require_baseline_fetch_approval"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "_fingerprint_repo",
@@ -307,7 +339,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -316,7 +348,7 @@
         "evaluator": "_transition_guard"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "_current_repository_fingerprints",
@@ -342,7 +374,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -351,7 +383,7 @@
         "evaluator": "_index_provenance_evidence"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "EVIDENCE_CONTRACT_VERSION",
           "FlowError",
@@ -375,7 +407,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -384,7 +416,7 @@
         "evaluator": "_require_lite_gate"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "LITE_GATE",
@@ -407,7 +439,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -416,7 +448,7 @@
         "evaluator": "_lite_change_assessment"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "_capture_lite_change_assessment"
         ],
@@ -544,7 +576,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -553,7 +585,7 @@
         "evaluator": "_require_current_plan_gate"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "_planning_context_sha256",
@@ -570,7 +602,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -579,7 +611,7 @@
         "evaluator": "_require_current_evidence"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "EVIDENCE_CONTRACT_VERSION",
           "FlowError"
@@ -594,7 +626,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -603,7 +635,7 @@
         "evaluator": "_require_review_gate"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "_require_gate",
@@ -619,7 +651,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -628,7 +660,7 @@
         "evaluator": "_review_is_current"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "_fingerprint_repo",
           "_review_snapshot_integrity_error",
@@ -645,7 +677,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -654,7 +686,7 @@
         "evaluator": "_require_route_gate"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "_require_current_route_selection",
@@ -671,7 +703,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -680,7 +712,7 @@
         "evaluator": "_latest_passing_test_is_current"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "_fingerprint_repo",
@@ -706,7 +738,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -715,7 +747,7 @@
         "evaluator": "_require_current_workspace_indexes"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "_workspace_index_staleness"
@@ -730,7 +762,7 @@
         "read-only"
       ],
       "capabilities": [
-        "legacy.kernel-evidence-read"
+        "controller.kernel-evidence-read"
       ],
       "input_schema_ref": "schema.guard.projection/v1",
       "output_schema_ref": "schema.guard.result/v1",
@@ -739,7 +771,7 @@
         "evaluator": "_require_workspace_ready"
       },
       "audit": {
-        "profile": "legacy-read-only-wrapper-v1",
+        "profile": "controller-read-only-v1",
         "allowed_globals": [
           "FlowError",
           "_json_bytes",

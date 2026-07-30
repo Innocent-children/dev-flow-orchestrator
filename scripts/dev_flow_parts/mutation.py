@@ -87,11 +87,7 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
                 "phase": "spawn_pending",
                 "gate_protocol_version": 1,
                 "target_release_authorized": False,
-                "containment_kind": (
-                    "windows_job_kill_on_close"
-                    if os.name == "nt"
-                    else "posix_process_group"
-                ),
+                "containment_kind": "posix_process_group",
                 "containment_established": False,
             }
         )
@@ -102,11 +98,7 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
         evidence["process_group"] = None
         evidence["gate_protocol_version"] = 1
         evidence["target_release_authorized"] = False
-        evidence["containment_kind"] = (
-            "windows_job_kill_on_close"
-            if os.name == "nt"
-            else "posix_process_group"
-        )
+        evidence["containment_kind"] = "posix_process_group"
         evidence["containment_established"] = False
         _atomic_write_sensitive_json(path, evidence)
         return path
@@ -138,11 +130,7 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
         "process_group": None,
         "gate_protocol_version": 1,
         "target_release_authorized": False,
-        "containment_kind": (
-            "windows_job_kill_on_close"
-            if os.name == "nt"
-            else "posix_process_group"
-        ),
+        "containment_kind": "posix_process_group",
         "containment_established": False,
         "command": _redacted_command(command),
         "operations": [
@@ -152,15 +140,11 @@ def _begin_mutation_intent(command: Sequence[str]) -> Path | None:
                 "phase": "spawn_pending",
                 "gate_protocol_version": 1,
                 "target_release_authorized": False,
-                "containment_kind": (
-                    "windows_job_kill_on_close"
-                    if os.name == "nt"
-                    else "posix_process_group"
-                ),
+                "containment_kind": "posix_process_group",
                 "containment_established": False,
             }
         ],
-        "platform": _platform_family(),
+        "platform": "macos",
         "state_revision": state_revision,
         "expected_committed_revision": (
             state_revision + 1
@@ -206,9 +190,7 @@ def _update_mutation_intent(
             "updated_at": utc_now(),
             "phase": phase,
             "pid": process.pid,
-            "process_group": (
-                process.pid if os.name != "nt" else None
-            ),
+            "process_group": process.pid,
             "command": _redacted_command(command),
             "cause": (
                 f"{type(cause).__name__}: {cause}"
@@ -280,12 +262,11 @@ def _complete_mutation_intent(
     _atomic_write_sensitive_json(path, evidence)
     try:
         path.unlink()
-        if os.name != "nt":
-            directory_fd = os.open(task_dir, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+        directory_fd = os.open(task_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except OSError as exc:
         if not path.exists():
             try:
@@ -338,11 +319,7 @@ def _abandon_unstarted_mutation_intent(path: Path | None) -> None:
                     "command": list(previous.get("command") or []),
                     "phase": previous.get("phase") or "child_quiescent",
                     "pid": previous.get("pid"),
-                    "process_group": (
-                        previous.get("pid")
-                        if os.name != "nt"
-                        else None
-                    ),
+                    "process_group": previous.get("pid"),
                     "gate_protocol_version": previous.get(
                         "gate_protocol_version"
                     ),
@@ -362,12 +339,11 @@ def _abandon_unstarted_mutation_intent(path: Path | None) -> None:
             return
         path.unlink()
         forget_active = True
-        if os.name != "nt":
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except FileNotFoundError:
         forget_active = True
     except OSError as exc:
@@ -419,17 +395,11 @@ def _persist_mutation_quarantine(
         "ready": False,
         "created_at": utc_now(),
         "pid": process.pid,
-        "process_group": (
-            process.pid if os.name != "nt" else None
-        ),
-        "containment_kind": (
-            "windows_job_kill_on_close"
-            if os.name == "nt"
-            else "posix_process_group"
-        ),
-        "containment_established": os.name != "nt",
+        "process_group": process.pid,
+        "containment_kind": "posix_process_group",
+        "containment_established": True,
         "command": _redacted_command(command),
-        "platform": _platform_family(),
+        "platform": "macos",
         "state_revision": state_revision,
         "cause": f"{type(error).__name__}: {error}",
         "required_recovery": [
@@ -448,53 +418,6 @@ def _quarantined_process_alive(pid: Any) -> bool:
             "mutation quarantine does not contain a valid child process id",
             details={"pid": pid},
         )
-    if os.name == "nt":  # pragma: no cover - exercised on native Windows
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = [
-            wintypes.DWORD,
-            wintypes.BOOL,
-            wintypes.DWORD,
-        ]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.WaitForSingleObject.argtypes = [
-            wintypes.HANDLE,
-            wintypes.DWORD,
-        ]
-        kernel32.WaitForSingleObject.restype = wintypes.DWORD
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        process = kernel32.OpenProcess(0x00100000, False, pid)
-        if not process:
-            error = ctypes.get_last_error()
-            if error == 87:  # ERROR_INVALID_PARAMETER: process is gone.
-                return False
-            if error == 5:  # Access denied proves a process still owns the id.
-                return True
-            raise FlowError(
-                "QUARANTINE_PROCESS_UNVERIFIABLE",
-                "could not determine whether the quarantined child still exists",
-                details={"pid": pid, "winerror": error},
-            )
-        try:
-            wait_result = int(kernel32.WaitForSingleObject(process, 0))
-            if wait_result == 258:  # WAIT_TIMEOUT
-                return True
-            if wait_result == 0:  # WAIT_OBJECT_0
-                return False
-            raise FlowError(
-                "QUARANTINE_PROCESS_UNVERIFIABLE",
-                "could not wait on the quarantined child process",
-                details={
-                    "pid": pid,
-                    "wait_result": wait_result,
-                    "winerror": ctypes.get_last_error(),
-                },
-            )
-        finally:
-            kernel32.CloseHandle(process)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -528,11 +451,7 @@ def _quarantine_processes_alive(quarantine: dict[str, Any]) -> bool:
         # authorization the real target could never have started.
         return False
     if quarantine.get("gate_protocol_version") == 1:
-        expected_containment = (
-            "windows_job_kill_on_close"
-            if os.name == "nt"
-            else "posix_process_group"
-        )
+        expected_containment = "posix_process_group"
         if (
             quarantine.get("containment_kind")
             != expected_containment
@@ -557,7 +476,7 @@ def _quarantine_processes_alive(quarantine: dict[str, Any]) -> bool:
     ):
         return False
     process_group = quarantine.get("process_group")
-    if os.name != "nt" and isinstance(process_group, int):
+    if isinstance(process_group, int):
         return _posix_process_group_alive(process_group)
     return _quarantined_process_alive(quarantine.get("pid"))
 
@@ -791,16 +710,10 @@ def _validate_quarantine_postconditions(
                     None,
                 )
                 permissions_safe = True
-                try:
-                    if os.name == "nt":
-                        _verify_windows_private_path(candidate)
-                    else:
-                        permissions_safe = (
-                            stat.S_IMODE(candidate.stat().st_mode)
-                            == 0o700
-                        )
-                except FlowError:
-                    permissions_safe = False
+                permissions_safe = (
+                    stat.S_IMODE(candidate.stat().st_mode)
+                    == 0o700
+                )
                 if (
                     expected_head is None
                     or not root
@@ -870,36 +783,18 @@ def _validate_quarantine_postconditions(
 
 
 def _acquire_exclusive(handle: Any, lock_path: Path) -> None:
-    """Take an exclusive advisory lock on an open lock file.
-
-    POSIX uses ``fcntl.lockf``; Windows uses ``msvcrt.locking`` over byte zero.
-    Both release automatically when the process exits. Every unsupported or
-    failed backend is a structured fail-closed error.
-    """
+    """Take an exclusive advisory lock on an open macOS lock file."""
 
     deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
     while True:
         try:
-            if fcntl is not None:
-                fcntl.lockf(
-                    handle.fileno(),
-                    fcntl.LOCK_EX | fcntl.LOCK_NB,
-                    1,
-                    0,
-                    os.SEEK_SET,
-                )
-            elif msvcrt is not None:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                raise FlowError(
-                    "LOCK_UNSUPPORTED",
-                    "no verified operating-system lock backend is available",
-                    details={
-                        "path": str(lock_path),
-                        "platform": _platform_family(),
-                    },
-                )
+            fcntl.lockf(
+                handle.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+                1,
+                0,
+                os.SEEK_SET,
+            )
             return
         except FlowError:
             raise
@@ -918,7 +813,7 @@ def _acquire_exclusive(handle: Any, lock_path: Path) -> None:
                     "timed out waiting for the exclusive controller lock",
                     details={
                         "path": str(lock_path),
-                        "platform": _platform_family(),
+                        "platform": "macos",
                         "timeout_seconds": LOCK_TIMEOUT_SECONDS,
                     },
                 ) from exc
@@ -927,7 +822,7 @@ def _acquire_exclusive(handle: Any, lock_path: Path) -> None:
                 "could not acquire the exclusive controller lock",
                 details={
                     "path": str(lock_path),
-                    "platform": _platform_family(),
+                    "platform": "macos",
                     "error": str(exc),
                 },
             ) from exc
@@ -935,23 +830,13 @@ def _acquire_exclusive(handle: Any, lock_path: Path) -> None:
 
 def _release_exclusive(handle: Any, lock_path: Path) -> None:
     try:
-        if fcntl is not None:
-            fcntl.lockf(
-                handle.fileno(),
-                fcntl.LOCK_UN,
-                1,
-                0,
-                os.SEEK_SET,
-            )
-        elif msvcrt is not None:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            raise FlowError(
-                "LOCK_UNSUPPORTED",
-                "no verified operating-system lock backend is available",
-                details={"path": str(lock_path), "platform": _platform_family()},
-            )
+        fcntl.lockf(
+            handle.fileno(),
+            fcntl.LOCK_UN,
+            1,
+            0,
+            os.SEEK_SET,
+        )
     except FlowError:
         raise
     except (OSError, ValueError) as exc:
@@ -963,7 +848,7 @@ def _release_exclusive(handle: Any, lock_path: Path) -> None:
             ),
             details={
                 "path": str(lock_path),
-                "platform": _platform_family(),
+                "platform": "macos",
                 "error": str(exc),
             },
         ) from exc
@@ -1022,6 +907,8 @@ def _file_lock(
             handle.seek(0)
             _acquire_exclusive(handle, lock_path)
             token: contextvars.Token[tuple[str, ...]] | None = None
+            capability: object | None = None
+            capability_token = None
             try:
                 if not allow_quarantine:
                     _assert_no_mutation_quarantine(directory)
@@ -1031,8 +918,19 @@ def _file_lock(
                         str(directory.resolve(strict=False)),
                     )
                 )
+                capability = _engine_lock_capability_issue(directory, name)
+                capability_token = _engine_held_lock_capabilities.set(
+                    (
+                        *_engine_held_lock_capabilities.get(),
+                        capability,
+                    )
+                )
                 yield
             finally:
+                if capability_token is not None:
+                    _engine_held_lock_capabilities.reset(capability_token)
+                if capability is not None:
+                    _engine_lock_capability_revoke(capability)
                 if token is not None:
                     _HELD_LOCK_DIRECTORIES.reset(token)
                 try:

@@ -42,8 +42,6 @@ _transition_engine_path_effect_markers = (
     "review-snapshot",
     "workspace",
 )
-_transition_engine_shadow_difference_limit = 16
-_transition_engine_shadow_detail_byte_limit = 1536
 _transition_engine_missing_contract_codes = frozenset(
     {
         "REGISTRY_UNKNOWN_REFERENCE",
@@ -356,7 +354,7 @@ class ApprovalOutcome:
 
 @dataclass(frozen=True)
 class KernelTransitionContext:
-    """Immutable controller proof required for schema-v3 evaluation."""
+    """Immutable controller proof required for schema-v4 evaluation."""
 
     task_id: str
     workflow_ref: Mapping[str, object]
@@ -573,7 +571,7 @@ def install_transition_engine_evaluation_lock_observer(
     """Install the trusted controller's exact live-lock observer once.
 
     The pure engine can still be loaded in isolation for preview and contract
-    tests.  In the composed controller, however, every non-preview schema-v3
+    tests.  In the composed controller, however, every non-preview schema-v4
     issuance records the opaque lock capabilities that were live at the
     instant the evaluation completed.  A later commit must observe the same
     capabilities; copied ContextVar path metadata is therefore insufficient.
@@ -582,14 +580,14 @@ def install_transition_engine_evaluation_lock_observer(
     global _transition_engine_evaluation_lock_observer
     if not callable(observer):
         raise TransitionEngineError(
-            "V3_ENGINE_LOCK_OBSERVER_INVALID",
+            "V4_ENGINE_LOCK_OBSERVER_INVALID",
             "engine evaluation lock observer must be callable",
         )
     if _transition_engine_evaluation_lock_observer is not None:
         if _transition_engine_evaluation_lock_observer is observer:
             return
         raise TransitionEngineError(
-            "V3_ENGINE_LOCK_OBSERVER_ALREADY_INSTALLED",
+            "V4_ENGINE_LOCK_OBSERVER_ALREADY_INSTALLED",
             "engine evaluation lock observer is immutable for this process",
         )
     _transition_engine_evaluation_lock_observer = observer
@@ -606,7 +604,7 @@ def _transition_engine_observe_evaluation_locks(
     observed = observer(state)
     if not isinstance(observed, Mapping):
         raise TransitionEngineError(
-            "V3_ENGINE_LOCK_OBSERVER_INVALID",
+            "V4_ENGINE_LOCK_OBSERVER_INVALID",
             "engine evaluation lock observer returned a non-object binding",
         )
     public = _thaw_contract_value(
@@ -617,7 +615,7 @@ def _transition_engine_observe_evaluation_locks(
     )
     if not isinstance(public, dict):
         raise TransitionEngineError(
-            "V3_ENGINE_LOCK_OBSERVER_INVALID",
+            "V4_ENGINE_LOCK_OBSERVER_INVALID",
             "engine evaluation lock binding must be an object",
         )
     return public
@@ -632,7 +630,7 @@ def _build_transition_evaluation_issuance_registry(
 
     ``TransitionEvaluation`` intentionally remains a public, inspectable
     projection.  Only the exact object returned by a successful non-preview
-    schema-v3 kernel evaluation is entered in this process-private one-shot
+    schema-v4 kernel evaluation is entered in this process-private one-shot
     registry.  Reconstructing, copying, or replacing that dataclass therefore
     cannot create commit authority.
     """
@@ -693,7 +691,7 @@ def _build_transition_evaluation_issuance_registry(
     def consume(value: object) -> dict[str, object]:
         if type(value) is not TransitionEvaluation:
             raise TransitionEngineError(
-                "V3_ENGINE_EVALUATION_UNREGISTERED",
+                "V4_ENGINE_EVALUATION_UNREGISTERED",
                 "commit proof requires an exact kernel-issued evaluation",
             )
         evaluation = value
@@ -704,7 +702,7 @@ def _build_transition_evaluation_issuance_registry(
                 or registered[0] is not evaluation
             ):
                 raise TransitionEngineError(
-                    "V3_ENGINE_EVALUATION_UNREGISTERED",
+                    "V4_ENGINE_EVALUATION_UNREGISTERED",
                     "public or replayed evaluation has no live kernel issuance",
                 )
             # Pop before validating the public projection.  Mutation, failed
@@ -720,7 +718,7 @@ def _build_transition_evaluation_issuance_registry(
             canonical, _canonical_json_bytes(observed)
         ):
             raise TransitionEngineError(
-                "V3_ENGINE_EVALUATION_CHANGED",
+                "V4_ENGINE_EVALUATION_CHANGED",
                 "kernel evaluation changed after issuance",
             )
         return copy.deepcopy(record)
@@ -755,7 +753,7 @@ def _build_engine_commit_proof_broker(
     registry: dict[
         str, tuple[object, bytes, str, dict[str, object]]
     ] = {}
-    domain = b"dev-flow-v3-engine-commit-proof-v1\0"
+    domain = b"dev-flow-v4-engine-commit-proof-v1\0"
     durable_observed_bindings = frozenset(
         {
             "task_directory",
@@ -770,7 +768,7 @@ def _build_engine_commit_proof_broker(
     )
 
     class EngineCommitProof:
-        """Opaque one-shot authority for one exact durable v3 transaction."""
+        """Opaque one-shot authority for one exact durable v4 transaction."""
 
         __slots__ = ("__issuance_id", "__mac")
 
@@ -830,7 +828,7 @@ def _build_engine_commit_proof_broker(
             if isinstance(item, int):
                 if not -(2**63) <= item <= 2**63 - 1:
                     raise TransitionEngineError(
-                        "V3_ENGINE_COMMIT_CANONICALIZATION_INVALID",
+                        "V4_ENGINE_COMMIT_CANONICALIZATION_INVALID",
                         "engine proof integers must fit signed 64-bit",
                         details={"path": pointer},
                     )
@@ -838,7 +836,7 @@ def _build_engine_commit_proof_broker(
             if isinstance(item, str):
                 if unicodedata.normalize("NFC", item) != item:
                     raise TransitionEngineError(
-                        "V3_ENGINE_COMMIT_CANONICALIZATION_INVALID",
+                        "V4_ENGINE_COMMIT_CANONICALIZATION_INVALID",
                         "engine proof strings must use NFC",
                         details={"path": pointer},
                     )
@@ -846,7 +844,7 @@ def _build_engine_commit_proof_broker(
                     item.encode("utf-8", "strict")
                 except UnicodeEncodeError as exc:
                     raise TransitionEngineError(
-                        "V3_ENGINE_COMMIT_CANONICALIZATION_INVALID",
+                        "V4_ENGINE_COMMIT_CANONICALIZATION_INVALID",
                         "engine proof strings must use exact UTF-8",
                         details={"path": pointer},
                     ) from exc
@@ -859,7 +857,7 @@ def _build_engine_commit_proof_broker(
                         or unicodedata.normalize("NFC", key) != key
                     ):
                         raise TransitionEngineError(
-                            "V3_ENGINE_COMMIT_CANONICALIZATION_INVALID",
+                            "V4_ENGINE_COMMIT_CANONICALIZATION_INVALID",
                             "engine proof object keys must be NFC strings",
                             details={"path": pointer},
                         )
@@ -873,7 +871,7 @@ def _build_engine_commit_proof_broker(
                     for index, child in enumerate(item)
                 ]
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_CANONICALIZATION_INVALID",
+                "V4_ENGINE_COMMIT_CANONICALIZATION_INVALID",
                 "engine proof contains a non-semantic JSON value",
                 details={
                     "path": pointer,
@@ -892,7 +890,7 @@ def _build_engine_commit_proof_broker(
             ).encode("utf-8")
         except (TypeError, ValueError, UnicodeEncodeError) as exc:
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_CANONICALIZATION_INVALID",
+                "V4_ENGINE_COMMIT_CANONICALIZATION_INVALID",
                 "engine proof cannot be canonically encoded",
                 details={"path": path},
             ) from exc
@@ -905,7 +903,7 @@ def _build_engine_commit_proof_broker(
         )
         if not isinstance(normalized, dict):
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_PROOF_INVALID",
+                "V4_ENGINE_COMMIT_PROOF_INVALID",
                 "engine commit proof core must be an object",
             )
         core_bytes = semantic_json_bytes(normalized)
@@ -934,8 +932,8 @@ def _build_engine_commit_proof_broker(
     ) -> dict[str, object]:
         if type(value) is not EngineCommitProof:
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_PROOF_INVALID",
-                "schema-v3 persistence requires a live opaque proof",
+                "V4_ENGINE_COMMIT_PROOF_INVALID",
+                "schema-v4 persistence requires a live opaque proof",
             )
         try:
             issuance_id = object.__getattribute__(
@@ -946,25 +944,25 @@ def _build_engine_commit_proof_broker(
             )
         except AttributeError as exc:
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_PROOF_INVALID",
-                "schema-v3 engine commit proof is incomplete",
+                "V4_ENGINE_COMMIT_PROOF_INVALID",
+                "schema-v4 engine commit proof is incomplete",
             ) from exc
         if not isinstance(issuance_id, str):
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_PROOF_INVALID",
-                "schema-v3 engine commit proof identity is invalid",
+                "V4_ENGINE_COMMIT_PROOF_INVALID",
+                "schema-v4 engine commit proof identity is invalid",
             )
         with registry_lock:
             registered = registry.get(issuance_id)
             if registered is None:
                 raise TransitionEngineError(
-                    "V3_ENGINE_COMMIT_PROOF_REPLAYED",
-                    "schema-v3 engine commit proof is absent or consumed",
+                    "V4_ENGINE_COMMIT_PROOF_REPLAYED",
+                    "schema-v4 engine commit proof is absent or consumed",
                 )
             if registered[0] is not value:
                 raise TransitionEngineError(
-                    "V3_ENGINE_COMMIT_PROOF_INVALID",
-                    "schema-v3 engine commit proof object is not registered",
+                    "V4_ENGINE_COMMIT_PROOF_INVALID",
+                    "schema-v4 engine commit proof object is not registered",
                 )
             # Atomic pop is the first operation for a real proof.  Every
             # binding failure and every exception after this point burns it.
@@ -979,8 +977,8 @@ def _build_engine_commit_proof_broker(
             or not hmac.compare_digest(supplied_mac, expected_mac)
         ):
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_PROOF_INVALID",
-                "schema-v3 engine commit proof authentication failed",
+                "V4_ENGINE_COMMIT_PROOF_INVALID",
+                "schema-v4 engine commit proof authentication failed",
             )
         observed = (
             observed_value()
@@ -989,16 +987,16 @@ def _build_engine_commit_proof_broker(
         )
         if not isinstance(observed, Mapping):
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_PROOF_MISMATCH",
+                "V4_ENGINE_COMMIT_PROOF_MISMATCH",
                 "durable transaction binding must be an object",
             )
         if (
             core.get("contract")
-            == "dev-flow-v3-engine-commit-proof/v1"
+            == "dev-flow-v4-engine-commit-proof/v1"
             and set(observed) != durable_observed_bindings
         ):
             raise TransitionEngineError(
-                "V3_ENGINE_COMMIT_PROOF_MISMATCH",
+                "V4_ENGINE_COMMIT_PROOF_MISMATCH",
                 "durable transaction supplied an incomplete proof binding",
                 details={
                     "missing": sorted(
@@ -1015,7 +1013,7 @@ def _build_engine_commit_proof_broker(
                 semantic_json_bytes(item),
             ):
                 raise TransitionEngineError(
-                    "V3_ENGINE_COMMIT_PROOF_MISMATCH",
+                    "V4_ENGINE_COMMIT_PROOF_MISMATCH",
                     "durable transaction differs from its engine proof",
                     details={"binding": str(key)},
                 )
@@ -1646,7 +1644,7 @@ def _transition_engine_contract_reference(
     value: object,
     *,
     expected_registry: str,
-    schema_v3: bool,
+    schema_v4: bool,
 ) -> tuple[str, str | None]:
     identifier = _contract_reference_id(
         value, expected_registry=expected_registry
@@ -1655,10 +1653,10 @@ def _transition_engine_contract_reference(
         version = value.get("version")
         if isinstance(version, str) and version:
             return identifier, version
-    if schema_v3:
+    if schema_v4:
         raise TransitionEngineError(
             "WORKFLOW_CONTRACT_UNSUPPORTED",
-            "schema-v3 executable references require an exact version",
+            "schema-v4 executable references require an exact version",
             details={
                 "registry": expected_registry,
                 "identifier": identifier,
@@ -1773,7 +1771,7 @@ def _transition_engine_require_supported_node(
     if node is None:
         raise TransitionEngineError(
             "WORKFLOW_NODE_CONTRACT_UNSUPPORTED",
-            "schema-v3 transition node is unavailable to the engine",
+            "schema-v4 transition node is unavailable to the engine",
             details={
                 "node_id": node_id,
                 "compatibility_blocker": True,
@@ -1840,7 +1838,7 @@ def _transition_engine_require_supported_contracts(
         identifier, version = _transition_engine_contract_reference(
             reference,
             expected_registry=registry,
-            schema_v3=True,
+            schema_v4=True,
         )
         key = _transition_engine_contract_key(registry, identifier)
         supported = _transition_engine_context_versions(
@@ -1915,7 +1913,7 @@ def _transition_engine_extract_paths(value: object) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
-def _transition_engine_require_v3_kernel_context(
+def _transition_engine_require_v4_kernel_context(
     graph: Mapping[str, object],
     state: Mapping[str, object],
     edge: Mapping[str, object],
@@ -1927,13 +1925,13 @@ def _transition_engine_require_v3_kernel_context(
     if context_value is None:
         raise TransitionEngineError(
             "KERNEL_CONTEXT_REQUIRED",
-            "schema-v3 transition evaluation requires kernel proof context",
-            details={"schema_version": 3},
+            "schema-v4 transition evaluation requires kernel proof context",
+            details={"schema_version": 4},
         )
     if context_value.get("task_lock_held") is not True:
         raise TransitionEngineError(
             "KERNEL_TASK_LOCK_REQUIRED",
-            "schema-v3 evaluation requires the current task lock",
+            "schema-v4 evaluation requires the current task lock",
         )
     task_id = state.get("task_id")
     if (
@@ -2194,7 +2192,7 @@ def _transition_engine_require_exact_approval_outcome(
     edge: Mapping[str, object],
     approval_outcome: ApprovalOutcome | None,
 ) -> None:
-    """Require one typed approval bound to the exact gated schema-v3 edge."""
+    """Require one typed approval bound to the exact gated schema-v4 edge."""
 
     gate = edge.get("gate")
     edge_id = edge.get("id")
@@ -2217,13 +2215,13 @@ def _transition_engine_require_exact_approval_outcome(
     ):
         raise TransitionEngineError(
             "WORKFLOW_GRAPH_INVALID",
-            "schema-v3 gated edge has no exact gate identity",
+            "schema-v4 gated edge has no exact gate identity",
             details={"edge_id": edge_id},
         )
     if approval_outcome is None:
         raise TransitionEngineError(
             "APPROVAL_OUTCOME_REQUIRED",
-            "schema-v3 gated transition requires a typed approval outcome",
+            "schema-v4 gated transition requires a typed approval outcome",
             details={
                 "edge_id": edge_id,
                 "gate_id": gate.get("id"),
@@ -2422,11 +2420,10 @@ class TransitionEngine:
     ) -> dict[str, object]:
         workflow_ref = state.get("workflow_ref")
         if not isinstance(workflow_ref, Mapping):
-            workflow_ref = {
-                "adapter": self.graph.get("legacy_adapter"),
-                "workflow_id": self.graph.get("workflow_id"),
-                "workflow_version": self.graph.get("workflow_version"),
-            }
+            raise TransitionEngineError(
+                "WORKFLOW_REF_REQUIRED",
+                "V4 transition requires an exact task workflow reference",
+            )
         evidence_sha256 = _sha256_contract(evidence)
         payload = {
             "contract": "dev-flow-transition-intent/v1",
@@ -2489,14 +2486,14 @@ class TransitionEngine:
                 "TASK_STATE_INVALID", "task status must be a string"
             )
         if (
-            state.get("schema_version") == 3
+            state.get("schema_version") == V4_TASK_SCHEMA_VERSION
             and approval_outcome is not None
             and type(approval_outcome) is not ApprovalOutcome
         ):
             raise TransitionEngineError(
                 "APPROVAL_OUTCOME_INVALID",
                 (
-                    "schema-v3 approval input must use the exact "
+                    "schema-v4 approval input must use the exact "
                     "ApprovalOutcome contract"
                 ),
             )
@@ -2530,14 +2527,9 @@ class TransitionEngine:
                 details={"edge_id": edge.get("id")},
             )
         confirmation = edge.get("confirmation")
-        legacy_terminal_compatibility = (
-            self.graph.get("legacy_adapter") is True
-            and state.get("schema_version") in {1, 2}
-        )
         if (
             target in _TERMINAL_NODE_IDS
             and confirmation != "explicit"
-            and not legacy_terminal_compatibility
         ):
             raise TransitionEngineError(
                 "TERMINAL_CONFIRMATION_REQUIRED",
@@ -2545,17 +2537,17 @@ class TransitionEngine:
                 details={"edge_id": edge.get("id"), "target": target},
             )
 
-        schema_v3 = state.get("schema_version") == 3
-        if schema_v3:
+        schema_v4 = state.get("schema_version") == V4_TASK_SCHEMA_VERSION
+        if schema_v4:
             _transition_engine_require_exact_approval_outcome(
                 edge, approval_outcome
             )
         context_value = _transition_engine_context_mapping(
             kernel_context
         )
-        if schema_v3:
+        if schema_v4:
             context_value = (
-                _transition_engine_require_v3_kernel_context(
+                _transition_engine_require_v4_kernel_context(
                     self.graph,
                     state,
                     edge,
@@ -2586,7 +2578,7 @@ class TransitionEngine:
                 _transition_engine_contract_reference(
                     guard_reference,
                     expected_registry="guards",
-                    schema_v3=schema_v3,
+                    schema_v4=schema_v4,
                 )
             )
             evaluator = _transition_engine_resolve_handler(
@@ -2660,7 +2652,7 @@ class TransitionEngine:
             action_parameters=action_parameters,
             evidence=intent_evidence,
         )
-        if schema_v3:
+        if schema_v4:
             _transition_engine_require_current_approval(
                 edge,
                 intent,
@@ -2724,7 +2716,7 @@ class TransitionEngine:
                 _transition_engine_contract_reference(
                     reducer_reference,
                     expected_registry="reducers",
-                    schema_v3=schema_v3,
+                    schema_v4=schema_v4,
                 )
             )
             reducer = _transition_engine_resolve_handler(
@@ -2853,7 +2845,7 @@ class TransitionEngine:
             guard_results=tuple(guard_results),
             audit_facts=tuple(audit_facts),
         )
-        if schema_v3 and not preview:
+        if schema_v4 and not preview:
             _transition_engine_register_evaluation_issuance(
                 evaluation,
                 state=state,
@@ -2865,223 +2857,3 @@ class TransitionEngine:
                 kernel_context=context_value,
             )
         return evaluation
-
-    def evaluate_shadow(
-        self,
-        legacy_candidate_state: Mapping[str, object],
-        state: Mapping[str, object],
-        **evaluation_arguments: object,
-    ) -> dict[str, object]:
-        """Evaluate a copied candidate without effect or commit callbacks."""
-
-        return evaluate_transition_shadow(
-            self,
-            legacy_candidate_state,
-            state,
-            **evaluation_arguments,
-        )
-
-
-def _transition_engine_bounded_path(path: str) -> str:
-    encoded = path.encode("utf-8")
-    if len(encoded) <= 160:
-        return path
-    digest = hashlib.sha256(encoded).hexdigest()[:16]
-    prefix = encoded[:120].decode("utf-8", errors="ignore")
-    return f"{prefix}…#{digest}"
-
-
-def _transition_engine_bounded_blocker(
-    error: TransitionEngineError,
-) -> dict[str, object]:
-    full_details = _thaw_contract_value(
-        _freeze_contract_value(
-            copy.deepcopy(error.details), "$shadow/blocker/details"
-        )
-    )
-    details_bytes = _canonical_json_bytes(full_details)
-    if len(details_bytes) > _transition_engine_shadow_detail_byte_limit:
-        details: dict[str, object] = {
-            "details_sha256": hashlib.sha256(details_bytes).hexdigest(),
-            "detail_keys": (
-                sorted(full_details)[:16]
-                if isinstance(full_details, dict)
-                else []
-            ),
-            "truncated": True,
-        }
-    else:
-        details = (
-            full_details if isinstance(full_details, dict) else {}
-        )
-    message_bytes = error.message.encode("utf-8")
-    message = error.message
-    if len(message_bytes) > 256:
-        message = (
-            message_bytes[:220].decode("utf-8", errors="ignore")
-            + "…#"
-            + hashlib.sha256(message_bytes).hexdigest()[:16]
-        )
-    return {
-        "code": error.code,
-        "message": message,
-        "details": details,
-    }
-
-
-def evaluate_transition_shadow(
-    transition_engine: TransitionEngine,
-    legacy_candidate_state: Mapping[str, object],
-    state: Mapping[str, object],
-    *,
-    expected_revision: int,
-    action_id: str,
-    action_parameters: Mapping[str, object],
-    evidence: Mapping[str, object],
-    edge_id: str | None = None,
-    action_outcome: ActionOutcome | None = None,
-    approval_outcome: ApprovalOutcome | None = None,
-    confirm_intent: str | None = None,
-    preview: bool = True,
-    guard_capability: object = None,
-    reducer_capability: object = None,
-    kernel_context: (
-        KernelTransitionContext | Mapping[str, object] | None
-    ) = None,
-) -> dict[str, object]:
-    """Run the pure engine on copied input and compare a legacy candidate."""
-
-    if not isinstance(transition_engine, TransitionEngine):
-        raise TransitionEngineError(
-            "SHADOW_ENGINE_INVALID",
-            "shadow evaluation requires a TransitionEngine",
-        )
-    originals = {
-        "legacy_candidate_state": legacy_candidate_state,
-        "state": state,
-        "action_parameters": action_parameters,
-        "evidence": evidence,
-    }
-    before_sha256 = {
-        key: _sha256_contract(value)
-        for key, value in originals.items()
-    }
-    legacy_copy = copy.deepcopy(dict(legacy_candidate_state))
-    state_copy = copy.deepcopy(dict(state))
-    parameters_copy = copy.deepcopy(dict(action_parameters))
-    evidence_copy = copy.deepcopy(dict(evidence))
-    context_copy: KernelTransitionContext | Mapping[str, object] | None
-    if isinstance(kernel_context, Mapping):
-        context_copy = copy.deepcopy(dict(kernel_context))
-    else:
-        context_copy = kernel_context
-    guard_capability_copy = copy.deepcopy(guard_capability)
-    reducer_capability_copy = copy.deepcopy(reducer_capability)
-
-    blocker: dict[str, object] | None = None
-    comparison: dict[str, object] | None = None
-    evaluation: TransitionEvaluation | None = None
-    try:
-        evaluation = transition_engine.evaluate(
-            state_copy,
-            expected_revision=expected_revision,
-            action_id=action_id,
-            action_parameters=parameters_copy,
-            evidence=evidence_copy,
-            edge_id=edge_id,
-            action_outcome=action_outcome,
-            approval_outcome=approval_outcome,
-            confirm_intent=confirm_intent,
-            preview=preview,
-            guard_capability=guard_capability_copy,
-            reducer_capability=reducer_capability_copy,
-            kernel_context=context_copy,
-        )
-        engine_candidate = _thaw_contract_value(
-            evaluation.candidate_state
-        )
-        if not isinstance(engine_candidate, Mapping):
-            raise TransitionEngineError(
-                "SHADOW_ENGINE_RESULT_INVALID",
-                "shadow engine candidate must be an object",
-            )
-        comparison = compare_shadow_outcomes(
-            legacy_copy, engine_candidate
-        )
-    except TransitionEngineError as exc:
-        blocker = _transition_engine_bounded_blocker(exc)
-    except Exception as exc:
-        blocker = {
-            "code": "SHADOW_EVALUATION_FAILED",
-            "message": "shadow evaluation failed before producing a candidate",
-            "details": {"exception_type": type(exc).__name__},
-        }
-
-    after_sha256 = {
-        key: _sha256_contract(value)
-        for key, value in originals.items()
-    }
-    input_unchanged = before_sha256 == after_sha256
-    if not input_unchanged:
-        blocker = {
-            "code": "SHADOW_INPUT_MUTATED",
-            "message": "shadow evaluation changed caller-owned input",
-            "details": {
-                "inputs": sorted(
-                    key
-                    for key in before_sha256
-                    if before_sha256[key] != after_sha256[key]
-                )
-            },
-        }
-        comparison = None
-
-    payload: dict[str, object] = {
-        "contract": "dev-flow-transition-shadow-evaluation/v1",
-        "matched": (
-            blocker is None
-            and comparison is not None
-            and comparison["matched"] is True
-        ),
-        "input_unchanged": input_unchanged,
-        "blocker": blocker,
-        "comparison": comparison,
-        "edge_id": evaluation.edge_id if evaluation else None,
-    }
-    payload["diagnostic_sha256"] = _sha256_contract(payload)
-    return payload
-
-
-def compare_shadow_outcomes(
-    legacy: Mapping[str, object],
-    engine: Mapping[str, object],
-) -> dict[str, object]:
-    """Return bounded deterministic diagnostics without changing state."""
-
-    legacy_value = _thaw_contract_value(
-        _freeze_contract_value(dict(legacy), "$shadow/legacy")
-    )
-    engine_value = _thaw_contract_value(
-        _freeze_contract_value(dict(engine), "$shadow/engine")
-    )
-    all_differences = json_pointer_diff(legacy_value, engine_value)
-    differences = [
-        _transition_engine_bounded_path(path)
-        for path in all_differences[
-            :_transition_engine_shadow_difference_limit
-        ]
-    ]
-    payload = {
-        "contract": "dev-flow-transition-shadow/v1",
-        "matched": not all_differences,
-        "differences": differences,
-        "difference_count": len(all_differences),
-        "differences_truncated": (
-            len(all_differences)
-            > _transition_engine_shadow_difference_limit
-        ),
-        "legacy_sha256": _sha256_contract(legacy_value),
-        "engine_sha256": _sha256_contract(engine_value),
-    }
-    payload["diagnostic_sha256"] = _sha256_contract(payload)
-    return payload

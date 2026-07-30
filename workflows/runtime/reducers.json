@@ -15,9 +15,9 @@
         "kind": "T"
       }
     ],
-    "v3-transition-reducers-v1": [
+    "v4-transition-reducers-v1": [
       {
-        "path": "scripts/dev_flow_parts/workflow_v3_handlers.py",
+        "path": "scripts/dev_flow_parts/workflow_v4_handlers.py",
         "kind": "T"
       }
     ]
@@ -197,7 +197,7 @@
       }
     },
     {
-      "id": "reducer.v3-cancel/v1",
+      "id": "reducer.v4-cancel/v1",
       "contract_id": "dev-flow-reducer/v1",
       "authority": [
         "state-delta"
@@ -205,9 +205,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.reducer.projection/v1",
       "output_schema_ref": "schema.reducer.result/v1",
-      "implementation_file_set": "v3-transition-reducers-v1",
+      "implementation_file_set": "v4-transition-reducers-v1",
       "symbols": {
-        "reducer": "_workflow_v3_reduce_cancel"
+        "reducer": "_workflow_v4_reduce_cancel"
       },
       "audit": {
         "profile": "pure-v1",
@@ -216,7 +216,7 @@
       }
     },
     {
-      "id": "reducer.v3-impact-reassess/v1",
+      "id": "reducer.v4-impact-reassess/v1",
       "contract_id": "dev-flow-reducer/v1",
       "authority": [
         "state-delta"
@@ -224,9 +224,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.reducer.projection/v1",
       "output_schema_ref": "schema.reducer.result/v1",
-      "implementation_file_set": "v3-transition-reducers-v1",
+      "implementation_file_set": "v4-transition-reducers-v1",
       "symbols": {
-        "reducer": "_workflow_v3_reduce_impact_reassess"
+        "reducer": "_workflow_v4_reduce_impact_reassess"
       },
       "audit": {
         "profile": "pure-v1",
@@ -235,7 +235,7 @@
       }
     },
     {
-      "id": "reducer.v3-invalidate-plan/v1",
+      "id": "reducer.v4-invalidate-plan/v1",
       "contract_id": "dev-flow-reducer/v1",
       "authority": [
         "state-delta"
@@ -243,9 +243,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.reducer.projection/v1",
       "output_schema_ref": "schema.reducer.result/v1",
-      "implementation_file_set": "v3-transition-reducers-v1",
+      "implementation_file_set": "v4-transition-reducers-v1",
       "symbols": {
-        "reducer": "_workflow_v3_reduce_invalidate_plan"
+        "reducer": "_workflow_v4_reduce_invalidate_plan"
       },
       "audit": {
         "profile": "pure-v1",
@@ -254,7 +254,7 @@
       }
     },
     {
-      "id": "reducer.v3-invalidate-review/v1",
+      "id": "reducer.v4-invalidate-review/v1",
       "contract_id": "dev-flow-reducer/v1",
       "authority": [
         "state-delta"
@@ -262,9 +262,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.reducer.projection/v1",
       "output_schema_ref": "schema.reducer.result/v1",
-      "implementation_file_set": "v3-transition-reducers-v1",
+      "implementation_file_set": "v4-transition-reducers-v1",
       "symbols": {
-        "reducer": "_workflow_v3_reduce_invalidate_review"
+        "reducer": "_workflow_v4_reduce_invalidate_review"
       },
       "audit": {
         "profile": "pure-v1",

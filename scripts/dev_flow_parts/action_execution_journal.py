@@ -1,4 +1,4 @@
-"""Pure schema-v3 action-execution journal and index contracts.
+"""Pure schema-v4 action-execution journal and index contracts.
 
 This module deliberately owns no I/O and grants no execution authority.  It
 normalizes and verifies strict records, computes portable identities, and
@@ -20,56 +20,56 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 
-ACTION_EXECUTION_INDEX_SCHEMA = "dev-flow-v3-action-execution-index/v1"
-ACTION_EXECUTION_JOURNAL_SCHEMA = "dev-flow-v3-action-execution-journal/v1"
+ACTION_EXECUTION_INDEX_SCHEMA = "dev-flow-v4-action-execution-index/v1"
+ACTION_EXECUTION_JOURNAL_SCHEMA = "dev-flow-v4-action-execution-journal/v1"
 ACTION_EFFECT_CONTAINMENT_SCHEMA = (
-    "dev-flow-v3-action-effect-containment/v1"
+    "dev-flow-v4-action-effect-containment/v1"
 )
 ACTION_RUNTIME_RESERVATION_SCHEMA = (
-    "dev-flow-v3-action-runtime-reservation/v1"
+    "dev-flow-v4-action-runtime-reservation/v1"
 )
 ACTION_RECONCILIATION_ATTEMPT_SCHEMA = (
-    "dev-flow-v3-action-reconciliation-attempt/v1"
+    "dev-flow-v4-action-reconciliation-attempt/v1"
 )
 ACTION_COMPENSATION_EXECUTION_SCHEMA = (
-    "dev-flow-v3-action-compensation-execution/v1"
+    "dev-flow-v4-action-compensation-execution/v1"
 )
 ACTION_COMPENSATION_PLAN_SCHEMA = (
-    "dev-flow-v3-action-compensation-plan/v1"
+    "dev-flow-v4-action-compensation-plan/v1"
 )
 ACTION_EXECUTION_INDEX_PATH = "action-executions/index.json"
 
 JOURNAL_RECORD_DOMAIN = (
-    b"dev-flow-v3-action-execution-journal-record-v1\x00"
+    b"dev-flow-v4-action-execution-journal-record-v1\x00"
 )
-INDEX_RECORD_DOMAIN = b"dev-flow-v3-action-execution-index-record-v1\x00"
-JOURNAL_KEY_DOMAIN = b"dev-flow-v3-action-execution-journal-key-v1\x00"
+INDEX_RECORD_DOMAIN = b"dev-flow-v4-action-execution-index-record-v1\x00"
+JOURNAL_KEY_DOMAIN = b"dev-flow-v4-action-execution-journal-key-v1\x00"
 JOURNAL_SEAL_DOMAIN = (
-    b"dev-flow-v3-action-execution-journal-seal-v1\x00"
+    b"dev-flow-v4-action-execution-journal-seal-v1\x00"
 )
-ENGINE_PROOF_DOMAIN = b"dev-flow-v3-engine-commit-proof-v1\x00"
+ENGINE_PROOF_DOMAIN = b"dev-flow-v4-engine-commit-proof-v1\x00"
 CONTAINMENT_RECORD_DOMAIN = (
-    b"dev-flow-v3-action-effect-containment-record-v1\x00"
+    b"dev-flow-v4-action-effect-containment-record-v1\x00"
 )
 RUNTIME_RESERVATION_RECORD_DOMAIN = (
-    b"dev-flow-v3-action-runtime-reservation-record-v1\x00"
+    b"dev-flow-v4-action-runtime-reservation-record-v1\x00"
 )
 RUNTIME_BINDING_DOMAIN = (
-    b"dev-flow-v3-action-runtime-binding-v1\x00"
+    b"dev-flow-v4-action-runtime-binding-v1\x00"
 )
 RECONCILIATION_RECORD_DOMAIN = (
-    b"dev-flow-v3-action-reconciliation-attempt-record-v1\x00"
+    b"dev-flow-v4-action-reconciliation-attempt-record-v1\x00"
 )
 COMPENSATION_RECORD_DOMAIN = (
-    b"dev-flow-v3-action-compensation-execution-record-v1\x00"
+    b"dev-flow-v4-action-compensation-execution-record-v1\x00"
 )
 COMPENSATION_PLAN_DOMAIN = (
-    b"dev-flow-v3-action-compensation-plan-v1\x00"
+    b"dev-flow-v4-action-compensation-plan-v1\x00"
 )
 COMPENSATION_RECEIPT_DOMAIN = (
-    b"dev-flow-v3-action-compensation-receipt-v1\x00"
+    b"dev-flow-v4-action-compensation-receipt-v1\x00"
 )
-SAFE_INPUT_DOMAIN = b"dev-flow-v3-action-effect-safe-input-v1\x00"
+SAFE_INPUT_DOMAIN = b"dev-flow-v4-action-effect-safe-input-v1\x00"
 ACTION_EXECUTION_LOCK_ORDER = (
     "task",
     "repository",
@@ -81,16 +81,6 @@ ACTION_EXECUTION_LOCK_ORDER = (
 _SIGNED_INT64_MIN = -(2**63)
 _SIGNED_INT64_MAX = 2**63 - 1
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_WINDOWS_RESERVED_COMPONENTS = frozenset(
-    {
-        "con",
-        "prn",
-        "aux",
-        "nul",
-        *(f"com{number}" for number in range(1, 10)),
-        *(f"lpt{number}" for number in range(1, 10)),
-    }
-)
 _FORBIDDEN_SECRET_KEYS = frozenset(
     {
         "manager_secret",
@@ -851,11 +841,10 @@ def _expect_path_component(value: object, pointer: str) -> str:
             or ord(character) == 127
             for character in text
         )
-        or text.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_COMPONENTS
     ):
         raise _error(
             "ACTION_JOURNAL_PATH_COMPONENT_INVALID",
-            "record identity is not a portable single path component",
+            "record identity is not a safe single path component",
             details={"pointer": pointer, "value": text},
         )
     return text
@@ -1549,7 +1538,7 @@ def _normalize_bindings(value: object) -> dict[str, object]:
     if result["action_edge_id"] != result["completion_edge_id"]:
         raise _error(
             "ACTION_JOURNAL_EDGE_ROLE_ALIAS_INVALID",
-            "legacy action_edge_id alias must equal completion_edge_id",
+            "action_edge_id must equal completion_edge_id",
         )
     if (
         result["authorization_kind"] == "manager"

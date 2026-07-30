@@ -1,5 +1,5 @@
 # Loaded by scripts/dev_flow.py into its shared module namespace.
-# Responsibility: isolated CLI projection for schema-v3 action quarantine
+# Responsibility: isolated CLI projection for schema-v4 action quarantine
 # inspection, preview, reconciliation, and lost-response recovery.
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ from typing import Mapping as _ActionRecoveryMapping
 
 
 _ACTION_RECOVERY_EVIDENCE_SCHEMA = (
-    "dev-flow-v3-action-reconciliation-evidence/v1"
+    "dev-flow-v4-action-reconciliation-evidence/v1"
 )
 _ACTION_RECOVERY_RESULT_SCHEMA = (
-    "dev-flow-v3-action-reconciliation-cli-result/v1"
+    "dev-flow-v4-action-reconciliation-cli-result/v1"
 )
 _ACTION_RECOVERY_RESULT_SCHEMA_V4 = (
     "dev-flow-v4-action-reconciliation-cli-result/v1"
@@ -33,28 +33,28 @@ _ACTION_RECOVERY_OPERATOR_INTERVENTION_REASON = (
     "TRUSTED_HOST_AUTHORITY_UNAVAILABLE"
 )
 _ACTION_RECOVERY_INSPECT_SCHEMA = (
-    "dev-flow-v3-action-reconciliation-inspect/v1"
+    "dev-flow-v4-action-reconciliation-inspect/v1"
 )
 _ACTION_RECOVERY_PREVIEW_SCHEMA = (
-    "dev-flow-v3-action-reconciliation-preview/v1"
+    "dev-flow-v4-action-reconciliation-preview/v1"
 )
 _ACTION_RECOVERY_PREVIEW_DOMAIN = (
-    b"dev-flow-v3-action-reconciliation-cli-preview-v1\x00"
+    b"dev-flow-v4-action-reconciliation-cli-preview-v1\x00"
 )
 _ACTION_RECOVERY_GATE_DOMAIN = (
-    b"dev-flow-v3-action-reconciliation-cli-gate-v1\x00"
+    b"dev-flow-v4-action-reconciliation-cli-gate-v1\x00"
 )
 _ACTION_RECOVERY_COMPENSATION_FILE_ACTION = (
     "recovery.compensate.controller-file-remove/v1"
 )
 _ACTION_RECOVERY_COMPENSATION_CONTRACT_DOMAIN = (
-    b"dev-flow-v3-controller-file-compensation-contract-v1\x00"
+    b"dev-flow-v4-controller-file-compensation-contract-v1\x00"
 )
 _ACTION_RECOVERY_COMPENSATION_RECEIPT_DOMAIN = (
-    b"dev-flow-v3-controller-file-compensation-receipt-v1\x00"
+    b"dev-flow-v4-controller-file-compensation-receipt-v1\x00"
 )
 _ACTION_RECOVERY_COMPENSATION_POSTCONDITION_DOMAIN = (
-    b"dev-flow-v3-controller-file-compensation-postcondition-v1\x00"
+    b"dev-flow-v4-controller-file-compensation-postcondition-v1\x00"
 )
 _ACTION_RECOVERY_UNRESOLVED_AUTHORITY_DOMAIN = (
     b"dev-flow-v4-action-recovery-authority-unavailable-v1\x00"
@@ -162,33 +162,12 @@ def _action_recovery_evidence(args: object) -> dict[str, object]:
             "compensation_plan",
         },
     }[outcome]
-    legacy_expected = {
-        "ABANDONED": common
-        | {
-            "quiescence_evidence_sha256",
-            "no_business_outcome_evidence_sha256",
-        },
-        "COMPENSATED": common
-        | {
-            "compensation_execution_id",
-            "compensation_plan",
-            "approvals",
-            "quiescence_evidence_sha256",
-        },
-    }.get(outcome)
-    if set(evidence) != expected and (
-        legacy_expected is None or set(evidence) != legacy_expected
-    ):
+    if set(evidence) != expected:
         raise _action_recovery_error(
             "ACTION_RECOVERY_EVIDENCE_INVALID",
             "reconciliation evidence has unknown or missing fields",
             details={
                 "expected": sorted(expected),
-                "legacy_expected": (
-                    sorted(legacy_expected)
-                    if legacy_expected is not None
-                    else None
-                ),
                 "actual": sorted(evidence),
             },
         )
@@ -1541,7 +1520,7 @@ def workflow_action_recovery_apply_v1(
     if not isinstance(outer, _ManagerAuthorityInvocation):
         raise _action_recovery_error(
             "MANAGER_CAPABILITY_REQUIRED",
-            "schema-v3 action recovery requires local manager proof",
+            "schema-v4 action recovery requires local manager proof",
         )
     request = outer.request
     if (
@@ -1600,7 +1579,7 @@ def workflow_action_recovery_apply_v1(
             raise FlowError(
                 exc.code, exc.message, details=exc.details
             ) from exc
-        result = recover_v3_workflow_action_reconciliation(
+        result = recover_v4_workflow_action_reconciliation(
             task_dir,
             args.attempt_id,
             reauthenticate=lambda: manager_secret,
@@ -1684,13 +1663,13 @@ def workflow_action_recovery_apply_v1(
         )
         if evidence["outcome"] == "ABANDONED":
             preview_evaluation = (
-                preview_v3_workflow_action_abandonment(
+                preview_v4_workflow_action_abandonment(
                     provisional, prepared, target
                 )
             )
         elif evidence["outcome"] == "COMPENSATED":
             preview_evaluation = (
-                preview_v3_workflow_action_compensation(
+                preview_v4_workflow_action_compensation(
                     provisional, prepared, target
                 )
             )
@@ -1764,7 +1743,7 @@ def workflow_action_recovery_apply_v1(
         )
         if evidence["outcome"] == "ABANDONED":
             preview_evaluation = (
-                preview_v3_workflow_action_abandonment(
+                preview_v4_workflow_action_abandonment(
                     request_without_proof,
                     prepared,
                     closed_target,
@@ -1772,7 +1751,7 @@ def workflow_action_recovery_apply_v1(
             )
         elif evidence["outcome"] == "COMPENSATED":
             preview_evaluation = (
-                preview_v3_workflow_action_compensation(
+                preview_v4_workflow_action_compensation(
                     request_without_proof,
                     prepared,
                     closed_target,
@@ -1813,9 +1792,9 @@ def workflow_action_recovery_apply_v1(
         context: WorkflowActionReconciliationCommitContext,
     ) -> WorkflowActionReconciliationCommitPlan:
         if context.decision == "ABANDONED":
-            return evaluate_v3_workflow_action_abandonment(context)
+            return evaluate_v4_workflow_action_abandonment(context)
         if context.decision == "COMPENSATED":
-            return evaluate_v3_workflow_action_compensation(context)
+            return evaluate_v4_workflow_action_compensation(context)
         assert invocation is not None
         current_store = ActionExecutionStore(task_dir)
         current_index = current_store.read_index(
@@ -1856,7 +1835,7 @@ def workflow_action_recovery_apply_v1(
         else None
     )
     try:
-        result = reconcile_v3_workflow_action_quarantine(
+        result = reconcile_v4_workflow_action_quarantine(
             task_dir,
             request_value,
             reauthenticate=lambda: manager_secret,

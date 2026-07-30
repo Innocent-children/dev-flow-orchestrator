@@ -47,7 +47,7 @@ if "ActionExecutionStore" not in globals():
 
 
 WORKFLOW_ACTION_RECONCILIATION_SCHEMA = (
-    "dev-flow-v3-workflow-action-reconciliation/v1"
+    "dev-flow-v4-workflow-action-reconciliation/v1"
 )
 WORKFLOW_ACTION_RECONCILIATION_FAILURE_POINTS = (
     "before-attempt",
@@ -63,31 +63,31 @@ _WORKFLOW_RECONCILE_SHA256_RE = _workflow_reconcile_re.compile(
     r"^[0-9a-f]{64}$"
 )
 _WORKFLOW_RECONCILE_ABANDONMENT_DOMAIN = (
-    b"dev-flow-v3-workflow-action-reconciliation-abandonment-v1\x00"
+    b"dev-flow-v4-workflow-action-reconciliation-abandonment-v1\x00"
 )
 _WORKFLOW_RECONCILE_LIVE_ABANDONMENT_DOMAIN = (
     b"dev-flow-v4-workflow-action-live-abandonment-v1\x00"
 )
 _WORKFLOW_RECONCILE_PROOF_DOMAIN = (
-    b"dev-flow-v3-workflow-action-reconciliation-proof-v1\x00"
+    b"dev-flow-v4-workflow-action-reconciliation-proof-v1\x00"
 )
 _WORKFLOW_RECONCILE_ENGINE_PROOF_DOMAIN = (
-    b"dev-flow-v3-workflow-action-reconciliation-engine-proof-v1\x00"
+    b"dev-flow-v4-workflow-action-reconciliation-engine-proof-v1\x00"
 )
 _WORKFLOW_RECONCILE_RESTART_UNRESOLVED_DOMAIN = (
-    b"dev-flow-v3-workflow-action-reconciliation-restart-unresolved-v1\x00"
+    b"dev-flow-v4-workflow-action-reconciliation-restart-unresolved-v1\x00"
 )
 _WORKFLOW_RECONCILE_DUAL_APPROVAL_DOMAIN = (
-    b"dev-flow-v3-workflow-action-compensation-dual-approval-v1\x00"
+    b"dev-flow-v4-workflow-action-compensation-dual-approval-v1\x00"
 )
 _WORKFLOW_RECONCILE_EVENT_DOMAIN = (
-    b"dev-flow-v3-workflow-action-reconciliation-event-v1\x00"
+    b"dev-flow-v4-workflow-action-reconciliation-event-v1\x00"
 )
 _WORKFLOW_RECONCILE_OUTBOX_DOMAIN = (
-    b"dev-flow-v3-workflow-action-reconciliation-outbox-v1\x00"
+    b"dev-flow-v4-workflow-action-reconciliation-outbox-v1\x00"
 )
 _WORKFLOW_RECONCILE_EVENT_SCHEMA = (
-    "dev-flow-v3-workflow-action-reconciliation-event/v1"
+    "dev-flow-v4-workflow-action-reconciliation-event/v1"
 )
 _WORKFLOW_RECONCILE_ACTION_ID = "control.reconcile/v1"
 _WORKFLOW_RECONCILE_SCOPE_FIELDS = (
@@ -614,7 +614,7 @@ def _workflow_reconcile_control_evaluation(
     )
     evidence = {
         "contract": (
-            "dev-flow-v3-workflow-action-"
+            "dev-flow-v4-workflow-action-"
             + decision_contract
             + "-evaluation/v1"
         ),
@@ -702,7 +702,7 @@ def _workflow_reconcile_control_evaluation(
     return evaluation
 
 
-def preview_v3_workflow_action_abandonment(
+def preview_v4_workflow_action_abandonment(
     request: WorkflowActionReconciliationRequest,
     state: _WorkflowReconcileMapping[str, object],
     target: _WorkflowReconcileMapping[str, object],
@@ -718,7 +718,7 @@ def preview_v3_workflow_action_abandonment(
     )
 
 
-def evaluate_v3_workflow_action_abandonment(
+def evaluate_v4_workflow_action_abandonment(
     context: WorkflowActionReconciliationCommitContext,
 ) -> WorkflowActionReconciliationCommitPlan:
     """Mint one live no-op evaluation after fresh authority is installed."""
@@ -741,7 +741,7 @@ def evaluate_v3_workflow_action_abandonment(
     return WorkflowActionReconciliationCommitPlan(evaluation)
 
 
-def preview_v3_workflow_action_compensation(
+def preview_v4_workflow_action_compensation(
     request: WorkflowActionReconciliationRequest,
     state: _WorkflowReconcileMapping[str, object],
     target: _WorkflowReconcileMapping[str, object],
@@ -757,7 +757,7 @@ def preview_v3_workflow_action_compensation(
     )
 
 
-def evaluate_v3_workflow_action_compensation(
+def evaluate_v4_workflow_action_compensation(
     context: WorkflowActionReconciliationCommitContext,
 ) -> WorkflowActionReconciliationCommitPlan:
     """Mint a live no-op business evaluation after compensation settles."""
@@ -797,7 +797,7 @@ class WorkflowActionCompensationPlan:
     effect_id: str
     safe_inputs: _WorkflowReconcileMapping[str, object]
     postcondition_contract_sha256: str
-    schema: str = "dev-flow-v3-action-compensation-plan/v1"
+    schema: str = "dev-flow-v4-action-compensation-plan/v1"
 
     def __post_init__(self) -> None:
         try:
@@ -825,7 +825,7 @@ class WorkflowActionCompensationPlan:
             "effect_id": self.effect_id,
             "safe_inputs": safe_inputs,
             "safe_inputs_sha256": semantic_sha256(
-                b"dev-flow-v3-action-effect-safe-input-v1\x00",
+                b"dev-flow-v4-action-effect-safe-input-v1\x00",
                 safe_inputs,
             ),
             "postcondition_contract_sha256": (
@@ -3187,7 +3187,7 @@ def _workflow_reconcile_locked(
         manager_secret = None
 
 
-def reconcile_v3_workflow_action_quarantine(
+def _reconcile_v4_workflow_action_quarantine_core(
     task_dir: str | object,
     request: WorkflowActionReconciliationRequest,
     *,
@@ -3274,7 +3274,7 @@ def reconcile_v3_workflow_action_quarantine(
                 "WORKFLOW_ACTION_RECONCILIATION_REPLAY",
                 "attempt identity is already bound to another request",
             )
-        return recover_v3_workflow_action_reconciliation(
+        return recover_v4_workflow_action_reconciliation(
             task_path,
             request.attempt_id,
             reauthenticate=reauthenticate,
@@ -3297,7 +3297,8 @@ def reconcile_v3_workflow_action_quarantine(
                     "current task state could not be validated",
                 ) from exc
             if (
-                live_state.get("schema_version") != 3
+                live_state.get("schema_version")
+                != V4_TASK_SCHEMA_VERSION
                 or live_state.get("task_id") != request.task_id
                 or live_state.get("revision")
                 != request.current_task_revision
@@ -3306,7 +3307,7 @@ def reconcile_v3_workflow_action_quarantine(
             ):
                 raise _workflow_reconcile_error(
                     "WORKFLOW_ACTION_RECONCILIATION_REVISION_INVALID",
-                    "request does not bind one settled current schema-v3 task revision",
+                    "request does not bind one settled current schema-v4 task revision",
                     details={
                         "expected_revision": (
                             request.current_task_revision
@@ -4107,7 +4108,7 @@ def _recover_workflow_reconciliation_locked(
     )
 
 
-def recover_v3_workflow_action_reconciliation(
+def recover_v4_workflow_action_reconciliation(
     task_dir: str | object,
     attempt_id: str,
     *,
@@ -4192,11 +4193,10 @@ __all__ = [
     "WorkflowActionReconciliationProof",
     "WorkflowActionReconciliationRequest",
     "WorkflowActionReconciliationResult",
-    "evaluate_v3_workflow_action_abandonment",
-    "evaluate_v3_workflow_action_compensation",
-    "preview_v3_workflow_action_abandonment",
-    "preview_v3_workflow_action_compensation",
-    "recover_v3_workflow_action_reconciliation",
-    "reconcile_v3_workflow_action_quarantine",
+    "evaluate_v4_workflow_action_abandonment",
+    "evaluate_v4_workflow_action_compensation",
+    "preview_v4_workflow_action_abandonment",
+    "preview_v4_workflow_action_compensation",
+    "recover_v4_workflow_action_reconciliation",
     "workflow_action_reconciliation_engine_proof_sha256",
 ]

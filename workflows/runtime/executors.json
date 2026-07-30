@@ -130,10 +130,9 @@
       ],
       "semantic_roots": [
         "_manager_default_actions",
-        "execute_v3_workflow_action_transaction",
-        "install_v4_runtime_policy",
-        "reconcile_v3_workflow_action_quarantine",
-        "recover_v3_workflow_action_transaction"
+        "execute_v4_workflow_action_transaction",
+        "reconcile_v4_workflow_action_quarantine",
+        "recover_v4_workflow_action_transaction"
       ]
     }
   },

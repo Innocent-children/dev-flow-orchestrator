@@ -1,6 +1,6 @@
 # Loaded by scripts/dev_flow.py into its shared module namespace.
 # Do not import this implementation fragment directly.
-# Responsibility: Errors, workflow constants, redaction, paths, state I/O, and migrations.
+# Responsibility: Errors, workflow constants, redaction, paths, and V4 state I/O.
 from __future__ import annotations
 
 import argparse
@@ -28,28 +28,13 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
-try:  # POSIX is the primary Codex environment; Windows uses msvcrt below.
-    import fcntl
-except ImportError:  # pragma: no cover - exercised only on Windows
-    fcntl = None  # type: ignore[assignment]
-
-try:  # Windows byte-range locking; absent on POSIX where fcntl is used instead.
-    import msvcrt
-except ImportError:  # pragma: no cover - exercised only on POSIX
-    msvcrt = None  # type: ignore[assignment]
+import fcntl
 
 
-# Auxiliary records (workspace registry, quarantine, and similar containers)
-# keep their existing schema.  Task and plugin configuration schemas evolve
-# independently so an older controller cannot silently ignore v2 safety
-# fields.
+# Auxiliary records and plugin configuration use independently versioned
+# generic protocols. Every task snapshot uses the V4 task schema.
 SCHEMA_VERSION = 1
-TASK_SCHEMA_VERSION = 2
-SUPPORTED_TASK_SCHEMA_VERSIONS = {
-    1,
-    TASK_SCHEMA_VERSION,
-    V3_TASK_SCHEMA_VERSION,
-}
+SUPPORTED_TASK_SCHEMA_VERSIONS = {V4_TASK_SCHEMA_VERSION}
 CONFIG_SCHEMA_VERSION = 2
 SUPPORTED_CONFIG_SCHEMA_VERSIONS = {1, CONFIG_SCHEMA_VERSION}
 EVIDENCE_CONTRACT_VERSION = 2
@@ -72,30 +57,6 @@ ORDERED_STATES = [
     "DONE",
 ]
 ALL_STATES = set(ORDERED_STATES) | {"BLOCKED", "CANCELLED"}
-# Frozen schema-v1/v2 compatibility topology.  Schema-v3 command handlers must
-# resolve movement from the task-pinned bundle and never consult these tables.
-FORWARD_EDGES = {
-    state: {ORDERED_STATES[index + 1]}
-    for index, state in enumerate(ORDERED_STATES[:-1])
-}
-FORWARD_EDGES["DONE"] = set()
-REWORK_EDGES = {
-    "IMPLEMENTING": {"PLANNING"},
-    "VERIFYING": {"IMPLEMENTING", "PLANNING"},
-    "REVIEWING": {"IMPLEMENTING", "PLANNING"},
-    "FINALIZING": {"IMPLEMENTING", "PLANNING"},
-}
-IMPACT_REASSESS_SOURCES = {
-    "ROUTE_APPROVED",
-    "WORKSPACE_READY",
-    "PLANNING",
-    "IMPLEMENTING",
-    "VERIFYING",
-    "REVIEWING",
-    "FINALIZING",
-}
-for _reassess_source in IMPACT_REASSESS_SOURCES:
-    REWORK_EDGES.setdefault(_reassess_source, set()).add("INDEXED")
 FLOW_MODES = ("full", "lite")
 DEFAULT_FLOW = "full"
 LOW_RISK_CHANGE_CATEGORIES = ("docs", "internal", "tests")
@@ -232,60 +193,35 @@ LITE_ORDERED_STATES = [
     "VERIFYING",
     "DONE",
 ]
-# Frozen schema-v1/v2 lite adapter topology; not authoritative for schema v3.
-LITE_FORWARD_EDGES = {
-    state: {LITE_ORDERED_STATES[index + 1]}
-    for index, state in enumerate(LITE_ORDERED_STATES[:-1])
-}
-LITE_FORWARD_EDGES["DONE"] = set()
-# Backward edges: rework the implementation, or re-open scope evidence with a
-# fresh preflight when the checkout drifted or the fix outgrew its approval.
-LITE_REWORK_EDGES = {
-    "IMPLEMENTING": {"PREFLIGHTED"},
-    "VERIFYING": {"IMPLEMENTING", "PREFLIGHTED"},
-}
-# V2 is fail-closed: only these exact reversible controller edges may advance
-# without a separate confirmation intent.  DONE/CANCELLED are intentionally
-# impossible to express here.
-AUTOMATIC_TRANSITION_EDGES = frozenset(
-    {
-        ("full", "WORKSPACE_READY", "PLANNING"),
-        ("full", "IMPLEMENTING", "VERIFYING"),
-        ("lite", "IMPLEMENTING", "VERIFYING"),
-    }
-)
-AUTOMATIC_ACTION_EDGES = frozenset(
-    {
-        ("full", "record-index", "BASELINED", "INDEXED"),
-        ("full", "review-snapshot", "VERIFYING", "REVIEWING"),
-    }
-)
-
-
 def _require_automatic_action(
-    flow: str, action: str, source: str, target: str
+    state_value: dict[str, Any],
+    action: str,
+    source: str,
+    target: str,
 ) -> None:
-    edge = (flow, action, source, target)
-    if edge not in AUTOMATIC_ACTION_EDGES:
+    try:
+        bundle = _workflow_transition_bundle(state_value)
+    except TransitionEngineError as exc:
+        raise FlowError(exc.code, exc.message, details=exc.details) from exc
+    matches = [
+        edge
+        for edge in bundle.legal_edges(source)
+        if edge.get("target") == target
+        and edge.get("automatic") is True
+        and isinstance(edge.get("trigger"), Mapping)
+        and edge["trigger"].get("id") == action
+    ]
+    if len(matches) != 1:
         raise FlowError(
             "AUTOMATIC_ACTION_NOT_ALLOWED",
-            "the controller action is not on the exact automatic whitelist",
+            "the task-pinned V4 bundle does not authorize this automatic action",
             details={
-                "flow": flow,
                 "action": action,
                 "source_status": source,
                 "target_status": target,
             },
         )
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-WINDOWS_RESERVED_TASK_STEMS = {
-    "con",
-    "prn",
-    "aux",
-    "nul",
-    *(f"com{index}" for index in range(1, 10)),
-    *(f"lpt{index}" for index in range(1, 10)),
-}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_PROTECTED_BRANCHES = ["main", "master", "trunk"]
 REVIEW_VERDICTS = {"PASS", "CONDITIONAL", "FAIL"}
@@ -623,16 +559,8 @@ def _sensitive_value_sha256(value: str | None) -> str | None:
     return hashlib.sha256(value.encode("utf-8", "surrogateescape")).hexdigest()
 
 
-def _platform_family() -> str:
-    if os.name == "nt":
-        return "windows"
-    if sys.platform == "darwin":
-        return "macos"
-    return "linux"
-
-
 def resolve_data_dir(data_dir: str | os.PathLike[str] | None = None) -> Path:
-    """Resolve state storage using CLI, environment, then platform state dir.
+    """Resolve state storage using CLI, environment, then macOS app support.
 
     Resolution order is deliberately exposed for hooks: explicit ``data_dir``;
     ``DEV_FLOW_DATA_DIR``; ``PLUGIN_DATA``; finally the user's state directory.
@@ -645,30 +573,12 @@ def resolve_data_dir(data_dir: str | os.PathLike[str] | None = None) -> Path:
     if candidate is None:
         candidate = _nonempty(os.environ.get("PLUGIN_DATA"))
     if candidate is None:
-        platform_family = _platform_family()
-        if platform_family == "macos":
-            candidate = str(
-                Path.home()
-                / "Library"
-                / "Application Support"
-                / "dev-flow-orchestrator"
-            )
-        elif platform_family == "windows":  # pragma: no cover - native Windows
-            local_app_data = _nonempty(os.environ.get("LOCALAPPDATA"))
-            root = (
-                Path(local_app_data)
-                if local_app_data is not None
-                else Path.home() / "AppData" / "Local"
-            )
-            candidate = str(root / "dev-flow-orchestrator")
-        else:
-            xdg_state_home = _nonempty(os.environ.get("XDG_STATE_HOME"))
-            root = (
-                Path(xdg_state_home)
-                if xdg_state_home is not None
-                else Path.home() / ".local" / "state"
-            )
-            candidate = str(root / "dev-flow-orchestrator")
+        candidate = str(
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "dev-flow-orchestrator"
+        )
     return Path(candidate).expanduser().resolve(strict=False)
 
 
@@ -679,14 +589,12 @@ def _validate_task_id(task_id: str) -> str:
         or encoded_length != len(task_id)
         or not TASK_ID_RE.fullmatch(task_id)
         or task_id.endswith(".")
-        or task_id.split(".", 1)[0].lower() in WINDOWS_RESERVED_TASK_STEMS
     ):
         raise FlowError(
             "INVALID_TASK_ID",
             (
                 "task id must be 1-64 ASCII bytes matching "
-                "[A-Za-z0-9][A-Za-z0-9._-]{0,63}, must not end in '.', and "
-                "must not use a Windows reserved device-name stem"
+                "[A-Za-z0-9][A-Za-z0-9._-]{0,63} and must not end in '.'"
             ),
             details={
                 "task_id": task_id,
@@ -733,129 +641,7 @@ def _nearest_existing_path(path: Path) -> tuple[Path, tuple[str, ...]]:
     return ancestor, tuple(reversed(suffix))
 
 
-def _windows_existing_identity(path: Path) -> dict[str, Any]:
-    """Return volume/file identity plus a handle-canonical Windows path."""
-
-    if os.name != "nt":  # pragma: no cover - native Windows helper
-        raise FlowError(
-            "PATH_IDENTITY_UNAVAILABLE",
-            "Windows file identity is unavailable on this platform",
-            details={"path": str(path)},
-        )
-    import ctypes
-    from ctypes import wintypes
-
-    class BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("dwFileAttributes", wintypes.DWORD),
-            ("ftCreationTime", wintypes.FILETIME),
-            ("ftLastAccessTime", wintypes.FILETIME),
-            ("ftLastWriteTime", wintypes.FILETIME),
-            ("dwVolumeSerialNumber", wintypes.DWORD),
-            ("nFileSizeHigh", wintypes.DWORD),
-            ("nFileSizeLow", wintypes.DWORD),
-            ("nNumberOfLinks", wintypes.DWORD),
-            ("nFileIndexHigh", wintypes.DWORD),
-            ("nFileIndexLow", wintypes.DWORD),
-        ]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.GetFileInformationByHandle.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(BY_HANDLE_FILE_INFORMATION),
-    ]
-    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-    kernel32.GetFinalPathNameByHandleW.argtypes = [
-        wintypes.HANDLE,
-        wintypes.LPWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-    ]
-    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    handle = kernel32.CreateFileW(
-        str(path),
-        0,
-        0x00000001 | 0x00000002 | 0x00000004,
-        None,
-        3,
-        0x02000000,
-        None,
-    )
-    if handle == wintypes.HANDLE(-1).value:
-        raise FlowError(
-            "PATH_IDENTITY_UNAVAILABLE",
-            "could not open a Windows path for stable identity",
-            details={
-                "path": str(path),
-                "winerror": ctypes.get_last_error(),
-            },
-        )
-    try:
-        information = BY_HANDLE_FILE_INFORMATION()
-        if not kernel32.GetFileInformationByHandle(
-            handle, ctypes.byref(information)
-        ):
-            raise FlowError(
-                "PATH_IDENTITY_UNAVAILABLE",
-                "could not read Windows volume/file identity",
-                details={
-                    "path": str(path),
-                    "winerror": ctypes.get_last_error(),
-                },
-            )
-        final_path: str | None = None
-        for flags in (0x1, 0x0):  # volume GUID, then normalized DOS path
-            required = kernel32.GetFinalPathNameByHandleW(
-                handle, None, 0, flags
-            )
-            if not required:
-                continue
-            buffer = ctypes.create_unicode_buffer(required + 1)
-            rendered = kernel32.GetFinalPathNameByHandleW(
-                handle, buffer, len(buffer), flags
-            )
-            if rendered and rendered < len(buffer):
-                final_path = buffer.value
-                break
-        if final_path is None:
-            raise FlowError(
-                "PATH_IDENTITY_UNAVAILABLE",
-                "could not canonicalize a Windows path by handle",
-                details={
-                    "path": str(path),
-                    "winerror": ctypes.get_last_error(),
-                },
-            )
-        file_index = (
-            int(information.nFileIndexHigh) << 32
-        ) | int(information.nFileIndexLow)
-        return {
-            "kind": "windows-file-id",
-            "volume_serial": int(
-                information.dwVolumeSerialNumber
-            ),
-            "file_index": file_index,
-            "final_path": final_path,
-        }
-    finally:
-        kernel32.CloseHandle(handle)
-
-
 def _stable_existing_identity(path: Path) -> dict[str, Any]:
-    if os.name == "nt":  # pragma: no cover - native Windows
-        return _windows_existing_identity(path)
     try:
         metadata = path.stat()
     except OSError as exc:
@@ -872,90 +658,12 @@ def _stable_existing_identity(path: Path) -> dict[str, Any]:
     }
 
 
-def _windows_directory_case_sensitive(path: Path) -> bool | None:
-    if os.name != "nt":  # pragma: no cover - native Windows helper
-        return None
-    import ctypes
-    from ctypes import wintypes
-
-    class FILE_CASE_SENSITIVE_INFORMATION(ctypes.Structure):
-        _fields_ = [("Flags", wintypes.ULONG)]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.GetFileInformationByHandleEx.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-    ]
-    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    handle = kernel32.CreateFileW(
-        str(path),
-        0,
-        0x00000001 | 0x00000002 | 0x00000004,
-        None,
-        3,
-        0x02000000,
-        None,
-    )
-    if handle == wintypes.HANDLE(-1).value:
-        raise FlowError(
-            "PATH_IDENTITY_UNAVAILABLE",
-            "could not open a Windows directory for case-sensitivity identity",
-            details={
-                "path": str(path),
-                "winerror": ctypes.get_last_error(),
-            },
-        )
-    try:
-        information = FILE_CASE_SENSITIVE_INFORMATION()
-        if kernel32.GetFileInformationByHandleEx(
-            handle,
-            23,  # FileCaseSensitiveInfo
-            ctypes.byref(information),
-            ctypes.sizeof(information),
-        ):
-            return bool(information.Flags & 0x1)
-        error = ctypes.get_last_error()
-        if error in {1, 50, 87, 120}:
-            return None
-        raise FlowError(
-            "PATH_IDENTITY_UNAVAILABLE",
-            "could not query Windows per-directory case sensitivity",
-            details={"path": str(path), "winerror": error},
-        )
-    finally:
-        kernel32.CloseHandle(handle)
-
-
 def _probe_filesystem_case_sensitive(existing: Path) -> bool:
     """Probe case behavior on the same filesystem and clean up unconditionally."""
 
     probe_parent = existing if existing.is_dir() else existing.parent
     stable = _stable_existing_identity(probe_parent)
-    if os.name == "nt":  # pragma: no cover - native Windows
-        native = _windows_directory_case_sensitive(probe_parent)
-        if native is not None:
-            return native
-        cache_key: Any = (
-            "windows-directory",
-            stable.get("volume_serial"),
-            stable.get("file_index"),
-        )
-    else:
-        cache_key = ("posix-device", stable.get("device"))
+    cache_key: Any = ("posix-device", stable.get("device"))
     cached = _FILESYSTEM_CASE_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -994,9 +702,6 @@ def _probe_filesystem_unicode_distinct(existing: Path) -> bool:
     probe_parent = existing if existing.is_dir() else existing.parent
     stable = _stable_existing_identity(probe_parent)
     cache_key: Any = (
-        "windows-volume",
-        stable.get("volume_serial"),
-    ) if os.name == "nt" else (
         "posix-device",
         stable.get("device"),
     )
@@ -1284,7 +989,7 @@ def _require_current_evidence(record: Any, label: str) -> dict[str, Any]:
             )
         raise FlowError(
             "EVIDENCE_REGENERATION_REQUIRED",
-            f"legacy {label} evidence must be regenerated by the current controller",
+            f"{label} evidence must use the current protocol version",
             details={
                 "label": label,
                 "required_version": EVIDENCE_CONTRACT_VERSION,
@@ -1292,139 +997,6 @@ def _require_current_evidence(record: Any, label: str) -> dict[str, Any]:
             },
         )
     return record
-
-
-def _validate_v2_task_contract(path: Path, value: dict[str, Any]) -> None:
-    if (
-        value.get("confirmation_contract_version")
-        != CONFIRMATION_CONTRACT_VERSION
-        or not isinstance(value.get("risk_assessment"), dict)
-    ):
-        raise FlowError(
-            "UNSUPPORTED_STATE",
-            "task state is missing its v2 confirmation or risk contract",
-            details={
-                "path": str(path),
-                "schema_version": value.get("schema_version"),
-                "confirmation_contract_version": value.get(
-                    "confirmation_contract_version"
-                ),
-            },
-        )
-
-    risk = value["risk_assessment"]
-    raw_categories = risk.get("categories")
-    raw_targets = risk.get("target_paths")
-    repositories = value.get("repositories")
-    try:
-        if (
-            not isinstance(raw_categories, list)
-            or any(
-                not isinstance(item, str) or not item.strip()
-                for item in raw_categories
-            )
-            or not isinstance(raw_targets, list)
-            or not isinstance(repositories, list)
-        ):
-            raise FlowError(
-                "STATE_INVARIANT_VIOLATION",
-                "task risk declaration fields have invalid types",
-            )
-        normalized_policy = _normalize_risk_policy(risk.get("policy"))
-        normalized_categories = sorted(set(raw_categories))
-        normalized_targets = sorted(
-            {
-                _normalize_repo_relative_path(
-                    item,
-                    "risk_assessment.target_paths",
-                    code="STATE_INVARIANT_VIOLATION",
-                )
-                for item in raw_targets
-            }
-        )
-    except FlowError as exc:
-        raise FlowError(
-            "STATE_INVARIANT_VIOLATION",
-            "task risk assessment is invalid",
-            details={"path": str(path), "cause": exc.code},
-        ) from exc
-
-    repository_count = risk.get("repository_count")
-    if (
-        not isinstance(repository_count, int)
-        or isinstance(repository_count, bool)
-        or repository_count != len(repositories)
-    ):
-        raise FlowError(
-            "STATE_INVARIANT_VIOLATION",
-            "task risk assessment repository count is invalid",
-            details={
-                "path": str(path),
-                "recorded_repository_count": repository_count,
-                "actual_repository_count": len(repositories),
-            },
-        )
-
-    expected_reasons = _declared_risk_reasons(
-        repository_count,
-        normalized_categories,
-        normalized_targets,
-        normalized_policy,
-    )
-    expected_decision = "requires_full" if expected_reasons else "safe"
-    stored_assessment_sha = risk.get("sha256")
-    assessment_payload = dict(risk)
-    assessment_payload.pop("sha256", None)
-    if (
-        risk.get("schema") != "dev-flow-risk-assessment/v1"
-        or normalized_policy != risk.get("policy")
-        or risk.get("policy_sha256")
-        != _sha256_bytes(_json_bytes(normalized_policy))
-        or stored_assessment_sha
-        != _sha256_bytes(_json_bytes(assessment_payload))
-        or normalized_categories != raw_categories
-        or normalized_targets != raw_targets
-        or risk.get("decision") != expected_decision
-        or risk.get("reasons") != expected_reasons
-        or not isinstance(risk.get("evaluated_at"), str)
-        or not risk.get("evaluated_at")
-    ):
-        raise FlowError(
-            "STATE_INVARIANT_VIOLATION",
-            "task risk assessment integrity check failed",
-            details={"path": str(path)},
-        )
-
-    flow = value.get("flow")
-    workspace = value.get("workspace")
-    strategy = (
-        workspace.get("strategy") if isinstance(workspace, dict) else None
-    )
-    if (
-        flow not in FLOW_MODES
-        or strategy not in FLOW_BY_WORKSPACE_STRATEGY
-        or FLOW_BY_WORKSPACE_STRATEGY.get(strategy) != flow
-    ):
-        raise FlowError(
-            "STATE_INVARIANT_VIOLATION",
-            "task flow does not match its immutable workspace strategy",
-            details={
-                "path": str(path),
-                "flow": flow,
-                "workspace_strategy": strategy,
-            },
-        )
-    if flow == "lite" and (
-        expected_decision != "safe"
-        or repository_count != 1
-        or not normalized_targets
-        or not normalized_categories
-    ):
-        raise FlowError(
-            "STATE_INVARIANT_VIOLATION",
-            "lite task no longer satisfies its immutable start risk declaration",
-            details={"path": str(path)},
-        )
 
 
 def _validate_task_state_structure(path: Path, value: Any) -> int:
@@ -1466,39 +1038,36 @@ def _validate_task_state_snapshot(
     resolve_workflow: bool = True,
 ) -> int:
     schema_version = _validate_task_state_structure(path, value)
-    if schema_version == V3_TASK_SCHEMA_VERSION:
-        try:
-            validate_v3_task_state(value)
-            if resolve_workflow:
-                resolve_loaded_task_workflow(
-                    value,
-                    purpose=(
-                        "recovery"
-                        if value.get("pending_event") is not None
-                        or value.get("pending_events") is not None
-                        else "inspection"
-                    ),
-                )
-        except (
-            WorkflowCatalogError,
-            WorkflowHandlerAuditError,
-            WorkflowStateError,
-        ) as exc:
-            raise FlowError(
-                getattr(exc, "code", "UNSUPPORTED_STATE"),
-                getattr(
-                    exc,
-                    "message",
-                    "task workflow contract is unsupported or invalid",
+    try:
+        validate_v4_task_state(value)
+        if resolve_workflow:
+            resolve_loaded_task_workflow(
+                value,
+                purpose=(
+                    "recovery"
+                    if value.get("pending_event") is not None
+                    or value.get("pending_events") is not None
+                    else "inspection"
                 ),
-                details={
-                    "path": str(path),
-                    **dict(getattr(exc, "details", {})),
-                },
-            ) from exc
+            )
+    except (
+        WorkflowCatalogError,
+        WorkflowHandlerAuditError,
+        WorkflowStateError,
+    ) as exc:
+        raise FlowError(
+            getattr(exc, "code", "UNSUPPORTED_STATE"),
+            getattr(
+                exc,
+                "message",
+                "task workflow contract is unsupported or invalid",
+            ),
+            details={
+                "path": str(path),
+                **dict(getattr(exc, "details", {})),
+            },
+        ) from exc
     _assert_supported_evidence_versions(value)
-    if schema_version == TASK_SCHEMA_VERSION:
-        _validate_v2_task_contract(path, value)
     _validate_pending_event_outbox(path.parent, value)
     return schema_version
 
@@ -1545,26 +1114,11 @@ def _read_task_state_structural_snapshot(
     Mutation callers use this narrow phase so the expected-revision CAS check
     remains ahead of workflow resolution. Recovery and ordinary supported
     reads continue to use ``_read_task_state_snapshot`` and therefore still
-    fail closed on an unavailable v3 bundle before delivering an outbox.
+    fail closed on an unavailable v4 bundle before delivering an outbox.
     """
 
     value = _read_task_state_json(path)
     _validate_task_state_structure(path, value)
-    return value
-
-
-def _prepare_state_compatibility_view(
-    value: dict[str, Any],
-) -> dict[str, Any]:
-    # Schema v1 predates implementation-worktree indexes. Keep the schema
-    # number stable and expose additive defaults without rewriting merely
-    # because a task was read.
-    for repository in value.get("repositories", []):
-        if isinstance(repository, dict):
-            repository.setdefault("workspace_index", None)
-            repository.setdefault("index_history", [])
-    # Tasks recorded before flow selection are full-flow tasks by definition.
-    value.setdefault("flow", DEFAULT_FLOW)
     return value
 
 
@@ -1576,8 +1130,7 @@ def _finish_loaded_state(
         or value.get("pending_events") is not None
     ):
         value = _recover_pending_event(path, value)
-    value = _migrate_sensitive_state(path, value)
-    return _prepare_state_compatibility_view(value)
+    return value
 
 
 def load_state(
@@ -1592,67 +1145,13 @@ def load_state(
     )
 
 
-def _workflow_inspection_is_compatibility_only(
-    value: Any,
-    inspection: dict[str, object],
-) -> bool:
-    """Identify compatibility blockers that are safe to report read-only."""
-
-    if not isinstance(value, dict):
-        return False
-    schema_version = value.get("schema_version")
-    if (
-        isinstance(schema_version, int)
-        and not isinstance(schema_version, bool)
-        and schema_version > max(SUPPORTED_TASK_SCHEMA_VERSIONS)
-        and isinstance(value.get("task_id"), str)
-        and isinstance(value.get("revision"), int)
-        and not isinstance(value.get("revision"), bool)
-        and isinstance(value.get("status"), str)
-    ):
-        return True
-    if schema_version != V3_TASK_SCHEMA_VERSION:
-        return False
-    if (
-        inspection.get("valid") is True
-        and inspection.get("mutation_ready") is not True
-    ):
-        return True
-    errors = inspection.get("errors")
-    if not isinstance(errors, list):
-        return False
-    compatibility_codes = {
-        "RESULT_REFERENCE_UNSUPPORTED",
-        "RUNTIME_HANDLE_UNSUPPORTED",
-        "WORKFLOW_REF_UNSUPPORTED",
-    }
-    return any(
-        isinstance(error, dict)
-        and error.get("code") in compatibility_codes
-        for error in errors
-    )
-
-
 def load_state_for_inspection(
     task_id: str | os.PathLike[str],
     data_dir: str | os.PathLike[str] | None = None,
-) -> tuple[dict[str, Any], dict[str, object] | None]:
-    """Load known state normally or return an unsupported read-only view."""
+) -> tuple[dict[str, Any], None]:
+    """Load and validate the current V4 task snapshot."""
 
-    path = _state_file_path(task_id, data_dir)
-    value = _read_task_state_json(path)
-    inspection = inspect_loaded_task_state(value)
-    if _workflow_inspection_is_compatibility_only(value, inspection):
-        safe = _redact_sensitive_value(value)
-        if not isinstance(safe, dict):
-            raise FlowError(
-                "UNSUPPORTED_STATE",
-                f"unsupported or invalid task state: {path}",
-                details={"path": str(path)},
-            )
-        return safe, inspection
-    _validate_task_state_snapshot(path, value)
-    return _finish_loaded_state(path, value), None
+    return load_state(task_id, data_dir), None
 
 
 def _is_within(path: Path, parent: Path) -> bool:
@@ -1778,256 +1277,7 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _windows_security_descriptor(path: Path) -> dict[str, Any]:
-    """Read owner and DACL details through Win32 using only ``ctypes``."""
-
-    if os.name != "nt":  # pragma: no cover - native Windows implementation
-        raise FlowError(
-            "PERMISSIONS_UNSUPPORTED",
-            "Windows security descriptors are unavailable on this platform",
-            details={"path": str(path)},
-        )
-    import ctypes
-    from ctypes import wintypes
-
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-    class SID_AND_ATTRIBUTES(ctypes.Structure):
-        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
-
-    class TOKEN_USER(ctypes.Structure):
-        _fields_ = [("User", SID_AND_ATTRIBUTES)]
-
-    class ACL_HEADER(ctypes.Structure):
-        _fields_ = [
-            ("AclRevision", ctypes.c_ubyte),
-            ("Sbz1", ctypes.c_ubyte),
-            ("AclSize", ctypes.c_ushort),
-            ("AceCount", ctypes.c_ushort),
-            ("Sbz2", ctypes.c_ushort),
-        ]
-
-    class ACE_HEADER(ctypes.Structure):
-        _fields_ = [
-            ("AceType", ctypes.c_ubyte),
-            ("AceFlags", ctypes.c_ubyte),
-            ("AceSize", ctypes.c_ushort),
-        ]
-
-    advapi32.GetNamedSecurityInfoW.argtypes = [
-        wintypes.LPWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
-    advapi32.GetAce.argtypes = [
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    advapi32.GetAce.restype = wintypes.BOOL
-    advapi32.ConvertSidToStringSidW.argtypes = [
-        ctypes.c_void_p,
-        ctypes.POINTER(wintypes.LPWSTR),
-    ]
-    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
-    advapi32.OpenProcessToken.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.HANDLE),
-    ]
-    advapi32.OpenProcessToken.restype = wintypes.BOOL
-    advapi32.GetTokenInformation.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    advapi32.GetTokenInformation.restype = wintypes.BOOL
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel32.LocalFree.restype = ctypes.c_void_p
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    def sid_string(sid: ctypes.c_void_p) -> str:
-        rendered = wintypes.LPWSTR()
-        if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(rendered)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            return str(rendered.value)
-        finally:
-            kernel32.LocalFree(
-                ctypes.cast(rendered, ctypes.c_void_p)
-            )
-
-    token = wintypes.HANDLE()
-    if not advapi32.OpenProcessToken(
-        kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        required = wintypes.DWORD()
-        advapi32.GetTokenInformation(
-            token, 1, None, 0, ctypes.byref(required)
-        )
-        if required.value <= 0:
-            raise ctypes.WinError(ctypes.get_last_error())
-        buffer = ctypes.create_string_buffer(required.value)
-        if not advapi32.GetTokenInformation(
-            token,
-            1,
-            buffer,
-            required.value,
-            ctypes.byref(required),
-        ):
-            raise ctypes.WinError(ctypes.get_last_error())
-        current_sid = sid_string(
-            ctypes.cast(buffer, ctypes.POINTER(TOKEN_USER)).contents.User.Sid
-        )
-    finally:
-        kernel32.CloseHandle(token)
-
-    owner = ctypes.c_void_p()
-    dacl = ctypes.c_void_p()
-    descriptor = ctypes.c_void_p()
-    result = advapi32.GetNamedSecurityInfoW(
-        str(path),
-        1,  # SE_FILE_OBJECT
-        0x00000001 | 0x00000004,  # OWNER_SECURITY_INFORMATION | DACL
-        ctypes.byref(owner),
-        None,
-        ctypes.byref(dacl),
-        None,
-        ctypes.byref(descriptor),
-    )
-    if result != 0:
-        raise OSError(result, f"GetNamedSecurityInfoW failed for {path}")
-    try:
-        if not owner.value or not dacl.value:
-            return {
-                "owner": sid_string(owner) if owner.value else None,
-                "current_user": current_sid,
-                "null_dacl": not bool(dacl.value),
-                "aces": [],
-            }
-        acl_header = ACL_HEADER.from_address(dacl.value)
-        aces: list[dict[str, Any]] = []
-        for index in range(int(acl_header.AceCount)):
-            ace_pointer = ctypes.c_void_p()
-            if not advapi32.GetAce(dacl, index, ctypes.byref(ace_pointer)):
-                raise ctypes.WinError(ctypes.get_last_error())
-            header = ACE_HEADER.from_address(ace_pointer.value)
-            # File DACLs should use ordinary allowed/denied ACEs. Object ACEs
-            # have variable SID offsets; treating them as unverifiable keeps
-            # the controller fail closed instead of guessing.
-            if header.AceType not in {0, 1}:
-                aces.append(
-                    {
-                        "type": int(header.AceType),
-                        "sid": None,
-                        "mask": None,
-                        "inherited": bool(header.AceFlags & 0x10),
-                        "unverifiable": True,
-                    }
-                )
-                continue
-            mask = ctypes.c_uint32.from_address(ace_pointer.value + 4).value
-            sid = sid_string(ctypes.c_void_p(ace_pointer.value + 8))
-            aces.append(
-                {
-                    "type": "allow" if header.AceType == 0 else "deny",
-                    "sid": sid,
-                    "mask": int(mask),
-                    "inherited": bool(header.AceFlags & 0x10),
-                    "unverifiable": False,
-                }
-            )
-        return {
-            "owner": sid_string(owner),
-            "current_user": current_sid,
-            "null_dacl": False,
-            "aces": aces,
-        }
-    finally:
-        kernel32.LocalFree(descriptor)
-
-
-def _verify_windows_private_path(path: Path) -> None:
-    try:
-        descriptor = _windows_security_descriptor(path)
-    except (OSError, ValueError) as exc:
-        raise FlowError(
-            "PERMISSIONS_UNVERIFIABLE",
-            "could not verify the Windows owner and DACL",
-            details={"path": str(path), "error": str(exc)},
-        ) from exc
-    owner = descriptor.get("owner")
-    current_user = descriptor.get("current_user")
-    trusted_owners = {current_user, "S-1-5-18", "S-1-5-32-544"}
-    if descriptor.get("null_dacl") or not owner or owner not in trusted_owners:
-        raise FlowError(
-            "PERMISSIONS_UNSAFE",
-            "controller-managed Windows storage has an unsafe owner or null DACL",
-            details={"path": str(path), "owner": owner, "null_dacl": True},
-        )
-    forbidden = {
-        "S-1-1-0",  # Everyone
-        "S-1-5-7",  # Anonymous Logon
-        "S-1-5-11",  # Authenticated Users
-        "S-1-5-32-545",  # BUILTIN\Users
-    }
-    write_mask = (
-        0x40000000  # GENERIC_WRITE
-        | 0x10000000  # GENERIC_ALL
-        | 0x00010000  # DELETE
-        | 0x00040000  # WRITE_DAC
-        | 0x00080000  # WRITE_OWNER
-        | 0x00000002  # FILE_ADD_FILE / FILE_WRITE_DATA
-        | 0x00000004  # FILE_ADD_SUBDIRECTORY / FILE_APPEND_DATA
-        | 0x00000010  # FILE_WRITE_EA
-        | 0x00000040  # FILE_DELETE_CHILD
-        | 0x00000100  # FILE_WRITE_ATTRIBUTES
-    )
-    current_user_write = False
-    for ace in descriptor.get("aces", []):
-        if ace.get("unverifiable"):
-            raise FlowError(
-                "PERMISSIONS_UNVERIFIABLE",
-                "controller-managed Windows storage has an unsupported ACE",
-                details={"path": str(path), "ace": ace},
-            )
-        if ace.get("type") != "allow":
-            continue
-        mask = int(ace.get("mask") or 0)
-        sid = ace.get("sid")
-        if sid in forbidden and mask & write_mask:
-            raise FlowError(
-                "PERMISSIONS_UNSAFE",
-                "controller-managed Windows storage grants broad write access",
-                details={"path": str(path), "sid": sid, "mask": mask},
-            )
-        if sid == current_user and mask & write_mask and not ace.get("inherited"):
-            current_user_write = True
-    if owner != current_user and not current_user_write:
-        raise FlowError(
-            "PERMISSIONS_UNSAFE",
-            "trusted-system-owned Windows storage lacks an explicit current-user write grant",
-            details={"path": str(path), "owner": owner},
-        )
-
-
 def _set_private_permissions(path: Path, mode: int) -> None:
-    if os.name == "nt":  # pragma: no cover - exercised on native Windows
-        _verify_windows_private_path(path)
-        return
     try:
         path.chmod(mode)
         actual = stat.S_IMODE(path.stat().st_mode)
@@ -2110,8 +1360,6 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
         )
 
     def fsync_parent() -> None:
-        if os.name == "nt":
-            return
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
@@ -2126,10 +1374,7 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
             prefix=rollback_prefix, dir=path.parent
         )
         rollback = Path(rollback_name)
-        if os.name != "nt":
-            os.fchmod(rollback_descriptor, mode)
-        else:  # pragma: no cover - native Windows
-            _verify_windows_private_path(rollback)
+        os.fchmod(rollback_descriptor, mode)
         with os.fdopen(rollback_descriptor, "wb") as rollback_handle:
             rollback_descriptor = -1
             if original_existed:
@@ -2196,17 +1441,14 @@ def _atomic_write_bytes(path: Path, data: bytes, mode: int = 0o600) -> None:
     restored = False
     recovery_uncertain = False
     try:
-        if os.name != "nt":
-            try:
-                os.fchmod(descriptor, mode)
-            except OSError as exc:
-                raise FlowError(
-                    "PERMISSIONS_UNVERIFIABLE",
-                    "could not apply private permissions to a temporary state file",
-                    details={"path": str(temporary), "mode": oct(mode), "error": str(exc)},
-                ) from exc
-        else:  # pragma: no cover - native Windows
-            _verify_windows_private_path(temporary)
+        try:
+            os.fchmod(descriptor, mode)
+        except OSError as exc:
+            raise FlowError(
+                "PERMISSIONS_UNVERIFIABLE",
+                "could not apply private permissions to a temporary state file",
+                details={"path": str(temporary), "mode": oct(mode), "error": str(exc)},
+            ) from exc
         with os.fdopen(descriptor, "wb") as handle:
             descriptor = -1
             handle.write(data)
@@ -2402,10 +1644,7 @@ def _append_event(path: Path, event: dict[str, Any]) -> None:
     ).encode("utf-8", "backslashreplace")
     descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
     try:
-        if os.name != "nt":
-            os.fchmod(descriptor, 0o600)
-        else:  # pragma: no cover - exercised on native Windows
-            _verify_windows_private_path(path)
+        os.fchmod(descriptor, 0o600)
         remaining = memoryview(payload)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -2436,13 +1675,10 @@ def _validate_pending_event_outbox(
             details={"path": str(task_dir / "state.json")},
         )
     if pending_batch is not None:
-        if state_value.get("schema_version") not in {
-            TASK_SCHEMA_VERSION,
-            V3_TASK_SCHEMA_VERSION,
-        }:
+        if state_value.get("schema_version") != V4_TASK_SCHEMA_VERSION:
             raise FlowError(
                 "PENDING_EVENT_INVALID",
-                "batched event outboxes require task schema v2",
+                "batched event outboxes require the current V4 task schema",
                 details={
                     "path": str(task_dir / "state.json"),
                     "schema_version": state_value.get("schema_version"),
@@ -2617,56 +1853,3 @@ def _recover_pending_event(
         _validate_task_state_snapshot(state_path, current)
         _flush_pending_event(task_dir, current)
         return current
-
-
-def _migrate_sensitive_state(
-    state_path: Path, state_value: dict[str, Any]
-) -> dict[str, Any]:
-    """Remove legacy secrets from state without creating a workflow event."""
-
-    redacted = _redact_sensitive_value(state_value)
-    if not isinstance(redacted, dict):  # Defensive: task state is an object.
-        raise TypeError("state redaction produced a non-object value")
-    if redacted == state_value:
-        return state_value
-
-    task_dir = state_path.parent.resolve(strict=False)
-
-    def rewrite(current: dict[str, Any]) -> dict[str, Any]:
-        safe = _redact_sensitive_value(current)
-        if not isinstance(safe, dict):  # Defensive: task state is an object.
-            raise TypeError("state redaction produced a non-object value")
-        if safe != current:
-            _atomic_write_json(state_path, safe)
-        return safe
-
-    # Normal controller commands already own this task's lock.  Re-locking
-    # would deadlock on platforms without reentrant file locks.
-    if str(task_dir) in set(_HELD_LOCK_DIRECTORIES.get()):
-        return rewrite(state_value)
-
-    # A read-only show/list operation may be the first process to encounter a
-    # legacy secret.  Serialize the one-time cleanup with ordinary state
-    # transitions and preserve a pending event before rewriting the snapshot.
-    with _task_lock(task_dir, allow_quarantine=True):
-        try:
-            current = json.loads(state_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise FlowError(
-                "STATE_READ_FAILED",
-                "could not reload task state for sensitive-data cleanup",
-                details={"path": str(state_path), "error": str(exc)},
-            ) from exc
-        if not isinstance(current, dict):
-            raise FlowError(
-                "UNSUPPORTED_STATE",
-                "task state is invalid during sensitive-data cleanup",
-                details={"path": str(state_path)},
-            )
-        _validate_task_state_snapshot(state_path, current)
-        if (
-            current.get("pending_event") is not None
-            or current.get("pending_events") is not None
-        ):
-            _flush_pending_event(task_dir, current)
-        return rewrite(current)

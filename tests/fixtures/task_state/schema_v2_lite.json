@@ -1,9 +1,0 @@
-{
-  "schema_version": 2,
-  "task_id": "legacy-v2",
-  "flow": "lite",
-  "status": "VERIFYING",
-  "revision": 11,
-  "requirement": "Preserve schema-v2 workflow semantics",
-  "confirmation_contract_version": 1
-}

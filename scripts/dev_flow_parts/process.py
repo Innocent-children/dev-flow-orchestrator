@@ -21,127 +21,117 @@ def _commit_state(
     *,
     additional_events: Sequence[tuple[str, dict[str, Any]]] | None = None,
     _manager_registry_operation: object = None,
+    _engine_commit_evaluation: object = None,
+    _engine_commit_proof: object = None,
+    _verified_receipt: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
-    linked_events = list(additional_events or ())
-    is_v3 = (
+    linked = list(additional_events or ())
+    is_v4 = (
         old_state is not None
-        and old_state.get("schema_version") == V3_TASK_SCHEMA_VERSION
+        and old_state.get("schema_version") == V4_TASK_SCHEMA_VERSION
     )
-    node_instances_changed = (
-        old_state is not None
-        and old_state.get("node_instances")
-        != new_state.get("node_instances")
-    )
-    orchestration_changed = (
-        old_state is not None
-        and old_state.get("orchestration")
-        != new_state.get("orchestration")
-    )
-    if _manager_registry_operation is not None:
-        if not is_v3:
+    if not is_v4:
+        if (
+            _engine_commit_evaluation is not None
+            or _engine_commit_proof is not None
+            or _verified_receipt is not None
+        ):
             raise FlowError(
-                "MANAGER_CAPABILITY_SCHEMA_REQUIRED",
-                "manager registry operations require a schema-v3 task",
+                "V4_ENGINE_COMMIT_SCHEMA_REQUIRED",
+                "engine commit authority applies only to schema-v4 tasks",
             )
-        manager_process_commit_gate_v1(
-            old_state,
-            new_state,
-            event_type,
-            _manager_registry_operation,
-        )
         return _persist_state_transaction(
             old_state,
             new_state,
             task_dir,
             event_type,
             payload,
-            additional_events=linked_events,
+            additional_events=linked,
         )
-    if (
-        old_state is not None
-        and old_state.get("status") != new_state.get("status")
-    ):
-        if is_v3 and orchestration_changed:
-            raise FlowError(
-                "V3_TRANSITION_SERVICE_REQUIRED",
-                "schema-v3 orchestration state cannot ride a task movement",
-                details={"task_id": old_state.get("task_id")},
-            )
-        try:
-            movement = resolve_loaded_task_workflow(
-                old_state,
-                purpose="mutation",
-                candidate_state=new_state,
-                candidate_event_type=event_type,
-                payload=payload,
-            )
-            movement_events = movement.get(
-                "_movement_audit_events", ()
-            )
-            if isinstance(movement_events, (list, tuple)):
-                linked_events.extend(movement_events)
-        except (
-            WorkflowCatalogError,
-            WorkflowStateError,
-        ) as exc:
-            raise FlowError(
-                getattr(exc, "code", "WORKFLOW_MOVEMENT_REJECTED"),
-                str(
-                    getattr(
-                        exc,
-                        "message",
-                        "candidate workflow movement was rejected",
-                    )
-                ),
-                details=getattr(exc, "details", {}),
-            ) from exc
-    elif is_v3 and (
-        node_instances_changed or orchestration_changed
-    ):
+    if _engine_commit_proof is not None:
         raise FlowError(
-            "V3_TRANSITION_SERVICE_REQUIRED",
-            "schema-v3 node or orchestration state requires a formal service",
-            details={
-                "task_id": old_state.get("task_id"),
-                "node_instances_changed": node_instances_changed,
-                "orchestration_changed": orchestration_changed,
-            },
+            "V4_ENGINE_COMMIT_AUTHORITY_CONFLICT",
+            (
+                "pre-minted proofs must enter the raw transaction boundary; "
+                "commit_state accepts an engine evaluation"
+            ),
         )
-    if is_v3:
-        try:
-            manager_event = manager_process_commit_gate_v1(
-                old_state,
-                new_state,
-                event_type,
-            )
-            if manager_event is None:
-                raise FlowError(
-                    "MANAGER_AUTHORIZATION_INVALID",
-                    "manager authority gate produced no consumption event",
+    if _engine_commit_evaluation is None:
+        raise FlowError(
+            "V4_ENGINE_COMMIT_PROOF_REQUIRED",
+            "schema-v4 state changes require a live kernel evaluation",
+        )
+    try:
+        resolve_loaded_task_workflow(old_state, purpose="mutation")
+    except (WorkflowCatalogError, WorkflowStateError) as exc:
+        raise FlowError(
+            getattr(exc, "code", "WORKFLOW_MOVEMENT_REJECTED"),
+            str(
+                getattr(
+                    exc,
+                    "message",
+                    "pinned workflow resolution failed",
                 )
-            linked_events.append(manager_event)
-            return _persist_state_transaction(
-                old_state,
-                new_state,
-                task_dir,
-                event_type,
-                payload,
-                additional_events=linked_events,
+            ),
+            details=getattr(exc, "details", {}),
+        ) from exc
+    manager_evaluation_state: dict[str, object] | None = None
+    manager_authorization_binding: dict[str, object] | None = None
+    if _manager_registry_operation is not None:
+        manager_process_commit_gate_v1(
+            old_state,
+            new_state,
+            event_type,
+            _manager_registry_operation,
+        )
+    else:
+        manager_event = manager_process_commit_gate_v1(
+            old_state,
+            new_state,
+            event_type,
+        )
+        if manager_event is None:
+            raise FlowError(
+                "MANAGER_AUTHORIZATION_INVALID",
+                "manager authority gate produced no consumption event",
             )
-        finally:
-            manager_process_commit_gate_v1(
-                old_state,
-                new_state,
-                event_type,
-                _effect_lifecycle=("clear", "generic"),
+        linked.append(manager_event)
+        prepared_manager_state = _manager_engine_evaluation_state_v1(
+            old_state, event_type=event_type
+        )
+        if not isinstance(prepared_manager_state, dict):
+            raise FlowError(
+                "MANAGER_PREAUTHORIZATION_REQUIRED",
+                "manager proof has no pre-evaluated nonce state",
             )
+        manager_evaluation_state = prepared_manager_state
+        manager_authorization_binding = {
+            "event_type": manager_event[0],
+            "payload": copy.deepcopy(manager_event[1]),
+        }
+    try:
+        proof = _workflow_transition_mint_engine_commit_proof(
+            old_state,
+            _engine_commit_evaluation,
+            task_dir,
+            event_type,
+            payload,
+            additional_events=linked,
+            verified_receipt=_verified_receipt,
+            manager_evaluation_state=manager_evaluation_state,
+            manager_authorization=manager_authorization_binding,
+        )
+    except TransitionEngineError as exc:
+        raise FlowError(exc.code, exc.message, details=exc.details) from exc
     return _persist_state_transaction(
         old_state,
         new_state,
         task_dir,
         event_type,
         payload,
-        additional_events=linked_events,
+        additional_events=linked,
+        _engine_commit_proof=proof,
+        _verified_receipt=_verified_receipt,
     )
 
 
@@ -157,8 +147,31 @@ def _persist_state_transaction(
     ] | None = None,
     _event_ids: Sequence[str] | None = None,
     _transaction_id: str | None = None,
+    _engine_commit_proof: object = None,
+    _verified_receipt: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Raw revision/outbox persistence; callers must authorize beforehand."""
+
+    linked = tuple(additional_events or ())
+    if (
+        old_state is not None
+        and old_state.get("schema_version") == V4_TASK_SCHEMA_VERSION
+    ):
+        try:
+            _workflow_transition_consume_engine_commit(
+                _engine_commit_proof,
+                old_state,
+                new_state,
+                task_dir,
+                event_type=event_type,
+                payload=payload,
+                additional_events=linked,
+                event_ids=_event_ids,
+                transaction_id=_transaction_id,
+                verified_receipt=_verified_receipt,
+            )
+        except TransitionEngineError as exc:
+            raise FlowError(exc.code, exc.message, details=exc.details) from exc
 
     previous_revision = int(old_state.get("revision", 0)) if old_state else 0
     revision = previous_revision + 1
@@ -167,7 +180,7 @@ def _persist_state_transaction(
     new_state["updated_at"] = now
     event_specs = [
         (event_type, payload or {}),
-        *(additional_events or ()),
+        *linked,
     ]
     if _event_ids is None:
         event_ids = [str(uuid.uuid4()) for _item in event_specs]
@@ -229,10 +242,10 @@ def _persist_state_transaction(
     if len(events) == 1:
         new_state["pending_event"] = events[0]
     else:
-        if int(new_state.get("schema_version", 1)) < TASK_SCHEMA_VERSION:
+        if new_state.get("schema_version") != V4_TASK_SCHEMA_VERSION:
             raise FlowError(
                 "UNSUPPORTED_STATE",
-                "batched audit facts require task schema v2",
+                "batched audit facts require the current V4 task schema",
                 details={
                     "task_id": new_state.get("task_id"),
                     "schema_version": new_state.get("schema_version"),
@@ -285,14 +298,9 @@ def _validate_loaded_state_for_mutation(
 ) -> Mapping[str, object]:
     """Resolve immutable workflow truth before any mutation-side effect."""
 
-    # Old schema-v1 snapshots may predate the additive flow projection. They
-    # have always meant full flow, but the persisted bytes remain untouched
-    # until an ordinary state transition commits a new revision.
-    validation_view = dict(state_value)
-    validation_view.setdefault("flow", DEFAULT_FLOW)
     try:
         return validate_task_state_for_mutation(
-            validation_view,
+            state_value,
             resolver=resolve_loaded_task_workflow,
         )
     except WorkflowStateError as exc:
@@ -316,10 +324,10 @@ def _locked_state(
     manager_effect_policy: str = "generic",
     manager_action_id: str | None = None,
     allow_quarantine: bool = False,
-    short_v3_effect_boundary: bool = False,
+    short_v4_effect_boundary: bool = False,
 ) -> Iterator[tuple[Path, dict[str, Any]]]:
     task_dir = _task_dir(task_id, data_dir)
-    detached_v3_snapshot: tuple[Path, dict[str, Any]] | None = None
+    detached_v4_snapshot: tuple[Path, dict[str, Any]] | None = None
     preauthorization_open = False
     try:
         with _task_lock(
@@ -349,11 +357,11 @@ def _locked_state(
             preauthorization_open = True
             state_value = _finish_loaded_state(state_path, state_value)
             if (
-                short_v3_effect_boundary
+                short_v4_effect_boundary
                 and state_value.get("schema_version")
-                == V3_TASK_SCHEMA_VERSION
+                == V4_TASK_SCHEMA_VERSION
             ):
-                detached_v3_snapshot = (
+                detached_v4_snapshot = (
                     task_dir,
                     _copy_state(state_value),
                 )
@@ -362,7 +370,7 @@ def _locked_state(
                     if (
                         lock_workspace_registry
                         or state_value.get("schema_version")
-                        == V3_TASK_SCHEMA_VERSION
+                        == V4_TASK_SCHEMA_VERSION
                     ):
                         with _workspace_registry_lock(
                             resolve_data_dir(data_dir)
@@ -382,17 +390,17 @@ def _locked_state(
                     )
                     preauthorization_open = False
                 return
-        if detached_v3_snapshot is None:
+        if detached_v4_snapshot is None:
             raise FlowError(
                 "MANAGER_EFFECT_BOUNDARY_INVALID",
-                "short schema-v3 effect boundary produced no snapshot",
+                "short schema-v4 effect boundary produced no snapshot",
             )
-        yield detached_v3_snapshot
+        yield detached_v4_snapshot
     finally:
         if preauthorization_open:
             authorization_state = (
-                detached_v3_snapshot[1]
-                if detached_v3_snapshot is not None
+                detached_v4_snapshot[1]
+                if detached_v4_snapshot is not None
                 else state_value
             )
             manager_process_commit_gate_v1(
@@ -407,8 +415,6 @@ def _locked_state(
 
 
 def _posix_process_group_alive(process_group: int) -> bool:
-    if os.name == "nt":  # pragma: no cover - POSIX helper
-        return False
     try:
         os.killpg(process_group, 0)
     except ProcessLookupError:
@@ -427,7 +433,7 @@ def _posix_process_group_alive(process_group: int) -> bool:
 def _quiesce_completed_process_group(
     process: subprocess.Popen[bytes], command: Sequence[str]
 ) -> None:
-    if os.name == "nt" or not _posix_process_group_alive(process.pid):
+    if not _posix_process_group_alive(process.pid):
         return
     for signal_number, timeout_seconds in ((15, 2.0), (9, 5.0)):
         try:
@@ -455,255 +461,6 @@ def _quiesce_completed_process_group(
             "quarantine": str(quarantine) if quarantine else None,
         },
     )
-
-
-def _windows_kill_on_close_job(
-    process: subprocess.Popen[bytes],
-    command: Sequence[str],
-    *,
-    require_ownership: bool = True,
-) -> Any:
-    """Place a protected child in a kill-on-close job.
-
-    ``require_ownership`` is true for a gated mutation, whose child is blocked
-    reading its gate byte and is therefore provably still alive: failing to
-    own it is a real failure and stays fail-closed, because kill-on-job-close
-    containment is what the quarantine mechanism relies on.  A read-only
-    protected child is contained on the same terms when Windows allows it, but
-    an unownable one is not an error; see the failure branch below.
-    """
-
-    if os.name != "nt":  # pragma: no cover - native Windows helper
-        return None
-    import ctypes
-    from ctypes import wintypes
-
-    class IO_COUNTERS(ctypes.Structure):
-        _fields_ = [
-            ("ReadOperationCount", ctypes.c_ulonglong),
-            ("WriteOperationCount", ctypes.c_ulonglong),
-            ("OtherOperationCount", ctypes.c_ulonglong),
-            ("ReadTransferCount", ctypes.c_ulonglong),
-            ("WriteTransferCount", ctypes.c_ulonglong),
-            ("OtherTransferCount", ctypes.c_ulonglong),
-        ]
-
-    class BASIC_LIMITS(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_longlong),
-            ("PerJobUserTimeLimit", ctypes.c_longlong),
-            ("LimitFlags", wintypes.DWORD),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", wintypes.DWORD),
-            ("Affinity", ctypes.c_size_t),
-            ("PriorityClass", wintypes.DWORD),
-            ("SchedulingClass", wintypes.DWORD),
-        ]
-
-    class EXTENDED_LIMITS(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", BASIC_LIMITS),
-            ("IoInfo", IO_COUNTERS),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateJobObjectW.argtypes = [
-        ctypes.c_void_p,
-        wintypes.LPCWSTR,
-    ]
-    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel32.SetInformationJobObject.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-    ]
-    kernel32.SetInformationJobObject.restype = wintypes.BOOL
-    kernel32.AssignProcessToJobObject.argtypes = [
-        wintypes.HANDLE,
-        wintypes.HANDLE,
-    ]
-    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    def ownership_failure(message: str, error: int) -> None:
-        try:
-            process.terminate()
-            process.wait(timeout=5.0)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            quarantine = _persist_mutation_quarantine(
-                process, command, exc
-            )
-            raise FlowError(
-                "MUTATION_QUARANTINED",
-                "unowned Windows child could not be proven quiescent",
-                details={
-                    "pid": process.pid,
-                    "winerror": error,
-                    "quarantine": (
-                        str(quarantine) if quarantine else None
-                    ),
-                },
-            ) from exc
-        raise FlowError(
-            "PROCESS_OWNERSHIP_FAILED",
-            message,
-            details={"pid": process.pid, "winerror": error},
-        )
-
-    job = kernel32.CreateJobObjectW(None, None)
-    if not job:
-        if not require_ownership:
-            return None
-        ownership_failure(
-            "could not create a Windows child-process job",
-            ctypes.get_last_error(),
-        )
-    limits = EXTENDED_LIMITS()
-    limits.BasicLimitInformation.LimitFlags = 0x00002000
-    if not kernel32.SetInformationJobObject(
-        job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
-    ) or not kernel32.AssignProcessToJobObject(
-        job, wintypes.HANDLE(process._handle)  # type: ignore[attr-defined]
-    ):
-        error = ctypes.get_last_error()
-        kernel32.CloseHandle(job)
-        if not require_ownership:
-            # Containment of a read-only child is best effort, not a
-            # precondition.  Such a child runs under DEVNULL stdin with no
-            # gate holding it, so it regularly finishes between Popen and
-            # this assignment, and Windows answers ERROR_ACCESS_DENIED for a
-            # process that has terminated or is terminating -- sometimes
-            # before its handle is even signalled, so an exit check cannot
-            # recognize every instance.  There is no mutation to contain, so
-            # continue with an unowned child rather than failing a read-only
-            # command with a mutation-ownership error.
-            return None
-        ownership_failure(
-            "could not place a mutating child in an owned Windows job",
-            error,
-        )
-    return job
-
-
-def _terminate_windows_job(job: Any) -> None:
-    if os.name != "nt" or not job:  # pragma: no cover - native Windows
-        return
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.TerminateJobObject.argtypes = [
-        wintypes.HANDLE,
-        wintypes.UINT,
-    ]
-    kernel32.TerminateJobObject.restype = wintypes.BOOL
-    if not kernel32.TerminateJobObject(job, 1):
-        raise OSError(
-            ctypes.get_last_error(), "TerminateJobObject failed"
-        )
-
-
-def _windows_job_active_processes(job: Any) -> int:
-    if os.name != "nt" or not job:  # pragma: no cover - native Windows
-        return 0
-    import ctypes
-    from ctypes import wintypes
-
-    class BASIC_ACCOUNTING(ctypes.Structure):
-        _fields_ = [
-            ("TotalUserTime", ctypes.c_longlong),
-            ("TotalKernelTime", ctypes.c_longlong),
-            ("ThisPeriodTotalUserTime", ctypes.c_longlong),
-            ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
-            ("TotalPageFaultCount", wintypes.DWORD),
-            ("TotalProcesses", wintypes.DWORD),
-            ("ActiveProcesses", wintypes.DWORD),
-            ("TotalTerminatedProcesses", wintypes.DWORD),
-        ]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.QueryInformationJobObject.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
-    accounting = BASIC_ACCOUNTING()
-    returned = wintypes.DWORD()
-    if not kernel32.QueryInformationJobObject(
-        job,
-        1,  # JobObjectBasicAccountingInformation
-        ctypes.byref(accounting),
-        ctypes.sizeof(accounting),
-        ctypes.byref(returned),
-    ):
-        raise OSError(
-            ctypes.get_last_error(),
-            "QueryInformationJobObject failed",
-        )
-    return int(accounting.ActiveProcesses)
-
-
-def _quiesce_windows_job(
-    job: Any,
-    process: subprocess.Popen[bytes],
-    command: Sequence[str],
-) -> None:
-    if os.name != "nt" or not job:  # pragma: no cover - native Windows
-        return
-    try:
-        active = _windows_job_active_processes(job)
-        if active:
-            _terminate_windows_job(job)
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if _windows_job_active_processes(job) == 0:
-                    return
-                time.sleep(0.05)
-            active = _windows_job_active_processes(job)
-        if active:
-            raise OSError(
-                errno.EBUSY,
-                f"Windows job still contains {active} active processes",
-            )
-    except OSError as exc:
-        quarantine = _persist_mutation_quarantine(
-            process, command, exc
-        )
-        raise FlowError(
-            "MUTATION_QUARANTINED",
-            "Windows child job could not be proven quiescent",
-            details={
-                "pid": process.pid,
-                "command": _redacted_command(command),
-                "quarantine": (
-                    str(quarantine) if quarantine else None
-                ),
-                "error": str(exc),
-            },
-        ) from exc
-
-
-def _close_windows_job(job: Any) -> None:
-    if os.name != "nt" or not job:  # pragma: no cover - native Windows
-        return
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    if not kernel32.CloseHandle(job):
-        raise OSError(ctypes.get_last_error(), "CloseHandle failed")
 
 
 _MUTATION_GATE_ENVELOPE = b"DEV_FLOW_GATE_V1:"
@@ -748,10 +505,6 @@ payload = json.dumps(
 sys.stdout.buffer.write(b"DEV_FLOW_GATE_V1:" + payload)
 sys.stdout.buffer.flush()
 """.strip()
-# Compatibility aliases retained for focused downstream tests and diagnostics.
-_WINDOWS_MUTATION_GATE_CODE = _MUTATION_GATE_CODE
-
-
 def _mutation_gate_command(
     command: Sequence[str],
 ) -> list[str]:
@@ -765,31 +518,16 @@ def _mutation_gate_command(
     ]
 
 
-def _windows_mutation_gate_command(
-    command: Sequence[str],
-) -> list[str]:
-    return _mutation_gate_command(command)
-
-
 def _terminate_and_quiesce_owned_child(
     process: subprocess.Popen[bytes],
     command: Sequence[str],
     *,
     protected_child: bool,
-    windows_job: Any,
 ) -> bool:
     """Best-effort termination whose result is safe to use before unlock."""
 
     try:
-        if os.name == "nt" and windows_job:
-            _terminate_windows_job(windows_job)
-            try:
-                process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                pass
-            _quiesce_windows_job(windows_job, process, command)
-            return _windows_job_active_processes(windows_job) == 0
-        if os.name != "nt" and protected_child:
+        if protected_child:
             process_group = process.pid
             if _posix_process_group_alive(process_group):
                 try:
@@ -968,11 +706,14 @@ def _run(
             "SSH_ASKPASS_REQUIRE",
         ):
             environment.pop(key, None)
+        environment["GIT_CONFIG_NOSYSTEM"] = "1"
+        environment["GIT_CONFIG_GLOBAL"] = os.devnull
+        environment["GIT_CONFIG_SYSTEM"] = os.devnull
         environment["GIT_TERMINAL_PROMPT"] = "0"
         environment["SSH_ASKPASS_REQUIRE"] = "never"
         environment["GIT_NO_REPLACE_OBJECTS"] = "1"
         environment["GIT_NO_LAZY_FETCH"] = "1"
-        # Disable both environment-selected and repository-local legacy grafts.
+        # Disable environment-selected and repository-local module grafts.
         environment["GIT_GRAFT_FILE"] = os.devnull
     if evidence_git:
         environment.pop("GIT_EXTERNAL_DIFF", None)
@@ -1005,11 +746,7 @@ def _run(
         "stderr": subprocess.PIPE,
         "text": False,
     }
-    if protected_child and os.name == "nt":  # pragma: no cover - native Windows
-        process_kwargs["creationflags"] = getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-        )
-    elif protected_child:
+    if protected_child:
         process_kwargs["start_new_session"] = True
     try:
         process = subprocess.Popen(launch_command, **process_kwargs)
@@ -1026,21 +763,6 @@ def _run(
                 "errno": getattr(exc, "errno", None),
             },
         ) from exc
-    windows_job: Any = None
-    if protected_child and os.name == "nt":  # pragma: no cover - native Windows
-        try:
-            windows_job = _windows_kill_on_close_job(
-                process, command, require_ownership=gated_mutation
-            )
-        except FlowError as exc:
-            if (
-                gated_mutation
-                and exc.code == "PROCESS_OWNERSHIP_FAILED"
-            ):
-                _abandon_unstarted_mutation_intent(
-                    mutation_intent
-                )
-            raise
     if mutation:
         try:
             _update_mutation_intent(
@@ -1063,25 +785,14 @@ def _run(
                     process,
                     command,
                     protected_child=protected_child,
-                    windows_job=windows_job,
                 )
             except BaseException as nested_error:
                 cleanup_error = nested_error
-                if os.name == "nt" and windows_job:
-                    try:
-                        _terminate_windows_job(windows_job)
-                    except BaseException:
-                        pass
-                elif os.name != "nt" and protected_child:
+                if protected_child:
                     try:
                         os.killpg(process.pid, 9)
                     except BaseException:
                         pass
-            if os.name == "nt" and windows_job:
-                try:
-                    _close_windows_job(windows_job)
-                except BaseException:
-                    pass
             quarantine = _persist_mutation_quarantine(
                 process, command, cleanup_error or exc
             )
@@ -1106,11 +817,7 @@ def _run(
             )
         else:
             stdout_bytes, stderr_bytes = process.communicate()
-        if os.name == "nt" and windows_job:
-            _quiesce_windows_job(
-                windows_job, process, command
-            )
-        elif protected_child and os.name != "nt":
+        if protected_child:
             _quiesce_completed_process_group(process, command)
     except BaseException as exc:
         cleanup_error = None
@@ -1119,17 +826,11 @@ def _run(
                 process,
                 command,
                 protected_child=protected_child,
-                windows_job=windows_job,
             )
         except BaseException as nested_error:
             quiescent = False
             cleanup_error = nested_error
-            if os.name == "nt" and windows_job:
-                try:
-                    _terminate_windows_job(windows_job)
-                except BaseException:
-                    pass
-            elif os.name != "nt" and protected_child:
+            if protected_child:
                 try:
                     os.killpg(process.pid, 9)
                 except BaseException:
@@ -1138,10 +839,6 @@ def _run(
             quarantine = _persist_mutation_quarantine(
                 process, command, cleanup_error or exc
             )
-            try:
-                _close_windows_job(windows_job)
-            except BaseException:
-                pass
             raise FlowError(
                 "MUTATION_QUARANTINED",
                 "protected child failed and could not be proven quiescent",
@@ -1164,10 +861,6 @@ def _run(
                 quarantine = _persist_mutation_quarantine(
                     process, command, evidence_error
                 )
-                try:
-                    _close_windows_job(windows_job)
-                except BaseException:
-                    pass
                 raise FlowError(
                     "MUTATION_QUARANTINED",
                     "child was quiesced but interruption evidence could not be finalized",
@@ -1178,37 +871,7 @@ def _run(
                         ),
                     },
                 ) from evidence_error
-        try:
-            _close_windows_job(windows_job)
-        except BaseException as close_error:
-            quarantine = _persist_mutation_quarantine(
-                process, command, close_error
-            )
-            raise FlowError(
-                "MUTATION_QUARANTINED",
-                "Windows child job could not be closed after interruption",
-                details={
-                    "pid": process.pid,
-                    "quarantine": (
-                        str(quarantine) if quarantine else None
-                    ),
-                },
-            ) from close_error
         raise
-    try:
-        _close_windows_job(windows_job)
-    except BaseException as exc:
-        quarantine = _persist_mutation_quarantine(process, command, exc)
-        raise FlowError(
-            "MUTATION_QUARANTINED",
-            "Windows child-process ownership could not be released safely",
-            details={
-                "pid": process.pid,
-                "command": _redacted_command(command),
-                "quarantine": str(quarantine) if quarantine else None,
-                "error": str(exc),
-            },
-        ) from exc
     stdout_bytes = stdout_bytes or b""
     stderr_bytes = stderr_bytes or b""
     effective_returncode = int(process.returncode or 0)

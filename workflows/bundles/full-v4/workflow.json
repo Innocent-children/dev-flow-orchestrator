@@ -5,9 +5,8 @@
   "workflow_id": "full",
   "workflow_version": 4,
   "flow": "full",
-  "legacy_adapter": false,
   "task_schema_versions": [
-    3
+    4
   ],
   "execution_profiles": [
     "single-repository",
@@ -65,42 +64,6 @@
         ]
       }
     },
-    "legacy_aliases": [
-      {
-        "alias_id": "orchestration.barrier.evaluate/v1",
-        "operation_ids": [
-          "orchestration.barrier.close/v1"
-        ]
-      },
-      {
-        "alias_id": "orchestration.plan.expand/v1",
-        "operation_ids": [
-          "orchestration.map.expand/v1"
-        ]
-      },
-      {
-        "alias_id": "orchestration.runtime.recover/v1",
-        "operation_ids": [
-          "orchestration.attempt.abandon/v1",
-          "orchestration.runtime.recovery.observe/v1"
-        ]
-      },
-      {
-        "alias_id": "orchestration.worker.assign/v1",
-        "operation_ids": [
-          "orchestration.assignment.issue/v1",
-          "orchestration.dispatch.handoff/v1",
-          "orchestration.frontier.advance/v1",
-          "orchestration.lease.issue/v1"
-        ]
-      },
-      {
-        "alias_id": "worker-result.submit/v1",
-        "operation_ids": [
-          "orchestration.result.accept/v1"
-        ]
-      }
-    ],
     "operation_matrix": [
       {
         "operation_id": "manager.capability.authorize/v1",
@@ -653,22 +616,22 @@
     },
     {
       "registry": "reducers",
-      "id": "reducer.v3-cancel/v1",
+      "id": "reducer.v4-cancel/v1",
       "version": "v1"
     },
     {
       "registry": "reducers",
-      "id": "reducer.v3-impact-reassess/v1",
+      "id": "reducer.v4-impact-reassess/v1",
       "version": "v1"
     },
     {
       "registry": "reducers",
-      "id": "reducer.v3-invalidate-plan/v1",
+      "id": "reducer.v4-invalidate-plan/v1",
       "version": "v1"
     },
     {
       "registry": "reducers",
-      "id": "reducer.v3-invalidate-review/v1",
+      "id": "reducer.v4-invalidate-review/v1",
       "version": "v1"
     },
     {
@@ -817,9 +780,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -1053,9 +1016,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -1291,9 +1254,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -1524,9 +1487,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -1764,9 +1727,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -1995,9 +1958,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -2226,9 +2189,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -2457,9 +2420,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -2696,9 +2659,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -2927,9 +2890,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -3161,9 +3124,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -3400,9 +3363,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -3632,9 +3595,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -3867,9 +3830,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -4101,9 +4064,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -4335,9 +4298,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -4567,9 +4530,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -4800,9 +4763,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -5031,9 +4994,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -5270,9 +5233,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -5504,9 +5467,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -5748,9 +5711,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -5987,9 +5950,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -6222,9 +6185,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -6456,9 +6419,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -6687,9 +6650,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -6930,9 +6893,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -7165,9 +7128,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -7399,9 +7362,9 @@
         "resume_policy": null,
         "tool_policy": null,
         "required_suites": [
-          "action-policy",
-          "action-recovery",
-          "orchestration-action-matrix"
+          "v4-static-closure",
+          "v4-effect-recovery",
+          "v4-multi-repository"
         ],
         "handler_closure": [
           {
@@ -7690,8 +7653,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -7935,8 +7898,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -8120,8 +8083,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -8308,8 +8271,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -8559,8 +8522,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -8756,9 +8719,9 @@
             "write_gate": "read-only"
           },
           "required_suites": [
-            "action-policy",
-            "action-recovery",
-            "external-tool-capability-evidence"
+            "v4-static-closure",
+            "v4-effect-recovery",
+            "v4-external-tools"
           ],
           "handler_closure": [
             {
@@ -8942,8 +8905,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -9213,9 +9176,9 @@
             "write_gate": "read-only"
           },
           "required_suites": [
-            "action-policy",
-            "action-recovery",
-            "external-tool-capability-evidence"
+            "v4-static-closure",
+            "v4-effect-recovery",
+            "v4-external-tools"
           ],
           "handler_closure": [
             {
@@ -9392,8 +9355,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -9577,8 +9540,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -9850,9 +9813,9 @@
             "write_gate": "read-only"
           },
           "required_suites": [
-            "action-policy",
-            "action-recovery",
-            "external-tool-capability-evidence"
+            "v4-static-closure",
+            "v4-effect-recovery",
+            "v4-external-tools"
           ],
           "handler_closure": [
             {
@@ -10036,8 +9999,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -10293,8 +10256,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -10478,8 +10441,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -10671,8 +10634,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -10936,9 +10899,9 @@
             "write_gate": "read-only"
           },
           "required_suites": [
-            "action-policy",
-            "action-recovery",
-            "external-tool-capability-evidence"
+            "v4-static-closure",
+            "v4-effect-recovery",
+            "v4-external-tools"
           ],
           "handler_closure": [
             {
@@ -11122,8 +11085,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -11390,8 +11353,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -11575,8 +11538,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -11773,9 +11736,9 @@
             "write_gate": "read-only"
           },
           "required_suites": [
-            "action-policy",
-            "action-recovery",
-            "external-tool-capability-evidence"
+            "v4-static-closure",
+            "v4-effect-recovery",
+            "v4-external-tools"
           ],
           "handler_closure": [
             {
@@ -12033,8 +11996,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -12231,9 +12194,9 @@
             "write_gate": "read-only"
           },
           "required_suites": [
-            "action-policy",
-            "action-recovery",
-            "external-tool-capability-evidence"
+            "v4-static-closure",
+            "v4-effect-recovery",
+            "v4-external-tools"
           ],
           "handler_closure": [
             {
@@ -12489,8 +12452,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -12687,9 +12650,9 @@
             "write_gate": "read-only"
           },
           "required_suites": [
-            "action-policy",
-            "action-recovery",
-            "external-tool-capability-evidence"
+            "v4-static-closure",
+            "v4-effect-recovery",
+            "v4-external-tools"
           ],
           "handler_closure": [
             {
@@ -12880,8 +12843,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -13138,8 +13101,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -13323,8 +13286,8 @@
           "resume_policy": null,
           "tool_policy": null,
           "required_suites": [
-            "action-policy",
-            "action-recovery"
+            "v4-static-closure",
+            "v4-effect-recovery"
           ],
           "handler_closure": [
             {
@@ -14143,7 +14106,7 @@
       "reducers": [
         {
           "registry": "reducers",
-          "id": "reducer.v3-invalidate-plan/v1",
+          "id": "reducer.v4-invalidate-plan/v1",
           "version": "v1"
         }
       ],
@@ -14476,7 +14439,7 @@
       "reducers": [
         {
           "registry": "reducers",
-          "id": "reducer.v3-invalidate-plan/v1",
+          "id": "reducer.v4-invalidate-plan/v1",
           "version": "v1"
         }
       ],
@@ -14520,7 +14483,7 @@
       "reducers": [
         {
           "registry": "reducers",
-          "id": "reducer.v3-invalidate-review/v1",
+          "id": "reducer.v4-invalidate-review/v1",
           "version": "v1"
         }
       ],
@@ -14568,7 +14531,7 @@
       "reducers": [
         {
           "registry": "reducers",
-          "id": "reducer.v3-impact-reassess/v1",
+          "id": "reducer.v4-impact-reassess/v1",
           "version": "v1"
         }
       ],
@@ -14716,7 +14679,7 @@
       "reducers": [
         {
           "registry": "reducers",
-          "id": "reducer.v3-cancel/v1",
+          "id": "reducer.v4-cancel/v1",
           "version": "v1"
         }
       ],
@@ -14767,7 +14730,7 @@
       "reducers": [
         {
           "registry": "reducers",
-          "id": "reducer.v3-cancel/v1",
+          "id": "reducer.v4-cancel/v1",
           "version": "v1"
         }
       ],

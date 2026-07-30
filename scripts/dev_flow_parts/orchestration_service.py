@@ -1,5 +1,5 @@
 # Loaded by scripts/dev_flow.py after core/process persistence primitives.
-# Responsibility: the only production composition layer for schema-v3
+# Responsibility: the only production composition layer for schema-v4
 # multi-repository orchestration.  Pure contracts remain in repository_plan,
 # orchestration_authority, orchestration_results, and runtime_adapters.
 from __future__ import annotations
@@ -104,9 +104,7 @@ ORCHESTRATION_OPERATOR_AUTHORIZE = (
 )
 ORCHESTRATION_OPERATOR_REVOKE = "orchestration.manager.revoke/v1"
 
-# Schema-v3 catalog identities.  The older constants above are retained only
-# for their frozen service adapters; no schema-v3 action is selected through
-# one of the overloaded aliases.
+# V4 repository operation identities used by the catalog and service.
 ORCHESTRATION_OPERATION_MANAGER_AUTHORIZE = (
     "manager.capability.authorize/v1"
 )
@@ -457,11 +455,11 @@ def _osc_digest(value: object) -> str:
     return _osc_hashlib.sha256(_osc_canonical_bytes(value)).hexdigest()
 
 
-def _osc_require_v3(state: _OscMapping[str, object]) -> None:
-    if state.get("schema_version") != V3_TASK_SCHEMA_VERSION:
+def _osc_require_v4(state: _OscMapping[str, object]) -> None:
+    if state.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         raise _osc_error(
-            "ORCHESTRATION_V3_REQUIRED",
-            "multi-repository orchestration is available only for schema-v3 tasks",
+            "ORCHESTRATION_V4_REQUIRED",
+            "multi-repository orchestration is available only for schema-v4 tasks",
             details={"schema_version": state.get("schema_version")},
         )
 
@@ -502,7 +500,7 @@ def _osc_empty_state() -> dict[str, object]:
 
 
 def _osc_state_copy(state: _OscMapping[str, object]) -> dict[str, object]:
-    _osc_require_v3(state)
+    _osc_require_v4(state)
     raw = state.get("orchestration")
     if raw is None:
         return _osc_empty_state()
@@ -3253,7 +3251,7 @@ def _osc_authoritative_effect_bindings(
     result: OrchestrationActionAdapterResult,
     effect_inputs: _OscOptional[_OscMapping[str, object]],
 ) -> tuple[WorkflowActionEffectBinding, ...]:
-    edge = resolve_v3_node_action_edge(
+    edge = resolve_v4_node_action_edge(
         state,
         invocation.public_command,
         selector=invocation.selector,
@@ -3472,7 +3470,7 @@ def _osc_execute_authoritative_transaction(
             unbound_seed.action_parameters, effect_bindings
         ),
     )
-    preview = preview_v3_workflow_action_transaction(
+    preview = preview_v4_workflow_action_transaction(
         old_state,
         seed,
         authorization=authorization,
@@ -3563,7 +3561,7 @@ def _osc_execute_authoritative_transaction(
             bound_payload,
             action_parameters=seed.action_parameters,
         )
-        current_preview = preview_v3_workflow_action_transaction(
+        current_preview = preview_v4_workflow_action_transaction(
             current,
             current_seed,
             authorization=authorization,
@@ -3614,7 +3612,7 @@ def _osc_execute_authoritative_transaction(
             launched.append(dispatched.binding)
         return dispatched
 
-    transaction = execute_v3_workflow_action_transaction(
+    transaction = execute_v4_workflow_action_transaction(
         old_state,
         task_dir,
         invocation,
@@ -3658,14 +3656,14 @@ def _osc_execute_authoritative_transaction(
             details={"operation_id": operation_id},
         )
     binding = launched[0]
-    release_v3_workflow_action_runtime(
+    release_v4_workflow_action_runtime(
         task_dir,
         binding,
         authorization=authorization,
         release_adapter=runtime_release_adapter,
         failure_hook=failure_hook,
     )
-    observe_v3_workflow_action_effect(
+    observe_v4_workflow_action_effect(
         task_dir,
         binding.execution_id,
         binding.effect_id,
@@ -3829,22 +3827,22 @@ def _osc_operator_workflow_authorization(
     )
 
 
-def _osc_resolve_v3_bundle(
+def _osc_resolve_v4_bundle(
     state: _OscMapping[str, object],
 ) -> object:
-    _osc_require_v3(state)
+    _osc_require_v4(state)
     try:
         resolve_loaded_task_workflow(state, purpose="mutation")
         workflow_ref = state.get("workflow_ref")
         if not isinstance(workflow_ref, _OscMapping):
             raise _osc_error(
                 "WORKFLOW_REF_REQUIRED",
-                "schema-v3 task has no pinned workflow reference",
+                "schema-v4 task has no pinned workflow reference",
             )
         bundle = workflow_runtime_services().catalog.resolve_identity(
             str(workflow_ref.get("bundle_sha256"))
         )
-        validate_v3_task_state_against_bundle(state, bundle)
+        validate_v4_task_state_against_bundle(state, bundle)
         return bundle
     except Exception as exc:
         if isinstance(exc, FlowError):
@@ -3855,7 +3853,7 @@ def _osc_resolve_v3_bundle(
 def _osc_resolve_multi_bundle(
     state: _OscMapping[str, object],
 ) -> object:
-    bundle = _osc_resolve_v3_bundle(state)
+    bundle = _osc_resolve_v4_bundle(state)
     if state.get("execution_profile") != "multi-repository":
         raise _osc_error(
             "ORCHESTRATION_MULTI_PROFILE_REQUIRED",
@@ -3892,7 +3890,7 @@ def _osc_evaluate_control_mutation(
             },
         )
     bundle_resolver = (
-        _osc_resolve_v3_bundle
+        _osc_resolve_v4_bundle
         if operation_id
         in {
             ORCHESTRATION_OPERATION_MANAGER_AUTHORIZE,
@@ -4051,7 +4049,7 @@ def _osc_locked_current_state(
         if require_multi:
             _osc_resolve_multi_bundle(state)
         else:
-            _osc_resolve_v3_bundle(state)
+            _osc_resolve_v4_bundle(state)
         with _workspace_registry_lock(resolve_data_dir(data_dir)):
             yield task_dir, state
 
@@ -4655,7 +4653,7 @@ def _osc_find_node(
     if not isinstance(nodes, list):
         raise _osc_error(
             "NODE_INSTANCE_INVALID",
-            "v3 task has no node instance collection",
+            "v4 task has no node instance collection",
         )
     for node in nodes:
         if (
@@ -6624,10 +6622,10 @@ def _osc_preauthorize_manager_effect(
     authorization: object,
     *,
     action_id: str,
-) -> SealedV3ManagerAuthorization:
-    sealed = seal_v3_manager_authorization(authorization)
+) -> SealedV4ManagerAuthorization:
+    sealed = seal_v4_manager_authorization(authorization)
     try:
-        return validate_v3_manager_authorization_pre_effect(
+        return validate_v4_manager_authorization_pre_effect(
             sealed,
             old_state,
             candidate_orchestration,
@@ -6640,7 +6638,7 @@ def _osc_preauthorize_manager_effect(
 
 
 class OrchestrationControllerService:
-    """Controller-only schema-v3 orchestration facade for CLI and MCP."""
+    """Controller-only schema-v4 orchestration facade for CLI and MCP."""
 
     __slots__ = (
         "_secret_resolver",
@@ -6823,144 +6821,6 @@ class OrchestrationControllerService:
             authorization.verifier_state.as_persistent_dict()
         )
         return authorization
-
-    def _frozen_legacy_authorize_manager_direct(
-        self,
-        task_id: str,
-        *,
-        expected_revision: int,
-        manager_session_id: str,
-        allowed_actions: _OscSequence[str] = ORCHESTRATION_MANAGER_ACTIONS,
-        ttl_ns: int,
-        operator_confirmed: bool,
-        operator_confirmation_sha256: str,
-        issuance_audit_sha256: str,
-        secret_transport: str = "local-secret-channel",
-        data_dir: object = None,
-    ) -> OrchestrationCommitReceipt:
-        inspected = load_state(task_id, data_dir)
-        if inspected.get("schema_version") == 3:
-            raise _osc_error(
-                "ORCHESTRATION_LEGACY_MANAGER_PATH_FORBIDDEN",
-                "schema-v3 manager issuance must use its catalog action transaction",
-            )
-        if operator_confirmed is not True:
-            raise _osc_error(
-                "MANAGER_CAPABILITY_OPERATOR_CONFIRMATION_REQUIRED",
-                "manager authorization requires explicit operator confirmation",
-            )
-        requested_actions = tuple(allowed_actions)
-        if (
-            not requested_actions
-            or any(
-                not isinstance(action, str) or not action
-                for action in requested_actions
-            )
-            or len(requested_actions) != len(set(requested_actions))
-            or tuple(
-                sorted(
-                    requested_actions,
-                    key=lambda item: str(item).encode("utf-8"),
-                )
-            )
-            != requested_actions
-        ):
-            raise _osc_error(
-                "MANAGER_CAPABILITY_ACTION_SCOPE_INVALID",
-                "manager actions must be a canonical package-owned action set",
-            )
-        secret = self._random_bytes(32)
-        if not isinstance(secret, bytearray) or len(secret) != 32:
-            raise _osc_error(
-                "MANAGER_CAPABILITY_SECRET_GENERATION_FAILED",
-                "secret source must transfer exactly one mutable 256-bit buffer",
-            )
-        try:
-            with _locked_state(
-                task_id,
-                data_dir,
-                expected_revision,
-                manager_effect_policy="formal",
-            ) as (task_dir, state):
-                old_state = _osc_copy.deepcopy(state)
-                new_state = _osc_copy.deepcopy(state)
-                orchestration = _osc_state_copy(new_state)
-                package_actions = set(_manager_default_actions(state))
-                if not set(requested_actions).issubset(
-                    package_actions
-                ):
-                    raise _osc_error(
-                        "MANAGER_CAPABILITY_ACTION_SCOPE_INVALID",
-                        "manager actions must be declared by the pinned bundle and sealed command registries",
-                        details={
-                            "unknown_actions": sorted(
-                                set(requested_actions)
-                                - package_actions
-                            )
-                        },
-                    )
-                verifier = issue_manager_capability(
-                    task_id=task_id,
-                    issued_for_task_revision=expected_revision,
-                    manager_session_id=manager_session_id,
-                    allowed_actions=requested_actions,
-                    ttl_ns=ttl_ns,
-                    wall_time_ns=self._wall_time_ns(),
-                    monotonic_time_ns=self._monotonic_ns(),
-                    clock_id=self._clock_id,
-                    secret_transport=secret_transport,
-                    operator_confirmation_sha256=(
-                        operator_confirmation_sha256
-                    ),
-                    issuance_audit_sha256=issuance_audit_sha256,
-                    manager_secret=secret,
-                )
-                if self._secret_publisher is None:
-                    raise _osc_error(
-                        "MANAGER_CAPABILITY_SECRET_CHANNEL_UNAVAILABLE",
-                        "manager authorization requires an injected secret publisher",
-                    )
-                capabilities = orchestration["manager_capabilities"]
-                assert isinstance(capabilities, dict)
-                capabilities[verifier.capability_id] = (
-                    verifier.as_persistent_dict()
-                )
-                new_state["orchestration"] = orchestration
-                payload = {
-                    "capability_id": verifier.capability_id,
-                    "manager_session_id": manager_session_id,
-                    "allowed_actions": list(verifier.allowed_actions),
-                    "secret_transport": secret_transport,
-                }
-                event = _osc_commit_control_event(
-                    old_state,
-                    new_state,
-                    task_dir,
-                    "orchestration_manager_authorized",
-                    payload,
-                    operation_id=ORCHESTRATION_OPERATOR_AUTHORIZE,
-                )
-                try:
-                    self._secret_publisher(
-                        verifier.capability_id, secret
-                    )
-                except Exception as publication_exc:
-                    raise _osc_error(
-                        "MANAGER_CAPABILITY_SECRET_PUBLICATION_PENDING",
-                        "manager verifier committed but its local secret publication did not complete; revoke and reissue through the operator path",
-                        details={
-                            "capability_id": verifier.capability_id,
-                            "revision": event.get("revision"),
-                        },
-                    ) from publication_exc
-                return _osc_receipt(
-                    event, authorization_id=None, payload=payload
-                )
-        except Exception as exc:
-            raise _osc_translate(exc) from exc
-        finally:
-            if isinstance(secret, bytearray):
-                _manager_zeroize(secret)
 
     def authorize_manager(
         self,
@@ -7899,7 +7759,7 @@ class OrchestrationControllerService:
             if not isinstance(workflow_ref, _OscMapping):
                 raise _osc_error(
                     "WORKFLOW_REF_REQUIRED",
-                    "v3 task has no pinned workflow reference",
+                    "v4 task has no pinned workflow reference",
                 )
             if (
                 plan["task_id"] != task_id
@@ -8181,7 +8041,7 @@ class OrchestrationControllerService:
             or minimum_successor_map_epoch is not None
         ):
             raise _osc_error(
-                "V3_MAP_INVALIDATION_INPUT_INVALID",
+                "V4_MAP_INVALIDATION_INPUT_INVALID",
                 "retirement reuses the persisted stale facts and accepts no replacement inputs",
             )
 
@@ -8193,14 +8053,14 @@ class OrchestrationControllerService:
             expansion_value = orchestration.get("expansion")
             if not isinstance(expansion_value, dict):
                 raise _osc_error(
-                    "V3_MAP_INVALIDATION_EXPANSION_REQUIRED",
+                    "V4_MAP_INVALIDATION_EXPANSION_REQUIRED",
                     "map invalidation requires a persisted expansion",
                 )
             expansion = _osc_copy.deepcopy(expansion_value)
             children = expansion.get("children")
             if not isinstance(children, list) or not children:
                 raise _osc_error(
-                    "V3_MAP_INVALIDATION_EXPANSION_INVALID",
+                    "V4_MAP_INVALIDATION_EXPANSION_INVALID",
                     "map invalidation requires canonical persisted children",
                 )
             node_ids = sorted(
@@ -8216,19 +8076,19 @@ class OrchestrationControllerService:
             )
             if len(node_ids) != len(children):
                 raise _osc_error(
-                    "V3_MAP_INVALIDATION_EXPANSION_INVALID",
+                    "V4_MAP_INVALIDATION_EXPANSION_INVALID",
                     "map invalidation child identities are invalid",
                 )
             next_revision = int(state["revision"]) + 1
             if phase == "STALE":
                 if expansion.get("current", True) is not True:
                     raise _osc_error(
-                        "V3_MAP_INVALIDATION_ALREADY_STALE",
+                        "V4_MAP_INVALIDATION_ALREADY_STALE",
                         "only a current map can enter the stale phase",
                     )
                 if not isinstance(reason, str) or not reason.strip():
                     raise _osc_error(
-                        "V3_MAP_INVALIDATION_REASON_REQUIRED",
+                        "V4_MAP_INVALIDATION_REASON_REQUIRED",
                         "map invalidation requires one stable reason",
                     )
                 map_epoch = expansion.get("map_epoch")
@@ -8244,7 +8104,7 @@ class OrchestrationControllerService:
                     or minimum_successor_map_epoch <= map_epoch
                 ):
                     raise _osc_error(
-                        "V3_MAP_SUCCESSOR_EPOCH_INVALID",
+                        "V4_MAP_SUCCESSOR_EPOCH_INVALID",
                         "successor map epoch must exceed the stale epoch",
                     )
                 core = {
@@ -8276,7 +8136,7 @@ class OrchestrationControllerService:
                     or "retired_at_revision" in expansion
                 ):
                     raise _osc_error(
-                        "V3_MAP_RETIREMENT_STATE_INVALID",
+                        "V4_MAP_RETIREMENT_STATE_INVALID",
                         "only a stale map can enter the retired phase",
                     )
                 expansion["retired_at_revision"] = next_revision
@@ -8382,7 +8242,7 @@ class OrchestrationControllerService:
             if not isinstance(nodes, list):
                 raise _osc_error(
                     "NODE_INSTANCE_INVALID",
-                    "v3 task node instances are invalid",
+                    "v4 task node instances are invalid",
                 )
             existing = {
                 node.get("node_instance_id")
@@ -8464,7 +8324,7 @@ class OrchestrationControllerService:
             repository_frontier = _osc_repository_frontier(
                 plan, approval, state, orchestration
             )
-            formal_facts = dict(v3_frontier_ready_facts(state))
+            formal_facts = dict(v4_frontier_ready_facts(state))
             formal_ids = tuple(
                 str(value)
                 for value in formal_facts["node_instance_ids"]
@@ -8726,450 +8586,6 @@ class OrchestrationControllerService:
             },
             mutate=mutate,
         )
-
-    def _frozen_legacy_issue_assignment_alias(
-        self,
-        task_id: str,
-        *,
-        node_instance_id: str,
-        worktree_path: str,
-        input_evidence_sha256: str,
-        allowed_actions: _OscSequence[str],
-        playbook_locator: str,
-        playbook_sha256: str,
-        required_evidence_contract_sha256s: _OscSequence[str],
-        runtime_handle_id: _OscOptional[str],
-        host_assignment_id: str,
-        runtime_authentication_sha256: str,
-        actor_id: str,
-        lease_ttl_ns: int,
-        lease_id: _OscOptional[str] = None,
-        request: object,
-        principal: object,
-        data_dir: object = None,
-    ) -> OrchestrationCommitReceipt:
-        """Frozen overloaded adapter retained for non-v3 compatibility only."""
-
-        inspected = load_state(task_id, data_dir)
-        if inspected.get("schema_version") == 3:
-            raise _osc_error(
-                "ORCHESTRATION_LEGACY_ALIAS_FORBIDDEN",
-                "schema-v3 callers must issue lease, assignment, and dispatch as separate authoritative operations",
-                details={"alias_id": ORCHESTRATION_ACTION_ASSIGN},
-            )
-        try:
-            parsed_request = validate_manager_capability_request(request)
-            committed_receipt: _OscOptional[
-                OrchestrationCommitReceipt
-            ] = None
-            committed_assignment: _OscOptional[dict[str, object]] = None
-            with _locked_state(
-                task_id,
-                data_dir,
-                parsed_request.expected_revision,
-                manager_effect_policy="formal",
-            ) as (task_dir, state):
-                old_state = _osc_copy.deepcopy(state)
-                new_state = _osc_copy.deepcopy(state)
-                orchestration = _osc_state_copy(new_state)
-                authorization = self._authorize(
-                    orchestration,
-                    parsed_request,
-                    principal,
-                    action_id=ORCHESTRATION_ACTION_ASSIGN,
-                )
-                sealed_authorization = (
-                    _osc_preauthorize_manager_effect(
-                        old_state,
-                        orchestration,
-                        authorization,
-                        action_id=ORCHESTRATION_ACTION_ASSIGN,
-                    )
-                )
-                cancellation = orchestration.get("cancellation")
-                cancellation_requested = (
-                    isinstance(cancellation, _OscMapping)
-                    and cancellation.get("requested") is True
-                )
-                if cancellation_requested:
-                    raise _osc_error(
-                        "WORKER_LEASE_CANCELLATION_REQUESTED",
-                        "worker assignment is blocked after cancellation is requested",
-                    )
-                plan = _osc_plan_from_state(task_dir, orchestration)
-                expansion = _osc_current_expansion(orchestration)
-                approval = _osc_approval_from_state(orchestration)
-                validate_repository_plan_approval(
-                    plan,
-                    approval,
-                    current_semantic_input_sha256=plan[
-                        "semantic_input_sha256"
-                    ],
-                )
-                child = next(
-                    (
-                        item
-                        for item in expansion["children"]
-                        if item["node_instance_id"]
-                        == node_instance_id
-                    ),
-                    None,
-                )
-                if not isinstance(child, _OscMapping):
-                    raise _osc_error(
-                        "NODE_INSTANCE_UNKNOWN",
-                        "assignment node is outside the current map expansion",
-                    )
-                node = _osc_find_node(new_state, node_instance_id)
-                if node.get("state") != "READY":
-                    raise _osc_error(
-                        "REPOSITORY_NODE_NOT_READY",
-                        "assignment is legal only for a formally READY node",
-                        details={
-                            "node_instance_id": node_instance_id,
-                            "state": node.get("state"),
-                        },
-                    )
-                frontier = _osc_repository_frontier(
-                    plan, approval, state, orchestration
-                )
-                dispatchable = {
-                    item.node_instance_id
-                    for item in frontier.dispatchable
-                }
-                if node_instance_id not in dispatchable:
-                    blockers = next(
-                        (
-                            list(item.codes)
-                            for item in frontier.blocked
-                            if item.repository_id
-                            == child["repository_id"]
-                        ),
-                        ["REPOSITORY_NOT_DISPATCHABLE"],
-                    )
-                    raise _osc_error(
-                        "REPOSITORY_NODE_NOT_DISPATCHABLE",
-                        "repository is outside the current dependency-ready frontier",
-                        details={
-                            "node_instance_id": node_instance_id,
-                            "blockers": blockers,
-                        },
-                    )
-                repository = next(
-                    item
-                    for item in plan["repositories"]
-                    if item["repository_id"]
-                    == child["repository_id"]
-                )
-                (
-                    worktree_binding,
-                    worktree_branch_ref,
-                    worktree_baseline_head,
-                    initial_worktree_sha256,
-                    _paths,
-                    _paths_sha256,
-                ) = _osc_bound_worktree_observation(
-                    worktree_path
-                )
-                worktree_identity_sha256 = worktree_binding[
-                    "worktree_identity_sha256"
-                ]
-                controller_claim_sha256 = _osc_digest(
-                    {
-                        "schema": (
-                            "dev-flow-controller-worktree-claim/v1"
-                        ),
-                        "task_id": task_id,
-                        "workflow_bundle_sha256": plan[
-                            "workflow_bundle_sha256"
-                        ],
-                        "repository_id": repository[
-                            "repository_id"
-                        ],
-                        "repository_identity_sha256": repository[
-                            "identity_sha256"
-                        ],
-                        "node_instance_id": node_instance_id,
-                        **worktree_binding,
-                    }
-                )
-                attempts = node.get("attempts")
-                if not isinstance(attempts, list):
-                    raise _osc_error(
-                        "NODE_INSTANCE_INVALID",
-                        "node attempt history is invalid",
-                    )
-                pending = orchestration["pending_retries"]
-                assert isinstance(pending, dict)
-                retry = pending.get(node_instance_id)
-                attempt = (
-                    int(retry["next_attempt"])
-                    if isinstance(retry, dict)
-                    else len(attempts) + 1
-                )
-                leases = orchestration["leases"]
-                assert isinstance(leases, dict)
-                lease = issue_worker_lease(
-                    {
-                        "task_id": task_id,
-                        "task_revision": int(state["revision"]),
-                        "workflow_bundle_sha256": plan[
-                            "workflow_bundle_sha256"
-                        ],
-                        "map_epoch": plan["map_epoch"],
-                        "node_instance_id": node_instance_id,
-                        "repository_id": repository["repository_id"],
-                        "repository_identity_sha256": repository[
-                            "identity_sha256"
-                        ],
-                        "worktree_identity_sha256": (
-                            worktree_identity_sha256
-                        ),
-                        "attempt": attempt,
-                        "input_evidence_sha256": (
-                            input_evidence_sha256
-                        ),
-                        "plan_dag_sha256": approval["dag_sha256"],
-                        "semantic_input_sha256": plan[
-                            "semantic_input_sha256"
-                        ],
-                        "interface_contract_sha256s": [
-                            item["sha256"]
-                            for item in plan["interface_contracts"]
-                        ],
-                        "approved_paths": list(
-                            repository["approved_paths"]
-                        ),
-                        "allowed_actions": list(allowed_actions),
-                        "write_policy": repository["write_policy"],
-                    },
-                    lease_nonce_bytes=bytes(
-                        self._random_bytes(32)
-                    ),
-                    wall_time_ns=self._wall_time_ns(),
-                    monotonic_time_ns=self._monotonic_ns(),
-                    ttl_ns=lease_ttl_ns,
-                    clock_id=self._clock_id,
-                    existing_leases=list(leases.values()),
-                    cancellation_requested=cancellation_requested,
-                )
-                assignment = create_worker_assignment(
-                    lease,
-                    node_id=str(child["node_id"]),
-                    worktree_path=worktree_path,
-                    controller_claim_sha256=controller_claim_sha256,
-                    plan_id=str(plan["plan_id"]),
-                    plan_artifact_sha256=str(
-                        approval["plan_artifact_sha256"]
-                    ),
-                    playbook_locator=playbook_locator,
-                    playbook_sha256=playbook_sha256,
-                    required_evidence_contract_sha256s=(
-                        required_evidence_contract_sha256s
-                    ),
-                )
-                if self._host_capability_observer is None:
-                    decision = {
-                        "schema": HOST_ISOLATION_DECISION_SCHEMA,
-                        "assignment_id": assignment.assignment_id,
-                        "parallel_dispatch_allowed": False,
-                        "dispatch_mode": "manager-serial",
-                        "blocker_codes": [
-                            "HOST_CAPABILITY_REPORT_MISSING"
-                        ],
-                    }
-                else:
-                    try:
-                        host_report = (
-                            self._host_capability_observer(
-                                assignment.as_dict()
-                            )
-                        )
-                    except Exception as exc:
-                        raise _osc_error(
-                            "HOST_CAPABILITY_OBSERVATION_FAILED",
-                            "trusted host capability observation failed before assignment commit",
-                            details={
-                                "type": type(exc).__name__
-                            },
-                        ) from exc
-                    decision = evaluate_host_isolation(
-                        host_report,
-                        assignment,
-                        trusted_adapter_ids=(
-                            self._trusted_host_adapter_ids
-                        ),
-                        protected_read_identity_sha256s=(
-                            self._protected_read_identity_sha256s
-                        ),
-                        mutating_tool_ids=self._mutating_tool_ids,
-                    ).as_dict()
-                durable_claim = _osc_acquire_worktree_claim(
-                    task_dir,
-                    task_id=task_id,
-                    node_instance_id=node_instance_id,
-                    lease_id=lease.lease_id,
-                    assignment_id=assignment.assignment_id,
-                    binding=worktree_binding,
-                    branch_ref=worktree_branch_ref,
-                    initial_head=worktree_baseline_head,
-                )
-                leases[lease.lease_id] = lease.as_dict()
-                assignments = orchestration["assignments"]
-                dispatch = orchestration["dispatch"]
-                assert isinstance(assignments, dict)
-                assert isinstance(dispatch, dict)
-                assignments[assignment.assignment_id] = (
-                    assignment.as_dict()
-                )
-                dispatch[assignment.assignment_id] = {
-                    "decision": decision,
-                    "runtime_handle_id": runtime_handle_id,
-                    "host_assignment_id": host_assignment_id,
-                    "runtime_authentication_sha256": (
-                        runtime_authentication_sha256
-                    ),
-                    "actor_id": actor_id,
-                    "worktree_baseline_head": (
-                        worktree_baseline_head
-                    ),
-                    "worktree_initial_fingerprint_sha256": (
-                        initial_worktree_sha256
-                    ),
-                    "repository_common_dir_sha256": worktree_binding[
-                        "repository_common_dir_sha256"
-                    ],
-                    "ownership_claim_sha256": worktree_binding[
-                        "ownership_claim_sha256"
-                    ],
-                    "worktree_claim_key_sha256": durable_claim[
-                        "claim_key_sha256"
-                    ],
-                    "worktree_claim_generation": durable_claim[
-                        "claim_generation"
-                    ],
-                    "worktree_branch_ref": worktree_branch_ref,
-                    "runtime_live": decision[
-                        "parallel_dispatch_allowed"
-                    ]
-                    is True,
-                    "runtime_status": (
-                        "ACTIVE"
-                        if decision[
-                            "parallel_dispatch_allowed"
-                        ]
-                        is True
-                        else "ACTIVE"
-                    ),
-                }
-                attempts.append(
-                    {
-                        "attempt": attempt,
-                        "state": "RUNNING",
-                        "input_sha256": input_evidence_sha256,
-                        "result_refs": [],
-                        **(
-                            {"previous_attempt": attempt - 1}
-                            if attempt > 1
-                            else {}
-                        ),
-                        "runtime_handle": (
-                            None
-                            if runtime_handle_id is None
-                            else {
-                                "schema": (
-                                    _workflow_state_runtime_handle_schema
-                                ),
-                                "handle_id": runtime_handle_id,
-                                "kind": "controller-runtime",
-                                "task_id": task_id,
-                                "node_instance_id": (
-                                    node_instance_id
-                                ),
-                                "attempt": attempt,
-                                "repository_id": repository[
-                                    "repository_id"
-                                ],
-                            }
-                        ),
-                    }
-                )
-                node["state"] = "RUNNING"
-                pending.pop(node_instance_id, None)
-                new_state["orchestration"] = orchestration
-                payload = {
-                    "assignment_id": assignment.assignment_id,
-                    "lease_id": lease.lease_id,
-                    "node_instance_id": node_instance_id,
-                    "attempt": attempt,
-                    "dispatch_mode": decision["dispatch_mode"],
-                    "parallel_dispatch_allowed": decision[
-                        "parallel_dispatch_allowed"
-                    ],
-                    "blocker_codes": decision["blocker_codes"],
-                    "manager_authorization_id": (
-                        authorization.authorization_id
-                    ),
-                }
-                event_type = V3_NODE_MUTATION_EVENT_TYPES[
-                    V3_NODE_MUTATION_ATTEMPT_START
-                ]
-                try:
-                    event = commit_v3_node_event(
-                        old_state,
-                        new_state,
-                        task_dir,
-                        event_type,
-                        payload,
-                        operation=V3_NODE_MUTATION_ATTEMPT_START,
-                        manager_authorization=sealed_authorization,
-                    )
-                except Exception as commit_exc:
-                    try:
-                        _osc_release_worktree_claim(
-                            task_dir,
-                            task_id=task_id,
-                            lease_id=lease.lease_id,
-                            assignment_id=assignment.assignment_id,
-                            claim_key_sha256=str(
-                                durable_claim[
-                                    "claim_key_sha256"
-                                ]
-                            ),
-                            claim_generation=int(
-                                durable_claim["claim_generation"]
-                            ),
-                            released_at_revision=int(
-                                state["revision"]
-                            ),
-                        )
-                    except Exception as rollback_exc:
-                        raise _osc_error(
-                            "WORKTREE_CLAIM_ROLLBACK_FAILED",
-                            "failed formal assignment left a conservative active worktree quarantine",
-                            details={
-                                "commit_failure_type": type(
-                                    commit_exc
-                                ).__name__,
-                                "rollback_failure_type": type(
-                                    rollback_exc
-                                ).__name__,
-                                "claim_key_sha256": durable_claim[
-                                    "claim_key_sha256"
-                                ],
-                            },
-                        ) from rollback_exc
-                    raise
-                committed_receipt = _osc_receipt(
-                    event,
-                    authorization_id=authorization.authorization_id,
-                    payload=payload,
-                )
-                committed_assignment = assignment.as_dict()
-            assert committed_receipt is not None
-            return committed_receipt
-        except Exception as exc:
-            raise _osc_translate(exc) from exc
 
     def issue_assignment(
         self,
@@ -9784,7 +9200,7 @@ class OrchestrationControllerService:
                         "dispatch observation requires exact durable context",
                     )
                 active_facts = (
-                    verify_active_v3_workflow_action_observe_context(
+                    verify_active_v4_workflow_action_observe_context(
                         context
                     )
                 )
@@ -10098,380 +9514,6 @@ class OrchestrationControllerService:
             "lease_active": status.authorized,
         }
 
-    def _frozen_legacy_accept_result_alias(
-        self,
-        task_id: str,
-        result_value: object,
-        *,
-        request: object,
-        principal: object,
-        data_dir: object = None,
-    ) -> OrchestrationCommitReceipt:
-        inspected = load_state(task_id, data_dir)
-        if inspected.get("schema_version") == 3:
-            raise _osc_error(
-                "ORCHESTRATION_LEGACY_ALIAS_FORBIDDEN",
-                "schema-v3 result acceptance requires orchestration.result.accept/v1",
-                details={
-                    "alias_id": ORCHESTRATION_ACTION_RESULT_ACCEPT
-                },
-            )
-        try:
-            parsed_request = validate_manager_capability_request(request)
-            raw = dict(result_value) if isinstance(
-                result_value, _OscMapping
-            ) else {}
-            result_id = raw.get("result_id")
-            with _osc_locked_current_state(
-                task_id, data_dir
-            ) as (task_dir, state):
-                old_state = _osc_copy.deepcopy(state)
-                new_state = _osc_copy.deepcopy(state)
-                orchestration = _osc_state_copy(new_state)
-                observed = orchestration["accepted_results"]
-                assert isinstance(observed, dict)
-                existing = (
-                    observed.get(result_id)
-                    if isinstance(result_id, str)
-                    else None
-                )
-                if existing is not None:
-                    candidate = evaluate_node_result_acceptance(
-                        result_value,
-                        expected_revision=parsed_request.expected_revision,
-                        current_revision=int(state["revision"]),
-                        expected_bindings={},
-                        verified_output={},
-                        observed_results={
-                            key: {
-                                "result": value["result"],
-                                "receipt": value["receipt"],
-                            }
-                            for key, value in observed.items()
-                            if isinstance(value, dict)
-                        },
-                    )
-                    receipt = candidate.prior_receipt
-                    if not isinstance(receipt, _OscMapping):
-                        raise _osc_error(
-                            "NODE_RESULT_RECEIPT_INVALID",
-                            "persisted result receipt is invalid",
-                        )
-                    _osc_validate_replay_caller(
-                        task_id=task_id,
-                        request=parsed_request,
-                        principal=principal,
-                        action_id=ORCHESTRATION_ACTION_RESULT_ACCEPT,
-                        orchestration=orchestration,
-                        authorization_id=receipt.get(
-                            "authorization_id"
-                        ),
-                    )
-                    event = _osc_committed_event(
-                        task_dir,
-                        task_id=task_id,
-                        event_type=V3_NODE_MUTATION_EVENT_TYPES[
-                            V3_NODE_MUTATION_RESULT_ACCEPT
-                        ],
-                        payload_key="result_id",
-                        payload_value=result_id,
-                        expected_event_id=receipt.get("event_id"),
-                        expected_revision=receipt.get(
-                            "accepted_revision"
-                        ),
-                        expected_authorization_id=receipt.get(
-                            "authorization_id"
-                        ),
-                    )
-                    if (
-                        event.get("event_id") != receipt.get("event_id")
-                        or event.get("revision")
-                        != receipt.get("accepted_revision")
-                    ):
-                        raise _osc_error(
-                            "NODE_RESULT_RECEIPT_INVALID",
-                            "persisted result receipt does not bind its committed event",
-                        )
-                    return _osc_receipt(
-                        event,
-                        authorization_id=receipt.get(
-                            "authorization_id"
-                        ),
-                        payload=receipt["payload"],
-                    )
-                result = validate_orchestration_node_result(
-                    result_value
-                )
-                expansion = _osc_current_expansion(orchestration)
-                child_ids = tuple(
-                    sorted(
-                        (
-                            str(child["node_instance_id"])
-                            for child in expansion.get(
-                                "children", ()
-                            )
-                            if isinstance(child, _OscMapping)
-                            and isinstance(
-                                child.get("node_instance_id"),
-                                str,
-                            )
-                        ),
-                        key=_osc_utf8_sort_key,
-                    )
-                )
-                current_index = orchestration["current_results"]
-                assert isinstance(current_index, dict)
-                pending_first_results = tuple(
-                    identifier
-                    for identifier in child_ids
-                    if identifier not in current_index
-                )
-                if (
-                    result["node_instance_id"] in child_ids
-                    and pending_first_results
-                    and result["node_instance_id"]
-                    != pending_first_results[0]
-                ):
-                    raise _osc_error(
-                        "NODE_RESULT_ACCEPTANCE_ORDER_BLOCKED",
-                        "fan-out results are accepted only in canonical node-instance order",
-                        details={
-                            "expected_node_instance_id": (
-                                pending_first_results[0]
-                            ),
-                            "actual_node_instance_id": result[
-                                "node_instance_id"
-                            ],
-                            "map_epoch": expansion.get(
-                                "map_epoch"
-                            ),
-                        },
-                    )
-                _check_revision(state, parsed_request.expected_revision)
-                authorization = self._authorize(
-                    orchestration,
-                    parsed_request,
-                    principal,
-                    action_id=ORCHESTRATION_ACTION_RESULT_ACCEPT,
-                )
-                sealed_authorization = (
-                    _osc_preauthorize_manager_effect(
-                        old_state,
-                        orchestration,
-                        authorization,
-                        action_id=(
-                            ORCHESTRATION_ACTION_RESULT_ACCEPT
-                        ),
-                    )
-                )
-                trusted_verified_output = _osc_verify_worker_result(
-                    task_id,
-                    result,
-                    data_dir=data_dir,
-                    locked_context=(task_dir, state),
-                    wall_time_ns=self._wall_time_ns,
-                    monotonic_time_ns=self._monotonic_ns,
-                    clock_id=self._clock_id,
-                )
-                assignments = orchestration["assignments"]
-                leases = orchestration["leases"]
-                assert isinstance(assignments, dict)
-                assert isinstance(leases, dict)
-                assignment = assignments.get(result["assignment_id"])
-                if not isinstance(assignment, dict):
-                    raise _osc_error(
-                        "WORKER_ASSIGNMENT_UNKNOWN",
-                        "result assignment is not persisted",
-                    )
-                lease = validate_worker_lease(
-                    leases[result["lease_id"]]
-                )
-                expectation = self._result_expectation(
-                    task_dir, orchestration, assignment, lease
-                )
-                candidate = evaluate_node_result_acceptance(
-                    result,
-                    expected_revision=parsed_request.expected_revision,
-                    current_revision=int(state["revision"]),
-                    expected_bindings=expectation,
-                    verified_output=trusted_verified_output,
-                    observed_results={
-                        key: {
-                            "result": value["result"],
-                            "receipt": value["receipt"],
-                        }
-                        for key, value in observed.items()
-                        if isinstance(value, dict)
-                    },
-                )
-                artifacts = orchestration["artifacts"]
-                assert isinstance(artifacts, dict)
-                if candidate.result_id in artifacts:
-                    raise _osc_error(
-                        "NODE_RESULT_ARTIFACT_IDENTITY_CONFLICT",
-                        "result identity is already occupied by another artifact",
-                        details={"result_id": candidate.result_id},
-                    )
-                content = canonical_node_result_bytes(candidate.result)
-                reference = _osc_store_artifact(
-                    task_dir,
-                    orchestration,
-                    artifact_id=candidate.result_id,
-                    content=content,
-                    kind=ORCHESTRATION_NODE_RESULT_SCHEMA,
-                    semantic_sha256=candidate.content_sha256,
-                )
-                payload = {
-                    "result_id": candidate.result_id,
-                    "node_instance_id": result["node_instance_id"],
-                    "repository_id": result["repository_id"],
-                    "attempt": result["attempt"],
-                    "outcome": result["outcome"],
-                    "disposition": candidate.disposition,
-                    "locator": reference["locator"],
-                    "manager_authorization_id": (
-                        authorization.authorization_id
-                    ),
-                }
-                receipt_record = {
-                    "accepted_revision": int(state["revision"]) + 1,
-                    "event_id": "",
-                    "authorization_id": authorization.authorization_id,
-                    "payload": _osc_copy.deepcopy(payload),
-                }
-                observed[candidate.result_id] = {
-                    "result": _osc_thaw(candidate.result),
-                    "receipt": receipt_record,
-                    "controller_observation": (
-                        seal_v3_controller_result_observation(
-                            result=candidate.result,
-                            verified_output=trusted_verified_output,
-                            observed_at_revision=int(
-                                state["revision"]
-                            ),
-                        )
-                    ),
-                }
-                current_results = orchestration["current_results"]
-                assert isinstance(current_results, dict)
-                current_results[result["node_instance_id"]] = (
-                    candidate.result_id
-                )
-                observed[candidate.result_id]["accepted"] = True
-                observed[candidate.result_id]["current"] = True
-                observed[candidate.result_id][
-                    "repository_evidence_sha256"
-                ] = result["verification_sha256"]
-                observed[candidate.result_id]["lease_quiesced"] = (
-                    lease.quiesced_at_wall_ns is not None
-                )
-                dispatch = orchestration["dispatch"][
-                    assignment["assignment_id"]
-                ]
-                observed[candidate.result_id]["runtime_live"] = bool(
-                    dispatch.get("runtime_live", True)
-                )
-                node = _osc_find_node(
-                    new_state, str(result["node_instance_id"])
-                )
-                node["state"] = str(result["outcome"])
-                attempt = node["attempts"][int(result["attempt"]) - 1]
-                attempt["state"] = str(result["outcome"])
-                attempt["result_refs"].append(
-                    {
-                        "schema": (
-                            _workflow_state_result_reference_schema
-                        ),
-                        "result_id": candidate.result_id,
-                        "task_id": task_id,
-                        "bundle_sha256": result[
-                            "workflow_bundle_sha256"
-                        ],
-                        "node_instance_id": result[
-                            "node_instance_id"
-                        ],
-                        "attempt": result["attempt"],
-                        "input_sha256": result["input_sha256"],
-                        "output_sha256": result["output_sha256"],
-                        "locator": reference["locator"],
-                    }
-                )
-                if orchestration.get("integration") is not None:
-                    orchestration["integration"]["current"] = False
-                    orchestration["integration_verification"] = None
-                    orchestration["review"] = None
-                new_state["orchestration"] = orchestration
-                event_type = V3_NODE_MUTATION_EVENT_TYPES[
-                    V3_NODE_MUTATION_RESULT_ACCEPT
-                ]
-
-                def finalize_event_binding(
-                    candidate_state: dict[str, object],
-                    event_id: str,
-                ) -> None:
-                    candidate_orchestration = candidate_state.get(
-                        "orchestration"
-                    )
-                    if not isinstance(candidate_orchestration, dict):
-                        raise _osc_error(
-                            "NODE_RESULT_RECEIPT_INVALID",
-                            "candidate orchestration ledger is absent",
-                        )
-                    candidate_results = candidate_orchestration.get(
-                        "accepted_results"
-                    )
-                    if not isinstance(candidate_results, dict):
-                        raise _osc_error(
-                            "NODE_RESULT_RECEIPT_INVALID",
-                            "candidate result ledger is absent",
-                        )
-                    candidate_record = candidate_results.get(
-                        candidate.result_id
-                    )
-                    candidate_receipt = (
-                        candidate_record.get("receipt")
-                        if isinstance(candidate_record, dict)
-                        else None
-                    )
-                    if not isinstance(candidate_receipt, dict):
-                        raise _osc_error(
-                            "NODE_RESULT_RECEIPT_INVALID",
-                            "candidate result receipt is absent",
-                        )
-                    candidate_receipt["event_id"] = event_id
-
-                final_verified_output = _osc_verify_worker_result(
-                    task_id,
-                    result,
-                    data_dir=data_dir,
-                    locked_context=(task_dir, state),
-                    wall_time_ns=self._wall_time_ns,
-                    monotonic_time_ns=self._monotonic_ns,
-                    clock_id=self._clock_id,
-                )
-                if final_verified_output != trusted_verified_output:
-                    raise _osc_error(
-                        "NODE_RESULT_WORKTREE_DRIFT",
-                        "controller observation changed before result commit",
-                    )
-                event = commit_v3_node_event(
-                    old_state,
-                    new_state,
-                    task_dir,
-                    event_type,
-                    payload,
-                    operation=V3_NODE_MUTATION_RESULT_ACCEPT,
-                    manager_authorization=sealed_authorization,
-                    finalize_event_binding=finalize_event_binding,
-                )
-                return _osc_receipt(
-                    event,
-                    authorization_id=authorization.authorization_id,
-                    payload=payload,
-                )
-        except Exception as exc:
-            raise _osc_translate(exc) from exc
-
     def accept_result(
         self,
         task_id: str,
@@ -10562,7 +9604,7 @@ class OrchestrationControllerService:
             accepted_record = {
                 "result": _osc_thaw(candidate.result),
                 "controller_observation": (
-                    seal_v3_controller_result_observation(
+                    seal_v4_controller_result_observation(
                         result=candidate.result,
                         verified_output=trusted_verified_output,
                         observed_at_revision=int(
@@ -12056,213 +11098,6 @@ class OrchestrationControllerService:
             mutate=mutate,
         )
 
-    def _frozen_legacy_abandon_attempt_alias(
-        self,
-        task_id: str,
-        *,
-        lease_id: str,
-        reason: str,
-        request: object,
-        principal: object,
-        data_dir: object = None,
-    ) -> OrchestrationCommitReceipt:
-        """Close one proven-quiesced lost attempt with a formal result."""
-
-        inspected = load_state(task_id, data_dir)
-        if inspected.get("schema_version") == 3:
-            raise _osc_error(
-                "ORCHESTRATION_LEGACY_ALIAS_FORBIDDEN",
-                "schema-v3 recovery observation and attempt abandonment are separate operations",
-                details={"alias_id": ORCHESTRATION_ACTION_RECOVER},
-            )
-        try:
-            parsed_request = validate_manager_capability_request(request)
-            with _locked_state(
-                task_id,
-                data_dir,
-                parsed_request.expected_revision,
-                manager_effect_policy="formal",
-            ) as (task_dir, state):
-                old_state = _osc_copy.deepcopy(state)
-                new_state = _osc_copy.deepcopy(state)
-                orchestration = _osc_state_copy(new_state)
-                authorization = self._authorize(
-                    orchestration,
-                    parsed_request,
-                    principal,
-                    action_id=ORCHESTRATION_ACTION_RECOVER,
-                )
-                sealed_authorization = (
-                    _osc_preauthorize_manager_effect(
-                        old_state,
-                        orchestration,
-                        authorization,
-                        action_id=ORCHESTRATION_ACTION_RECOVER,
-                    )
-                )
-                facts = v3_attempt_abandonment_facts(
-                    old_state,
-                    lease_id=lease_id,
-                    reason=reason,
-                    manager_authorization_id=(
-                        authorization.authorization_id
-                    ),
-                )
-                result_id = str(facts["result_id"])
-                node_instance_id = str(
-                    facts["node_instance_id"]
-                )
-                reference = _osc_store_artifact(
-                    task_dir,
-                    orchestration,
-                    artifact_id=result_id,
-                    content=facts["content"],
-                    kind=V3_ATTEMPT_ABANDONMENT_SCHEMA,
-                    semantic_sha256=str(facts["artifact_sha256"]),
-                )
-                if (
-                    reference["locator"] != facts["locator"]
-                    or reference["sha256"]
-                    != facts["artifact_sha256"]
-                    or reference["size"] != facts["artifact_size"]
-                ):
-                    raise _osc_error(
-                        "V3_ATTEMPT_ABANDON_ARTIFACT_INVALID",
-                        "controller artifact storage differs from formal abandonment facts",
-                    )
-
-                node = _osc_find_node(
-                    new_state, node_instance_id
-                )
-                attempts = node.get("attempts")
-                attempt_number = int(facts["attempt"])
-                if (
-                    not isinstance(attempts, list)
-                    or len(attempts) != attempt_number
-                    or not isinstance(attempts[-1], dict)
-                ):
-                    raise _osc_error(
-                        "V3_ATTEMPT_ABANDON_NODE_INVALID",
-                        "formal abandonment facts do not identify the current attempt",
-                    )
-                node["state"] = "BLOCKED"
-                attempts[-1]["state"] = "BLOCKED"
-                result_refs = attempts[-1].get("result_refs")
-                if not isinstance(result_refs, list):
-                    raise _osc_error(
-                        "V3_ATTEMPT_HISTORY_REWRITE",
-                        "current attempt result history is invalid",
-                    )
-                result_refs.append(
-                    {
-                        "schema": (
-                            _workflow_state_result_reference_schema
-                        ),
-                        "result_id": result_id,
-                        "task_id": task_id,
-                        "bundle_sha256": state["workflow_ref"][
-                            "bundle_sha256"
-                        ],
-                        "node_instance_id": node_instance_id,
-                        "attempt": attempt_number,
-                        "input_sha256": facts["input_sha256"],
-                        "output_sha256": facts[
-                            "artifact_sha256"
-                        ],
-                        "locator": facts["locator"],
-                    }
-                )
-
-                payload = _osc_thaw(facts["event_payload"])
-                accepted = orchestration["accepted_results"]
-                current = orchestration["current_results"]
-                assert isinstance(accepted, dict)
-                assert isinstance(current, dict)
-                accepted[result_id] = {
-                    "schema": (
-                        V3_ATTEMPT_ABANDONMENT_RECORD_SCHEMA
-                    ),
-                    "result": _osc_thaw(facts["document"]),
-                    "receipt": {
-                        "accepted_revision": int(state["revision"])
-                        + 1,
-                        "event_id": "",
-                        "authorization_id": (
-                            authorization.authorization_id
-                        ),
-                        "payload": _osc_copy.deepcopy(payload),
-                    },
-                    "accepted": True,
-                    "current": True,
-                    "controller_owned": True,
-                    "lease_quiesced": True,
-                    "runtime_live": False,
-                }
-                current[node_instance_id] = result_id
-                integration = orchestration.get("integration")
-                if (
-                    isinstance(integration, dict)
-                    and integration.get("current") is True
-                ):
-                    integration["current"] = False
-                    orchestration["integration_verification"] = None
-                    orchestration["review"] = None
-                new_state["orchestration"] = orchestration
-
-                def finalize_event_binding(
-                    candidate_state: dict[str, object],
-                    event_id: str,
-                ) -> None:
-                    candidate_orchestration = candidate_state.get(
-                        "orchestration"
-                    )
-                    candidate_results = (
-                        candidate_orchestration.get(
-                            "accepted_results"
-                        )
-                        if isinstance(
-                            candidate_orchestration, dict
-                        )
-                        else None
-                    )
-                    candidate_record = (
-                        candidate_results.get(result_id)
-                        if isinstance(candidate_results, dict)
-                        else None
-                    )
-                    candidate_receipt = (
-                        candidate_record.get("receipt")
-                        if isinstance(candidate_record, dict)
-                        else None
-                    )
-                    if not isinstance(candidate_receipt, dict):
-                        raise _osc_error(
-                            "V3_ATTEMPT_ABANDON_RECEIPT_INVALID",
-                            "candidate abandonment receipt is absent",
-                        )
-                    candidate_receipt["event_id"] = event_id
-
-                event_type = V3_NODE_MUTATION_EVENT_TYPES[
-                    V3_NODE_MUTATION_ATTEMPT_ABANDON
-                ]
-                event = commit_v3_node_event(
-                    old_state,
-                    new_state,
-                    task_dir,
-                    event_type,
-                    payload,
-                    operation=V3_NODE_MUTATION_ATTEMPT_ABANDON,
-                    manager_authorization=sealed_authorization,
-                    finalize_event_binding=finalize_event_binding,
-                )
-                return _osc_receipt(
-                    event,
-                    authorization_id=authorization.authorization_id,
-                    payload=payload,
-                )
-        except Exception as exc:
-            raise _osc_translate(exc) from exc
-
     def abandon_attempt(
         self,
         task_id: str,
@@ -12307,7 +11142,7 @@ class OrchestrationControllerService:
                 or not reason.strip()
             ):
                 raise _osc_error(
-                    "V3_ATTEMPT_ABANDON_QUIESCENCE_REQUIRED",
+                    "V4_ATTEMPT_ABANDON_QUIESCENCE_REQUIRED",
                     "attempt abandonment requires a quiescence proof and reason",
                 )
             assignment_id = proof.get("assignment_id")
@@ -12324,7 +11159,7 @@ class OrchestrationControllerService:
                 or dispatch_record.get("runtime_live") is not False
             ):
                 raise _osc_error(
-                    "V3_ATTEMPT_ABANDON_QUIESCENCE_REQUIRED",
+                    "V4_ATTEMPT_ABANDON_QUIESCENCE_REQUIRED",
                     "attempt abandonment requires the exact quiesced assignment",
                 )
             node = _osc_find_node(state, lease.node_instance_id)
@@ -12337,7 +11172,7 @@ class OrchestrationControllerService:
                 or node_attempts[-1].get("state") != "RUNNING"
             ):
                 raise _osc_error(
-                    "V3_ATTEMPT_ABANDON_NODE_INVALID",
+                    "V4_ATTEMPT_ABANDON_NODE_INVALID",
                     "attempt abandonment must target the current running attempt",
                 )
             attempt_id = (
@@ -12355,12 +11190,12 @@ class OrchestrationControllerService:
             )
             if attempt_id in attempts:
                 raise _osc_error(
-                    "V3_ATTEMPT_ABANDON_REPLAY",
+                    "V4_ATTEMPT_ABANDON_REPLAY",
                     "attempt abandonment is single-use",
                     details={"attempt_id": attempt_id},
                 )
             document = {
-                "schema": V3_ATTEMPT_ABANDONMENT_SCHEMA,
+                "schema": V4_ATTEMPT_ABANDONMENT_SCHEMA,
                 "attempt_id": attempt_id,
                 "task_id": task_id,
                 "workflow_bundle_sha256": (
@@ -12388,7 +11223,7 @@ class OrchestrationControllerService:
             reference = _osc_artifact_reference(
                 artifact_id=attempt_id,
                 content=content,
-                kind=V3_ATTEMPT_ABANDONMENT_SCHEMA,
+                kind=V4_ATTEMPT_ABANDONMENT_SCHEMA,
                 semantic_sha256=content_sha256,
             )
             attempts[attempt_id] = {
@@ -12403,7 +11238,7 @@ class OrchestrationControllerService:
             result_refs = node_attempts[-1].get("result_refs")
             if not isinstance(result_refs, list):
                 raise _osc_error(
-                    "V3_ATTEMPT_HISTORY_REWRITE",
+                    "V4_ATTEMPT_HISTORY_REWRITE",
                     "current attempt result history is invalid",
                 )
             result_refs.append(
@@ -12455,7 +11290,7 @@ class OrchestrationControllerService:
                 content, bytes
             ):
                 raise _osc_error(
-                    "V3_ATTEMPT_ABANDON_ARTIFACT_INVALID",
+                    "V4_ATTEMPT_ABANDON_ARTIFACT_INVALID",
                     "attempt abandonment has no prepared evidence",
                 )
             authorization = preauthorization.authorization
@@ -12626,7 +11461,7 @@ class OrchestrationControllerService:
                     )
                 ):
                     raise _osc_error(
-                        "V3_ATTEMPT_ABANDON_RETRY_INVALID",
+                        "V4_ATTEMPT_ABANDON_RETRY_INVALID",
                         "retry source is not the current blocked abandonment diagnostic",
                     )
             retry_id = (
@@ -13596,7 +12431,7 @@ def manager_authority_transaction_service_v1(
     monotonic_ns: _OscCallable[[], int] = _osc_system_monotonic_ns,
     clock_id: str = "process-monotonic",
 ) -> OrchestrationControllerService:
-    """Build the sealed schema-v3 manager authority transaction service."""
+    """Build the sealed schema-v4 manager authority transaction service."""
 
     return orchestration_controller_service(
         secret_resolver=lambda _capability_id: bytearray(),

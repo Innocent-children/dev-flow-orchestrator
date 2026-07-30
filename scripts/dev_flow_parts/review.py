@@ -16,34 +16,34 @@ from typing import Mapping as _ReviewMapping
 from typing import Sequence as _ReviewSequence
 
 
-_V3_REVIEW_EFFECT_PLAN_SCHEMA = "dev-flow-v3-review-effect-plan/v1"
-_V3_REVIEW_EFFECT_OBSERVATION_SCHEMA = (
-    "dev-flow-v3-review-effect-observation/v1"
+_V4_REVIEW_EFFECT_PLAN_SCHEMA = "dev-flow-v4-review-effect-plan/v1"
+_V4_REVIEW_EFFECT_OBSERVATION_SCHEMA = (
+    "dev-flow-v4-review-effect-observation/v1"
 )
-_V3_REVIEW_EFFECT_RECEIPT_SCHEMA = (
-    "dev-flow-v3-review-effect-receipt/v1"
+_V4_REVIEW_EFFECT_RECEIPT_SCHEMA = (
+    "dev-flow-v4-review-effect-receipt/v1"
 )
-_V3_REVIEW_EFFECT_PLAN_DOMAIN = b"dev-flow-v3-review-effect-plan-v1\0"
-_V3_REVIEW_EFFECT_OBSERVATION_DOMAIN = (
-    b"dev-flow-v3-review-effect-observation-v1\0"
+_V4_REVIEW_EFFECT_PLAN_DOMAIN = b"dev-flow-v4-review-effect-plan-v1\0"
+_V4_REVIEW_EFFECT_OBSERVATION_DOMAIN = (
+    b"dev-flow-v4-review-effect-observation-v1\0"
 )
-_V3_REVIEW_EFFECT_RECEIPT_DOMAIN = (
-    b"dev-flow-v3-review-effect-receipt-v1\0"
+_V4_REVIEW_EFFECT_RECEIPT_DOMAIN = (
+    b"dev-flow-v4-review-effect-receipt-v1\0"
 )
-_V3_REVIEW_EXECUTION_ID_DOMAIN = (
-    b"dev-flow-v3-review-execution-id-v1\0"
+_V4_REVIEW_EXECUTION_ID_DOMAIN = (
+    b"dev-flow-v4-review-execution-id-v1\0"
 )
-_V3_REVIEW_SNAPSHOT_ID_DOMAIN = (
-    b"dev-flow-v3-review-snapshot-id-v1\0"
+_V4_REVIEW_SNAPSHOT_ID_DOMAIN = (
+    b"dev-flow-v4-review-snapshot-id-v1\0"
 )
-_V3_REVIEW_ATTEMPT_ID_DOMAIN = (
-    b"dev-flow-v3-review-attempt-id-v1\0"
+_V4_REVIEW_ATTEMPT_ID_DOMAIN = (
+    b"dev-flow-v4-review-attempt-id-v1\0"
 )
-_V3_REVIEW_ACTION_EVIDENCE_SCHEMA = (
-    "dev-flow-v3-review-action-evidence/v1"
+_V4_REVIEW_ACTION_EVIDENCE_SCHEMA = (
+    "dev-flow-v4-review-action-evidence/v1"
 )
-_V3_REVIEW_SHA256 = _review_re.compile(r"[0-9a-f]{64}")
-_V3_REVIEW_EXPECTED_EFFECT_IDS = {
+_V4_REVIEW_SHA256 = _review_re.compile(r"[0-9a-f]{64}")
+_V4_REVIEW_EXPECTED_EFFECT_IDS = {
     ("full", "IMPLEMENTING", "record-test"): (
         "full.implementing.record-test.v1.effect"
     ),
@@ -62,7 +62,7 @@ _V3_REVIEW_EXPECTED_EFFECT_IDS = {
 }
 
 
-def _v3_review_error(
+def _v4_review_error(
     code: str,
     message: str,
     *,
@@ -71,36 +71,36 @@ def _v3_review_error(
     return FlowError(code, message, details=dict(details or {}))
 
 
-def _v3_review_thaw(value: object) -> object:
+def _v4_review_thaw(value: object) -> object:
     if isinstance(value, _ReviewMapping):
         return {
-            str(key): _v3_review_thaw(item)
+            str(key): _v4_review_thaw(item)
             for key, item in value.items()
         }
     if isinstance(value, tuple):
-        return [_v3_review_thaw(item) for item in value]
+        return [_v4_review_thaw(item) for item in value]
     return _review_copy.deepcopy(value)
 
 
-def _v3_review_freeze(value: object) -> object:
+def _v4_review_freeze(value: object) -> object:
     if isinstance(value, dict):
         return _ReviewMappingProxyType(
             {
-                str(key): _v3_review_freeze(item)
+                str(key): _v4_review_freeze(item)
                 for key, item in value.items()
             }
         )
     if isinstance(value, list):
-        return tuple(_v3_review_freeze(item) for item in value)
+        return tuple(_v4_review_freeze(item) for item in value)
     return value
 
 
-def _v3_review_public(value: object) -> object:
+def _v4_review_public(value: object) -> object:
     try:
-        source = semantic_json_bytes(_v3_review_thaw(value))
+        source = semantic_json_bytes(_v4_review_thaw(value))
         return parse_semantic_json(source)
     except Exception as exc:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_JSON_INVALID",
             "review effect bindings require strict semantic JSON",
             details={
@@ -109,47 +109,47 @@ def _v3_review_public(value: object) -> object:
         ) from exc
 
 
-def _v3_review_sha256(domain: bytes, value: object) -> str:
-    return semantic_sha256(domain, _v3_review_public(value))
+def _v4_review_sha256(domain: bytes, value: object) -> str:
+    return semantic_sha256(domain, _v4_review_public(value))
 
 
-def _v3_review_text(value: object, role: str) -> str:
+def _v4_review_text(value: object, role: str) -> str:
     if not isinstance(value, str) or not value:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_BINDING_INVALID",
             f"{role} must be non-empty text",
         )
-    _v3_review_public(value)
+    _v4_review_public(value)
     return value
 
 
-def _v3_review_revision(value: object) -> int:
+def _v4_review_revision(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_BINDING_INVALID",
             "task revision must be a non-negative integer",
         )
     return value
 
 
-def _v3_review_sorted_ids(
+def _v4_review_sorted_ids(
     values: _ReviewSequence[object],
 ) -> tuple[str, ...]:
     normalized = tuple(
-        _v3_review_text(value, "repository_id") for value in values
+        _v4_review_text(value, "repository_id") for value in values
     )
     expected = tuple(
         sorted(set(normalized), key=lambda item: item.encode("utf-8"))
     )
     if not expected or normalized != expected:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_BINDING_INVALID",
             "repository IDs must be non-empty, unique, and UTF-8 sorted",
         )
     return expected
 
 
-def _v3_review_effect_id(
+def _v4_review_effect_id(
     state_value: _ReviewMapping[str, object],
     action: str,
 ) -> str:
@@ -158,9 +158,9 @@ def _v3_review_effect_id(
         str(state_value.get("status")),
         action,
     )
-    effect_id = _V3_REVIEW_EXPECTED_EFFECT_IDS.get(key)
+    effect_id = _V4_REVIEW_EXPECTED_EFFECT_IDS.get(key)
     if effect_id is None:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_NODE_INVALID",
             "review effect is not catalog-declared at the current node",
             details={
@@ -172,7 +172,7 @@ def _v3_review_effect_id(
     return effect_id
 
 
-def v3_review_execution_id(
+def v4_review_execution_id(
     state_value: _ReviewMapping[str, object],
     *,
     action: str,
@@ -187,7 +187,7 @@ def v3_review_execution_id(
         "flow": state_value.get("flow"),
         "status": state_value.get("status"),
         "action": action,
-        "expected_effect_id": _v3_review_effect_id(
+        "expected_effect_id": _v4_review_effect_id(
             state_value, action
         ),
         "request_binding": dict(request_binding),
@@ -195,14 +195,14 @@ def v3_review_execution_id(
     return (
         action
         + "-"
-        + _v3_review_sha256(
-            _V3_REVIEW_EXECUTION_ID_DOMAIN, core
+        + _v4_review_sha256(
+            _V4_REVIEW_EXECUTION_ID_DOMAIN, core
         )
     )
 
 
 @_review_dataclass(frozen=True)
-class V3ReviewEffectPlan:
+class V4ReviewEffectPlan:
     """Immutable plan plus process-local bytes for one claimed filesystem effect."""
 
     action: str
@@ -217,36 +217,36 @@ class V3ReviewEffectPlan:
 
     def __post_init__(self) -> None:
         if self.action not in {"record-test", "review-snapshot"}:
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_PLAN_TYPE_INVALID",
                 "review effect plan action is invalid",
             )
-        _v3_review_text(self.expected_effect_id, "expected_effect_id")
-        _v3_review_text(self.task_id, "task_id")
-        _v3_review_revision(self.task_revision)
-        _v3_review_text(self.execution_id, "execution_id")
-        repository_ids = _v3_review_sorted_ids(self.repository_ids)
-        bindings = _v3_review_public(dict(self.bindings))
+        _v4_review_text(self.expected_effect_id, "expected_effect_id")
+        _v4_review_text(self.task_id, "task_id")
+        _v4_review_revision(self.task_revision)
+        _v4_review_text(self.execution_id, "execution_id")
+        repository_ids = _v4_review_sorted_ids(self.repository_ids)
+        bindings = _v4_review_public(dict(self.bindings))
         if not isinstance(bindings, dict):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_BINDING_INVALID",
                 "review effect bindings must be an object",
             )
         descriptors = bindings.get("payloads")
         if not isinstance(descriptors, list):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_BINDING_INVALID",
                 "review effect plan has no payload descriptors",
             )
         payloads: dict[str, bytes] = {}
         for path, content in self.payloads.items():
             if not isinstance(path, str) or not path:
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_PAYLOAD_INVALID",
                     "review payload path must be absolute text",
                 )
             if not isinstance(content, bytes):
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_PAYLOAD_INVALID",
                     "review payload content must be bytes",
                     details={"path": path},
@@ -265,13 +265,13 @@ class V3ReviewEffectPlan:
             )
             or set(expected_paths) != set(payloads)
         ):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_PAYLOAD_INVALID",
                 "review payload inventory differs from its immutable descriptors",
             )
         for descriptor in descriptors:
             if not isinstance(descriptor, dict):
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_PAYLOAD_INVALID",
                     "review payload descriptor is invalid",
                 )
@@ -283,13 +283,13 @@ class V3ReviewEffectPlan:
                 or descriptor.get("sha256")
                 != _review_hashlib.sha256(content).hexdigest()
             ):
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_PAYLOAD_INVALID",
                     "review payload bytes differ from their descriptor",
                     details={"path": path},
                 )
         core = {
-            "schema": _V3_REVIEW_EFFECT_PLAN_SCHEMA,
+            "schema": _V4_REVIEW_EFFECT_PLAN_SCHEMA,
             "action": self.action,
             "expected_effect_id": self.expected_effect_id,
             "task_id": self.task_id,
@@ -299,15 +299,15 @@ class V3ReviewEffectPlan:
             "bindings": bindings,
         }
         if (
-            _v3_review_sha256(_V3_REVIEW_EFFECT_PLAN_DOMAIN, core)
+            _v4_review_sha256(_V4_REVIEW_EFFECT_PLAN_DOMAIN, core)
             != self.semantic_sha256
         ):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_PLAN_DIGEST_MISMATCH",
                 "review effect plan digest differs from its bindings",
             )
         object.__setattr__(self, "repository_ids", repository_ids)
-        object.__setattr__(self, "bindings", _v3_review_freeze(bindings))
+        object.__setattr__(self, "bindings", _v4_review_freeze(bindings))
         object.__setattr__(
             self,
             "payloads",
@@ -323,19 +323,19 @@ class V3ReviewEffectPlan:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema": _V3_REVIEW_EFFECT_PLAN_SCHEMA,
+            "schema": _V4_REVIEW_EFFECT_PLAN_SCHEMA,
             "action": self.action,
             "expected_effect_id": self.expected_effect_id,
             "task_id": self.task_id,
             "task_revision": self.task_revision,
             "execution_id": self.execution_id,
             "repository_ids": list(self.repository_ids),
-            "bindings": _v3_review_thaw(self.bindings),
+            "bindings": _v4_review_thaw(self.bindings),
             "semantic_sha256": self.semantic_sha256,
         }
 
 
-def _v3_review_build_plan(
+def _v4_review_build_plan(
     *,
     action: str,
     expected_effect_id: str,
@@ -345,17 +345,17 @@ def _v3_review_build_plan(
     repository_ids: _ReviewSequence[str],
     bindings: _ReviewMapping[str, object],
     payloads: _ReviewMapping[str, bytes],
-) -> V3ReviewEffectPlan:
+) -> V4ReviewEffectPlan:
     ids = tuple(
         sorted(
             set(repository_ids),
             key=lambda item: item.encode("utf-8"),
         )
     )
-    public = _v3_review_public(dict(bindings))
+    public = _v4_review_public(dict(bindings))
     assert isinstance(public, dict)
     core = {
-        "schema": _V3_REVIEW_EFFECT_PLAN_SCHEMA,
+        "schema": _V4_REVIEW_EFFECT_PLAN_SCHEMA,
         "action": action,
         "expected_effect_id": expected_effect_id,
         "task_id": task_id,
@@ -364,7 +364,7 @@ def _v3_review_build_plan(
         "repository_ids": list(ids),
         "bindings": public,
     }
-    return V3ReviewEffectPlan(
+    return V4ReviewEffectPlan(
         action=action,
         expected_effect_id=expected_effect_id,
         task_id=task_id,
@@ -373,23 +373,23 @@ def _v3_review_build_plan(
         repository_ids=ids,
         bindings=public,
         payloads=payloads,
-        semantic_sha256=_v3_review_sha256(
-            _V3_REVIEW_EFFECT_PLAN_DOMAIN, core
+        semantic_sha256=_v4_review_sha256(
+            _V4_REVIEW_EFFECT_PLAN_DOMAIN, core
         ),
     )
 
 
-def _v3_review_task_paths(
+def _v4_review_task_paths(
     state_value: _ReviewMapping[str, object],
     data_root: str | _ReviewPath,
     task_dir: str | _ReviewPath,
 ) -> tuple[_ReviewPath, _ReviewPath, _ReviewPath]:
-    if state_value.get("schema_version") != V3_TASK_SCHEMA_VERSION:
-        raise _v3_review_error(
+    if state_value.get("schema_version") != V4_TASK_SCHEMA_VERSION:
+        raise _v4_review_error(
             "REVIEW_EFFECT_SCHEMA_REQUIRED",
-            "typed review effects require a schema-v3 task",
+            "typed review effects require a schema-v4 task",
         )
-    task_id = _v3_review_text(state_value.get("task_id"), "task_id")
+    task_id = _v4_review_text(state_value.get("task_id"), "task_id")
     resolved_data = _ReviewPath(data_root).expanduser().resolve(
         strict=True
     )
@@ -400,7 +400,7 @@ def _v3_review_task_paths(
         strict=False
     )
     if not _same_path(resolved_task, expected):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_TASK_PATH_MISMATCH",
             "review effect task directory is outside its controller namespace",
             details={
@@ -410,7 +410,7 @@ def _v3_review_task_paths(
         )
     state_path = resolved_task / "state.json"
     if not state_path.is_file():
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_STATE_UNAVAILABLE",
             "review effect requires a durable task state",
             details={"path": str(state_path)},
@@ -418,7 +418,7 @@ def _v3_review_task_paths(
     return resolved_data, resolved_task, state_path
 
 
-def _v3_review_profile_for_repository(
+def _v4_review_profile_for_repository(
     repo: _ReviewMapping[str, object],
 ) -> tuple[_ReviewPath, dict[str, object]]:
     working = _ReviewPath(str(_working_path(dict(repo)))).resolve(
@@ -453,16 +453,16 @@ def _v3_review_profile_for_repository(
             filesystem.get("unicode_normalization_distinct"), bool
         )
     ):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_FILESYSTEM_FACTS_INVALID",
             "repository has no approved filesystem capability facts",
             details={"repository_id": repo.get("id")},
         )
-    _v3_workspace_seed_filesystem_facts(working, filesystem)
-    if not _v3_workspace_readonly_recorded_path_matches(
+    _v4_workspace_seed_filesystem_facts(working, filesystem)
+    if not _v4_workspace_readonly_recorded_path_matches(
         recorded_identity, recorded_path, working
     ):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_REPOSITORY_MISMATCH",
             "working repository differs from its approved path",
             details={"repository_id": repo.get("id")},
@@ -470,7 +470,7 @@ def _v3_review_profile_for_repository(
     return working, _review_copy.deepcopy(dict(filesystem))
 
 
-def _v3_review_controller_filesystem_facts(
+def _v4_review_controller_filesystem_facts(
     state_value: _ReviewMapping[str, object],
     task_dir: _ReviewPath,
     repository_profiles: _ReviewSequence[
@@ -500,12 +500,12 @@ def _v3_review_controller_filesystem_facts(
             else None
         )
         if isinstance(facts, dict):
-            _v3_workspace_seed_filesystem_facts(task_dir, facts)
+            _v4_workspace_seed_filesystem_facts(task_dir, facts)
             return _review_copy.deepcopy(facts)
     try:
         task_device = task_dir.stat().st_dev
     except OSError as exc:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_FILESYSTEM_FACTS_INVALID",
             "controller task filesystem cannot be identified",
             details={"path": str(task_dir), "error": str(exc)},
@@ -516,22 +516,22 @@ def _v3_review_controller_filesystem_facts(
         if path.stat().st_dev == task_device
     ]
     if not matching or any(item != matching[0] for item in matching):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_FILESYSTEM_FACTS_INVALID",
             "controller filesystem lacks approved capability facts",
             details={"path": str(task_dir)},
         )
     facts = _review_copy.deepcopy(matching[0])
-    _v3_workspace_seed_filesystem_facts(task_dir, facts)
+    _v4_workspace_seed_filesystem_facts(task_dir, facts)
     return facts
 
 
-def _v3_review_capture_fingerprint(
+def _v4_review_capture_fingerprint(
     repository_id: str,
     working: _ReviewPath,
     filesystem: _ReviewMapping[str, object],
 ) -> dict[str, object]:
-    with _v3_workspace_readonly_git():
+    with _v4_workspace_readonly_git():
         first = _fingerprint_repo_once(
             working,
             filesystem_capabilities=dict(filesystem),
@@ -541,7 +541,7 @@ def _v3_review_capture_fingerprint(
             filesystem_capabilities=dict(filesystem),
         )
     if first.get("sha256") != second.get("sha256"):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_REPOSITORY_CHANGED",
             "repository changed during read-only review planning",
             details={"repository_id": repository_id},
@@ -549,18 +549,18 @@ def _v3_review_capture_fingerprint(
     return _review_copy.deepcopy(second)
 
 
-def _v3_review_fingerprint_reference(
+def _v4_review_fingerprint_reference(
     task_dir: _ReviewPath,
     fingerprint: _ReviewMapping[str, object],
 ) -> tuple[dict[str, object], bytes]:
     fingerprint_sha256 = fingerprint.get("sha256")
     if (
         not isinstance(fingerprint_sha256, str)
-        or not _V3_REVIEW_SHA256.fullmatch(fingerprint_sha256)
+        or not _V4_REVIEW_SHA256.fullmatch(fingerprint_sha256)
         or _fingerprint_payload_sha256(dict(fingerprint))
         != fingerprint_sha256
     ):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_FINGERPRINT_INVALID",
             "planned repository fingerprint is invalid",
         )
@@ -590,7 +590,7 @@ def _v3_review_fingerprint_reference(
     return reference, source
 
 
-def _v3_review_payload_descriptor(
+def _v4_review_payload_descriptor(
     path: _ReviewPath,
     content: bytes,
     kind: str,
@@ -603,7 +603,7 @@ def _v3_review_payload_descriptor(
     }
 
 
-def _v3_review_approval_binding(
+def _v4_review_approval_binding(
     state_value: dict[str, Any],
 ) -> dict[str, object]:
     if _flow(state_value) == "lite":
@@ -614,7 +614,7 @@ def _v3_review_approval_binding(
                 approval.get("lite_policy_sha256")
                 != risk.get("policy_sha256")
             ):
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "STALE_APPROVAL",
                     "lite approval does not bind the task risk policy",
                 )
@@ -625,7 +625,7 @@ def _v3_review_approval_binding(
             approval.get("preflight_evidence_sha256")
             != evidence_sha256
         ):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "STALE_APPROVAL",
                 "lite approval does not bind current preflight evidence",
             )
@@ -635,7 +635,7 @@ def _v3_review_approval_binding(
             if bool((repo.get("preflight") or {}).get("dirty"))
         ]
         if dirty and approval.get("dirty_allowed") is not True:
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "DIRTY_NOT_APPROVED",
                 "dirty preflight evidence requires explicit lite approval",
                 details={"repository_ids": dirty},
@@ -657,7 +657,7 @@ def _v3_review_approval_binding(
     )
     artifact = _latest_artifact(state_value, plan_kind)
     if not isinstance(artifact, dict):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "ARTIFACT_REQUIRED",
             f"the plan gate requires a recorded {plan_kind} artifact",
         )
@@ -683,7 +683,7 @@ def _v3_review_approval_binding(
         or not isinstance(route_approval, dict)
         or not isinstance(workspace_approval, dict)
     ):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "STALE_PLAN",
             "plan approval is missing its durable route or workspace binding",
         )
@@ -730,7 +730,7 @@ def _v3_review_approval_binding(
         or approval.get("planning_context_sha256")
         != context_sha256
     ):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "STALE_APPROVAL",
             "plan approval is not bound to current durable planning facts",
         )
@@ -745,14 +745,14 @@ def _v3_review_approval_binding(
     }
 
 
-def _v3_review_output_record(
+def _v4_review_output_record(
     output: str | _ReviewPath | None,
 ) -> dict[str, object] | None:
     if output is None:
         return None
     path = _ReviewPath(output).expanduser().resolve(strict=True)
     if not path.is_file():
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_OUTPUT_INVALID",
             "test output must be one regular file",
             details={"path": str(path)},
@@ -805,7 +805,7 @@ def _test_receipt(test: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def plan_v3_record_test_effect(
+def plan_v4_record_test_effect(
     *,
     state_value: dict[str, Any],
     data_root: str | _ReviewPath,
@@ -816,20 +816,20 @@ def plan_v3_record_test_effect(
     exit_code: int,
     repository_ids: _ReviewSequence[str] | None = None,
     output: str | _ReviewPath | None = None,
-) -> V3ReviewEffectPlan:
+) -> V4ReviewEffectPlan:
     """Plan test evidence without filesystem mutation or capability probes."""
 
-    _v3_review_revision(state_value.get("revision"))
+    _v4_review_revision(state_value.get("revision"))
     if isinstance(exit_code, bool) or not isinstance(exit_code, int):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_BINDING_INVALID",
             "test exit code must be an integer",
         )
-    effect_id = _v3_review_effect_id(state_value, "record-test")
-    task_id = _v3_review_text(state_value.get("task_id"), "task_id")
-    node_id = _v3_review_text(state_value.get("status"), "status")
-    execution_id = _v3_review_text(execution_id, "execution_id")
-    _resolved_data, resolved_task, state_path = _v3_review_task_paths(
+    effect_id = _v4_review_effect_id(state_value, "record-test")
+    task_id = _v4_review_text(state_value.get("task_id"), "task_id")
+    node_id = _v4_review_text(state_value.get("status"), "status")
+    execution_id = _v4_review_text(execution_id, "execution_id")
+    _resolved_data, resolved_task, state_path = _v4_review_task_paths(
         state_value, data_root, task_dir
     )
     configured = {
@@ -843,7 +843,7 @@ def plan_v3_record_test_effect(
                 set(configured)
                 if repository_ids is None
                 else {
-                    _v3_review_text(item, "repository_id")
+                    _v4_review_text(item, "repository_id")
                     for item in repository_ids
                 }
             ),
@@ -851,7 +851,7 @@ def plan_v3_record_test_effect(
         )
     )
     if not selected_ids or not set(selected_ids).issubset(configured):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_REPOSITORY_MISMATCH",
             "test effect selects an unknown or empty repository set",
             details={
@@ -866,19 +866,19 @@ def plan_v3_record_test_effect(
                 not isinstance(workspace, dict)
                 or workspace.get("ready") is not True
             ):
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "WORKSPACE_REQUIRED",
                     "full-flow test evidence requires an approved workspace",
                     details={"repository_id": repository_id},
                 )
     profiles = [
-        _v3_review_profile_for_repository(configured[item])
+        _v4_review_profile_for_repository(configured[item])
         for item in selected_ids
     ]
-    controller_facts = _v3_review_controller_filesystem_facts(
+    controller_facts = _v4_review_controller_filesystem_facts(
         state_value, resolved_task, profiles
     )
-    _v3_workspace_seed_filesystem_facts(
+    _v4_workspace_seed_filesystem_facts(
         resolved_task / "artifacts" / "fingerprints",
         controller_facts,
     )
@@ -889,10 +889,10 @@ def plan_v3_record_test_effect(
     for repository_id, (working, filesystem) in zip(
         selected_ids, profiles
     ):
-        fingerprint = _v3_review_capture_fingerprint(
+        fingerprint = _v4_review_capture_fingerprint(
             repository_id, working, filesystem
         )
-        reference, source = _v3_review_fingerprint_reference(
+        reference, source = _v4_review_fingerprint_reference(
             resolved_task, fingerprint
         )
         payloads[str(reference["path"])] = source
@@ -912,13 +912,13 @@ def plan_v3_record_test_effect(
                 "fingerprint_reference": reference,
             }
         )
-    approval_binding = _v3_review_approval_binding(state_value)
+    approval_binding = _v4_review_approval_binding(state_value)
     recorded_at = state_value.get("updated_at")
     if not isinstance(recorded_at, str) or not recorded_at:
         recorded_at = approval_binding.get("approved_at")
-    recorded_at = _v3_review_text(recorded_at, "recorded_at")
-    test_id = "test-" + _v3_review_sha256(
-        _V3_REVIEW_EXECUTION_ID_DOMAIN,
+    recorded_at = _v4_review_text(recorded_at, "recorded_at")
+    test_id = "test-" + _v4_review_sha256(
+        _V4_REVIEW_EXECUTION_ID_DOMAIN,
         {
             "execution_id": execution_id,
             "effect_id": effect_id,
@@ -937,7 +937,7 @@ def plan_v3_record_test_effect(
         "repository_ids": list(selected_ids),
         "fingerprints": fingerprint_references,
         "capability_profile_sha256": capability_profiles,
-        "output": _v3_review_output_record(output),
+        "output": _v4_review_output_record(output),
     }
     if approval_binding["flow"] == "lite":
         test_record.update(
@@ -957,7 +957,7 @@ def plan_v3_record_test_effect(
             }
         )
     descriptors = [
-        _v3_review_payload_descriptor(
+        _v4_review_payload_descriptor(
             _ReviewPath(path), content, "fingerprint"
         )
         for path, content in payloads.items()
@@ -979,7 +979,7 @@ def plan_v3_record_test_effect(
         "test_record": test_record,
         "payloads": descriptors,
     }
-    return _v3_review_build_plan(
+    return _v4_review_build_plan(
         action="record-test",
         expected_effect_id=effect_id,
         task_id=task_id,
@@ -1006,9 +1006,9 @@ def _review_snapshot_receipt(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _v3_review_catalog_effect(
+def _v4_review_catalog_effect(
     edge: _ReviewMapping[str, object],
-    plan: V3ReviewEffectPlan,
+    plan: V4ReviewEffectPlan,
 ) -> _ReviewMapping[str, object]:
     effects = edge.get("effects")
     effect = (
@@ -1025,7 +1025,7 @@ def _v3_review_catalog_effect(
         or effect.get("recovery", {}).get("redispatch")
         != "forbidden"
     ):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_CATALOG_MISMATCH",
             "review command did not resolve its exact claimed catalog effect",
             details={
@@ -1036,14 +1036,14 @@ def _v3_review_catalog_effect(
     return effect
 
 
-def _v3_review_action_outcome(
+def _v4_review_action_outcome(
     current: dict[str, Any],
     authorization_edge: _ReviewMapping[str, object],
     completion_edge: _ReviewMapping[str, object],
-    plan: V3ReviewEffectPlan,
+    plan: V4ReviewEffectPlan,
 ) -> ActionOutcome:
     planned = _copy_state(current)
-    result = _v3_review_result(plan)
+    result = _v4_review_result(plan)
     if plan.action == "record-test":
         planned["tests"].append(
             _review_copy.deepcopy(result["test_record"])
@@ -1082,19 +1082,19 @@ def _v3_review_action_outcome(
         or not isinstance(completion_edge_id, str)
         or not completion_edge_id
     ):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_CATALOG_MISMATCH",
             "review action has no exact authorization/completion identity",
         )
     evidence = {
-        "contract": _V3_REVIEW_ACTION_EVIDENCE_SCHEMA,
+        "contract": _V4_REVIEW_ACTION_EVIDENCE_SCHEMA,
         "action": plan.action,
         "plan_sha256": plan.semantic_sha256,
         "expected_effect_id": plan.expected_effect_id,
         "authorization_action_edge_id": authorization_edge_id,
         "completion_edge_id": completion_edge_id,
-        "result_sha256": _v3_review_sha256(
-            _V3_REVIEW_EFFECT_OBSERVATION_DOMAIN, result
+        "result_sha256": _v4_review_sha256(
+            _V4_REVIEW_EFFECT_OBSERVATION_DOMAIN, result
         ),
     }
     return ActionOutcome(
@@ -1110,7 +1110,7 @@ def _v3_review_action_outcome(
         ),
         external_postconditions=(
             {
-                "contract": _V3_REVIEW_ACTION_EVIDENCE_SCHEMA,
+                "contract": _V4_REVIEW_ACTION_EVIDENCE_SCHEMA,
                 "plan_sha256": plan.semantic_sha256,
                 "payloads_sha256": result["payloads_sha256"],
             },
@@ -1118,10 +1118,10 @@ def _v3_review_action_outcome(
     )
 
 
-def _v3_review_invocation(
+def _v4_review_invocation(
     current: dict[str, Any],
     task_dir: _ReviewPath,
-    plan: V3ReviewEffectPlan,
+    plan: V4ReviewEffectPlan,
     outcome: ActionOutcome,
     authorization: WorkflowActionAuthorization,
     *,
@@ -1138,7 +1138,7 @@ def _v3_review_invocation(
         "completion_edge_id": completion_edge["id"],
     }
     evidence = {
-        "contract": _V3_REVIEW_ACTION_EVIDENCE_SCHEMA,
+        "contract": _V4_REVIEW_ACTION_EVIDENCE_SCHEMA,
         "plan_sha256": plan.semantic_sha256,
         "effect_id": plan.expected_effect_id,
     }
@@ -1151,7 +1151,7 @@ def _v3_review_invocation(
         evidence=evidence,
     )
     try:
-        preview = preview_v3_workflow_action_transaction(
+        preview = preview_v4_workflow_action_transaction(
             current,
             request,
             authorization=authorization,
@@ -1178,22 +1178,22 @@ def _v3_review_invocation(
     )
 
 
-def _v3_review_run_transaction(
+def _v4_review_run_transaction(
     args: argparse.Namespace,
     task_dir: _ReviewPath,
     current: dict[str, Any],
-    plan: V3ReviewEffectPlan,
+    plan: V4ReviewEffectPlan,
     authorization: WorkflowActionAuthorization,
     authorization_edge: _ReviewMapping[str, object],
     completion_edge: _ReviewMapping[str, object],
     *,
     selector: str | None,
 ) -> WorkflowActionTransactionResult:
-    effect = _v3_review_catalog_effect(authorization_edge, plan)
-    outcome = _v3_review_action_outcome(
+    effect = _v4_review_catalog_effect(authorization_edge, plan)
+    outcome = _v4_review_action_outcome(
         current, authorization_edge, completion_edge, plan
     )
-    invocation = _v3_review_invocation(
+    invocation = _v4_review_invocation(
         current,
         task_dir,
         plan,
@@ -1203,8 +1203,8 @@ def _v3_review_run_transaction(
         authorization_edge=authorization_edge,
         completion_edge=completion_edge,
     )
-    attempt_id = "attempt-" + _v3_review_sha256(
-        _V3_REVIEW_ATTEMPT_ID_DOMAIN,
+    attempt_id = "attempt-" + _v4_review_sha256(
+        _V4_REVIEW_ATTEMPT_ID_DOMAIN,
         {
             "execution_id": plan.execution_id,
             "effect_id": plan.expected_effect_id,
@@ -1218,18 +1218,18 @@ def _v3_review_run_transaction(
         effect_id=plan.expected_effect_id,
         kind="filesystem",
         scope_kinds=tuple(effect["scopes"]),
-        scopes=v3_review_effect_scopes(plan),
-        safe_inputs=v3_review_effect_safe_inputs(plan),
+        scopes=v4_review_effect_scopes(plan),
+        safe_inputs=v4_review_effect_safe_inputs(plan),
         attempt_id=attempt_id,
     )
     dispatch_observations: dict[
-        str, V3ReviewEffectObservation
+        str, V4ReviewEffectObservation
     ] = {}
 
     def dispatch(
         context: WorkflowActionDispatchContext,
     ) -> WorkflowActionEffectObservation:
-        observation = dispatch_v3_review_effect(plan, context)
+        observation = dispatch_v4_review_effect(plan, context)
         dispatch_observations[context.plan.effect_id] = observation
         return WorkflowActionEffectObservation(
             task_id=context.plan.task_id,
@@ -1244,7 +1244,7 @@ def _v3_review_run_transaction(
     def observe(
         context: WorkflowActionObserveContext,
     ) -> WorkflowActionEffectObservation:
-        receipt = observe_v3_review_effect(
+        receipt = observe_v4_review_effect(
             plan,
             context,
             dispatch_observations.get(context.effect_id),
@@ -1267,7 +1267,7 @@ def _v3_review_run_transaction(
     )
     try:
         if active.exists():
-            result = recover_v3_workflow_action_transaction(
+            result = recover_v4_workflow_action_transaction(
                 task_dir,
                 plan.execution_id,
                 authorization=authorization,
@@ -1277,28 +1277,28 @@ def _v3_review_run_transaction(
                 "AWAITING_EFFECT_OBSERVATION",
                 "QUARANTINE_REQUIRED",
             }:
-                observe_v3_workflow_action_effect(
+                observe_v4_workflow_action_effect(
                     task_dir,
                     plan.execution_id,
                     plan.expected_effect_id,
                     authorization=authorization,
                     observer=observe,
                 )
-                result = recover_v3_workflow_action_transaction(
+                result = recover_v4_workflow_action_transaction(
                     task_dir,
                     plan.execution_id,
                     authorization=authorization,
                     invocation=invocation,
                 )
         elif archived.exists():
-            result = recover_v3_workflow_action_transaction(
+            result = recover_v4_workflow_action_transaction(
                 task_dir,
                 plan.execution_id,
                 authorization=authorization,
                 invocation=invocation,
             )
         else:
-            result = execute_v3_workflow_action_transaction(
+            result = execute_v4_workflow_action_transaction(
                 current,
                 task_dir,
                 invocation,
@@ -1347,7 +1347,7 @@ def _v3_review_run_transaction(
     )
 
 
-def v3_record_test_command_v1(
+def v4_record_test_command_v1(
     args: argparse.Namespace,
     task_dir: _ReviewPath,
     current: dict[str, Any],
@@ -1355,7 +1355,7 @@ def v3_record_test_command_v1(
 ) -> dict[str, Any]:
     selector = str(current["status"]).lower()
     try:
-        edge = resolve_v3_node_action_edge(
+        edge = resolve_v4_node_action_edge(
             current, "record-test", selector=selector
         )
     except TransitionEngineError as exc:
@@ -1371,7 +1371,7 @@ def v3_record_test_command_v1(
     )
     canonical_event = edge.get("canonical_event")
     if not isinstance(canonical_event, str):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_CATALOG_MISMATCH",
             "record-test action has no canonical event",
         )
@@ -1388,12 +1388,12 @@ def v3_record_test_command_v1(
             authorization.request_nonce_sha256
         ),
     }
-    execution_id = v3_review_execution_id(
+    execution_id = v4_review_execution_id(
         current,
         action="record-test",
         request_binding=request_binding,
     )
-    plan = plan_v3_record_test_effect(
+    plan = plan_v4_record_test_effect(
         state_value=current,
         data_root=resolve_data_dir(args.data_dir),
         task_dir=task_dir,
@@ -1404,7 +1404,7 @@ def v3_record_test_command_v1(
         repository_ids=repository_ids,
         output=args.output,
     )
-    result = _v3_review_run_transaction(
+    result = _v4_review_run_transaction(
         args,
         task_dir,
         current,
@@ -1415,7 +1415,7 @@ def v3_record_test_command_v1(
         selector=selector,
     )
     assert isinstance(result.state, dict)
-    test_record = _v3_review_thaw(
+    test_record = _v4_review_thaw(
         plan.bindings["test_record"]
     )
     assert isinstance(test_record, dict)
@@ -1443,11 +1443,11 @@ def command_record_test(args: argparse.Namespace) -> dict[str, Any]:
         args.data_dir,
         args.expected_revision,
         manager_action_id="evidence.test.record",
-        short_v3_effect_boundary=True,
+        short_v4_effect_boundary=True,
     ) as (task_dir, current):
         _assert_status(current, {"IMPLEMENTING", "VERIFYING"}, "record-test")
-        if current.get("schema_version") == V3_TASK_SCHEMA_VERSION:
-            return v3_record_test_command_v1(
+        if current.get("schema_version") == V4_TASK_SCHEMA_VERSION:
+            return v4_record_test_command_v1(
                 args, task_dir, current, output_record
             )
         if _flow(current) == "lite":
@@ -1615,8 +1615,7 @@ def _write_review_repo(
             relative = _untracked_filesystem_path(item)
             archive.add(working / relative, arcname=relative, recursive=False)
     _set_private_permissions(tar_path, 0o600)
-    # Windows requires a writable descriptor for fsync; no bytes are changed.
-    with tar_path.open("rb+") as archive_handle:
+    with tar_path.open("rb") as archive_handle:
         os.fsync(archive_handle.fileno())
     _validate_untracked_archive(tar_path, fingerprint["untracked"])
     middle_fingerprint = _fingerprint_repo(working)
@@ -1807,22 +1806,22 @@ def _latest_passing_test_is_current(
     return True, None
 
 
-def _v3_review_latest_passing_test_is_current(
+def _v4_review_latest_passing_test_is_current(
     state_value: dict[str, Any],
     approval_binding: _ReviewMapping[str, object],
     fingerprints: _ReviewMapping[str, dict[str, object]],
 ) -> tuple[bool, str | None]:
     """Typed planner test-currentness check using only prevalidated facts."""
 
-    binding = _v3_review_thaw(approval_binding)
+    binding = _v4_review_thaw(approval_binding)
     if not isinstance(binding, dict):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_APPROVAL_MISMATCH",
             "typed test currency requires one durable approval binding",
         )
     flow = _flow(state_value)
     if binding.get("flow") != flow:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_APPROVAL_MISMATCH",
             "typed test currency received another approval flow",
         )
@@ -1867,7 +1866,7 @@ def _v3_review_latest_passing_test_is_current(
             return False, f"{missing_message}: {repository_id}"
         current = fingerprints.get(repository_id)
         if not isinstance(current, dict):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_REPOSITORY_MISMATCH",
                 "typed test currency lacks a planned repository fingerprint",
                 details={"repository_id": repository_id},
@@ -1951,7 +1950,7 @@ def _v3_review_latest_passing_test_is_current(
     return True, None
 
 
-def _v3_review_capture_sections(
+def _v4_review_capture_sections(
     working: _ReviewPath,
     base_sha: str,
 ) -> tuple[str, dict[str, bytes], dict[str, list[str]]]:
@@ -2000,7 +1999,7 @@ def _v3_review_capture_sections(
     return head_sha, sections, files
 
 
-def _v3_review_untracked_tar_bytes(
+def _v4_review_untracked_tar_bytes(
     working: _ReviewPath,
     untracked: _ReviewSequence[dict[str, Any]],
 ) -> bytes:
@@ -2025,7 +2024,7 @@ def _v3_review_untracked_tar_bytes(
             elif info.issym():
                 archive.addfile(info)
             else:
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_UNTRACKED_INVALID",
                     "review snapshot supports only regular files and symlinks",
                     details={"path": relative},
@@ -2033,7 +2032,7 @@ def _v3_review_untracked_tar_bytes(
     return stream.getvalue()
 
 
-def _v3_review_snapshot_repository(
+def _v4_review_snapshot_repository(
     *,
     task_dir: _ReviewPath,
     snapshot_root: _ReviewPath,
@@ -2050,19 +2049,19 @@ def _v3_review_snapshot_repository(
         else None
     )
     if not isinstance(base_sha, str) or not base_sha:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "BASELINE_REQUIRED",
             "review snapshot repository has no approved baseline",
             details={"repository_id": repository_id},
         )
-    with _v3_workspace_readonly_git():
+    with _v4_workspace_readonly_git():
         head_sha, sections, section_files = (
-            _v3_review_capture_sections(working, base_sha)
+            _v4_review_capture_sections(working, base_sha)
         )
         verify_head, verify_sections, verify_files = (
-            _v3_review_capture_sections(working, base_sha)
+            _v4_review_capture_sections(working, base_sha)
         )
-        final_fingerprint = _v3_review_capture_fingerprint(
+        final_fingerprint = _v4_review_capture_fingerprint(
             repository_id, working, filesystem
         )
     if (
@@ -2073,14 +2072,14 @@ def _v3_review_snapshot_repository(
         or final_fingerprint.get("sha256")
         != fingerprint.get("sha256")
     ):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_SNAPSHOT_CHANGED",
             "repository changed while its review payload was planned",
             details={"repository_id": repository_id},
         )
     repo_root = snapshot_root / repository_id
     if not _is_within(repo_root, snapshot_root):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_PATH_INVALID",
             "repository identity escapes the snapshot root",
             details={"repository_id": repository_id},
@@ -2110,7 +2109,7 @@ def _v3_review_snapshot_repository(
     untracked_manifest = _json_bytes(untracked)
     manifest_path = repo_root / "untracked.json"
     tar_path = repo_root / "untracked.tar"
-    tar_bytes = _v3_review_untracked_tar_bytes(working, untracked)
+    tar_bytes = _v4_review_untracked_tar_bytes(working, untracked)
     payloads[str(manifest_path)] = untracked_manifest
     payloads[str(tar_path)] = tar_bytes
     section_records["untracked"] = {
@@ -2128,7 +2127,7 @@ def _v3_review_snapshot_repository(
         "size": len(tar_bytes),
         "files": untracked,
     }
-    reference, fingerprint_bytes = _v3_review_fingerprint_reference(
+    reference, fingerprint_bytes = _v4_review_fingerprint_reference(
         task_dir, fingerprint
     )
     payloads[str(reference["path"])] = fingerprint_bytes
@@ -2151,24 +2150,24 @@ def _v3_review_snapshot_repository(
     return record, payloads
 
 
-def plan_v3_review_snapshot_effect(
+def plan_v4_review_snapshot_effect(
     *,
     state_value: dict[str, Any],
     data_root: str | _ReviewPath,
     task_dir: str | _ReviewPath,
     execution_id: str,
     repository_ids: _ReviewSequence[str] | None = None,
-) -> V3ReviewEffectPlan:
+) -> V4ReviewEffectPlan:
     """Capture a deterministic all-repository snapshot entirely in memory."""
 
-    effect_id = _v3_review_effect_id(
+    effect_id = _v4_review_effect_id(
         state_value, "review-snapshot"
     )
-    task_id = _v3_review_text(state_value.get("task_id"), "task_id")
-    node_id = _v3_review_text(state_value.get("status"), "status")
-    revision = _v3_review_revision(state_value.get("revision"))
-    execution_id = _v3_review_text(execution_id, "execution_id")
-    resolved_data, resolved_task, state_path = _v3_review_task_paths(
+    task_id = _v4_review_text(state_value.get("task_id"), "task_id")
+    node_id = _v4_review_text(state_value.get("status"), "status")
+    revision = _v4_review_revision(state_value.get("revision"))
+    execution_id = _v4_review_text(execution_id, "execution_id")
+    resolved_data, resolved_task, state_path = _v4_review_task_paths(
         state_value, data_root, task_dir
     )
     configured = {
@@ -2182,7 +2181,7 @@ def plan_v3_review_snapshot_effect(
                 set(configured)
                 if repository_ids is None
                 else {
-                    _v3_review_text(item, "repository_id")
+                    _v4_review_text(item, "repository_id")
                     for item in repository_ids
                 }
             ),
@@ -2190,9 +2189,9 @@ def plan_v3_review_snapshot_effect(
         )
     )
     if set(selected_ids) != set(configured) or not selected_ids:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "INCOMPLETE_REVIEW",
-            "schema-v3 review snapshot must cover every repository",
+            "schema-v4 review snapshot must cover every repository",
             details={
                 "required_repository_ids": sorted(configured),
                 "selected_repository_ids": list(selected_ids),
@@ -2204,20 +2203,20 @@ def plan_v3_review_snapshot_effect(
             not isinstance(workspace, dict)
             or workspace.get("ready") is not True
         ):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "WORKSPACE_REQUIRED",
                 "review snapshot requires every approved workspace",
                 details={"repository_id": repository_id},
             )
     profiles = [
-        _v3_review_profile_for_repository(configured[item])
+        _v4_review_profile_for_repository(configured[item])
         for item in selected_ids
     ]
-    controller_facts = _v3_review_controller_filesystem_facts(
+    controller_facts = _v4_review_controller_filesystem_facts(
         state_value, resolved_task, profiles
     )
-    snapshot_id = "review-" + _v3_review_sha256(
-        _V3_REVIEW_SNAPSHOT_ID_DOMAIN,
+    snapshot_id = "review-" + _v4_review_sha256(
+        _V4_REVIEW_SNAPSHOT_ID_DOMAIN,
         {
             "task_id": task_id,
             "execution_id": execution_id,
@@ -2225,7 +2224,7 @@ def plan_v3_review_snapshot_effect(
         },
     )
     snapshot_root = resolved_task / "reviews" / snapshot_id
-    _v3_workspace_seed_filesystem_facts(
+    _v4_workspace_seed_filesystem_facts(
         snapshot_root, controller_facts
     )
     fingerprints: dict[str, dict[str, object]] = {}
@@ -2233,18 +2232,18 @@ def plan_v3_review_snapshot_effect(
         selected_ids, profiles
     ):
         fingerprints[repository_id] = (
-            _v3_review_capture_fingerprint(
+            _v4_review_capture_fingerprint(
                 repository_id, working, filesystem
             )
         )
-    approval_binding = _v3_review_approval_binding(state_value)
-    passing, reason = _v3_review_latest_passing_test_is_current(
+    approval_binding = _v4_review_approval_binding(state_value)
+    passing, reason = _v4_review_latest_passing_test_is_current(
         state_value,
         approval_binding,
         fingerprints,
     )
     if not passing:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "CURRENT_TEST_REQUIRED",
             reason or "a current passing test is required",
         )
@@ -2255,7 +2254,7 @@ def plan_v3_review_snapshot_effect(
         selected_ids, profiles
     ):
         record, repository_payloads = (
-            _v3_review_snapshot_repository(
+            _v4_review_snapshot_repository(
                 task_dir=resolved_task,
                 snapshot_root=snapshot_root,
                 repo=configured[repository_id],
@@ -2279,13 +2278,13 @@ def plan_v3_review_snapshot_effect(
     for repository_id, (working, filesystem) in zip(
         selected_ids, profiles
     ):
-        current = _v3_review_capture_fingerprint(
+        current = _v4_review_capture_fingerprint(
             repository_id, working, filesystem
         )
         if current.get("sha256") != fingerprints[
             repository_id
         ].get("sha256"):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_SNAPSHOT_CHANGED",
                 "repository changed across the multi-repository snapshot",
                 details={"repository_id": repository_id},
@@ -2293,7 +2292,7 @@ def plan_v3_review_snapshot_effect(
     created_at = state_value.get("updated_at")
     if not isinstance(created_at, str) or not created_at:
         created_at = approval_binding.get("approved_at")
-    created_at = _v3_review_text(created_at, "created_at")
+    created_at = _v4_review_text(created_at, "created_at")
     manifest = {
         "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "snapshot_id": snapshot_id,
@@ -2317,8 +2316,8 @@ def plan_v3_review_snapshot_effect(
     artifact = {
         "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
         "artifact_id": "review-artifact-"
-        + _v3_review_sha256(
-            _V3_REVIEW_SNAPSHOT_ID_DOMAIN,
+        + _v4_review_sha256(
+            _V4_REVIEW_SNAPSHOT_ID_DOMAIN,
             {
                 "snapshot_id": snapshot_id,
                 "manifest_sha256": snapshot["sha256"],
@@ -2358,7 +2357,7 @@ def plan_v3_review_snapshot_effect(
             )
         )
         descriptors.append(
-            _v3_review_payload_descriptor(
+            _v4_review_payload_descriptor(
                 _ReviewPath(path), content, kind
             )
         )
@@ -2381,7 +2380,7 @@ def plan_v3_review_snapshot_effect(
         "artifact": artifact,
         "payloads": descriptors,
     }
-    return _v3_review_build_plan(
+    return _v4_review_build_plan(
         action="review-snapshot",
         expected_effect_id=effect_id,
         task_id=task_id,
@@ -2393,16 +2392,16 @@ def plan_v3_review_snapshot_effect(
     )
 
 
-def v3_review_effect_safe_inputs(
-    plan: V3ReviewEffectPlan,
+def v4_review_effect_safe_inputs(
+    plan: V4ReviewEffectPlan,
 ) -> dict[str, object]:
-    if type(plan) is not V3ReviewEffectPlan:
-        raise _v3_review_error(
+    if type(plan) is not V4ReviewEffectPlan:
+        raise _v4_review_error(
             "REVIEW_EFFECT_PLAN_TYPE_INVALID",
             "safe inputs require the exact typed review plan",
         )
     return {
-        "schema": _V3_REVIEW_EFFECT_PLAN_SCHEMA,
+        "schema": _V4_REVIEW_EFFECT_PLAN_SCHEMA,
         "action": plan.action,
         "expected_effect_id": plan.expected_effect_id,
         "plan_sha256": plan.semantic_sha256,
@@ -2410,18 +2409,18 @@ def v3_review_effect_safe_inputs(
         "execution_id": plan.execution_id,
         "repository_ids": list(plan.repository_ids),
         "state_sha256": plan.bindings["state_sha256"],
-        "payloads_sha256": _v3_review_sha256(
-            _V3_REVIEW_EFFECT_PLAN_DOMAIN,
-            _v3_review_thaw(plan.bindings["payloads"]),
+        "payloads_sha256": _v4_review_sha256(
+            _V4_REVIEW_EFFECT_PLAN_DOMAIN,
+            _v4_review_thaw(plan.bindings["payloads"]),
         ),
     }
 
 
-def v3_review_effect_scopes(
-    plan: V3ReviewEffectPlan,
+def v4_review_effect_scopes(
+    plan: V4ReviewEffectPlan,
 ) -> dict[str, list[str]]:
-    if type(plan) is not V3ReviewEffectPlan:
-        raise _v3_review_error(
+    if type(plan) is not V4ReviewEffectPlan:
+        raise _v4_review_error(
             "REVIEW_EFFECT_PLAN_TYPE_INVALID",
             "scopes require the exact typed review plan",
         )
@@ -2451,7 +2450,7 @@ def v3_review_effect_scopes(
         {
             "repository_ids": list(plan.repository_ids),
             "node_ids": [
-                _v3_review_text(
+                _v4_review_text(
                     plan.bindings.get("node_id"), "node_id"
                 )
             ],
@@ -2473,14 +2472,14 @@ def v3_review_effect_scopes(
     )
 
 
-def _v3_review_load_bound_state(
-    plan: V3ReviewEffectPlan,
+def _v4_review_load_bound_state(
+    plan: V4ReviewEffectPlan,
 ) -> dict[str, object]:
     path = _ReviewPath(str(plan.bindings["state_path"]))
     try:
         state = _read_task_state_structural_snapshot(path)
     except Exception as exc:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_STATE_UNAVAILABLE",
             "review effect cannot load its bound task state",
             details={
@@ -2493,14 +2492,14 @@ def _v3_review_load_bound_state(
         mismatches.append("task_id")
     if state.get("revision") != plan.task_revision:
         mismatches.append("revision")
-    if state.get("workflow_ref") != _v3_review_thaw(
+    if state.get("workflow_ref") != _v4_review_thaw(
         plan.bindings["workflow_ref"]
     ):
         mismatches.append("workflow_ref")
     if _sha256_contract(state) != plan.bindings["state_sha256"]:
         mismatches.append("state_sha256")
     if mismatches:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_STATE_CHANGED",
             "task state changed after the review effect was planned",
             details={"fields": mismatches},
@@ -2508,17 +2507,17 @@ def _v3_review_load_bound_state(
     return state
 
 
-def _v3_review_verify_current_repositories(
-    plan: V3ReviewEffectPlan,
+def _v4_review_verify_current_repositories(
+    plan: V4ReviewEffectPlan,
 ) -> None:
     for record in plan.bindings["repositories"]:
         repository_id = str(record["repository_id"])
         working = _ReviewPath(str(record["working_path"]))
         filesystem = record["filesystem_capabilities"]
-        current = _v3_review_capture_fingerprint(
+        current = _v4_review_capture_fingerprint(
             repository_id,
             working,
-            _v3_review_thaw(filesystem),
+            _v4_review_thaw(filesystem),
         )
         planned = record.get("fingerprint")
         expected_sha = (
@@ -2527,34 +2526,34 @@ def _v3_review_verify_current_repositories(
             else record.get("fingerprint_sha256")
         )
         if current.get("sha256") != expected_sha:
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_REPOSITORY_CHANGED",
                 "repository changed after the review effect was planned",
                 details={"repository_id": repository_id},
             )
 
 
-def _v3_review_validate_dispatch_context(
-    plan: V3ReviewEffectPlan,
+def _v4_review_validate_dispatch_context(
+    plan: V4ReviewEffectPlan,
     context: object,
 ) -> ActionDispatchPlan:
     if type(context) is not WorkflowActionDispatchContext:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_TRANSACTION_PERMIT_REQUIRED",
             "review dispatch requires Transaction's active context",
         )
     verifier = globals().get(
-        "verify_active_v3_workflow_action_dispatch_context"
+        "verify_active_v4_workflow_action_dispatch_context"
     )
     if not callable(verifier):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_TRANSACTION_AUTHORITY_UNAVAILABLE",
             "review dispatch authority verifier is unavailable",
         )
     try:
         verifier(context)
     except Exception as exc:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_TRANSACTION_PERMIT_INACTIVE",
             "review dispatch context is forged, copied, replayed, or inactive",
             details={
@@ -2572,7 +2571,7 @@ def _v3_review_validate_dispatch_context(
             mismatches.append("execution_id")
         if transaction_plan.effect_id != plan.expected_effect_id:
             mismatches.append("effect_id")
-        if transaction_plan.safe_inputs != v3_review_effect_safe_inputs(
+        if transaction_plan.safe_inputs != v4_review_effect_safe_inputs(
             plan
         ):
             mismatches.append("safe_inputs")
@@ -2580,10 +2579,10 @@ def _v3_review_validate_dispatch_context(
         mismatches.append("effect_kind")
     if context.settlement != "synchronous-quiescence":
         mismatches.append("settlement")
-    if context.scopes != v3_review_effect_scopes(plan):
+    if context.scopes != v4_review_effect_scopes(plan):
         mismatches.append("scopes")
     if mismatches:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_TRANSACTION_PERMIT_MISMATCH",
             "review dispatch context differs from its immutable plan",
             details={"fields": sorted(set(mismatches))},
@@ -2592,27 +2591,27 @@ def _v3_review_validate_dispatch_context(
     return transaction_plan
 
 
-def _v3_review_validate_observe_context(
-    plan: V3ReviewEffectPlan,
+def _v4_review_validate_observe_context(
+    plan: V4ReviewEffectPlan,
     context: object,
 ) -> WorkflowActionObserveContext:
     if type(context) is not WorkflowActionObserveContext:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_OBSERVE_CONTEXT_REQUIRED",
             "review observation requires Transaction's observe-only context",
         )
     verifier = globals().get(
-        "verify_active_v3_workflow_action_observe_context"
+        "verify_active_v4_workflow_action_observe_context"
     )
     if not callable(verifier):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_TRANSACTION_AUTHORITY_UNAVAILABLE",
             "review observe authority verifier is unavailable",
         )
     try:
         facts = verifier(context)
     except Exception as exc:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_OBSERVE_CONTEXT_INACTIVE",
             "review observe context is forged, copied, replayed, or inactive",
             details={
@@ -2627,8 +2626,8 @@ def _v3_review_validate_observe_context(
             "task_id": plan.task_id,
             "execution_id": plan.execution_id,
             "effect_id": plan.expected_effect_id,
-            "safe_inputs": v3_review_effect_safe_inputs(plan),
-            "scopes": v3_review_effect_scopes(plan),
+            "safe_inputs": v4_review_effect_safe_inputs(plan),
+            "scopes": v4_review_effect_scopes(plan),
             "effect_kind": "filesystem",
             "settlement": "synchronous-quiescence",
         }
@@ -2636,7 +2635,7 @@ def _v3_review_validate_observe_context(
             if facts.get(field) != expected_value:
                 mismatches.append(field)
     if mismatches:
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_OBSERVE_CONTEXT_MISMATCH",
             "review observe context differs from its immutable plan",
             details={"fields": sorted(set(mismatches))},
@@ -2645,7 +2644,7 @@ def _v3_review_validate_observe_context(
 
 
 @_review_dataclass(frozen=True)
-class V3ReviewEffectObservation:
+class V4ReviewEffectObservation:
     action: str
     plan_sha256: str
     task_id: str
@@ -2657,14 +2656,14 @@ class V3ReviewEffectObservation:
     semantic_sha256: str
 
     def __post_init__(self) -> None:
-        result = _v3_review_public(dict(self.result))
+        result = _v4_review_public(dict(self.result))
         if not isinstance(result, dict):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_OBSERVATION_INVALID",
                 "review observation result must be an object",
             )
         core = {
-            "schema": _V3_REVIEW_EFFECT_OBSERVATION_SCHEMA,
+            "schema": _V4_REVIEW_EFFECT_OBSERVATION_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "task_id": self.task_id,
@@ -2675,27 +2674,27 @@ class V3ReviewEffectObservation:
             "result": result,
         }
         if (
-            _v3_review_sha256(
-                _V3_REVIEW_EFFECT_OBSERVATION_DOMAIN, core
+            _v4_review_sha256(
+                _V4_REVIEW_EFFECT_OBSERVATION_DOMAIN, core
             )
             != self.semantic_sha256
         ):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_OBSERVATION_DIGEST_MISMATCH",
                 "review observation digest differs from its result",
             )
-        object.__setattr__(self, "result", _v3_review_freeze(result))
+        object.__setattr__(self, "result", _v4_review_freeze(result))
 
 
-def _v3_review_build_observation(
-    plan: V3ReviewEffectPlan,
+def _v4_review_build_observation(
+    plan: V4ReviewEffectPlan,
     transaction_plan: ActionDispatchPlan,
     result: _ReviewMapping[str, object],
-) -> V3ReviewEffectObservation:
-    public = _v3_review_public(dict(result))
+) -> V4ReviewEffectObservation:
+    public = _v4_review_public(dict(result))
     assert isinstance(public, dict)
     core = {
-        "schema": _V3_REVIEW_EFFECT_OBSERVATION_SCHEMA,
+        "schema": _V4_REVIEW_EFFECT_OBSERVATION_SCHEMA,
         "action": plan.action,
         "plan_sha256": plan.semantic_sha256,
         "task_id": transaction_plan.task_id,
@@ -2705,7 +2704,7 @@ def _v3_review_build_observation(
         "attempt_id": transaction_plan.attempt_id,
         "result": public,
     }
-    return V3ReviewEffectObservation(
+    return V4ReviewEffectObservation(
         action=plan.action,
         plan_sha256=plan.semantic_sha256,
         task_id=transaction_plan.task_id,
@@ -2714,39 +2713,39 @@ def _v3_review_build_observation(
         claim_id=transaction_plan.claim_id,
         attempt_id=transaction_plan.attempt_id,
         result=public,
-        semantic_sha256=_v3_review_sha256(
-            _V3_REVIEW_EFFECT_OBSERVATION_DOMAIN, core
+        semantic_sha256=_v4_review_sha256(
+            _V4_REVIEW_EFFECT_OBSERVATION_DOMAIN, core
         ),
     )
 
 
-def _v3_review_result(plan: V3ReviewEffectPlan) -> dict[str, object]:
+def _v4_review_result(plan: V4ReviewEffectPlan) -> dict[str, object]:
     if plan.action == "record-test":
         return {
-            "test_record": _v3_review_thaw(
+            "test_record": _v4_review_thaw(
                 plan.bindings["test_record"]
             ),
-            "payloads_sha256": _v3_review_sha256(
-                _V3_REVIEW_EFFECT_PLAN_DOMAIN,
-                _v3_review_thaw(plan.bindings["payloads"]),
+            "payloads_sha256": _v4_review_sha256(
+                _V4_REVIEW_EFFECT_PLAN_DOMAIN,
+                _v4_review_thaw(plan.bindings["payloads"]),
             ),
         }
     return {
-        "snapshot": _v3_review_thaw(plan.bindings["snapshot"]),
-        "artifact": _v3_review_thaw(plan.bindings["artifact"]),
-        "payloads_sha256": _v3_review_sha256(
-            _V3_REVIEW_EFFECT_PLAN_DOMAIN,
-            _v3_review_thaw(plan.bindings["payloads"]),
+        "snapshot": _v4_review_thaw(plan.bindings["snapshot"]),
+        "artifact": _v4_review_thaw(plan.bindings["artifact"]),
+        "payloads_sha256": _v4_review_sha256(
+            _V4_REVIEW_EFFECT_PLAN_DOMAIN,
+            _v4_review_thaw(plan.bindings["payloads"]),
         ),
     }
 
 
-def _v3_review_verify_payloads(plan: V3ReviewEffectPlan) -> None:
+def _v4_review_verify_payloads(plan: V4ReviewEffectPlan) -> None:
     for descriptor in plan.bindings["payloads"]:
         path = _ReviewPath(str(descriptor["path"]))
         unresolved = _rollback_evidence_for(path)
         if unresolved:
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "ATOMIC_RECOVERY_REQUIRED",
                 "review payload has unresolved rollback evidence",
                 details={
@@ -2759,7 +2758,7 @@ def _v3_review_verify_payloads(plan: V3ReviewEffectPlan) -> None:
         try:
             source = path.read_bytes()
         except OSError as exc:
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_RECEIPT_MISSING",
                 "review effect payload is missing or unreadable",
                 details={"path": str(path), "error": str(exc)},
@@ -2769,7 +2768,7 @@ def _v3_review_verify_payloads(plan: V3ReviewEffectPlan) -> None:
             or _review_hashlib.sha256(source).hexdigest()
             != descriptor["sha256"]
         ):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_RECEIPT_MISMATCH",
                 "review effect payload differs from its planned bytes",
                 details={"path": str(path)},
@@ -2778,7 +2777,7 @@ def _v3_review_verify_payloads(plan: V3ReviewEffectPlan) -> None:
         record = plan.bindings["test_record"]
         for repository_id, reference in record["fingerprints"].items():
             _load_recorded_fingerprint(
-                _v3_review_thaw(reference),
+                _v4_review_thaw(reference),
                 f"test-fingerprint:{record['name']}:{repository_id}",
             )
         output = record.get("output")
@@ -2794,34 +2793,34 @@ def _v3_review_verify_payloads(plan: V3ReviewEffectPlan) -> None:
                 current_size != output["size"]
                 or current_sha != output["sha256"]
             ):
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_OUTPUT_CHANGED",
                     "test output changed after review planning",
                     details={"path": str(path)},
                 )
     else:
-        snapshot = _v3_review_thaw(plan.bindings["snapshot"])
+        snapshot = _v4_review_thaw(plan.bindings["snapshot"])
         assert isinstance(snapshot, dict)
         error = _review_snapshot_integrity_error(snapshot)
         if error:
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_SNAPSHOT_INVALID",
                 error,
                 details={"snapshot_id": snapshot.get("snapshot_id")},
             )
 
 
-def dispatch_v3_review_effect(
-    plan: V3ReviewEffectPlan,
+def dispatch_v4_review_effect(
+    plan: V4ReviewEffectPlan,
     context: object,
-) -> V3ReviewEffectObservation:
+) -> V4ReviewEffectObservation:
     """Write exact planned bytes once; leave partial bytes for reconciliation."""
 
-    transaction_plan = _v3_review_validate_dispatch_context(
+    transaction_plan = _v4_review_validate_dispatch_context(
         plan, context
     )
-    _v3_review_load_bound_state(plan)
-    _v3_review_verify_current_repositories(plan)
+    _v4_review_load_bound_state(plan)
+    _v4_review_verify_current_repositories(plan)
     for descriptor in plan.bindings["payloads"]:
         path = _ReviewPath(str(descriptor["path"]))
         content = plan.payloads[str(path)]
@@ -2829,13 +2828,13 @@ def dispatch_v3_review_effect(
             try:
                 existing = path.read_bytes()
             except OSError as exc:
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_PAYLOAD_UNREADABLE",
                     "existing review payload cannot be read",
                     details={"path": str(path), "error": str(exc)},
                 ) from exc
             if existing != content:
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_PAYLOAD_COLLISION",
                     "digest-addressed review target contains other bytes",
                     details={"path": str(path)},
@@ -2846,15 +2845,15 @@ def dispatch_v3_review_effect(
             _set_private_permissions(path, 0o600)
             with path.open("rb+") as handle:
                 _review_os.fsync(handle.fileno())
-    _v3_review_verify_payloads(plan)
-    _v3_review_verify_current_repositories(plan)
-    return _v3_review_build_observation(
-        plan, transaction_plan, _v3_review_result(plan)
+    _v4_review_verify_payloads(plan)
+    _v4_review_verify_current_repositories(plan)
+    return _v4_review_build_observation(
+        plan, transaction_plan, _v4_review_result(plan)
     )
 
 
 @_review_dataclass(frozen=True)
-class V3ReviewEffectReceipt:
+class V4ReviewEffectReceipt:
     action: str
     plan_sha256: str
     claim_id: str
@@ -2869,8 +2868,8 @@ class V3ReviewEffectReceipt:
     semantic_sha256: str
 
     def __post_init__(self) -> None:
-        _v3_review_text(self.claim_id, "claim_id")
-        _v3_review_text(self.attempt_id, "attempt_id")
+        _v4_review_text(self.claim_id, "claim_id")
+        _v4_review_text(self.attempt_id, "attempt_id")
         for field_name in (
             "journal_record_sha256",
             "index_record_sha256",
@@ -2880,17 +2879,17 @@ class V3ReviewEffectReceipt:
             value = getattr(self, field_name)
             if (
                 not isinstance(value, str)
-                or not _V3_REVIEW_SHA256.fullmatch(value)
+                or not _V4_REVIEW_SHA256.fullmatch(value)
             ):
-                raise _v3_review_error(
+                raise _v4_review_error(
                     "REVIEW_EFFECT_RECEIPT_BINDING_INVALID",
                     f"{field_name} must be lowercase SHA-256",
                 )
-        repository_ids = _v3_review_sorted_ids(self.repository_ids)
-        result = _v3_review_public(dict(self.result))
+        repository_ids = _v4_review_sorted_ids(self.repository_ids)
+        result = _v4_review_public(dict(self.result))
         assert isinstance(result, dict)
         core = {
-            "schema": _V3_REVIEW_EFFECT_RECEIPT_SCHEMA,
+            "schema": _V4_REVIEW_EFFECT_RECEIPT_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "claim_id": self.claim_id,
@@ -2908,21 +2907,21 @@ class V3ReviewEffectReceipt:
             "result": result,
         }
         if (
-            _v3_review_sha256(
-                _V3_REVIEW_EFFECT_RECEIPT_DOMAIN, core
+            _v4_review_sha256(
+                _V4_REVIEW_EFFECT_RECEIPT_DOMAIN, core
             )
             != self.semantic_sha256
         ):
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_RECEIPT_DIGEST_MISMATCH",
                 "review receipt digest differs from its result",
             )
         object.__setattr__(self, "repository_ids", repository_ids)
-        object.__setattr__(self, "result", _v3_review_freeze(result))
+        object.__setattr__(self, "result", _v4_review_freeze(result))
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema": _V3_REVIEW_EFFECT_RECEIPT_SCHEMA,
+            "schema": _V4_REVIEW_EFFECT_RECEIPT_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "claim_id": self.claim_id,
@@ -2937,23 +2936,23 @@ class V3ReviewEffectReceipt:
             ),
             "repository_ids": list(self.repository_ids),
             "recovered_lost_response": self.recovered_lost_response,
-            "result": _v3_review_thaw(self.result),
+            "result": _v4_review_thaw(self.result),
             "semantic_sha256": self.semantic_sha256,
         }
 
 
-def observe_v3_review_effect(
-    plan: V3ReviewEffectPlan,
+def observe_v4_review_effect(
+    plan: V4ReviewEffectPlan,
     context: object,
-    observation: V3ReviewEffectObservation | None = None,
-) -> V3ReviewEffectReceipt:
+    observation: V4ReviewEffectObservation | None = None,
+) -> V4ReviewEffectReceipt:
     """Observe only durable bytes and repositories; never write or redispatch."""
 
-    claim = _v3_review_validate_observe_context(plan, context)
-    _v3_review_load_bound_state(plan)
-    _v3_review_verify_payloads(plan)
-    _v3_review_verify_current_repositories(plan)
-    result = _v3_review_result(plan)
+    claim = _v4_review_validate_observe_context(plan, context)
+    _v4_review_load_bound_state(plan)
+    _v4_review_verify_payloads(plan)
+    _v4_review_verify_current_repositories(plan)
+    result = _v4_review_result(plan)
     if observation is not None:
         mismatches = []
         for field, expected in (
@@ -2967,16 +2966,16 @@ def observe_v3_review_effect(
         ):
             if getattr(observation, field, None) != expected:
                 mismatches.append(field)
-        if _v3_review_thaw(observation.result) != result:
+        if _v4_review_thaw(observation.result) != result:
             mismatches.append("result")
         if mismatches:
-            raise _v3_review_error(
+            raise _v4_review_error(
                 "REVIEW_EFFECT_OBSERVATION_MISMATCH",
                 "dispatch observation differs from durable review evidence",
                 details={"fields": sorted(set(mismatches))},
             )
     core = {
-        "schema": _V3_REVIEW_EFFECT_RECEIPT_SCHEMA,
+        "schema": _V4_REVIEW_EFFECT_RECEIPT_SCHEMA,
         "action": plan.action,
         "plan_sha256": plan.semantic_sha256,
         "claim_id": claim.claim_id,
@@ -2993,7 +2992,7 @@ def observe_v3_review_effect(
         "recovered_lost_response": observation is None,
         "result": result,
     }
-    return V3ReviewEffectReceipt(
+    return V4ReviewEffectReceipt(
         action=plan.action,
         plan_sha256=plan.semantic_sha256,
         claim_id=claim.claim_id,
@@ -3009,23 +3008,23 @@ def observe_v3_review_effect(
         repository_ids=plan.repository_ids,
         recovered_lost_response=observation is None,
         result=result,
-        semantic_sha256=_v3_review_sha256(
-            _V3_REVIEW_EFFECT_RECEIPT_DOMAIN, core
+        semantic_sha256=_v4_review_sha256(
+            _V4_REVIEW_EFFECT_RECEIPT_DOMAIN, core
         ),
     )
 
 
-def v3_review_snapshot_command_v1(
+def v4_review_snapshot_command_v1(
     args: argparse.Namespace,
     task_dir: _ReviewPath,
     current: dict[str, Any],
 ) -> dict[str, Any]:
     try:
-        edge = resolve_v3_node_action_edge(
+        edge = resolve_v4_node_action_edge(
             current, "review-snapshot"
         )
         completion_edge = (
-            resolve_v3_workflow_action_completion_edge(
+            resolve_v4_workflow_action_completion_edge(
                 current,
                 edge,
                 public_command="review-snapshot",
@@ -3051,14 +3050,14 @@ def v3_review_snapshot_command_v1(
     )
     canonical_event = edge.get("canonical_event")
     if not isinstance(canonical_event, str):
-        raise _v3_review_error(
+        raise _v4_review_error(
             "REVIEW_EFFECT_CATALOG_MISMATCH",
             "review-snapshot action has no canonical event",
         )
     authorization = _manager_workflow_action_authorization_v1(
         current, event_type=canonical_event
     )
-    execution_id = v3_review_execution_id(
+    execution_id = v4_review_execution_id(
         current,
         action="review-snapshot",
         request_binding={
@@ -3069,14 +3068,14 @@ def v3_review_snapshot_command_v1(
             ),
         },
     )
-    plan = plan_v3_review_snapshot_effect(
+    plan = plan_v4_review_snapshot_effect(
         state_value=current,
         data_root=resolve_data_dir(args.data_dir),
         task_dir=task_dir,
         execution_id=execution_id,
         repository_ids=repository_ids,
     )
-    result = _v3_review_run_transaction(
+    result = _v4_review_run_transaction(
         args,
         task_dir,
         current,
@@ -3087,7 +3086,7 @@ def v3_review_snapshot_command_v1(
         selector=None,
     )
     assert isinstance(result.state, dict)
-    snapshot = _v3_review_thaw(plan.bindings["snapshot"])
+    snapshot = _v4_review_thaw(plan.bindings["snapshot"])
     assert isinstance(snapshot, dict)
     return _result(
         "review-snapshot",
@@ -3103,190 +3102,13 @@ def command_review_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         args.data_dir,
         args.expected_revision,
         manager_action_id="evidence.review-snapshot.record",
-        short_v3_effect_boundary=True,
+        short_v4_effect_boundary=True,
     ) as (task_dir, current):
         _assert_flow(current, "full", "review-snapshot")
-        _assert_status(current, {"VERIFYING", "REVIEWING"}, "review-snapshot")
-        if current.get("schema_version") == V3_TASK_SCHEMA_VERSION:
-            return v3_review_snapshot_command_v1(
-                args, task_dir, current
-            )
-        automatic_state_transition = (
-            _uses_confirmation_contract(current)
-            and current.get("status") == "VERIFYING"
+        _assert_status(
+            current, {"VERIFYING", "REVIEWING"}, "review-snapshot"
         )
-        if automatic_state_transition:
-            _require_automatic_action(
-                _flow(current),
-                "review-snapshot",
-                "VERIFYING",
-                "REVIEWING",
-            )
-        _require_current_workspace_indexes(current)
-        _require_workspace_ready(current)
-        route_value = (current.get("route") or {}).get("value")
-        plan_kind = "direct-contract" if route_value == "direct" else "openspec-plan"
-        _require_current_plan_gate(current, plan_kind)
-        state_value = _copy_state(current)
-        selected = _repo_by_selector(state_value, args.repo)
-        if len(selected) != len(state_value["repositories"]):
-            raise FlowError("INCOMPLETE_REVIEW", "review-snapshot must include every configured repository")
-        initial_fingerprints = {
-            repo["id"]: _fingerprint_repo(_working_path(repo))
-            for repo in selected
-        }
-        passing, reason = _latest_passing_test_is_current(
-            current,
-            fingerprints=initial_fingerprints,
-        )
-        if not passing:
-            raise FlowError("CURRENT_TEST_REQUIRED", reason or "a current passing test is required")
-        snapshot_id = f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
-        snapshot_root = task_dir / "reviews" / snapshot_id
-        try:
-            repositories = [
-                _write_review_repo(
-                    snapshot_root,
-                    repo,
-                    task_dir=task_dir,
-                    initial_fingerprint=initial_fingerprints[repo["id"]],
-                )
-                for repo in selected
-            ]
-            for repository in repositories:
-                current_fingerprint = _fingerprint_repo(
-                    Path(repository["working_path"])
-                )
-                recorded_fingerprint = repository.get(
-                    "fingerprint"
-                ) or {}
-                if current_fingerprint.get(
-                    "sha256"
-                ) != recorded_fingerprint.get("sha256"):
-                    raise FlowError(
-                        "REVIEW_SNAPSHOT_CHANGED",
-                        (
-                            "a repository changed after its section of the "
-                            "multi-repository snapshot was captured"
-                        ),
-                        details={
-                            "repository_id": repository[
-                                "repository_id"
-                            ],
-                            "recorded_sha256": recorded_fingerprint.get(
-                                "sha256"
-                            ),
-                            "current_sha256": current_fingerprint.get(
-                                "sha256"
-                            ),
-                        },
-                    )
-            snapshot = {
-                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
-                "snapshot_id": snapshot_id,
-                "created_at": utc_now(),
-                "repository_ids": [repo["id"] for repo in selected],
-                "repositories": repositories,
-            }
-            manifest_path = snapshot_root / "manifest.json"
-            _atomic_write_json(manifest_path, snapshot)
-            snapshot["manifest_path"] = str(manifest_path)
-            snapshot["manifest_path_identity"] = (
-                _serializable_path_identity(manifest_path)
-            )
-            snapshot["sha256"] = _sha256_file(manifest_path)
-            integrity_error = _review_snapshot_integrity_error(
-                snapshot
-            )
-            if integrity_error:
-                raise FlowError(
-                    "REVIEW_SNAPSHOT_INVALID",
-                    integrity_error,
-                    details={"snapshot_id": snapshot_id},
-                )
-        except BaseException as exc:
-            if snapshot_root.exists():
-                try:
-                    shutil.rmtree(snapshot_root)
-                except OSError as cleanup_error:
-                    raise FlowError(
-                        "REVIEW_SNAPSHOT_CLEANUP_FAILED",
-                        (
-                            "an incomplete review snapshot could not be "
-                            "removed and was not recorded as usable"
-                        ),
-                        details={
-                            "snapshot_root": str(snapshot_root),
-                            "error": str(cleanup_error),
-                            "cause": f"{type(exc).__name__}: {exc}",
-                        },
-                    ) from cleanup_error
-            raise
-        state_value["review_snapshots"].append(snapshot)
-        state_value["artifacts"].append(
-            {
-                "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
-                "artifact_id": str(uuid.uuid4()),
-                "kind": "review-snapshot",
-                "path": str(manifest_path),
-                "path_identity": _serializable_path_identity(manifest_path),
-                "sha256": snapshot["sha256"],
-                "size": manifest_path.stat().st_size,
-                "recorded_at": utc_now(),
-                "metadata": {
-                    "snapshot_id": snapshot_id,
-                    "evidence_contract_version": EVIDENCE_CONTRACT_VERSION,
-                    "capability_profile_sha256": {
-                        item["repository_id"]: item[
-                            "capability_profile_sha256"
-                        ]
-                        for item in repositories
-                    },
-                },
-            }
-        )
-        state_value["status"] = "REVIEWING"
-        _commit_state(
-            current,
-            state_value,
-            task_dir,
-            "review_snapshot_recorded",
-            {
-                "snapshot_id": snapshot_id,
-                "sha256": snapshot["sha256"],
-                "repository_ids": snapshot["repository_ids"],
-                "confirmation_mode": (
-                    "automatic"
-                    if automatic_state_transition
-                    else (
-                        "not-applicable"
-                        if _uses_confirmation_contract(current)
-                        else "legacy"
-                    )
-                ),
-            },
-            additional_events=(
-                [
-                    (
-                        "state_transitioned",
-                        {
-                            "from": "VERIFYING",
-                            "to": "REVIEWING",
-                            "action": "review-snapshot",
-                            "confirmation_mode": "automatic",
-                        },
-                    )
-                ]
-                if automatic_state_transition
-                else None
-            ),
-        )
-    return _result(
-        "review-snapshot",
-        state_value,
-        snapshot=_review_snapshot_receipt(snapshot),
-    )
-
+        return v4_review_snapshot_command_v1(args, task_dir, current)
 
 def _snapshot_file_error(
     path_value: Any,
@@ -3418,7 +3240,7 @@ TRANSITION_INTENT_NAMESPACE = "transition-intent-v1"
 
 def _uses_confirmation_contract(state_value: dict[str, Any]) -> bool:
     return (
-        int(state_value.get("schema_version", 1)) >= TASK_SCHEMA_VERSION
+        state_value.get("schema_version") == V4_TASK_SCHEMA_VERSION
         and state_value.get("confirmation_contract_version")
         == CONFIRMATION_CONTRACT_VERSION
     )
@@ -3431,17 +3253,15 @@ def _transition_confirmation_mode(
     *,
     action: str = "transition",
 ) -> str:
-    if not _uses_confirmation_contract(state_value):
-        return "legacy"
-    if target in TERMINAL_STATES:
-        return "explicit"
-    if (
-        action == "transition"
-        and (_flow(state_value), source, target)
-        in AUTOMATIC_TRANSITION_EDGES
-    ):
-        return "automatic"
-    return "explicit"
+    try:
+        return v4_workflow_confirmation_mode(
+            state_value,
+            source,
+            target,
+            action=action,
+        )
+    except TransitionEngineError as exc:
+        raise FlowError(exc.code, exc.message, details=exc.details) from exc
 
 
 def _transition_side_effects(
@@ -3700,25 +3520,25 @@ def _transition_guard(
         _require_review_gate(state_value)
 
 
-def _v3_command_effect_at(state_value: dict[str, Any]) -> str:
+def _v4_command_effect_at(state_value: dict[str, Any]) -> str:
     """Return a revision-bound timestamp stable across preview and apply."""
 
     value = state_value.get("updated_at") or state_value.get("created_at")
     if not isinstance(value, str) or not value:
         raise FlowError(
             "TASK_STATE_INVALID",
-            "schema-v3 movement requires a revision-bound task timestamp",
+            "schema-v4 movement requires a revision-bound task timestamp",
         )
     return value
 
 
-def _v3_transition_result(
+def _v4_transition_result(
     args: argparse.Namespace,
     task_dir: Path,
     current: dict[str, Any],
     target: str,
 ) -> dict[str, Any]:
-    """Execute transition without touching legacy topology or invalidations."""
+    """Execute a direct task-pinned V4 transition."""
 
     source = current["status"]
     if source == target:
@@ -3749,12 +3569,12 @@ def _v3_transition_result(
             "from_status": source,
             "reason": args.note,
             "details": [],
-            "at": _v3_command_effect_at(current),
+            "at": _v4_command_effect_at(current),
         }
     if target == "CANCELLED":
         state_records["cancelled"] = {
             "reason": args.note,
-            "at": _v3_command_effect_at(current),
+            "at": _v4_command_effect_at(current),
             "by": _actor(),
             "from_status": source,
         }
@@ -3789,10 +3609,10 @@ def _v3_transition_result(
                 ),
                 "details": live_risk_assessment["reasons"],
                 "assessment": live_risk_assessment,
-                "at": _v3_command_effect_at(current),
+                "at": _v4_command_effect_at(current),
             }
     try:
-        evaluation = v3_command_movement_evaluate_v1(
+        evaluation = v4_command_movement_evaluate_v1(
             current,
             target=effective_target,
             event_type=event_type,
@@ -3802,7 +3622,7 @@ def _v3_transition_result(
             confirm_intent=supplied_intent,
             preview=preview_only,
         )
-        preview = v3_command_movement_preview_v1(evaluation)
+        preview = v4_command_movement_preview_v1(evaluation)
         if preview_only:
             return _result(
                 "transition",
@@ -3844,7 +3664,7 @@ def _v3_transition_result(
                     ).get("sha256"),
                 }
             )
-        state_value = v3_command_movement_commit_v1(
+        state_value = v4_command_movement_commit_v1(
             current,
             evaluation,
             task_dir,
@@ -3893,7 +3713,6 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     target = args.to_option or args.to
     preview_only = bool(getattr(args, "preview", False))
-    supplied_intent = getattr(args, "confirm_intent", None)
     with _locked_state(
         task_id,
         args.data_dir,
@@ -3903,315 +3722,9 @@ def command_transition(args: argparse.Namespace) -> dict[str, Any]:
         ),
         manager_action_id="task.transition",
     ) as (task_dir, current):
-        if current.get("schema_version") == V3_TASK_SCHEMA_VERSION:
-            return _v3_transition_result(
-                args, task_dir, current, target
-            )
-        if target not in ALL_STATES:
-            raise FlowError(
-                "INVALID_ARGUMENT",
-                f"unknown target state: {target}",
-                details={"allowed": sorted(ALL_STATES)},
-            )
-        source = current["status"]
-        if source == target:
-            return _result("transition", current, unchanged=True, transition={"from": source, "to": target})
-        if source in TERMINAL_STATES:
-            raise FlowError("INVALID_TRANSITION", f"terminal task cannot transition from {source}")
-        if (
-            target == "PREFLIGHTED"
-            and (
-                source == "INTAKE"
-                or (
-                    source == "BLOCKED"
-                    and (current.get("blocked") or {}).get("phase")
-                    == "preflight"
-                )
-            )
-        ):
-            raise FlowError(
-                "PREFLIGHT_CONFIRMATION_REQUIRED",
-                (
-                    "initial and preflight-blocked transitions to "
-                    "PREFLIGHTED require an all-repository "
-                    "preflight --preview/--confirm-preview pair"
-                ),
-                details={"from": source, "to": target},
-            )
-        if target == "CANCELLED":
-            if not args.note:
-                raise FlowError("INVALID_ARGUMENT", "transition to CANCELLED requires --note; cancel is preferred")
-        elif target == "BLOCKED":
-            if not args.note:
-                raise FlowError("INVALID_ARGUMENT", "transition to BLOCKED requires --note")
-        elif source == "BLOCKED":
-            if (current.get("blocked") or {}).get("phase") == "lite-risk":
-                raise FlowError(
-                    "LITE_REPLACEMENT_REQUIRED",
-                    (
-                        "a lite task blocked by live risk cannot resume; "
-                        "cancel it and start a full-flow replacement"
-                    ),
-                    details={
-                        "required_flow": "full",
-                        "allowed": ["CANCELLED"],
-                    },
-                )
-            expected = (current.get("blocked") or {}).get("from_status")
-            if target != expected:
-                raise FlowError("INVALID_TRANSITION", f"blocked task can only resume to {expected}", details={"from": source, "to": target, "allowed": [expected]})
-        else:
-            lite = _flow(current) == "lite"
-            forward_edges = LITE_FORWARD_EDGES if lite else FORWARD_EDGES
-            rework_edges = LITE_REWORK_EDGES if lite else REWORK_EDGES
-            allowed = set(forward_edges.get(source, set())) | set(rework_edges.get(source, set()))
-            if target not in allowed:
-                raise FlowError("INVALID_TRANSITION", f"transition {source} -> {target} is not allowed", details={"from": source, "to": target, "allowed": sorted(allowed | {"BLOCKED", "CANCELLED"})})
-            if (
-                target == "PLANNING"
-                and source in {"IMPLEMENTING", "VERIFYING", "REVIEWING", "FINALIZING"}
-                and not args.note
-            ):
-                raise FlowError(
-                    "INVALID_ARGUMENT",
-                    "replanning requires --note",
-                    details={"from": source, "to": target},
-                )
-            if target == "INDEXED" and source in IMPACT_REASSESS_SOURCES and not args.note:
-                raise FlowError(
-                    "INVALID_ARGUMENT",
-                    "impact reassessment requires --note",
-                    details={"from": source, "to": target},
-                )
-            if (
-                lite
-                and target == "PREFLIGHTED"
-                and source in {"IMPLEMENTING", "VERIFYING"}
-                and not args.note
-            ):
-                raise FlowError(
-                    "INVALID_ARGUMENT",
-                    "reopening lite scope evidence requires --note",
-                    details={"from": source, "to": target},
-                )
-        live_risk_assessment: dict[str, Any] | None = None
-        transition_fingerprints: dict[str, dict[str, Any]] | None = None
-        if (
-            _uses_confirmation_contract(current)
-            and _flow(current) == "lite"
-            and target in {"VERIFYING", "DONE"}
-        ):
-            (
-                live_risk_assessment,
-                transition_fingerprints,
-            ) = _capture_lite_change_assessment(
-                current, args.data_dir
-            )
-            if live_risk_assessment["decision"] != "safe":
-                if preview_only:
-                    return _result(
-                        "transition",
-                        current,
-                        transition_applied=False,
-                        required_flow="full",
-                        assessment=live_risk_assessment,
-                        transition={"from": source, "to": target},
-                    )
-                state_value = _copy_state(current)
-                state_value["status"] = "BLOCKED"
-                state_value["blocked"] = {
-                    "phase": "lite-risk",
-                    "from_status": source,
-                    "required_flow": "full",
-                    "reason": (
-                        "live change risk requires replacement with full flow"
-                    ),
-                    "details": live_risk_assessment["reasons"],
-                    "assessment": live_risk_assessment,
-                    "at": utc_now(),
-                }
-                risk_payload = {
-                    "from": source,
-                    "attempted_target": target,
-                    "required_flow": "full",
-                    "assessment_sha256": live_risk_assessment["sha256"],
-                }
-                _commit_state(
-                    current,
-                    state_value,
-                    task_dir,
-                    "lite_risk_escalation_required",
-                    risk_payload,
-                    additional_events=[
-                        (
-                            "state_transitioned",
-                            {
-                                "from": source,
-                                "to": "BLOCKED",
-                                "reason": "lite-risk",
-                                "required_flow": "full",
-                            },
-                        )
-                    ],
-                )
-                return _result(
-                    "transition",
-                    state_value,
-                    transition_applied=False,
-                    required_flow="full",
-                    assessment=live_risk_assessment,
-                    transition={"from": source, "to": target},
-                )
-        confirmation_mode = _transition_confirmation_mode(
-            current, source, target, action="transition"
-        )
-        if (
-            _uses_confirmation_contract(current)
-            and transition_fingerprints is None
-            and target != "CANCELLED"
-            and (
-                confirmation_mode == "explicit"
-                or preview_only
-                or supplied_intent is not None
-            )
-        ):
-            transition_fingerprints = (
-                _current_repository_fingerprints(current)
-            )
-        _transition_guard(
-            current, target, fingerprints=transition_fingerprints
-        )
-        intent_preview: dict[str, Any] | None = None
-        if _uses_confirmation_contract(current):
-            if (
-                confirmation_mode == "explicit"
-                or preview_only
-                or supplied_intent is not None
-            ):
-                intent_preview = _transition_intent_preview(
-                    current,
-                    source,
-                    target,
-                    action="transition",
-                    action_parameters={"note": args.note},
-                    live_risk_assessment=live_risk_assessment,
-                    fingerprints=transition_fingerprints,
-                )
-                if preview_only:
-                    return _result(
-                        "transition",
-                        current,
-                        preview=intent_preview,
-                        transition={"from": source, "to": target},
-                    )
-            if (
-                intent_preview is not None
-                and intent_preview["requires_confirmation"]
-            ):
-                _assert_confirmation_intent(
-                    intent_preview, supplied_intent
-                )
-            elif (
-                intent_preview is not None
-                and supplied_intent is not None
-            ):
-                _assert_confirmation_intent(
-                    intent_preview, supplied_intent
-                )
-        elif preview_only or supplied_intent is not None:
-            raise FlowError(
-                "CONFIRMATION_CONTRACT_UNAVAILABLE",
-                "schema-v1 tasks keep their legacy direct-transition behavior",
-                details={"schema_version": current.get("schema_version")},
-            )
-        state_value = _copy_state(current)
-        state_value["status"] = target
-        if target == "PLANNING" and source != "BLOCKED":
-            state_value["planning_generation"] = int(
-                current.get("planning_generation", 0)
-            ) + 1
-        if target == "BLOCKED":
-            state_value["blocked"] = {"phase": "manual", "from_status": source, "reason": args.note, "details": [], "at": utc_now()}
-        elif source == "BLOCKED":
-            state_value["blocked"] = None
-        if target == "CANCELLED":
-            state_value["cancelled"] = {"reason": args.note, "at": utc_now(), "by": _actor()}
-        if target == "IMPLEMENTING" and source in {"VERIFYING", "REVIEWING", "FINALIZING"}:
-            state_value["review_snapshots"] = []
-            state_value["approvals"].pop("review", None)
-        if target == "PLANNING" and source != "BLOCKED":
-            state_value["review_snapshots"] = []
-            state_value["approvals"].pop("plan", None)
-            state_value["approvals"].pop("review", None)
-        if target == "INDEXED" and source in IMPACT_REASSESS_SOURCES:
-            state_value["impact_generation"] = int(
-                current.get("impact_generation", 0)
-            ) + 1
-            state_value["route"] = None
-            for gate in ("route", "workspace", "plan", "review"):
-                state_value["approvals"].pop(gate, None)
-            state_value["review_snapshots"] = []
-            reassessed_at = utc_now()
-            for repo in state_value.get("repositories", []):
-                previous_workspace = repo.get("workspace")
-                if previous_workspace:
-                    history = repo.setdefault("workspace_history", [])
-                    history.append(
-                        {
-                            **previous_workspace,
-                            "workspace_index": repo.get("workspace_index"),
-                            "retired_at": reassessed_at,
-                            "retired_reason": args.note,
-                        }
-                    )
-                repo["workspace"] = None
-                repo["workspace_index"] = None
-            previous_generation = int(
-                (state_value.get("workspace") or {}).get("generation", 0)
-            )
-            state_value["workspace"] = {
-                "strategy": "worktree",
-                "ready": False,
-                "generation": previous_generation + 1,
-                "plan": None,
-                "reassessed_at": reassessed_at,
-            }
-        confirmation = (
-            {
-                "intent_id": intent_preview["intent_id"],
-                "confirmation_mode": intent_preview[
-                    "confirmation_mode"
-                ],
-                "evidence_sha256": intent_preview["evidence_sha256"],
-            }
-            if intent_preview is not None
-            else {"confirmation_mode": confirmation_mode}
-        )
-        _commit_state(
-            current,
-            state_value,
-            task_dir,
-            "state_transitioned",
-            {
-                "from": source,
-                "to": target,
-                "note": args.note,
-                **confirmation,
-            },
-        )
-    return _result(
-        "transition",
-        state_value,
-        transition={
-            "from": source,
-            "to": target,
-            "note": args.note,
-            **confirmation,
-        },
-    )
+        return _v4_transition_result(args, task_dir, current, target)
 
-
-def _v3_cancel_result(
+def _v4_cancel_result(
     args: argparse.Namespace,
     task_dir: Path,
     current: dict[str, Any],
@@ -4230,7 +3743,7 @@ def _v3_cancel_result(
     supplied_intent = getattr(args, "confirm_intent", None)
     cancelled = {
         "reason": args.reason,
-        "at": _v3_command_effect_at(current),
+        "at": _v4_command_effect_at(current),
         "by": _actor(),
         "from_status": source,
     }
@@ -4241,7 +3754,7 @@ def _v3_cancel_result(
         "note": args.reason,
     }
     try:
-        evaluation = v3_command_movement_evaluate_v1(
+        evaluation = v4_command_movement_evaluate_v1(
             current,
             target="CANCELLED",
             event_type="task_cancelled",
@@ -4251,7 +3764,7 @@ def _v3_cancel_result(
             confirm_intent=supplied_intent,
             preview=preview_only,
         )
-        preview = v3_command_movement_preview_v1(evaluation)
+        preview = v4_command_movement_preview_v1(evaluation)
         if preview_only:
             return _result(
                 "cancel",
@@ -4264,7 +3777,7 @@ def _v3_cancel_result(
             "confirmation_mode": preview["confirmation_mode"],
             "evidence_sha256": preview["evidence_sha256"],
         }
-        state_value = v3_command_movement_commit_v1(
+        state_value = v4_command_movement_commit_v1(
             current,
             evaluation,
             task_dir,
@@ -4298,7 +3811,6 @@ def _v3_cancel_result(
 def command_cancel(args: argparse.Namespace) -> dict[str, Any]:
     task_id = _task_arg(args)
     preview_only = bool(getattr(args, "preview", False))
-    supplied_intent = getattr(args, "confirm_intent", None)
     with _locked_state(
         task_id,
         args.data_dir,
@@ -4308,72 +3820,4 @@ def command_cancel(args: argparse.Namespace) -> dict[str, Any]:
         ),
         manager_action_id="task.cancel",
     ) as (task_dir, current):
-        if current.get("schema_version") == V3_TASK_SCHEMA_VERSION:
-            return _v3_cancel_result(args, task_dir, current)
-        if current.get("status") == "CANCELLED":
-            return _result("cancel", current, unchanged=True, cancelled=current.get("cancelled"))
-        if current.get("status") == "DONE":
-            raise FlowError("INVALID_STATE", "completed task cannot be cancelled")
-        source = current["status"]
-        intent_preview: dict[str, Any] | None = None
-        if _uses_confirmation_contract(current):
-            intent_preview = _transition_intent_preview(
-                current,
-                source,
-                "CANCELLED",
-                action="cancel",
-                action_parameters={"reason": args.reason},
-            )
-            if preview_only:
-                return _result(
-                    "cancel",
-                    current,
-                    preview=intent_preview,
-                    cancelled=None,
-                )
-            _assert_confirmation_intent(intent_preview, supplied_intent)
-        elif preview_only or supplied_intent is not None:
-            raise FlowError(
-                "CONFIRMATION_CONTRACT_UNAVAILABLE",
-                "schema-v1 tasks keep their legacy direct-cancel behavior",
-                details={"schema_version": current.get("schema_version")},
-            )
-        state_value = _copy_state(current)
-        state_value["status"] = "CANCELLED"
-        state_value["cancelled"] = {"reason": args.reason, "at": utc_now(), "by": _actor(), "from_status": source}
-        confirmation = (
-            {
-                "intent_id": intent_preview["intent_id"],
-                "confirmation_mode": "explicit",
-                "evidence_sha256": intent_preview["evidence_sha256"],
-            }
-            if intent_preview is not None
-            else {"confirmation_mode": "legacy"}
-        )
-        _commit_state(
-            current,
-            state_value,
-            task_dir,
-            "task_cancelled",
-            {"from": source, "reason": args.reason, **confirmation},
-            additional_events=(
-                [
-                    (
-                        "state_transitioned",
-                        {
-                            "from": source,
-                            "to": "CANCELLED",
-                            **confirmation,
-                        },
-                    )
-                ]
-                if intent_preview is not None
-                else None
-            ),
-        )
-    return _result(
-        "cancel",
-        state_value,
-        cancelled=state_value["cancelled"],
-        confirmation=confirmation,
-    )
+        return _v4_cancel_result(args, task_dir, current)

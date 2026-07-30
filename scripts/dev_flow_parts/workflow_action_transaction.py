@@ -18,56 +18,56 @@ from typing import Mapping as _WorkflowTxMapping
 
 _WORKFLOW_TX_SHA256_RE = _workflow_tx_re.compile(r"^[0-9a-f]{64}$")
 _WORKFLOW_TX_EFFECT_PLAN_DOMAIN = (
-    b"dev-flow-v3-workflow-action-effect-plan-v1\x00"
+    b"dev-flow-v4-workflow-action-effect-plan-v1\x00"
 )
 _WORKFLOW_TX_OPERATION_DOMAIN = (
-    b"dev-flow-v3-workflow-action-operation-v1\x00"
+    b"dev-flow-v4-workflow-action-operation-v1\x00"
 )
 _WORKFLOW_TX_SEMANTIC_OPERATION_DOMAIN = (
-    b"dev-flow-v3-workflow-action-semantic-operation-v1\x00"
+    b"dev-flow-v4-workflow-action-semantic-operation-v1\x00"
 )
-_WORKFLOW_TX_REQUEST_DOMAIN = b"dev-flow-v3-workflow-action-request-v1\x00"
+_WORKFLOW_TX_REQUEST_DOMAIN = b"dev-flow-v4-workflow-action-request-v1\x00"
 _WORKFLOW_TX_CONFIRMATION_DOMAIN = (
-    b"dev-flow-v3-workflow-action-confirmation-v1\x00"
+    b"dev-flow-v4-workflow-action-confirmation-v1\x00"
 )
 _WORKFLOW_TX_GUARD_DOMAIN = (
-    b"dev-flow-v3-workflow-action-guard-projection-v1\x00"
+    b"dev-flow-v4-workflow-action-guard-projection-v1\x00"
 )
 _WORKFLOW_TX_EVIDENCE_DOMAIN = (
-    b"dev-flow-v3-workflow-action-evidence-v1\x00"
+    b"dev-flow-v4-workflow-action-evidence-v1\x00"
 )
 _WORKFLOW_TX_APPROVAL_DOMAIN = (
-    b"dev-flow-v3-workflow-action-approval-v1\x00"
+    b"dev-flow-v4-workflow-action-approval-v1\x00"
 )
 _WORKFLOW_TX_POSTCONDITION_DOMAIN = (
-    b"dev-flow-v3-workflow-action-postcondition-v1\x00"
+    b"dev-flow-v4-workflow-action-postcondition-v1\x00"
 )
 _WORKFLOW_TX_VERIFIER_DOMAIN = (
-    b"dev-flow-v3-workflow-action-verifier-before-v1\x00"
+    b"dev-flow-v4-workflow-action-verifier-before-v1\x00"
 )
 _WORKFLOW_TX_IDEMPOTENCY_DOMAIN = (
-    b"dev-flow-v3-workflow-action-effect-idempotency-v1\x00"
+    b"dev-flow-v4-workflow-action-effect-idempotency-v1\x00"
 )
 _WORKFLOW_TX_EFFECT_RECEIPT_DOMAIN = (
-    b"dev-flow-v3-workflow-action-effect-receipt-set-v1\x00"
+    b"dev-flow-v4-workflow-action-effect-receipt-set-v1\x00"
 )
 _WORKFLOW_TX_EVENT_DOMAIN = (
-    b"dev-flow-v3-workflow-action-authoritative-event-v1\x00"
+    b"dev-flow-v4-workflow-action-authoritative-event-v1\x00"
 )
 _WORKFLOW_TX_OUTBOX_DOMAIN = (
-    b"dev-flow-v3-workflow-action-authoritative-outbox-v1\x00"
+    b"dev-flow-v4-workflow-action-authoritative-outbox-v1\x00"
 )
 _WORKFLOW_TX_SCOPE_LOCK_DOMAIN = (
-    b"dev-flow-v3-workflow-action-scope-lock-v1\x00"
+    b"dev-flow-v4-workflow-action-scope-lock-v1\x00"
 )
 _WORKFLOW_TX_DISPATCH_PERMIT_DOMAIN = (
-    b"dev-flow-v3-workflow-action-dispatch-permit-v1\x00"
+    b"dev-flow-v4-workflow-action-dispatch-permit-v1\x00"
 )
 _WORKFLOW_TX_OBSERVE_CONTEXT_DOMAIN = (
-    b"dev-flow-v3-workflow-action-observe-context-v1\x00"
+    b"dev-flow-v4-workflow-action-observe-context-v1\x00"
 )
 _WORKFLOW_TX_RUNTIME_RELEASE_PERMIT_DOMAIN = (
-    b"dev-flow-v3-workflow-action-runtime-release-permit-v1\x00"
+    b"dev-flow-v4-workflow-action-runtime-release-permit-v1\x00"
 )
 _WORKFLOW_TX_RUNTIME_LAUNCH_PROTOCOL = "suspended-handshake/v1"
 _WORKFLOW_TX_RUNTIME_RELEASE_PROTOCOL = "suspended-release/v1"
@@ -1171,7 +1171,7 @@ def _workflow_tx_build_observe_callback_authority():
     lock = _workflow_tx_threading.Lock()
     active: dict[int, dict[str, object]] = {}
     active_stack = _workflow_tx_contextvars.ContextVar(
-        "dev_flow_v3_active_action_observers", default=()
+        "dev_flow_v4_active_action_observers", default=()
     )
 
     def invoke(
@@ -1267,7 +1267,7 @@ def _workflow_tx_build_dispatch_callback_authority():
     permits: dict[int, tuple[object, str]] = {}
     active: dict[int, tuple[object, object, str, int]] = {}
     active_stack = _workflow_tx_contextvars.ContextVar(
-        "dev_flow_v3_active_action_dispatches", default=()
+        "dev_flow_v4_active_action_dispatches", default=()
     )
 
     def issue(context: WorkflowActionDispatchContext) -> None:
@@ -1564,7 +1564,7 @@ def _workflow_tx_build_runtime_release_callback_authority():
     permits: dict[int, tuple[object, str]] = {}
     active: dict[int, tuple[object, object, str, int]] = {}
     active_stack = _workflow_tx_contextvars.ContextVar(
-        "dev_flow_v3_active_runtime_releases", default=()
+        "dev_flow_v4_active_runtime_releases", default=()
     )
 
     def issue(
@@ -1811,13 +1811,13 @@ def _workflow_tx_edge(
     invocation: WorkflowActionInvocation,
 ) -> _WorkflowTxMapping[str, object]:
     if invocation.kind == "node":
-        return resolve_v3_node_action_edge(
+        return resolve_v4_node_action_edge(
             state,
             invocation.public_command,
             selector=invocation.selector,
         )
     assert invocation.target is not None
-    return resolve_v3_movement_action_edge(
+    return resolve_v4_movement_action_edge(
         state,
         invocation.public_command,
         target=invocation.target,
@@ -1926,7 +1926,7 @@ def _workflow_tx_edge_roles(
     )
 
 
-def resolve_v3_workflow_action_completion_edge(
+def resolve_v4_workflow_action_completion_edge(
     state: _WorkflowTxMapping[str, object],
     authorization_action_edge: _WorkflowTxMapping[str, object],
     *,
@@ -2050,7 +2050,7 @@ def _workflow_tx_evaluate(
             }
             if not preview:
                 parameters["intent_id"] = invocation.confirm_intent
-            return evaluate_v3_workflow_movement(
+            return evaluate_v4_workflow_movement(
                 state,
                 desired,
                 event_type=canonical_event,
@@ -2072,13 +2072,13 @@ def _workflow_tx_evaluate(
         "receipt_context": receipt_context,
     }
     if invocation.kind == "node":
-        return evaluate_v3_node_action(
+        return evaluate_v4_node_action(
             state,
             selector=invocation.selector,
             **common,
         )
     assert invocation.target is not None
-    return evaluate_v3_movement_action(
+    return evaluate_v4_movement_action(
         state,
         target=invocation.target,
         edge_selector=invocation.edge_selector,
@@ -2310,7 +2310,7 @@ def _workflow_tx_bound_scopes(
     return normalize_scopes(scopes)
 
 
-def compile_v3_workflow_action_journal(
+def compile_v4_workflow_action_journal(
     state: _WorkflowTxMapping[str, object],
     edge: _WorkflowTxMapping[str, object],
     preview: TransitionEvaluation,
@@ -2969,7 +2969,7 @@ def _workflow_tx_commit_evaluation(
     """Commit through the typed action boundary and live manager gate."""
 
     if authorization.kind != "manager":
-        return commit_v3_workflow_action(
+        return commit_v4_workflow_action(
             old_state,
             evaluation,
             task_path,
@@ -3706,21 +3706,21 @@ def _workflow_tx_build_public_dispatch_api(
         )
 
     claim_ready.__name__ = (
-        "claim_ready_v3_workflow_action_effects"
+        "claim_ready_v4_workflow_action_effects"
     )
     dispatch_claimed.__name__ = (
-        "dispatch_claimed_v3_workflow_action_effect"
+        "dispatch_claimed_v4_workflow_action_effect"
     )
     verify_active.__name__ = (
-        "verify_active_v3_workflow_action_dispatch_context"
+        "verify_active_v4_workflow_action_dispatch_context"
     )
     return claim_ready, dispatch_claimed, verify_active
 
 
 (
-    claim_ready_v3_workflow_action_effects,
-    dispatch_claimed_v3_workflow_action_effect,
-    verify_active_v3_workflow_action_dispatch_context,
+    claim_ready_v4_workflow_action_effects,
+    dispatch_claimed_v4_workflow_action_effect,
+    verify_active_v4_workflow_action_dispatch_context,
 ) = _workflow_tx_build_public_dispatch_api(
     _WORKFLOW_TX_ISSUE_DISPATCH_PERMIT,
     _WORKFLOW_TX_INVOKE_DISPATCH_CALLBACK,
@@ -3736,18 +3736,18 @@ del _workflow_tx_build_dispatch_callback_authority
 
 (
     _WORKFLOW_TX_INVOKE_OBSERVE_CALLBACK,
-    verify_active_v3_workflow_action_observe_context,
+    verify_active_v4_workflow_action_observe_context,
 ) = _workflow_tx_build_observe_callback_authority()
 
 del _workflow_tx_build_observe_callback_authority
 
 
-def verify_active_v3_workflow_action_dispatch(
+def verify_active_v4_workflow_action_dispatch(
     context: WorkflowActionDispatchContext,
 ) -> dict[str, object]:
     """Compatibility alias for the canonical active-context verifier."""
 
-    return verify_active_v3_workflow_action_dispatch_context(context)
+    return verify_active_v4_workflow_action_dispatch_context(context)
 
 
 def _workflow_tx_validate_runtime_binding(
@@ -3783,7 +3783,7 @@ def _workflow_tx_validate_runtime_binding(
     return effect
 
 
-def bind_v3_workflow_action_runtime(
+def bind_v4_workflow_action_runtime(
     task_dir: str | object,
     binding: WorkflowActionRuntimeBinding,
     *,
@@ -4158,17 +4158,17 @@ def _workflow_tx_build_public_runtime_release_api(
         )
 
     release_runtime.__name__ = (
-        "release_v3_workflow_action_runtime"
+        "release_v4_workflow_action_runtime"
     )
     verify_active_release.__name__ = (
-        "verify_active_v3_workflow_action_runtime_release"
+        "verify_active_v4_workflow_action_runtime_release"
     )
     return release_runtime, verify_active_release
 
 
 (
-    release_v3_workflow_action_runtime,
-    verify_active_v3_workflow_action_runtime_release,
+    release_v4_workflow_action_runtime,
+    verify_active_v4_workflow_action_runtime_release,
 ) = _workflow_tx_build_public_runtime_release_api(
     _WORKFLOW_TX_ISSUE_RUNTIME_RELEASE_PERMIT,
     _WORKFLOW_TX_INVOKE_RUNTIME_RELEASE_CALLBACK,
@@ -4844,11 +4844,11 @@ def _workflow_tx_build_public_observe_api(
             failure_hook=failure_hook,
         )
 
-    observe_effect.__name__ = "observe_v3_workflow_action_effect"
+    observe_effect.__name__ = "observe_v4_workflow_action_effect"
     return observe_effect
 
 
-observe_v3_workflow_action_effect = (
+observe_v4_workflow_action_effect = (
     _workflow_tx_build_public_observe_api(
         _WORKFLOW_TX_INVOKE_OBSERVE_CALLBACK
     )
@@ -5126,7 +5126,7 @@ def _workflow_tx_fresh_evaluation(
     reconstructed = _workflow_tx_bindings_from_journal(
         journal, edge_roles.authorization_action_edge
     )
-    fresh_journal = compile_v3_workflow_action_journal(
+    fresh_journal = compile_v4_workflow_action_journal(
         current,
         edge_roles.authorization_action_edge,
         preview,
@@ -5385,7 +5385,7 @@ def _workflow_tx_finalize_verified(
                     context.record, fresh.edge_roles
                 )
             )
-            receipt = build_v3_workflow_action_receipt(
+            receipt = build_v4_workflow_action_receipt(
                 fresh.state,
                 fresh.preview,
                 task_path,
@@ -5549,7 +5549,7 @@ def _workflow_tx_finalize_verified(
         manager_secret = None
 
 
-def preview_v3_workflow_action_transaction(
+def preview_v4_workflow_action_transaction(
     state: _WorkflowTxMapping[str, object],
     invocation: WorkflowActionInvocation,
     *,
@@ -5611,7 +5611,7 @@ def preview_v3_workflow_action_transaction(
         return evaluate(authoritative)
 
 
-def execute_v3_workflow_action_transaction(
+def _execute_v4_workflow_action_transaction_core(
     state: dict[str, object],
     task_dir: str | object,
     invocation: WorkflowActionInvocation,
@@ -5645,7 +5645,7 @@ def execute_v3_workflow_action_transaction(
     control_action_id: str | None = None,
     failure_hook: _WorkflowTxCallable[[str], None] | None = None,
 ) -> WorkflowActionTransactionResult:
-    """Run the v3 Action Transaction with a short-lock effect boundary."""
+    """Run the v4 Action Transaction with a short-lock effect boundary."""
 
     if type(invocation) is not WorkflowActionInvocation:
         raise _workflow_tx_error(
@@ -5731,7 +5731,7 @@ def execute_v3_workflow_action_transaction(
                     manager_intent_state=manager_intent_state,
                     edge_roles=edge_roles,
                 )
-                committed = commit_v3_workflow_action(
+                committed = commit_v4_workflow_action(
                     authoritative_before, evaluation, task_path
                 )
                 return WorkflowActionTransactionResult(
@@ -5776,7 +5776,7 @@ def execute_v3_workflow_action_transaction(
                 str(authoritative_before["task_id"]),
                 failure_hook=failure_hook,
             )
-            journal = compile_v3_workflow_action_journal(
+            journal = compile_v4_workflow_action_journal(
                 authoritative_before,
                 edge,
                 preview,
@@ -5812,7 +5812,7 @@ def execute_v3_workflow_action_transaction(
         str, WorkflowActionRuntimeBinding
     ] = {}
     while True:
-        batch = claim_ready_v3_workflow_action_effects(
+        batch = claim_ready_v4_workflow_action_effects(
             task_path,
             execution_id,
             authorization=authorization,
@@ -5824,7 +5824,7 @@ def execute_v3_workflow_action_transaction(
             _workflow_tx_fail(failure_hook, "after-containment")
             for context in batch.contexts:
                 dispatched = (
-                    dispatch_claimed_v3_workflow_action_effect(
+                    dispatch_claimed_v4_workflow_action_effect(
                         task_path,
                         context,
                         authorization=authorization,
@@ -5834,7 +5834,7 @@ def execute_v3_workflow_action_transaction(
                 )
                 dispatcher_invocations += 1
                 if type(dispatched) is WorkflowActionRuntimeLaunch:
-                    bound = bind_v3_workflow_action_runtime(
+                    bound = bind_v4_workflow_action_runtime(
                         task_path,
                         dispatched.binding,
                         authorization=authorization,
@@ -5868,7 +5868,7 @@ def execute_v3_workflow_action_transaction(
                         failure_hook=failure_hook,
                     )
                 else:
-                    observe_v3_workflow_action_effect(
+                    observe_v4_workflow_action_effect(
                         task_path,
                         execution_id,
                         context.plan.effect_id,
@@ -5902,392 +5902,6 @@ def execute_v3_workflow_action_transaction(
             archive_path=None,
             dispatcher_invocations=dispatcher_invocations,
         )
-
-
-def _workflow_tx_legacy_execute_v3_workflow_action_transaction(
-    state: dict[str, object],
-    task_dir: str | object,
-    invocation: WorkflowActionInvocation,
-    *,
-    authorization: WorkflowActionAuthorization | None = None,
-    effect_binding: WorkflowActionEffectBinding | None = None,
-    execution_id: str | None = None,
-    dispatcher: (
-        _WorkflowTxCallable[
-            [WorkflowActionDispatchContext],
-            WorkflowActionEffectObservation,
-        ]
-        | None
-    ) = None,
-    failure_hook: _WorkflowTxCallable[[str], None] | None = None,
-) -> WorkflowActionTransactionResult:
-    """Execute one action while the caller retains all declared locks."""
-
-    if type(invocation) is not WorkflowActionInvocation:
-        raise _workflow_tx_error(
-            "WORKFLOW_ACTION_TRANSACTION_REQUEST_INVALID",
-            "transaction requires the exact invocation type",
-        )
-    task_path = _WorkflowTxPath(task_dir).resolve(strict=True)
-    authoritative_before = load_state(task_path / "state.json")
-    if _sha256_contract(authoritative_before) != _sha256_contract(state):
-        raise _workflow_tx_error(
-            "WORKFLOW_ACTION_TRANSACTION_STALE_STATE",
-            "supplied task state is not the current authoritative snapshot",
-        )
-    edge_roles = _workflow_tx_edge_roles(state, invocation)
-    edge = edge_roles.authorization_action_edge
-    catalog_effect = _workflow_tx_dispatch_effect(edge)
-    evaluation_state, manager_intent_state = (
-        _workflow_tx_evaluation_state(state, edge, authorization)
-    )
-    preview = _workflow_tx_evaluate(
-        evaluation_state,
-        invocation,
-        preview=True,
-        manager_intent_state=manager_intent_state,
-        edge_roles=edge_roles,
-    )
-    if catalog_effect is None:
-        if (
-            effect_binding is not None
-            or execution_id is not None
-            or dispatcher is not None
-        ):
-            raise _workflow_tx_error(
-                "WORKFLOW_ACTION_TRANSACTION_JOURNAL_FORBIDDEN",
-                "effect-free action cannot carry execution journal inputs",
-            )
-        evaluation = _workflow_tx_evaluate(
-            evaluation_state,
-            invocation,
-            preview=False,
-            manager_intent_state=manager_intent_state,
-            edge_roles=edge_roles,
-        )
-        committed = commit_v3_workflow_action(
-            state, evaluation, task_path
-        )
-        return WorkflowActionTransactionResult(
-            status="COMMITTED_EFFECT_FREE",
-            execution_id=None,
-            state=committed,
-            journal=None,
-            index=None,
-            archive_path=None,
-            dispatcher_invocations=0,
-        )
-    if (
-        type(authorization) is not WorkflowActionAuthorization
-        or type(effect_binding) is not WorkflowActionEffectBinding
-        or not isinstance(execution_id, str)
-        or not execution_id
-        or not callable(dispatcher)
-    ):
-        raise _workflow_tx_error(
-            "WORKFLOW_ACTION_TRANSACTION_INPUT_REQUIRED",
-            "side-effect action requires authorization, effect binding, "
-            "execution identity, and dispatcher",
-        )
-    if invocation.confirm_intent != preview.intent.get("intent_id"):
-        raise _workflow_tx_error(
-            "WORKFLOW_ACTION_TRANSACTION_CONFIRMATION_MISMATCH",
-            "side-effect transaction must bind the current preview intent",
-        )
-    manager_secret = _workflow_tx_reauthenticate(authorization)
-    store = ActionExecutionStore(task_path)
-    dispatcher_invocations = 0
-    try:
-        _workflow_tx_fail(failure_hook, "before-prepare")
-        initialized = store.initialize_index(
-            str(state["task_id"]), failure_hook=failure_hook
-        )
-        journal = compile_v3_workflow_action_journal(
-            state,
-            edge,
-            preview,
-            invocation,
-            authorization,
-            effect_binding,
-            execution_id=execution_id,
-            manager_secret=manager_secret,
-        )
-        context = store.persist_initial(
-            journal,
-            expected_index=cas_token(initialized.index),
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-prepare")
-        assert context.record is not None
-        claim_id = "claim-" + _workflow_tx_secrets.token_hex(16)
-        plan = store.claim_for_dispatch(
-            execution_id,
-            effect_binding.effect_id,
-            claim_id,
-            expected_index=cas_token(context.index),
-            expected_journal=cas_token(context.record),
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-claim")
-        context = store.read_promoted_context(
-            execution_id,
-            expected_index=CASToken(
-                plan.index_revision, plan.index_record_sha256
-            ),
-            expected_journal=CASToken(
-                plan.journal_revision, plan.journal_record_sha256
-            ),
-            manager_secret=manager_secret,
-        )
-        assert context.record is not None
-        containment = new_containment(
-            context.record,
-            effect_binding.effect_id,
-            index=context.index,
-            expected_index=cas_token(context.index),
-            manager_secret=manager_secret,
-        )
-        containment_result = store.persist_containment(
-            containment,
-            expected_index=cas_token(context.index),
-            expected_journal=cas_token(context.record),
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-containment")
-        dispatch_context = WorkflowActionDispatchContext(
-            plan=plan,
-            effect_kind=effect_binding.kind,
-            settlement="synchronous-quiescence",
-            scopes=_workflow_tx_copy.deepcopy(
-                dict(effect_binding.scopes)
-            ),
-            catalog_contract_sha256=semantic_sha256(
-                _WORKFLOW_TX_EFFECT_PLAN_DOMAIN,
-                _workflow_transition_public(catalog_effect),
-            ),
-        )
-        dispatcher_invocations += 1
-        observation = dispatcher(dispatch_context)
-        _workflow_tx_fail(failure_hook, "after-dispatch")
-        observation = _workflow_tx_validate_observation(
-            observation, plan
-        )
-        running = advance_effect_phase(
-            context.record,
-            effect_binding.effect_id,
-            "RUNNING",
-            manager_secret=manager_secret,
-            containment_record_sha256=str(
-                containment_result.record["record_sha256"]
-            ),
-        )
-        context = _workflow_tx_persist_update(
-            store,
-            context,
-            running,
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-running")
-        assert containment_result.record is not None
-        quiesced_containment = advance_containment(
-            containment_result.record,
-            "QUIESCED",
-            receipt_sha256=observation.receipt_sha256,
-        )
-        containment_result = store.persist_containment(
-            quiesced_containment,
-            expected_index=cas_token(context.index),
-            expected_journal=cas_token(context.record),
-            expected_containment=cas_token(
-                containment_result.record
-            ),
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        assert context.record is not None
-        quiesced = advance_effect_phase(
-            context.record,
-            effect_binding.effect_id,
-            "QUIESCED",
-            manager_secret=manager_secret,
-            containment_record_sha256=str(
-                containment_result.record["record_sha256"]
-            ),
-            receipt_sha256=observation.receipt_sha256,
-        )
-        context = _workflow_tx_persist_update(
-            store,
-            context,
-            quiesced,
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-observation")
-        assert containment_result.record is not None
-        closed_containment = advance_containment(
-            containment_result.record,
-            "CLOSED",
-            receipt_sha256=observation.receipt_sha256,
-        )
-        containment_result = store.persist_containment(
-            closed_containment,
-            expected_index=cas_token(context.index),
-            expected_journal=cas_token(context.record),
-            expected_containment=cas_token(
-                containment_result.record
-            ),
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        assert context.record is not None
-        verified = advance_effect_phase(
-            context.record,
-            effect_binding.effect_id,
-            "VERIFIED",
-            manager_secret=manager_secret,
-            containment_record_sha256=str(
-                containment_result.record["record_sha256"]
-            ),
-            receipt_sha256=observation.receipt_sha256,
-        )
-        context = _workflow_tx_persist_update(
-            store,
-            context,
-            verified,
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        assert context.record is not None
-        settled = advance_global_settlement(
-            context.record, manager_secret=manager_secret
-        )
-        context = _workflow_tx_persist_update(
-            store,
-            context,
-            settled,
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-effect-verified")
-        effect_receipt_sha256 = semantic_sha256(
-            _WORKFLOW_TX_EFFECT_RECEIPT_DOMAIN,
-            {
-                "edge_roles": edge_roles.binding(),
-                "observations": [
-                    {
-                        "effect_id": observation.effect_id,
-                        "claim_id": observation.claim_id,
-                        "attempt_id": observation.attempt_id,
-                        "settlement": observation.settlement,
-                        "receipt_sha256": observation.receipt_sha256,
-                    }
-                ],
-            },
-        )
-        receipt = build_v3_workflow_action_receipt(
-            state,
-            preview,
-            task_path,
-            execution_id=execution_id,
-            effect_receipt_sha256=effect_receipt_sha256,
-            authorization_action_edge_id=(
-                edge_roles.authorization_action_edge_id
-            ),
-            completion_edge_id=edge_roles.completion_edge_id,
-        )
-        assert context.record is not None
-        receipt_verified = verify_receipt_intent(
-            context.record,
-            receipt,
-            manager_secret=manager_secret,
-        )
-        context = _workflow_tx_persist_update(
-            store,
-            context,
-            receipt_verified,
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-receipt-verified")
-        assert context.record is not None
-        receipt_context = WorkflowActionReceiptContext(
-            index=context.index,
-            journal=context.record,
-            expected_index=cas_token(context.index),
-            reauthenticate=authorization.reauthenticate,
-            pre_effect_state=state,
-        )
-        evaluation = _workflow_tx_evaluate(
-            evaluation_state,
-            invocation,
-            preview=False,
-            receipt_context=receipt_context,
-            manager_intent_state=manager_intent_state,
-            edge_roles=edge_roles,
-        )
-        committed = _workflow_tx_commit_evaluation(
-            state,
-            evaluation,
-            task_path,
-            authorization,
-            receipt_context,
-        )
-        _workflow_tx_fail(failure_hook, "after-task-commit")
-        facts = _workflow_tx_authority_facts(
-            task_path, context.record
-        )
-        if facts is None:
-            raise _workflow_tx_error(
-                "WORKFLOW_ACTION_TRANSACTION_COMMIT_UNOBSERVED",
-                "task commit returned without its authoritative outbox",
-            )
-        nonce_consumed = _workflow_tx_nonce_consumed(
-            authorization, facts
-        )
-        final_journal = commit_journal(
-            context.record,
-            {
-                "task_commit_revision": facts.state["revision"],
-                "task_state_sha256": _sha256_contract(facts.state),
-                "event_sha256": facts.event_sha256,
-                "outbox_sha256": facts.outbox_sha256,
-                "nonce_consumed": nonce_consumed,
-            },
-            manager_secret=manager_secret,
-        )
-        context = _workflow_tx_persist_update(
-            store,
-            context,
-            final_journal,
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-journal-commit")
-        assert context.record is not None
-        closure = store.archive_and_close(
-            execution_id,
-            expected_index=cas_token(context.index),
-            expected_journal=cas_token(context.record),
-            authoritative_event_sha256=facts.event_sha256,
-            manager_secret=manager_secret,
-            failure_hook=failure_hook,
-        )
-        _workflow_tx_fail(failure_hook, "after-archive")
-        return WorkflowActionTransactionResult(
-            status="COMMITTED",
-            execution_id=execution_id,
-            state=_workflow_tx_copy.deepcopy(committed),
-            journal=_workflow_tx_copy.deepcopy(context.record),
-            index=_workflow_tx_copy.deepcopy(closure.index),
-            archive_path=closure.archive_path,
-            dispatcher_invocations=dispatcher_invocations,
-        )
-    finally:
-        manager_secret = None
 
 
 def _workflow_tx_persist_uncertain_quarantine(
@@ -6562,7 +6176,7 @@ def _workflow_tx_authenticated_live_runtime(
     return None
 
 
-def recover_v3_workflow_action_transaction(
+def _recover_v4_workflow_action_transaction_core(
     task_dir: str | object,
     execution_id: str,
     *,
@@ -6889,18 +6503,16 @@ __all__ = [
     "WorkflowActionRuntimeReleaseContext",
     "WorkflowActionTransactionError",
     "WorkflowActionTransactionResult",
-    "bind_v3_workflow_action_runtime",
-    "claim_ready_v3_workflow_action_effects",
-    "compile_v3_workflow_action_journal",
-    "dispatch_claimed_v3_workflow_action_effect",
-    "execute_v3_workflow_action_transaction",
-    "observe_v3_workflow_action_effect",
-    "preview_v3_workflow_action_transaction",
-    "recover_v3_workflow_action_transaction",
-    "release_v3_workflow_action_runtime",
-    "resolve_v3_workflow_action_completion_edge",
-    "verify_active_v3_workflow_action_dispatch",
-    "verify_active_v3_workflow_action_dispatch_context",
-    "verify_active_v3_workflow_action_observe_context",
-    "verify_active_v3_workflow_action_runtime_release",
+    "bind_v4_workflow_action_runtime",
+    "claim_ready_v4_workflow_action_effects",
+    "compile_v4_workflow_action_journal",
+    "dispatch_claimed_v4_workflow_action_effect",
+    "observe_v4_workflow_action_effect",
+    "preview_v4_workflow_action_transaction",
+    "release_v4_workflow_action_runtime",
+    "resolve_v4_workflow_action_completion_edge",
+    "verify_active_v4_workflow_action_dispatch",
+    "verify_active_v4_workflow_action_dispatch_context",
+    "verify_active_v4_workflow_action_observe_context",
+    "verify_active_v4_workflow_action_runtime_release",
 ]

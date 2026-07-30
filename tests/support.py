@@ -1,218 +1,677 @@
-"""Cross-platform subprocess fixtures for the dev-flow test suite.
-
-The helpers deliberately use only the Python standard library and are invoked
-through ``sys.executable``.  This keeps the tests independent of POSIX shell
-utilities and exercises paths containing spaces and non-ASCII characters.
-"""
-
 from __future__ import annotations
 
-import argparse
-import importlib.util
+import hashlib
+import json
 import os
-import signal
+import runpy
+import subprocess
+import struct
 import sys
-import time
+import tempfile
+import unittest
 from pathlib import Path
 
 
-def _load_controller(path: Path):
-    specification = importlib.util.spec_from_file_location(
-        "dev_flow_support_controller", path
-    )
-    if specification is None or specification.loader is None:
-        raise RuntimeError(f"cannot import controller: {path}")
-    module = importlib.util.module_from_spec(specification)
-    sys.modules[specification.name] = module
-    specification.loader.exec_module(module)
-    return module
+ROOT = Path(__file__).resolve().parents[1]
+CONTROLLER = ROOT / "scripts/dev_flow.py"
 
 
-def command_emit(args: argparse.Namespace) -> int:
-    sys.stdout.buffer.write(bytes.fromhex(args.stdout_hex))
-    sys.stdout.buffer.flush()
-    sys.stderr.buffer.write(bytes.fromhex(args.stderr_hex))
-    sys.stderr.buffer.flush()
-    return args.exit_code
+def load_controller() -> dict[str, object]:
+    return runpy.run_path(str(CONTROLLER), run_name="v4_focused_test")
 
 
-def command_echo(args: argparse.Namespace) -> int:
-    value = os.environ.get(args.environment, "")
-    payload = "\0".join([*args.value, value]).encode("utf-8")
-    sys.stdout.buffer.write(payload)
-    sys.stdout.buffer.flush()
-    return 0
+def runtime_services():
+    return load_controller()["_WORKFLOW_RUNTIME_SERVICES"]
 
 
-def command_hold_lock(args: argparse.Namespace) -> int:
-    controller = _load_controller(args.controller)
-    with controller._file_lock(args.directory, args.name):
-        args.ready.write_text("ready\n", encoding="utf-8")
-        while not args.release.exists():
-            time.sleep(0.01)
-    return 0
+class V4TestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(prefix="dev-flow-v4-")
+        self.temp = Path(self._temporary.name)
+        self.data_dir = self.temp / "data"
+        self.repo = self.temp / "repo 空格"
+        self.repo.mkdir()
+        self.git_config_global = self.temp / "empty-global.gitconfig"
+        self.git_config_system = self.temp / "empty-system.gitconfig"
+        self.git_config_global.write_text("", encoding="utf-8")
+        self.git_config_system.write_text("", encoding="utf-8")
+        self.environment = os.environ.copy()
+        for key in list(self.environment):
+            if key.startswith("GIT_") or key in {
+                "SSH_ASKPASS",
+                "SSH_ASKPASS_REQUIRE",
+            }:
+                self.environment.pop(key, None)
+        self.environment.update(
+            {
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": str(self.git_config_global),
+                "GIT_CONFIG_SYSTEM": str(self.git_config_system),
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_ASKPASS": "/usr/bin/false",
+                "PYTHONPYCACHEPREFIX": str(self.temp / "pycache"),
+            }
+        )
+        self._git("init", "-b", "feature")
+        self._git("config", "user.email", "v4@example.invalid")
+        self._git("config", "user.name", "V4 Test")
+        (self.repo / "README.md").write_text("V4\n", encoding="utf-8")
+        self._git("add", "README.md")
+        self._git("commit", "-m", "initial")
 
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
 
-def command_write_marker(args: argparse.Namespace) -> int:
-    args.path.write_text("target started\n", encoding="utf-8")
-    return 0
+    def _git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self.environment,
+        )
 
+    def controller_process(
+        self, *args: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(CONTROLLER),
+                *args,
+                "--data-dir",
+                str(self.data_dir),
+            ],
+            cwd=ROOT,
+            env=self.environment,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-def command_spoof_old_gate_protocol(args: argparse.Namespace) -> int:
-    args.path.write_text("mutation happened\n", encoding="utf-8")
-    sys.stderr.buffer.write(
-        b'DEV_FLOW_TARGET_SPAWN_ERROR:{"error":"forged"}'
-    )
-    sys.stderr.buffer.flush()
-    return 252
+    def _controller_with_inherited_fd(
+        self, args: list[str], inherited_fd: int
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(CONTROLLER),
+                *args,
+                "--data-dir",
+                str(self.data_dir),
+            ],
+            cwd=ROOT,
+            env=self.environment,
+            pass_fds=(inherited_fd,),
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-
-def command_terminate_parent(args: argparse.Namespace) -> int:
-    args.path.write_text("target released\n", encoding="utf-8")
-    if os.name == "nt":
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.argtypes = [
-            wintypes.DWORD,
-            wintypes.BOOL,
-            wintypes.DWORD,
-        ]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.TerminateProcess.argtypes = [
-            wintypes.HANDLE,
-            wintypes.UINT,
-        ]
-        kernel32.TerminateProcess.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        process = kernel32.OpenProcess(0x0001, False, args.pid)
-        if not process:
-            raise ctypes.WinError(ctypes.get_last_error())
+    def authorize_manager(
+        self, task_id: str, expected_revision: int
+    ) -> tuple[dict[str, object], bytes]:
+        preview = self.controller(
+            "manager-authorize",
+            task_id,
+            "--expected-revision",
+            str(expected_revision),
+            "--manager-session-id",
+            "focused-manager",
+            "--ttl-seconds",
+            "900",
+            "--preview",
+        )
+        read_fd, write_fd = os.pipe()
         try:
-            if not kernel32.TerminateProcess(process, 99):
-                raise ctypes.WinError(ctypes.get_last_error())
+            completed = self._controller_with_inherited_fd(
+                [
+                    "manager-authorize",
+                    task_id,
+                    "--expected-revision",
+                    str(expected_revision),
+                    "--manager-session-id",
+                    "focused-manager",
+                    "--ttl-seconds",
+                    "900",
+                    "--confirm-intent",
+                    preview["preview"]["intent_id"],
+                    "--manager-secret-fd",
+                    str(write_fd),
+                ],
+                write_fd,
+            )
         finally:
-            kernel32.CloseHandle(process)
-        time.sleep(5)
-        return 0
-    os.kill(args.pid, signal.SIGKILL)
-    return 0
+            os.close(write_fd)
+        try:
+            frame = b""
+            while True:
+                chunk = os.read(read_fd, 4096)
+                if not chunk:
+                    break
+                frame += chunk
+        finally:
+            os.close(read_fd)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=f"stdout={completed.stdout}\nstderr={completed.stderr}",
+        )
+        result = json.loads(completed.stdout)
+        self.assertTrue(result.get("ok"), result)
+        self.assertGreaterEqual(len(frame), 4)
+        (length,) = struct.unpack(">I", frame[:4])
+        self.assertEqual(len(frame), length + 4)
+        return result, frame[4:]
+
+    def manager_controller_process(
+        self,
+        request: dict[str, object],
+        secret: bytes,
+        *args: str,
+    ) -> subprocess.CompletedProcess[str]:
+        read_fd, write_fd = os.pipe()
+        frame = struct.pack(">I", len(secret)) + secret
+        try:
+            os.write(write_fd, frame)
+        finally:
+            os.close(write_fd)
+        try:
+            return self._controller_with_inherited_fd(
+                [
+                    *args,
+                    "--manager-request-json",
+                    json.dumps(
+                        request,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "--manager-secret-fd",
+                    str(read_fd),
+                ],
+                read_fd,
+            )
+        finally:
+            os.close(read_fd)
+
+    def controller(self, *args: str) -> dict[str, object]:
+        completed = self.controller_process(*args)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=f"stdout={completed.stdout}\nstderr={completed.stderr}",
+        )
+        result = json.loads(completed.stdout)
+        self.assertTrue(result.get("ok"), result)
+        return result
+
+    def start(self, task_id: str, strategy: str) -> dict[str, object]:
+        args = [
+            "start",
+            "focused V4 task",
+            "--repo",
+            str(self.repo),
+            "--task-id",
+            task_id,
+            "--workspace-strategy",
+            strategy,
+            "--change-category",
+            "docs",
+        ]
+        if strategy != "worktree":
+            args.extend(["--target-path", "README.md"])
+        return self.controller(*args)
 
 
-def command_crash_after_gate_spawn(args: argparse.Namespace) -> int:
-    """Exit after the no-side-effect gate starts but before PID persistence."""
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-    controller = _load_controller(args.controller)
-    original_update = controller._update_mutation_intent
 
-    def crash_before_child_identity_persists(
-        path,
-        process,
-        command,
+class V4OrchestrationTestCase(V4TestCase):
+    """Focused real-controller fixture for the current multi-repository path."""
+
+    orchestration_task_id = "focused-orchestration-v4"
+    manager_session_id = "focused-orchestration-manager"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.namespace = load_controller()
+        bundle = self.namespace["_WORKFLOW_RUNTIME_SERVICES"].catalog.bundles[
+            ("full", 4)
+        ]
+        creation_fields = json.loads(
+            json.dumps(
+                self.namespace["build_v4_task_creation_fields"](
+                    self.orchestration_task_id,
+                    bundle,
+                    execution_profile="multi-repository",
+                )
+            )
+        )
+        self.orchestration_task_dir = (
+            self.data_dir / "tasks" / self.orchestration_task_id
+        )
+        self.namespace["_ensure_private_dir"](self.orchestration_task_dir)
+        self.namespace["_atomic_write_json"](
+            self.orchestration_task_dir / "state.json",
+            {
+                "schema_version": 4,
+                "task_id": self.orchestration_task_id,
+                "revision": 0,
+                "status": "INTAKE",
+                "flow": "full",
+                "repositories": [],
+                "route": None,
+                **creation_fields,
+            },
+        )
+        self.secrets: dict[str, bytearray] = {}
+        self.random_counter = 0
+        self.wall_ns = 1_000_000_000_000
+        self.monotonic_ns = 1_000_000_000
+        self.protected_identity = digest("controller-data-directory")
+        self.service = self.namespace["OrchestrationControllerService"](
+            secret_resolver=lambda capability_id: bytearray(
+                self.secrets[capability_id]
+            ),
+            secret_publisher=lambda capability_id, secret: (
+                self.secrets.__setitem__(
+                    capability_id, bytearray(secret)
+                )
+            ),
+            random_bytes=self._random_bytes,
+            wall_time_ns=lambda: self.wall_ns,
+            monotonic_ns=lambda: self.monotonic_ns,
+            clock_id="focused-orchestration-clock",
+            runtime_stop_observer=self._trusted_stop_observer,
+            runtime_stop_authenticator=lambda _lease, _observation: True,
+            integration_verifier=self._trusted_integration_verifier,
+            host_capability_observer=self._trusted_host_observer,
+            trusted_host_adapter_ids=("focused-host-adapter",),
+            protected_read_identity_sha256s=(self.protected_identity,),
+        )
+        receipt = self.service.authorize_manager(
+            self.orchestration_task_id,
+            expected_revision=0,
+            manager_session_id=self.manager_session_id,
+            ttl_ns=100_000_000_000,
+            operator_confirmed=True,
+            operator_confirmation_sha256=digest("operator-confirmation"),
+            issuance_audit_sha256=digest("issuance-audit"),
+            data_dir=self.data_dir,
+        )
+        self.capability_id = str(receipt.payload["capability_id"])
+        self.nonce_counter = 0
+
+    def _random_bytes(self, size: int) -> bytearray:
+        self.random_counter += 1
+        seed = hashlib.sha256(
+            f"random-{self.random_counter}".encode("utf-8")
+        ).digest()
+        return bytearray(
+            (seed * ((size + len(seed) - 1) // len(seed)))[:size]
+        )
+
+    def orchestration_state(self) -> dict[str, object]:
+        return json.loads(
+            (self.orchestration_task_dir / "state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def orchestration_principal(self) -> dict[str, object]:
+        return {
+            "schema": self.namespace["AGENT_PRINCIPAL_SCHEMA"],
+            "role": "manager",
+            "session_id": self.manager_session_id,
+            "os_user_identity_sha256": digest("os-user"),
+            "host_identity_sha256": digest("host"),
+        }
+
+    def orchestration_request(
+        self,
+        action_id: str,
         *,
-        phase,
-        cause=None,
-        target_release_authorized=None,
-    ):
-        if phase == "child_owned":
-            os._exit(91)
-        return original_update(
-            path,
-            process,
-            command,
-            phase=phase,
-            cause=cause,
-            target_release_authorized=target_release_authorized,
-        )
+        expected_revision: int | None = None,
+        nonce: str | None = None,
+    ) -> dict[str, object]:
+        self.nonce_counter += 1
+        return {
+            "schema": self.namespace["MANAGER_CAPABILITY_REQUEST_SCHEMA"],
+            "capability_id": self.capability_id,
+            "task_id": self.orchestration_task_id,
+            "manager_session_id": self.manager_session_id,
+            "action_id": action_id,
+            "expected_revision": (
+                int(self.orchestration_state()["revision"])
+                if expected_revision is None
+                else expected_revision
+            ),
+            "request_nonce": nonce
+            or digest(f"request-nonce-{self.nonce_counter}"),
+        }
 
-    controller._update_mutation_intent = (
-        crash_before_child_identity_persists
-    )
-    with controller._task_lock(args.task_directory):
-        controller._run(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "write-marker",
-                str(args.target_marker),
+    def _trusted_host_observer(
+        self, assignment: dict[str, object]
+    ) -> dict[str, object]:
+        return {
+            "schema": self.namespace["HOST_CAPABILITY_REPORT_SCHEMA"],
+            "adapter_id": "focused-host-adapter",
+            "assignment_id": assignment["assignment_id"],
+            "worker_session_id": "focused-worker-session",
+            "worker_identity_sha256": digest("focused-worker"),
+            "attestation_sha256": digest("focused-host-attestation"),
+            "host_enforced": True,
+            "allowed_write_identity_sha256s": [
+                assignment["worktree_identity_sha256"]
             ],
-            mutation=True,
-        )
-    return 0
-
-
-def command_crash_after_target_release(args: argparse.Namespace) -> int:
-    controller = _load_controller(args.controller)
-    with controller._task_lock(args.task_directory):
-        controller._run(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "terminate-parent",
-                str(os.getpid()),
-                str(args.target_marker),
+            "denied_read_identity_sha256s": [
+                self.protected_identity
             ],
-            mutation=True,
+            "denied_tool_ids": sorted(
+                self.namespace["_osc_mutating_tool_ids"]
+            ),
+            "all_other_writes_denied": True,
+            "manager_secret_channel_excluded": True,
+            "controller_state_excluded": True,
+            "mutation_tools_excluded": True,
+        }
+
+    def _trusted_stop_observer(
+        self, projection: dict[str, object]
+    ) -> dict[str, object]:
+        return {
+            "schema": self.namespace["RUNTIME_STOP_OBSERVATION_SCHEMA"],
+            "task_id": projection["task_id"],
+            "node_instance_id": projection["node_instance_id"],
+            "attempt": projection["attempt"],
+            "assignment_id": projection["assignment_id"],
+            "lease_id": projection["lease_id"],
+            "runtime_handle_id": projection["runtime_handle_id"],
+            "host_assignment_id": projection["host_assignment_id"],
+            "authentication_sha256": projection[
+                "runtime_authentication_sha256"
+            ],
+            "stopped": True,
+        }
+
+    def _trusted_integration_verifier(
+        self, projection: dict[str, object]
+    ) -> dict[str, object]:
+        observation = {
+            "schema": self.namespace[
+                "ORCHESTRATION_TRUSTED_INTEGRATION_OBSERVATION_SCHEMA"
+            ],
+            "snapshot_id": projection["snapshot_id"],
+            "snapshot_sha256": projection["snapshot_sha256"],
+            "outcome": "SUCCEEDED",
+            "evidence_sha256": digest("focused-integration-evidence"),
+            "verifier_id": "focused-integration-verifier",
+        }
+        return {
+            **observation,
+            "attestation_sha256": self.namespace["_osc_digest"](
+                observation
+            ),
+        }
+
+    def record_and_expand_plan(self) -> dict[str, object]:
+        contract_content = b'{"schema":"contract.integration/v1"}\n'
+        contract_sha256 = hashlib.sha256(contract_content).hexdigest()
+        self.service.record_artifact(
+            self.orchestration_task_id,
+            artifact_id="focused-integration-contract",
+            content=contract_content,
+            kind="application/vnd.dev-flow.contract+json",
+            semantic_sha256=contract_sha256,
+            request=self.orchestration_request(
+                self.namespace["ORCHESTRATION_ACTION_ARTIFACT_RECORD"]
+            ),
+            principal=self.orchestration_principal(),
+            data_dir=self.data_dir,
         )
-    return 0
+        plan_value = {
+            "schema": self.namespace["REPOSITORY_PLAN_SCHEMA"],
+            "task_id": self.orchestration_task_id,
+            "workflow_bundle_sha256": self.orchestration_state()[
+                "workflow_ref"
+            ]["bundle_sha256"],
+            "plan_id": "focused-plan-v4",
+            "map_node_id": "map.repositories/v1",
+            "map_epoch": 1,
+            "plan_input_revision": self.orchestration_state()["revision"],
+            "semantic_input_sha256": "0" * 64,
+            "repository_set": ["api"],
+            "repositories": [
+                {
+                    "repository_id": "api",
+                    "identity_sha256": digest("repository-api"),
+                    "repository_path": "repositories/api",
+                    "approved_paths": ["src", "tests"],
+                    "write_policy": "scoped-write",
+                    "required_approval_ids": [],
+                    "required_evidence_contract_sha256": [
+                        contract_sha256
+                    ],
+                }
+            ],
+            "interface_contracts": [
+                {
+                    "contract_id": "contract.integration/v1",
+                    "artifact_id": "focused-integration-contract",
+                    "sha256": contract_sha256,
+                }
+            ],
+            "dependencies": [],
+            "worktree_policy": {
+                "mode": "controller-owned",
+                "require_clean": True,
+                "distinct": True,
+            },
+            "concurrency_policy": {
+                "max_workers": 1,
+                "max_writable_workers": 1,
+            },
+            "retry_policy": {
+                "max_attempts": 2,
+                "retryable_states": ["BLOCKED", "FAILED"],
+                "requires_approval": True,
+            },
+            "integration_policy": {
+                "commands": [["python3", "-m", "unittest"]],
+                "evidence_contract_sha256": [contract_sha256],
+            },
+        }
+        bound = self.namespace["bind_repository_plan_semantic_input"](
+            plan_value
+        )
+        plan = json.loads(
+            self.namespace["canonical_repository_plan_bytes"](bound)
+        )
+        self.service.record_plan(
+            self.orchestration_task_id,
+            plan,
+            request=self.orchestration_request(
+                self.namespace["ORCHESTRATION_ACTION_PLAN_RECORD"]
+            ),
+            principal=self.orchestration_principal(),
+            data_dir=self.data_dir,
+        )
+        self.service.approve_plan(
+            self.orchestration_task_id,
+            approval_intent="approve-repository-map/v1",
+            request=self.orchestration_request(
+                self.namespace["ORCHESTRATION_ACTION_PLAN_APPROVE"]
+            ),
+            principal=self.orchestration_principal(),
+            data_dir=self.data_dir,
+        )
+        self.service.expand_plan(
+            self.orchestration_task_id,
+            current_semantic_input_sha256=plan[
+                "semantic_input_sha256"
+            ],
+            request=self.orchestration_request(
+                self.namespace["ORCHESTRATION_OPERATION_MAP_EXPAND"]
+            ),
+            principal=self.orchestration_principal(),
+            data_dir=self.data_dir,
+        )
+        self.service.advance_ready_frontier(
+            self.orchestration_task_id,
+            request=self.orchestration_request(
+                self.namespace["ORCHESTRATION_OPERATION_FRONTIER_ADVANCE"]
+            ),
+            principal=self.orchestration_principal(),
+            data_dir=self.data_dir,
+        )
+        return plan
 
+    def start_orchestration_assignment(
+        self,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        plan = self.record_and_expand_plan()
+        child = self.orchestration_state()["orchestration"]["expansion"][
+            "children"
+        ][0]
+        allowed_actions = [
+            "repository.read/v1",
+            "repository.write-approved/v1",
+            "result.emit-candidate/v1",
+        ]
+        input_sha256 = digest("focused-assignment-input")
+        lease = self.service.issue_lease(
+            self.orchestration_task_id,
+            node_instance_id=child["node_instance_id"],
+            worktree_path=str(self.repo.resolve()),
+            input_evidence_sha256=input_sha256,
+            allowed_actions=allowed_actions,
+            lease_ttl_ns=10_000_000_000,
+            request=self.orchestration_request(
+                self.namespace["ORCHESTRATION_OPERATION_LEASE_ISSUE"]
+            ),
+            principal=self.orchestration_principal(),
+            data_dir=self.data_dir,
+        )
+        issued = self.service.issue_assignment(
+            self.orchestration_task_id,
+            node_instance_id=child["node_instance_id"],
+            worktree_path=str(self.repo.resolve()),
+            input_evidence_sha256=input_sha256,
+            allowed_actions=allowed_actions,
+            playbook_locator="playbooks/workflow.md",
+            playbook_sha256=digest("playbook"),
+            required_evidence_contract_sha256s=plan["repositories"][0][
+                "required_evidence_contract_sha256"
+            ],
+            runtime_handle_id="runtime-api",
+            host_assignment_id="host-assignment-api",
+            runtime_authentication_sha256=digest("runtime-auth"),
+            actor_id="worker-api",
+            lease_ttl_ns=10_000_000_000,
+            lease_id=str(lease.payload["lease_id"]),
+            request=self.orchestration_request(
+                self.namespace[
+                    "ORCHESTRATION_OPERATION_ASSIGNMENT_ISSUE"
+                ]
+            ),
+            principal=self.orchestration_principal(),
+            data_dir=self.data_dir,
+        )
+        self.service.handoff_dispatch(
+            self.orchestration_task_id,
+            assignment_id=str(issued.payload["assignment_id"]),
+            runtime_handle_id="runtime-api",
+            host_assignment_id="host-assignment-api",
+            runtime_authentication_sha256=digest("runtime-auth"),
+            actor_id="worker-api",
+            request=self.orchestration_request(
+                self.namespace[
+                    "ORCHESTRATION_OPERATION_DISPATCH_HANDOFF"
+                ]
+            ),
+            principal=self.orchestration_principal(),
+            data_dir=self.data_dir,
+        )
+        assignment = self.orchestration_state()["orchestration"][
+            "assignments"
+        ][issued.payload["assignment_id"]]
+        return plan, assignment
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    commands = parser.add_subparsers(dest="command", required=True)
-
-    emit = commands.add_parser("emit")
-    emit.add_argument("--stdout-hex", default="")
-    emit.add_argument("--stderr-hex", default="")
-    emit.add_argument("--exit-code", type=int, default=0)
-    emit.set_defaults(handler=command_emit)
-
-    echo = commands.add_parser("echo")
-    echo.add_argument("--environment", required=True)
-    echo.add_argument("value", nargs="*")
-    echo.set_defaults(handler=command_echo)
-
-    hold = commands.add_parser("hold-lock")
-    hold.add_argument("controller", type=Path)
-    hold.add_argument("directory", type=Path)
-    hold.add_argument("ready", type=Path)
-    hold.add_argument("release", type=Path)
-    hold.add_argument("--name", default="native.lock")
-    hold.set_defaults(handler=command_hold_lock)
-
-    marker = commands.add_parser("write-marker")
-    marker.add_argument("path", type=Path)
-    marker.set_defaults(handler=command_write_marker)
-
-    spoof = commands.add_parser("spoof-old-gate-protocol")
-    spoof.add_argument("path", type=Path)
-    spoof.set_defaults(handler=command_spoof_old_gate_protocol)
-
-    terminate = commands.add_parser("terminate-parent")
-    terminate.add_argument("pid", type=int)
-    terminate.add_argument("path", type=Path)
-    terminate.set_defaults(handler=command_terminate_parent)
-
-    crash = commands.add_parser("crash-after-gate-spawn")
-    crash.add_argument("controller", type=Path)
-    crash.add_argument("task_directory", type=Path)
-    crash.add_argument("target_marker", type=Path)
-    crash.set_defaults(handler=command_crash_after_gate_spawn)
-
-    released = commands.add_parser("crash-after-target-release")
-    released.add_argument("controller", type=Path)
-    released.add_argument("task_directory", type=Path)
-    released.add_argument("target_marker", type=Path)
-    released.set_defaults(handler=command_crash_after_target_release)
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    arguments = build_parser().parse_args(argv)
-    return int(arguments.handler(arguments))
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    def successful_orchestration_result(
+        self, assignment: dict[str, object]
+    ) -> dict[str, object]:
+        state = self.orchestration_state()
+        dispatch = state["orchestration"]["dispatch"][
+            assignment["assignment_id"]
+        ]
+        worktree_sha256, _paths, changed_paths_sha256 = self.namespace[
+            "_osc_worktree_observation"
+        ](
+            str(self.repo.resolve()),
+            baseline_head=dispatch["worktree_baseline_head"],
+        )
+        output_observation = {
+            "schema": self.namespace[
+                "ORCHESTRATION_CONTROLLER_OUTPUT_OBSERVATION_SCHEMA"
+            ],
+            "task_id": self.orchestration_task_id,
+            "assignment_id": assignment["assignment_id"],
+            "node_instance_id": assignment["node_instance_id"],
+            "attempt": assignment["attempt"],
+            "worktree_sha256": worktree_sha256,
+            "changed_paths_sha256": changed_paths_sha256,
+            "artifacts": {},
+            "evidence": {},
+        }
+        output_sha256 = hashlib.sha256(
+            b"dev-flow-controller-output-observation-v1\x00"
+            + self.namespace["_osc_canonical_bytes"](output_observation)
+        ).hexdigest()
+        verification_sha256 = hashlib.sha256(
+            b"dev-flow-controller-verification-observation-v1\x00"
+            + self.namespace["_osc_canonical_bytes"](
+                {
+                    "assignment_id": assignment["assignment_id"],
+                    "outcome": "SUCCEEDED",
+                    "evidence": {},
+                }
+            )
+        ).hexdigest()
+        lease = assignment["lease_credential"]
+        candidate = {
+            "schema": self.namespace[
+                "ORCHESTRATION_NODE_RESULT_SCHEMA"
+            ],
+            "task_id": self.orchestration_task_id,
+            "workflow_bundle_sha256": assignment[
+                "workflow_bundle_sha256"
+            ],
+            "map_epoch": assignment["map_epoch"],
+            "repository_id": assignment["repository_id"],
+            "node_instance_id": assignment["node_instance_id"],
+            "attempt": assignment["attempt"],
+            "assignment_id": assignment["assignment_id"],
+            "lease_id": lease["lease_id"],
+            "lease_nonce": lease["lease_nonce"],
+            "input_sha256": assignment["input_evidence_sha256"],
+            "output_sha256": output_sha256,
+            "worktree_sha256": worktree_sha256,
+            "changed_paths_sha256": changed_paths_sha256,
+            "verification_sha256": verification_sha256,
+            "outcome": "SUCCEEDED",
+            "summary": "focused controller-observed result",
+            "blockers": [],
+            "plan_drift": {"detected": False, "reasons": []},
+            "artifact_refs": [],
+            "evidence_refs": [],
+            "runtime_handle": dispatch["runtime_handle_id"],
+        }
+        bound = self.namespace["bind_node_result_identity"](candidate)
+        return json.loads(
+            self.namespace["canonical_node_result_bytes"](bound)
+        )

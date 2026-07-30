@@ -17,12 +17,12 @@ from typing import Callable as _BaselineCallable
 from typing import Mapping as _BaselineMapping
 
 
-_V3_PURE_COMMAND_EVIDENCE_CONTRACT = (
-    "dev-flow-v3-pure-command-evidence/v1"
+_V4_PURE_COMMAND_EVIDENCE_CONTRACT = (
+    "dev-flow-v4-pure-command-evidence/v1"
 )
 
 
-def _v3_pure_command_raise(exc: TransitionEngineError) -> None:
+def _v4_pure_command_raise(exc: TransitionEngineError) -> None:
     details = _workflow_transition_public(exc.details)
     raise FlowError(
         exc.code,
@@ -31,7 +31,7 @@ def _v3_pure_command_raise(exc: TransitionEngineError) -> None:
     ) from exc
 
 
-def _v3_pure_action_outcome(
+def _v4_pure_action_outcome(
     edge: Mapping[str, object],
     *,
     command: str,
@@ -59,7 +59,7 @@ def _v3_pure_action_outcome(
     public_evidence = _copy_state(dict(evidence))
     public_delta = _copy_state(dict(proposed_state_delta))
     binding = {
-        "contract": _V3_PURE_COMMAND_EVIDENCE_CONTRACT,
+        "contract": _V4_PURE_COMMAND_EVIDENCE_CONTRACT,
         "command": command,
         "edge_id": edge_id,
         "evidence": public_evidence,
@@ -88,7 +88,7 @@ def _v3_pure_action_outcome(
     )
 
 
-def _v3_pure_approval_outcome(
+def _v4_pure_approval_outcome(
     edge: Mapping[str, object],
     approval: Mapping[str, object],
 ) -> ApprovalOutcome:
@@ -123,7 +123,7 @@ def _v3_pure_approval_outcome(
     )
 
 
-def _v3_pure_node_action_commit(
+def _v4_pure_node_action_commit(
     current: dict[str, Any],
     task_dir: Path,
     *,
@@ -137,7 +137,7 @@ def _v3_pure_node_action_commit(
     """Preview, explicitly confirm, and proof-commit one pure node action."""
 
     try:
-        preview = evaluate_v3_node_action(
+        preview = evaluate_v4_node_action(
             current,
             public_command=public_command,
             selector=selector,
@@ -147,7 +147,7 @@ def _v3_pure_node_action_commit(
             evidence=evidence,
             preview=True,
         )
-        evaluation = evaluate_v3_node_action(
+        evaluation = evaluate_v4_node_action(
             current,
             public_command=public_command,
             selector=selector,
@@ -157,15 +157,15 @@ def _v3_pure_node_action_commit(
             evidence=evidence,
             confirm_intent=str(preview.intent["intent_id"]),
         )
-        committed = commit_v3_workflow_action(
+        committed = commit_v4_workflow_action(
             current, evaluation, task_dir
         )
     except TransitionEngineError as exc:
-        _v3_pure_command_raise(exc)
+        _v4_pure_command_raise(exc)
     return committed, evaluation
 
 
-def _v3_command_set_route_commit(
+def _v4_command_set_route_commit(
     current: dict[str, Any],
     task_dir: Path,
     *,
@@ -176,10 +176,10 @@ def _v3_command_set_route_commit(
     impact_metadata: Mapping[str, object],
 ) -> dict[str, Any]:
     try:
-        edge = resolve_v3_node_action_edge(current, "set-route")
+        edge = resolve_v4_node_action_edge(current, "set-route")
     except TransitionEngineError as exc:
-        _v3_pure_command_raise(exc)
-    outcome = _v3_pure_action_outcome(
+        _v4_pure_command_raise(exc)
+    outcome = _v4_pure_action_outcome(
         edge,
         command="set-route",
         proposed_state_delta={
@@ -197,7 +197,7 @@ def _v3_command_set_route_commit(
             ],
         },
     )
-    state_value, _evaluation = _v3_pure_node_action_commit(
+    state_value, _evaluation = _v4_pure_node_action_commit(
         current,
         task_dir,
         public_command="set-route",
@@ -212,7 +212,7 @@ def _v3_command_set_route_commit(
     return state_value
 
 
-def _v3_command_approve_commit(
+def _v4_command_approve_commit(
     current: dict[str, Any],
     task_dir: Path,
     args: argparse.Namespace,
@@ -220,11 +220,11 @@ def _v3_command_approve_commit(
     artifact_sha: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
-        edge = resolve_v3_node_action_edge(
+        edge = resolve_v4_node_action_edge(
             current, "approve", selector=args.gate
         )
     except TransitionEngineError as exc:
-        _v3_pure_command_raise(exc)
+        _v4_pure_command_raise(exc)
     action_parameters = {
         "gate": args.gate,
         "note": args.note,
@@ -243,7 +243,7 @@ def _v3_command_approve_commit(
     pointer = "/approvals/" + args.gate.replace(
         "~", "~0"
     ).replace("/", "~1")
-    seed_outcome = _v3_pure_action_outcome(
+    seed_outcome = _v4_pure_action_outcome(
         edge,
         command="approve",
         proposed_state_delta={
@@ -253,11 +253,11 @@ def _v3_command_approve_commit(
         },
         evidence=evidence,
     )
-    seed_approval = _v3_pure_approval_outcome(
+    seed_approval = _v4_pure_approval_outcome(
         edge, approval_value
     )
     try:
-        preview = evaluate_v3_node_action(
+        preview = evaluate_v4_node_action(
             current,
             public_command="approve",
             selector=args.gate,
@@ -272,7 +272,7 @@ def _v3_command_approve_commit(
                 "intent_id": str(preview.intent["intent_id"]),
             }
         )
-        outcome = _v3_pure_action_outcome(
+        outcome = _v4_pure_action_outcome(
             edge,
             command="approve",
             proposed_state_delta={
@@ -282,10 +282,10 @@ def _v3_command_approve_commit(
             },
             evidence=evidence,
         )
-        approval_outcome = _v3_pure_approval_outcome(
+        approval_outcome = _v4_pure_approval_outcome(
             edge, approval_value
         )
-        evaluation = evaluate_v3_node_action(
+        evaluation = evaluate_v4_node_action(
             current,
             public_command="approve",
             selector=args.gate,
@@ -295,27 +295,27 @@ def _v3_command_approve_commit(
             evidence=evidence,
             confirm_intent=str(preview.intent["intent_id"]),
         )
-        state_value = commit_v3_workflow_action(
+        state_value = commit_v4_workflow_action(
             current, evaluation, task_dir
         )
     except TransitionEngineError as exc:
-        _v3_pure_command_raise(exc)
+        _v4_pure_command_raise(exc)
     return state_value, approval_value
 
 
-_V3_BASELINE_PLAN_SCHEMA = "dev-flow-v3-baseline-effect-plan/v1"
-_V3_BASELINE_OBSERVATION_SCHEMA = (
-    "dev-flow-v3-baseline-effect-observation/v1"
+_V4_BASELINE_PLAN_SCHEMA = "dev-flow-v4-baseline-effect-plan/v1"
+_V4_BASELINE_OBSERVATION_SCHEMA = (
+    "dev-flow-v4-baseline-effect-observation/v1"
 )
-_V3_BASELINE_RECEIPT_SCHEMA = "dev-flow-v3-baseline-effect-receipt/v1"
-_V3_BASELINE_PLAN_DOMAIN = b"dev-flow-v3-baseline-effect-plan-v1\x00"
-_V3_BASELINE_OBSERVATION_DOMAIN = (
-    b"dev-flow-v3-baseline-effect-observation-v1\x00"
+_V4_BASELINE_RECEIPT_SCHEMA = "dev-flow-v4-baseline-effect-receipt/v1"
+_V4_BASELINE_PLAN_DOMAIN = b"dev-flow-v4-baseline-effect-plan-v1\x00"
+_V4_BASELINE_OBSERVATION_DOMAIN = (
+    b"dev-flow-v4-baseline-effect-observation-v1\x00"
 )
-_V3_BASELINE_RECEIPT_DOMAIN = (
-    b"dev-flow-v3-baseline-effect-receipt-v1\x00"
+_V4_BASELINE_RECEIPT_DOMAIN = (
+    b"dev-flow-v4-baseline-effect-receipt-v1\x00"
 )
-_V3_BASELINE_ACTIONS = frozenset(
+_V4_BASELINE_ACTIONS = frozenset(
     {
         "fetch",
         "materialization",
@@ -323,7 +323,7 @@ _V3_BASELINE_ACTIONS = frozenset(
         "record-artifact",
     }
 )
-_V3_BASELINE_SECRET_FIELDS = frozenset(
+_V4_BASELINE_SECRET_FIELDS = frozenset(
     {
         "access_token",
         "api_key",
@@ -336,14 +336,14 @@ _V3_BASELINE_SECRET_FIELDS = frozenset(
         "token",
     }
 )
-_v3_baseline_readonly_git_lock = _baseline_threading.RLock()
+_v4_baseline_readonly_git_lock = _baseline_threading.RLock()
 
 
 @_baseline_contextmanager
-def _v3_baseline_readonly_git():
+def _v4_baseline_readonly_git():
     """Prevent evidence commands from refreshing Git's mutable index cache."""
 
-    with _v3_baseline_readonly_git_lock:
+    with _v4_baseline_readonly_git_lock:
         marker = object()
         previous = _baseline_os.environ.get(
             "GIT_OPTIONAL_LOCKS", marker
@@ -360,7 +360,7 @@ def _v3_baseline_readonly_git():
                 )
 
 
-def _v3_baseline_error(
+def _v4_baseline_error(
     code: str,
     message: str,
     *,
@@ -369,7 +369,7 @@ def _v3_baseline_error(
     return FlowError(code, message, details=dict(details or {}))
 
 
-def _v3_baseline_semantic_value(
+def _v4_baseline_semantic_value(
     value: object,
     *,
     pointer: str = "",
@@ -390,7 +390,7 @@ def _v3_baseline_semantic_value(
         # already-loaded journal canonicalizer.
         return _baseline_json.loads(semantic_json_bytes(plain))
     except Exception as exc:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_SEMANTIC_JSON_INVALID",
             "baseline effect value violates strict semantic JSON",
             details={
@@ -402,7 +402,7 @@ def _v3_baseline_semantic_value(
         ) from None
 
 
-def _v3_baseline_reject_secrets(
+def _v4_baseline_reject_secrets(
     value: object,
     *,
     pointer: str = "",
@@ -410,82 +410,82 @@ def _v3_baseline_reject_secrets(
     if isinstance(value, _BaselineMapping):
         for key, item in value.items():
             folded = str(key).casefold().replace("-", "_")
-            if folded in _V3_BASELINE_SECRET_FIELDS or any(
+            if folded in _V4_BASELINE_SECRET_FIELDS or any(
                 folded.endswith("_" + secret)
-                for secret in _V3_BASELINE_SECRET_FIELDS
+                for secret in _V4_BASELINE_SECRET_FIELDS
             ):
-                raise _v3_baseline_error(
+                raise _v4_baseline_error(
                     "BASELINE_EFFECT_SECRET_FORBIDDEN",
                     "effect plans and receipts cannot contain secret fields",
                     details={"pointer": pointer + "/" + str(key)},
                 )
-            _v3_baseline_reject_secrets(
+            _v4_baseline_reject_secrets(
                 item, pointer=pointer + "/" + str(key)
             )
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            _v3_baseline_reject_secrets(
+            _v4_baseline_reject_secrets(
                 item, pointer=f"{pointer}/{index}"
             )
 
 
-def _v3_baseline_semantic_bytes(value: object) -> bytes:
-    normalized = _v3_baseline_semantic_value(value)
+def _v4_baseline_semantic_bytes(value: object) -> bytes:
+    normalized = _v4_baseline_semantic_value(value)
     return semantic_json_bytes(normalized)
 
 
-def _v3_baseline_semantic_sha256(
+def _v4_baseline_semantic_sha256(
     domain: bytes, value: object
 ) -> str:
-    normalized = _v3_baseline_semantic_value(value)
+    normalized = _v4_baseline_semantic_value(value)
     return semantic_sha256(domain, normalized)
 
 
-def _v3_baseline_freeze(value: object) -> object:
-    normalized = _v3_baseline_semantic_value(value)
+def _v4_baseline_freeze(value: object) -> object:
+    normalized = _v4_baseline_semantic_value(value)
     if isinstance(normalized, dict):
         return _BaselineMappingProxyType(
             {
-                key: _v3_baseline_freeze(item)
+                key: _v4_baseline_freeze(item)
                 for key, item in normalized.items()
             }
         )
     if isinstance(normalized, list):
-        return tuple(_v3_baseline_freeze(item) for item in normalized)
+        return tuple(_v4_baseline_freeze(item) for item in normalized)
     return normalized
 
 
-def _v3_baseline_thaw(value: object) -> object:
+def _v4_baseline_thaw(value: object) -> object:
     if isinstance(value, _BaselineMapping):
         return {
-            str(key): _v3_baseline_thaw(item)
+            str(key): _v4_baseline_thaw(item)
             for key, item in value.items()
         }
     if isinstance(value, tuple):
-        return [_v3_baseline_thaw(item) for item in value]
+        return [_v4_baseline_thaw(item) for item in value]
     return _baseline_copy.deepcopy(value)
 
 
-def _v3_baseline_require_text(value: object, role: str) -> str:
+def _v4_baseline_require_text(value: object, role: str) -> str:
     if not isinstance(value, str) or not value:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_BINDING_INVALID",
             f"{role} must be non-empty text",
         )
-    _v3_baseline_semantic_value(value, pointer="/" + role)
+    _v4_baseline_semantic_value(value, pointer="/" + role)
     return value
 
 
-def _v3_baseline_require_revision(value: object) -> int:
+def _v4_baseline_require_revision(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_BINDING_INVALID",
             "task revision must be a non-negative integer",
         )
     return value
 
 
-def _v3_baseline_canonical_path(
+def _v4_baseline_canonical_path(
     value: str | _BaselinePath,
     *,
     must_exist: bool,
@@ -495,7 +495,7 @@ def _v3_baseline_canonical_path(
             strict=must_exist
         )
     except (OSError, RuntimeError) as exc:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_PATH_INVALID",
             "effect path cannot be resolved canonically",
             details={"path": str(value)},
@@ -503,7 +503,7 @@ def _v3_baseline_canonical_path(
     return str(path)
 
 
-def _v3_baseline_plan_core(
+def _v4_baseline_plan_core(
     action: str,
     task_id: str,
     task_revision: int,
@@ -511,7 +511,7 @@ def _v3_baseline_plan_core(
     bindings: _BaselineMapping[str, object],
 ) -> dict[str, object]:
     return {
-        "schema": _V3_BASELINE_PLAN_SCHEMA,
+        "schema": _V4_BASELINE_PLAN_SCHEMA,
         "action": action,
         "task_id": task_id,
         "task_revision": task_revision,
@@ -521,7 +521,7 @@ def _v3_baseline_plan_core(
 
 
 @_baseline_dataclass(frozen=True)
-class V3BaselineEffectPlan:
+class V4BaselineEffectPlan:
     """Immutable semantic plan. Construct plans only through the builders."""
 
     action: str
@@ -532,20 +532,20 @@ class V3BaselineEffectPlan:
     semantic_sha256: str
 
     def __post_init__(self) -> None:
-        if self.action not in _V3_BASELINE_ACTIONS:
-            raise _v3_baseline_error(
+        if self.action not in _V4_BASELINE_ACTIONS:
+            raise _v4_baseline_error(
                 "BASELINE_EFFECT_ACTION_INVALID",
                 "unsupported baseline effect action",
                 details={"action": self.action},
             )
         expected_type = {
-            "fetch": "V3BaselineFetchPlan",
-            "materialization": "V3BaselineMaterializationPlan",
-            "record-index": "V3RecordIndexPlan",
-            "record-artifact": "V3RecordArtifactPlan",
+            "fetch": "V4BaselineFetchPlan",
+            "materialization": "V4BaselineMaterializationPlan",
+            "record-index": "V4RecordIndexPlan",
+            "record-artifact": "V4RecordArtifactPlan",
         }[self.action]
         if type(self).__name__ != expected_type:
-            raise _v3_baseline_error(
+            raise _v4_baseline_error(
                 "BASELINE_EFFECT_PLAN_TYPE_INVALID",
                 "typed plan class does not match its action",
                 details={
@@ -554,104 +554,104 @@ class V3BaselineEffectPlan:
                     "actual_type": type(self).__name__,
                 },
             )
-        _v3_baseline_require_text(self.task_id, "task_id")
-        _v3_baseline_require_revision(self.task_revision)
-        _v3_baseline_require_text(
+        _v4_baseline_require_text(self.task_id, "task_id")
+        _v4_baseline_require_revision(self.task_revision)
+        _v4_baseline_require_text(
             self.repository_id, "repository_id"
         )
-        public_bindings = _v3_baseline_semantic_value(
+        public_bindings = _v4_baseline_semantic_value(
             dict(self.bindings), pointer="/bindings"
         )
         assert isinstance(public_bindings, dict)
-        _v3_baseline_reject_secrets(public_bindings)
-        core = _v3_baseline_plan_core(
+        _v4_baseline_reject_secrets(public_bindings)
+        core = _v4_baseline_plan_core(
             self.action,
             self.task_id,
             self.task_revision,
             self.repository_id,
             public_bindings,
         )
-        expected = _v3_baseline_semantic_sha256(
-            _V3_BASELINE_PLAN_DOMAIN, core
+        expected = _v4_baseline_semantic_sha256(
+            _V4_BASELINE_PLAN_DOMAIN, core
         )
         if self.semantic_sha256 != expected:
-            raise _v3_baseline_error(
+            raise _v4_baseline_error(
                 "BASELINE_EFFECT_PLAN_DIGEST_MISMATCH",
                 "effect plan digest does not match its semantic bindings",
             )
         object.__setattr__(
-            self, "bindings", _v3_baseline_freeze(public_bindings)
+            self, "bindings", _v4_baseline_freeze(public_bindings)
         )
 
     def as_dict(self) -> dict[str, object]:
-        core = _v3_baseline_plan_core(
+        core = _v4_baseline_plan_core(
             self.action,
             self.task_id,
             self.task_revision,
             self.repository_id,
-            _v3_baseline_thaw(self.bindings),
+            _v4_baseline_thaw(self.bindings),
         )
         core["semantic_sha256"] = self.semantic_sha256
         return core
 
 
 @_baseline_dataclass(frozen=True)
-class V3BaselineFetchPlan(V3BaselineEffectPlan):
+class V4BaselineFetchPlan(V4BaselineEffectPlan):
     pass
 
 
 @_baseline_dataclass(frozen=True)
-class V3BaselineMaterializationPlan(V3BaselineEffectPlan):
+class V4BaselineMaterializationPlan(V4BaselineEffectPlan):
     pass
 
 
 @_baseline_dataclass(frozen=True)
-class V3RecordIndexPlan(V3BaselineEffectPlan):
+class V4RecordIndexPlan(V4BaselineEffectPlan):
     pass
 
 
 @_baseline_dataclass(frozen=True)
-class V3RecordArtifactPlan(V3BaselineEffectPlan):
+class V4RecordArtifactPlan(V4BaselineEffectPlan):
     pass
 
 
-_V3_BASELINE_PLAN_TYPES = {
-    "fetch": V3BaselineFetchPlan,
-    "materialization": V3BaselineMaterializationPlan,
-    "record-index": V3RecordIndexPlan,
-    "record-artifact": V3RecordArtifactPlan,
+_V4_BASELINE_PLAN_TYPES = {
+    "fetch": V4BaselineFetchPlan,
+    "materialization": V4BaselineMaterializationPlan,
+    "record-index": V4RecordIndexPlan,
+    "record-artifact": V4RecordArtifactPlan,
 }
 
 
-def _v3_baseline_build_plan(
+def _v4_baseline_build_plan(
     action: str,
     *,
     task_id: str,
     task_revision: int,
     repository_id: str,
     bindings: _BaselineMapping[str, object],
-) -> V3BaselineEffectPlan:
-    task_value = _v3_baseline_require_text(task_id, "task_id")
-    revision_value = _v3_baseline_require_revision(task_revision)
-    repository_value = _v3_baseline_require_text(
+) -> V4BaselineEffectPlan:
+    task_value = _v4_baseline_require_text(task_id, "task_id")
+    revision_value = _v4_baseline_require_revision(task_revision)
+    repository_value = _v4_baseline_require_text(
         repository_id, "repository_id"
     )
-    public_bindings = _v3_baseline_semantic_value(
+    public_bindings = _v4_baseline_semantic_value(
         dict(bindings), pointer="/bindings"
     )
     assert isinstance(public_bindings, dict)
-    _v3_baseline_reject_secrets(public_bindings)
-    core = _v3_baseline_plan_core(
+    _v4_baseline_reject_secrets(public_bindings)
+    core = _v4_baseline_plan_core(
         action,
         task_value,
         revision_value,
         repository_value,
         public_bindings,
     )
-    digest = _v3_baseline_semantic_sha256(
-        _V3_BASELINE_PLAN_DOMAIN, core
+    digest = _v4_baseline_semantic_sha256(
+        _V4_BASELINE_PLAN_DOMAIN, core
     )
-    plan_type = _V3_BASELINE_PLAN_TYPES[action]
+    plan_type = _V4_BASELINE_PLAN_TYPES[action]
     return plan_type(
         action,
         task_value,
@@ -662,7 +662,7 @@ def _v3_baseline_build_plan(
     )
 
 
-def plan_v3_baseline_fetch(
+def plan_v4_baseline_fetch(
     *,
     task_id: str,
     task_revision: int,
@@ -675,15 +675,15 @@ def plan_v3_baseline_fetch(
     source_ref: str,
     pre_head_sha: str,
     pre_ref_sha: str | None,
-) -> V3BaselineFetchPlan:
+) -> V4BaselineFetchPlan:
     """Pure/read-only fetch planning bound to exact pre-effect Git facts."""
 
-    path = _v3_baseline_canonical_path(
+    path = _v4_baseline_canonical_path(
         repository_path, must_exist=True
     )
     actual_head = _git(_BaselinePath(path), "rev-parse", "HEAD")
     if actual_head != pre_head_sha:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_FETCH_PRECONDITION_MISMATCH",
             "fetch plan pre-HEAD differs from the repository",
             details={
@@ -695,7 +695,7 @@ def plan_v3_baseline_fetch(
         _redact_sensitive_text(remote_url) != remote_url
         or not _baseline_re.fullmatch(r"[0-9a-f]{64}", remote_url_sha256)
     ):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_FETCH_REMOTE_BINDING_INVALID",
             "fetch plans require a redacted remote URL and lowercase SHA-256",
         )
@@ -709,7 +709,7 @@ def plan_v3_baseline_fetch(
         )
         or _redact_sensitive_text(live_url) != remote_url
     ):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_FETCH_REMOTE_BINDING_MISMATCH",
             "fetch plan does not match the live approved remote",
             details={
@@ -726,37 +726,37 @@ def plan_v3_baseline_fetch(
             },
         )
     live_url = None
-    plan = _v3_baseline_build_plan(
+    plan = _v4_baseline_build_plan(
         "fetch",
         task_id=task_id,
         task_revision=task_revision,
         repository_id=repository_id,
         bindings={
             "repository_path": path,
-            "remote": _v3_baseline_require_text(remote, "remote"),
-            "remote_url": _v3_baseline_require_text(
+            "remote": _v4_baseline_require_text(remote, "remote"),
+            "remote_url": _v4_baseline_require_text(
                 remote_url, "remote_url"
             ),
-            "remote_url_sha256": _v3_baseline_require_text(
+            "remote_url_sha256": _v4_baseline_require_text(
                 remote_url_sha256, "remote_url_sha256"
             ),
-            "refspec": _v3_baseline_require_text(
+            "refspec": _v4_baseline_require_text(
                 refspec, "refspec"
             ),
-            "source_ref": _v3_baseline_require_text(
+            "source_ref": _v4_baseline_require_text(
                 source_ref, "source_ref"
             ),
-            "pre_head_sha": _v3_baseline_require_text(
+            "pre_head_sha": _v4_baseline_require_text(
                 pre_head_sha, "pre_head_sha"
             ),
             "pre_ref_sha": pre_ref_sha,
         },
     )
-    assert isinstance(plan, V3BaselineFetchPlan)
+    assert isinstance(plan, V4BaselineFetchPlan)
     return plan
 
 
-def plan_v3_baseline_materialization(
+def plan_v4_baseline_materialization(
     *,
     task_id: str,
     task_revision: int,
@@ -764,20 +764,20 @@ def plan_v3_baseline_materialization(
     source_path: str | _BaselinePath,
     destination_path: str | _BaselinePath,
     base_sha: str,
-) -> V3BaselineMaterializationPlan:
+) -> V4BaselineMaterializationPlan:
     """Pure/read-only plan for one repository's detached analysis result."""
 
     source = _BaselinePath(
-        _v3_baseline_canonical_path(source_path, must_exist=True)
+        _v4_baseline_canonical_path(source_path, must_exist=True)
     )
-    destination = _v3_baseline_canonical_path(
+    destination = _v4_baseline_canonical_path(
         destination_path, must_exist=False
     )
     resolved_base = _git_optional(
         source, "rev-parse", "--verify", f"{base_sha}^{{commit}}"
     )
     if resolved_base != base_sha:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_MATERIALIZATION_BASE_INVALID",
             "materialization base is not the exact requested commit",
             details={
@@ -785,9 +785,9 @@ def plan_v3_baseline_materialization(
                 "resolved_base_sha": resolved_base,
             },
         )
-    with _v3_baseline_readonly_git():
+    with _v4_baseline_readonly_git():
         source_fingerprint = _fingerprint_repo(source)
-    plan = _v3_baseline_build_plan(
+    plan = _v4_baseline_build_plan(
         "materialization",
         task_id=task_id,
         task_revision=task_revision,
@@ -804,11 +804,11 @@ def plan_v3_baseline_materialization(
             ],
         },
     )
-    assert isinstance(plan, V3BaselineMaterializationPlan)
+    assert isinstance(plan, V4BaselineMaterializationPlan)
     return plan
 
 
-def plan_v3_record_index(
+def plan_v4_record_index(
     *,
     task_id: str,
     task_revision: int,
@@ -820,7 +820,7 @@ def plan_v3_record_index(
     source_path: str | _BaselinePath,
     source_snapshot_sha: str,
     external_receipt: _BaselineMapping[str, object],
-) -> V3RecordIndexPlan:
+) -> V4RecordIndexPlan:
     """Pure index-evidence plan with explicit phase/generation separation."""
 
     expected_role = {
@@ -828,32 +828,32 @@ def plan_v3_record_index(
         "current-generation-workspace": "workspace",
     }
     if phase not in expected_role or expected_role[phase] != source_role:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_PHASE_SOURCE_ROLE_MISMATCH",
             "index phase and source role do not identify the same source",
             details={"phase": phase, "source_role": source_role},
         )
     if isinstance(generation, bool) or not isinstance(generation, int):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_GENERATION_INVALID",
             "index generation must be an integer",
         )
     if phase == "baseline" and generation != 0:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_GENERATION_INVALID",
             "baseline index generation must be zero",
         )
     if phase == "current-generation-workspace" and generation <= 0:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_GENERATION_INVALID",
             "workspace index generation must be positive",
         )
     path = _BaselinePath(
-        _v3_baseline_canonical_path(source_path, must_exist=True)
+        _v4_baseline_canonical_path(source_path, must_exist=True)
     )
     actual_head = _git(path, "rev-parse", "HEAD")
     if actual_head != source_snapshot_sha:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_SOURCE_SNAPSHOT_MISMATCH",
             "index source snapshot differs from the current source HEAD",
             details={
@@ -864,17 +864,17 @@ def plan_v3_record_index(
     source_branch = _git_optional(
         path, "symbolic-ref", "--quiet", "--short", "HEAD"
     )
-    with _v3_baseline_readonly_git():
+    with _v4_baseline_readonly_git():
         status_available, source_status = _status_porcelain(path)
     if not status_available:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_SOURCE_OBSERVATION_UNAVAILABLE",
             "index source cleanliness cannot be observed",
         )
     if phase == "baseline" and (
         source_branch is not None or bool(source_status)
     ):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_BASELINE_SOURCE_INVALID",
             "baseline index source must be clean and detached",
             details={
@@ -883,16 +883,16 @@ def plan_v3_record_index(
                 "dirty": bool(source_status),
             },
         )
-    public_receipt = _v3_baseline_semantic_value(
+    public_receipt = _v4_baseline_semantic_value(
         dict(external_receipt), pointer="/external_receipt"
     )
     assert isinstance(public_receipt, dict)
     if not public_receipt:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_TYPED_RECEIPT_REQUIRED",
             "external index success requires a non-empty typed receipt",
         )
-    _v3_baseline_reject_secrets(public_receipt)
+    _v4_baseline_reject_secrets(public_receipt)
     receipt_mismatches = [
         field
         for field, expected in (
@@ -914,14 +914,14 @@ def plan_v3_record_index(
     ):
         receipt_mismatches.append("receipt_sha256")
     if receipt_mismatches:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_TYPED_RECEIPT_MISMATCH",
             "external receipt differs from the exact index source binding",
             details={"fields": sorted(set(receipt_mismatches))},
         )
-    with _v3_baseline_readonly_git():
+    with _v4_baseline_readonly_git():
         fingerprint = _fingerprint_repo(path)
-    plan = _v3_baseline_build_plan(
+    plan = _v4_baseline_build_plan(
         "record-index",
         task_id=task_id,
         task_revision=task_revision,
@@ -930,7 +930,7 @@ def plan_v3_record_index(
             "phase": phase,
             "source_role": source_role,
             "generation": generation,
-            "project_id": _v3_baseline_require_text(
+            "project_id": _v4_baseline_require_text(
                 project_id, "project_id"
             ),
             "source_path": str(path),
@@ -946,43 +946,43 @@ def plan_v3_record_index(
             "coverage_proof": False,
         },
     )
-    assert isinstance(plan, V3RecordIndexPlan)
+    assert isinstance(plan, V4RecordIndexPlan)
     return plan
 
 
-def plan_v3_record_artifact(
+def plan_v4_record_artifact(
     *,
     task_id: str,
     task_revision: int,
     repository_id: str,
     artifact_path: str | _BaselinePath,
     artifact_kind: str,
-) -> V3RecordArtifactPlan:
+) -> V4RecordArtifactPlan:
     """Pure artifact plan binding the exact canonical path, kind and hash."""
 
     path = _BaselinePath(
-        _v3_baseline_canonical_path(artifact_path, must_exist=True)
+        _v4_baseline_canonical_path(artifact_path, must_exist=True)
     )
     artifact_hash = _hash_artifact(path)
-    plan = _v3_baseline_build_plan(
+    plan = _v4_baseline_build_plan(
         "record-artifact",
         task_id=task_id,
         task_revision=task_revision,
         repository_id=repository_id,
         bindings={
             "artifact_path": str(path),
-            "artifact_kind": _v3_baseline_require_text(
+            "artifact_kind": _v4_baseline_require_text(
                 artifact_kind, "artifact_kind"
             ),
             "planned_hash": artifact_hash,
         },
     )
-    assert isinstance(plan, V3RecordArtifactPlan)
+    assert isinstance(plan, V4RecordArtifactPlan)
     return plan
 
 
 @_baseline_dataclass(frozen=True)
-class V3BaselineEffectObservation:
+class V4BaselineEffectObservation:
     action: str
     plan_sha256: str
     task_id: str
@@ -994,13 +994,13 @@ class V3BaselineEffectObservation:
     semantic_sha256: str
 
     def __post_init__(self) -> None:
-        public_result = _v3_baseline_semantic_value(
+        public_result = _v4_baseline_semantic_value(
             dict(self.result), pointer="/result"
         )
         assert isinstance(public_result, dict)
-        _v3_baseline_reject_secrets(public_result)
+        _v4_baseline_reject_secrets(public_result)
         core = {
-            "schema": _V3_BASELINE_OBSERVATION_SCHEMA,
+            "schema": _V4_BASELINE_OBSERVATION_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "task_id": self.task_id,
@@ -1010,44 +1010,44 @@ class V3BaselineEffectObservation:
             "attempt_id": self.attempt_id,
             "result": public_result,
         }
-        expected = _v3_baseline_semantic_sha256(
-            _V3_BASELINE_OBSERVATION_DOMAIN, core
+        expected = _v4_baseline_semantic_sha256(
+            _V4_BASELINE_OBSERVATION_DOMAIN, core
         )
         if expected != self.semantic_sha256:
-            raise _v3_baseline_error(
+            raise _v4_baseline_error(
                 "BASELINE_EFFECT_OBSERVATION_DIGEST_MISMATCH",
                 "dispatch observation digest does not match its bindings",
             )
         object.__setattr__(
-            self, "result", _v3_baseline_freeze(public_result)
+            self, "result", _v4_baseline_freeze(public_result)
         )
 
 
-def v3_baseline_effect_safe_inputs(
-    plan: V3BaselineEffectPlan,
+def v4_baseline_effect_safe_inputs(
+    plan: V4BaselineEffectPlan,
 ) -> dict[str, object]:
     """Return the exact safe-input binding the transaction must journal."""
 
-    if type(plan) not in set(_V3_BASELINE_PLAN_TYPES.values()):
-        raise _v3_baseline_error(
+    if type(plan) not in set(_V4_BASELINE_PLAN_TYPES.values()):
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_PLAN_TYPE_INVALID",
             "safe inputs require an exact typed baseline plan",
         )
     return {
-        "baseline_plan_schema": _V3_BASELINE_PLAN_SCHEMA,
+        "baseline_plan_schema": _V4_BASELINE_PLAN_SCHEMA,
         "baseline_action": plan.action,
         "baseline_plan_sha256": plan.semantic_sha256,
         "baseline_repository_id": plan.repository_id,
     }
 
 
-def v3_baseline_effect_scopes(
-    plan: V3BaselineEffectPlan,
+def v4_baseline_effect_scopes(
+    plan: V4BaselineEffectPlan,
 ) -> dict[str, list[str]]:
     """Return the one exact normalized scope set for the typed plan."""
 
-    if type(plan) not in set(_V3_BASELINE_PLAN_TYPES.values()):
-        raise _v3_baseline_error(
+    if type(plan) not in set(_V4_BASELINE_PLAN_TYPES.values()):
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_PLAN_TYPE_INVALID",
             "scopes require an exact typed baseline plan",
         )
@@ -1088,29 +1088,29 @@ def v3_baseline_effect_scopes(
     )
 
 
-def _v3_baseline_validate_transaction_permit(
-    plan: V3BaselineEffectPlan,
+def _v4_baseline_validate_transaction_permit(
+    plan: V4BaselineEffectPlan,
     permit: object,
 ) -> ActionDispatchPlan:
     """Accept only the exact process-local plan returned by Transaction."""
 
     if type(permit) is not WorkflowActionDispatchContext:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_TRANSACTION_PERMIT_REQUIRED",
             "direct plan dispatch is forbidden without a transaction permit",
         )
     verifier = globals().get(
-        "verify_active_v3_workflow_action_dispatch_context"
+        "verify_active_v4_workflow_action_dispatch_context"
     )
     if not callable(verifier):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_TRANSACTION_AUTHORITY_UNAVAILABLE",
             "transaction active-dispatch verifier is unavailable",
         )
     try:
         verifier(permit)
     except Exception as exc:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_TRANSACTION_PERMIT_INACTIVE",
             "transaction context is forged, copied, replayed, or inactive",
             details={
@@ -1123,11 +1123,11 @@ def _v3_baseline_validate_transaction_permit(
         ) from None
     transaction_plan = permit.plan
     if type(transaction_plan) is not ActionDispatchPlan:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_TRANSACTION_PERMIT_REQUIRED",
             "transaction context has no exact first-claim dispatch plan",
         )
-    expected_safe_inputs = v3_baseline_effect_safe_inputs(plan)
+    expected_safe_inputs = v4_baseline_effect_safe_inputs(plan)
     mismatches: list[str] = []
     if transaction_plan.task_id != plan.task_id:
         mismatches.append("task_id")
@@ -1135,7 +1135,7 @@ def _v3_baseline_validate_transaction_permit(
         mismatches.append("safe_inputs")
     if permit.settlement != "synchronous-quiescence":
         mismatches.append("settlement")
-    if permit.scopes != v3_baseline_effect_scopes(plan):
+    if permit.scopes != v4_baseline_effect_scopes(plan):
         mismatches.append("scopes")
     for field, value in (
         (
@@ -1150,7 +1150,7 @@ def _v3_baseline_validate_transaction_permit(
         ):
             mismatches.append(field)
     if mismatches:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_TRANSACTION_PERMIT_MISMATCH",
             "transaction dispatch permit differs from the immutable plan",
             details={"fields": sorted(mismatches)},
@@ -1158,13 +1158,13 @@ def _v3_baseline_validate_transaction_permit(
     return transaction_plan
 
 
-def dispatch_v3_baseline_effect(
-    plan: V3BaselineEffectPlan,
+def dispatch_v4_baseline_effect(
+    plan: V4BaselineEffectPlan,
     permit: object,
     dispatcher: _BaselineCallable[
-        [V3BaselineEffectPlan], _BaselineMapping[str, object] | None
+        [V4BaselineEffectPlan], _BaselineMapping[str, object] | None
     ],
-) -> V3BaselineEffectObservation:
+) -> V4BaselineEffectObservation:
     """Dispatch only through Transaction's just-persisted first-claim plan.
 
     Baseline never creates, persists, reconstructs, or retries a permit. The
@@ -1173,21 +1173,21 @@ def dispatch_v3_baseline_effect(
     """
 
     if not callable(dispatcher):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_DISPATCH_INVALID",
             "dispatch requires a callable effect implementation",
         )
-    transaction_plan = _v3_baseline_validate_transaction_permit(
+    transaction_plan = _v4_baseline_validate_transaction_permit(
         plan, permit
     )
     result = dispatcher(plan)
-    public_result = _v3_baseline_semantic_value(
+    public_result = _v4_baseline_semantic_value(
         dict(result or {}), pointer="/result"
     )
     assert isinstance(public_result, dict)
-    _v3_baseline_reject_secrets(public_result)
+    _v4_baseline_reject_secrets(public_result)
     core = {
-        "schema": _V3_BASELINE_OBSERVATION_SCHEMA,
+        "schema": _V4_BASELINE_OBSERVATION_SCHEMA,
         "action": plan.action,
         "plan_sha256": plan.semantic_sha256,
         "task_id": transaction_plan.task_id,
@@ -1197,7 +1197,7 @@ def dispatch_v3_baseline_effect(
         "attempt_id": transaction_plan.attempt_id,
         "result": public_result,
     }
-    return V3BaselineEffectObservation(
+    return V4BaselineEffectObservation(
         plan.action,
         plan.semantic_sha256,
         transaction_plan.task_id,
@@ -1206,27 +1206,27 @@ def dispatch_v3_baseline_effect(
         transaction_plan.claim_id,
         transaction_plan.attempt_id,
         public_result,
-        _v3_baseline_semantic_sha256(
-            _V3_BASELINE_OBSERVATION_DOMAIN, core
+        _v4_baseline_semantic_sha256(
+            _V4_BASELINE_OBSERVATION_DOMAIN, core
         ),
     )
 
 
-def dispatch_v3_baseline_fetch(
-    plan: V3BaselineFetchPlan,
+def dispatch_v4_baseline_fetch(
+    plan: V4BaselineFetchPlan,
     permit: object,
-) -> V3BaselineEffectObservation:
+) -> V4BaselineEffectObservation:
     """Fetch with a transient URL capability after exact digest revalidation."""
 
-    if type(plan) is not V3BaselineFetchPlan:
-        raise _v3_baseline_error(
+    if type(plan) is not V4BaselineFetchPlan:
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_PLAN_TYPE_INVALID",
             "fetch dispatch requires an exact fetch plan",
         )
-    _v3_baseline_validate_transaction_permit(plan, permit)
+    _v4_baseline_validate_transaction_permit(plan, permit)
 
     def _dispatch(
-        current_plan: V3BaselineEffectPlan,
+        current_plan: V4BaselineEffectPlan,
     ) -> dict[str, object]:
         bindings = current_plan.bindings
         path = _BaselinePath(str(bindings["repository_path"]))
@@ -1246,7 +1246,7 @@ def dispatch_v3_baseline_fetch(
             or _redact_sensitive_text(live_url)
             != bindings["remote_url"]
         ):
-            raise _v3_baseline_error(
+            raise _v4_baseline_error(
                 "BASELINE_FETCH_REMOTE_BINDING_MISMATCH",
                 "live fetch capability differs from the approved remote",
                 details={
@@ -1308,7 +1308,7 @@ def dispatch_v3_baseline_fetch(
                 str(bindings["refspec"]),
             )
         except FlowError as exc:
-            raise _v3_baseline_error(
+            raise _v4_baseline_error(
                 "BASELINE_FETCH_DISPATCH_FAILED",
                 "approved fetch invocation failed",
                 details={
@@ -1329,30 +1329,30 @@ def dispatch_v3_baseline_fetch(
             "pre_head_sha": bindings["pre_head_sha"],
         }
 
-    return dispatch_v3_baseline_effect(plan, permit, _dispatch)
+    return dispatch_v4_baseline_effect(plan, permit, _dispatch)
 
 
-def _v3_baseline_validate_observe_context(
-    plan: V3BaselineEffectPlan,
+def _v4_baseline_validate_observe_context(
+    plan: V4BaselineEffectPlan,
     context: object,
 ) -> dict[str, object]:
     if type(context) is not WorkflowActionObserveContext:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_OBSERVE_CONTEXT_REQUIRED",
             "receipt observation requires Transaction's exact observe-only context",
         )
     verifier = globals().get(
-        "verify_active_v3_workflow_action_observe_context"
+        "verify_active_v4_workflow_action_observe_context"
     )
     if not callable(verifier):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_TRANSACTION_AUTHORITY_UNAVAILABLE",
             "transaction observe-only verifier is unavailable",
         )
     try:
         facts = verifier(context)
     except Exception as exc:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_OBSERVE_CONTEXT_INACTIVE",
             "observe-only context is forged, copied, stale, or inactive",
             details={
@@ -1364,7 +1364,7 @@ def _v3_baseline_validate_observe_context(
             },
         ) from None
     if not isinstance(facts, dict):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_OBSERVE_CONTEXT_MISMATCH",
             "observe-only verifier returned invalid authority facts",
         )
@@ -1375,12 +1375,12 @@ def _v3_baseline_validate_observe_context(
             (
                 "safe_inputs",
                 facts.get("safe_inputs"),
-                v3_baseline_effect_safe_inputs(plan),
+                v4_baseline_effect_safe_inputs(plan),
             ),
             (
                 "scopes",
                 facts.get("scopes"),
-                v3_baseline_effect_scopes(plan),
+                v4_baseline_effect_scopes(plan),
             ),
             (
                 "settlement",
@@ -1391,7 +1391,7 @@ def _v3_baseline_validate_observe_context(
         if actual != expected
     ]
     if mismatches:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_OBSERVE_CONTEXT_MISMATCH",
             "observe-only context does not bind the immutable effect plan",
             details={"fields": mismatches},
@@ -1399,15 +1399,15 @@ def _v3_baseline_validate_observe_context(
     return facts
 
 
-def _v3_baseline_verify_dispatch_observation(
-    plan: V3BaselineEffectPlan,
+def _v4_baseline_verify_dispatch_observation(
+    plan: V4BaselineEffectPlan,
     facts: _BaselineMapping[str, object],
-    observation: V3BaselineEffectObservation | None,
+    observation: V4BaselineEffectObservation | None,
 ) -> None:
     if observation is None:
         return
-    if type(observation) is not V3BaselineEffectObservation:
-        raise _v3_baseline_error(
+    if type(observation) is not V4BaselineEffectObservation:
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_OBSERVATION_INVALID",
             "receipt observation requires the exact typed dispatch observation",
         )
@@ -1433,7 +1433,7 @@ def _v3_baseline_verify_dispatch_observation(
         if actual != expected
     ]
     if mismatches:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_OBSERVATION_MISMATCH",
             "dispatch observation differs from the durable observe context",
             details={"fields": mismatches},
@@ -1441,7 +1441,7 @@ def _v3_baseline_verify_dispatch_observation(
 
 
 @_baseline_dataclass(frozen=True)
-class V3BaselineEffectReceipt:
+class V4BaselineEffectReceipt:
     action: str
     plan_sha256: str
     claim_id: str
@@ -1456,18 +1456,18 @@ class V3BaselineEffectReceipt:
 
     def __post_init__(self) -> None:
         expected_type = {
-            "fetch": "V3BaselineFetchReceipt",
-            "materialization": "V3BaselineMaterializationReceipt",
-            "record-index": "V3RecordIndexReceipt",
-            "record-artifact": "V3RecordArtifactReceipt",
+            "fetch": "V4BaselineFetchReceipt",
+            "materialization": "V4BaselineMaterializationReceipt",
+            "record-index": "V4RecordIndexReceipt",
+            "record-artifact": "V4RecordArtifactReceipt",
         }.get(self.action)
         if type(self).__name__ != expected_type:
-            raise _v3_baseline_error(
+            raise _v4_baseline_error(
                 "BASELINE_EFFECT_RECEIPT_TYPE_INVALID",
                 "typed receipt class does not match its action",
             )
-        _v3_baseline_require_text(self.claim_id, "claim_id")
-        _v3_baseline_require_text(self.attempt_id, "attempt_id")
+        _v4_baseline_require_text(self.claim_id, "claim_id")
+        _v4_baseline_require_text(self.attempt_id, "attempt_id")
         for field_name in (
             "journal_record_sha256",
             "index_record_sha256",
@@ -1481,17 +1481,17 @@ class V3BaselineEffectReceipt:
                     r"[0-9a-f]{64}", value
                 )
             ):
-                raise _v3_baseline_error(
+                raise _v4_baseline_error(
                     "BASELINE_EFFECT_RECEIPT_BINDING_INVALID",
                     f"{field_name} must be lowercase SHA-256",
                 )
-        public_observation = _v3_baseline_semantic_value(
+        public_observation = _v4_baseline_semantic_value(
             dict(self.observation), pointer="/observation"
         )
         assert isinstance(public_observation, dict)
-        _v3_baseline_reject_secrets(public_observation)
+        _v4_baseline_reject_secrets(public_observation)
         core = {
-            "schema": _V3_BASELINE_RECEIPT_SCHEMA,
+            "schema": _V4_BASELINE_RECEIPT_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "claim_id": self.claim_id,
@@ -1507,23 +1507,23 @@ class V3BaselineEffectReceipt:
             "repository_id": self.repository_id,
             "observation": public_observation,
         }
-        expected = _v3_baseline_semantic_sha256(
-            _V3_BASELINE_RECEIPT_DOMAIN, core
+        expected = _v4_baseline_semantic_sha256(
+            _V4_BASELINE_RECEIPT_DOMAIN, core
         )
         if expected != self.semantic_sha256:
-            raise _v3_baseline_error(
+            raise _v4_baseline_error(
                 "BASELINE_EFFECT_RECEIPT_DIGEST_MISMATCH",
                 "effect receipt digest does not match its bindings",
             )
         object.__setattr__(
             self,
             "observation",
-            _v3_baseline_freeze(public_observation),
+            _v4_baseline_freeze(public_observation),
         )
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema": _V3_BASELINE_RECEIPT_SCHEMA,
+            "schema": _V4_BASELINE_RECEIPT_SCHEMA,
             "action": self.action,
             "plan_sha256": self.plan_sha256,
             "claim_id": self.claim_id,
@@ -1537,50 +1537,50 @@ class V3BaselineEffectReceipt:
                 self.observe_context_sha256
             ),
             "repository_id": self.repository_id,
-            "observation": _v3_baseline_thaw(self.observation),
+            "observation": _v4_baseline_thaw(self.observation),
             "semantic_sha256": self.semantic_sha256,
         }
 
 
 @_baseline_dataclass(frozen=True)
-class V3BaselineFetchReceipt(V3BaselineEffectReceipt):
+class V4BaselineFetchReceipt(V4BaselineEffectReceipt):
     pass
 
 
 @_baseline_dataclass(frozen=True)
-class V3BaselineMaterializationReceipt(V3BaselineEffectReceipt):
+class V4BaselineMaterializationReceipt(V4BaselineEffectReceipt):
     pass
 
 
 @_baseline_dataclass(frozen=True)
-class V3RecordIndexReceipt(V3BaselineEffectReceipt):
+class V4RecordIndexReceipt(V4BaselineEffectReceipt):
     pass
 
 
 @_baseline_dataclass(frozen=True)
-class V3RecordArtifactReceipt(V3BaselineEffectReceipt):
+class V4RecordArtifactReceipt(V4BaselineEffectReceipt):
     pass
 
 
-_V3_BASELINE_RECEIPT_TYPES = {
-    "fetch": V3BaselineFetchReceipt,
-    "materialization": V3BaselineMaterializationReceipt,
-    "record-index": V3RecordIndexReceipt,
-    "record-artifact": V3RecordArtifactReceipt,
+_V4_BASELINE_RECEIPT_TYPES = {
+    "fetch": V4BaselineFetchReceipt,
+    "materialization": V4BaselineMaterializationReceipt,
+    "record-index": V4RecordIndexReceipt,
+    "record-artifact": V4RecordArtifactReceipt,
 }
 
 
-def _v3_baseline_build_receipt(
-    plan: V3BaselineEffectPlan,
+def _v4_baseline_build_receipt(
+    plan: V4BaselineEffectPlan,
     facts: _BaselineMapping[str, object],
     observed: _BaselineMapping[str, object],
-) -> V3BaselineEffectReceipt:
-    public = _v3_baseline_semantic_value(
+) -> V4BaselineEffectReceipt:
+    public = _v4_baseline_semantic_value(
         dict(observed), pointer="/observation"
     )
     assert isinstance(public, dict)
     core = {
-        "schema": _V3_BASELINE_RECEIPT_SCHEMA,
+        "schema": _V4_BASELINE_RECEIPT_SCHEMA,
         "action": plan.action,
         "plan_sha256": plan.semantic_sha256,
         "claim_id": facts["claim_id"],
@@ -1598,7 +1598,7 @@ def _v3_baseline_build_receipt(
         "repository_id": plan.repository_id,
         "observation": public,
     }
-    receipt_type = _V3_BASELINE_RECEIPT_TYPES[plan.action]
+    receipt_type = _V4_BASELINE_RECEIPT_TYPES[plan.action]
     return receipt_type(
         plan.action,
         plan.semantic_sha256,
@@ -1610,35 +1610,35 @@ def _v3_baseline_build_receipt(
         str(facts["observe_context_sha256"]),
         plan.repository_id,
         public,
-        _v3_baseline_semantic_sha256(
-            _V3_BASELINE_RECEIPT_DOMAIN, core
+        _v4_baseline_semantic_sha256(
+            _V4_BASELINE_RECEIPT_DOMAIN, core
         ),
     )
 
 
-def observe_v3_baseline_fetch(
-    plan: V3BaselineFetchPlan,
+def observe_v4_baseline_fetch(
+    plan: V4BaselineFetchPlan,
     observe_context: object,
-    observation: V3BaselineEffectObservation | None = None,
-) -> V3BaselineFetchReceipt:
+    observation: V4BaselineEffectObservation | None = None,
+) -> V4BaselineFetchReceipt:
     """Observe-only fetch receipt; this function cannot invoke fetch."""
 
-    if type(plan) is not V3BaselineFetchPlan:
-        raise _v3_baseline_error(
+    if type(plan) is not V4BaselineFetchPlan:
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_PLAN_TYPE_INVALID",
             "fetch observation requires an exact fetch plan",
         )
-    facts = _v3_baseline_validate_observe_context(
+    facts = _v4_baseline_validate_observe_context(
         plan, observe_context
     )
-    _v3_baseline_verify_dispatch_observation(
+    _v4_baseline_verify_dispatch_observation(
         plan, facts, observation
     )
     bindings = plan.bindings
     path = _BaselinePath(str(bindings["repository_path"]))
     actual_head = _git(path, "rev-parse", "HEAD")
     if actual_head != bindings["pre_head_sha"]:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_FETCH_POSTCONDITION_MISMATCH",
             "fetch changed or no longer observes the bound checkout HEAD",
         )
@@ -1654,7 +1654,7 @@ def observe_v3_baseline_fetch(
         )
         or _redact_sensitive_text(live_url) != bindings["remote_url"]
     ):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_FETCH_POSTCONDITION_MISMATCH",
             "fetch remote binding differs from the immutable plan",
             details={
@@ -1675,11 +1675,11 @@ def observe_v3_baseline_fetch(
         f"{bindings['source_ref']}^{{commit}}",
     )
     if not post_ref_sha:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "BASELINE_FETCH_POSTCONDITION_MISMATCH",
             "fetch did not leave the planned source ref observable",
         )
-    receipt = _v3_baseline_build_receipt(
+    receipt = _v4_baseline_build_receipt(
         plan,
         facts,
         {
@@ -1696,33 +1696,33 @@ def observe_v3_baseline_fetch(
         },
     )
     live_url = None
-    assert isinstance(receipt, V3BaselineFetchReceipt)
+    assert isinstance(receipt, V4BaselineFetchReceipt)
     return receipt
 
 
-def observe_v3_baseline_materialization(
-    plan: V3BaselineMaterializationPlan,
+def observe_v4_baseline_materialization(
+    plan: V4BaselineMaterializationPlan,
     observe_context: object,
-    observation: V3BaselineEffectObservation | None = None,
-) -> V3BaselineMaterializationReceipt:
+    observation: V4BaselineEffectObservation | None = None,
+) -> V4BaselineMaterializationReceipt:
     """Re-observe the exact clean detached result for one repository."""
 
-    if type(plan) is not V3BaselineMaterializationPlan:
-        raise _v3_baseline_error(
+    if type(plan) is not V4BaselineMaterializationPlan:
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_PLAN_TYPE_INVALID",
             "materialization observation requires its exact typed plan",
         )
-    facts = _v3_baseline_validate_observe_context(
+    facts = _v4_baseline_validate_observe_context(
         plan, observe_context
     )
-    _v3_baseline_verify_dispatch_observation(
+    _v4_baseline_verify_dispatch_observation(
         plan, facts, observation
     )
     bindings = plan.bindings
     source = _BaselinePath(str(bindings["source_path"]))
     destination = _BaselinePath(str(bindings["destination_path"]))
     if not destination.is_dir():
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "ANALYSIS_WORKSPACE_VERIFY_FAILED",
             "materialized destination does not exist",
             details={"path": str(destination)},
@@ -1735,7 +1735,7 @@ def observe_v3_baseline_materialization(
         "--short",
         "HEAD",
     )
-    with _v3_baseline_readonly_git():
+    with _v4_baseline_readonly_git():
         status_available, status_porcelain = _status_porcelain(
             destination
         )
@@ -1756,7 +1756,7 @@ def observe_v3_baseline_materialization(
         or not common_dir_matches
         or not linked
     ):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "ANALYSIS_WORKSPACE_VERIFY_FAILED",
             "materialized result is not the exact clean detached worktree",
             details={
@@ -1766,7 +1766,7 @@ def observe_v3_baseline_materialization(
                 "dirty": bool(status_porcelain),
             },
         )
-    with _v3_baseline_readonly_git():
+    with _v4_baseline_readonly_git():
         source_fingerprint = _fingerprint_repo(source)
     if (
         source_fingerprint["sha256"]
@@ -1774,13 +1774,13 @@ def observe_v3_baseline_materialization(
         or source_fingerprint["capability_profile_sha256"]
         != bindings["source_capability_profile_sha256"]
     ):
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "SOURCE_WORKTREE_CHANGED",
             "source checkout changed after materialization planning",
         )
-    with _v3_baseline_readonly_git():
+    with _v4_baseline_readonly_git():
         fingerprint = _fingerprint_repo(destination)
-    receipt = _v3_baseline_build_receipt(
+    receipt = _v4_baseline_build_receipt(
         plan,
         facts,
         {
@@ -1796,26 +1796,26 @@ def observe_v3_baseline_materialization(
             ],
         },
     )
-    assert isinstance(receipt, V3BaselineMaterializationReceipt)
+    assert isinstance(receipt, V4BaselineMaterializationReceipt)
     return receipt
 
 
-def observe_v3_record_index(
-    plan: V3RecordIndexPlan,
+def observe_v4_record_index(
+    plan: V4RecordIndexPlan,
     observe_context: object,
-    observation: V3BaselineEffectObservation | None = None,
-) -> V3RecordIndexReceipt:
+    observation: V4BaselineEffectObservation | None = None,
+) -> V4RecordIndexReceipt:
     """Re-observe the source and preserve index evidence as discovery only."""
 
-    if type(plan) is not V3RecordIndexPlan:
-        raise _v3_baseline_error(
+    if type(plan) is not V4RecordIndexPlan:
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_PLAN_TYPE_INVALID",
             "index observation requires an exact record-index plan",
         )
-    facts = _v3_baseline_validate_observe_context(
+    facts = _v4_baseline_validate_observe_context(
         plan, observe_context
     )
-    _v3_baseline_verify_dispatch_observation(
+    _v4_baseline_verify_dispatch_observation(
         plan, facts, observation
     )
     bindings = plan.bindings
@@ -1824,7 +1824,7 @@ def observe_v3_record_index(
     branch = _git_optional(
         path, "symbolic-ref", "--quiet", "--short", "HEAD"
     )
-    with _v3_baseline_readonly_git():
+    with _v4_baseline_readonly_git():
         status_available, status_porcelain = _status_porcelain(path)
         fingerprint = _fingerprint_repo(path)
     mismatches = []
@@ -1854,12 +1854,12 @@ def observe_v3_record_index(
         if field in result and result[field] != bindings[field]:
             mismatches.append("external_result." + field)
     if mismatches:
-        raise _v3_baseline_error(
+        raise _v4_baseline_error(
             "INDEX_OBSERVATION_MISMATCH",
             "index observation differs from its phase/source binding",
             details={"fields": sorted(mismatches)},
         )
-    receipt = _v3_baseline_build_receipt(
+    receipt = _v4_baseline_build_receipt(
         plan,
         facts,
         {
@@ -1878,38 +1878,38 @@ def observe_v3_record_index(
             "coverage_proof": False,
         },
     )
-    assert isinstance(receipt, V3RecordIndexReceipt)
+    assert isinstance(receipt, V4RecordIndexReceipt)
     return receipt
 
 
-def observe_v3_record_artifact(
-    plan: V3RecordArtifactPlan,
+def observe_v4_record_artifact(
+    plan: V4RecordArtifactPlan,
     observe_context: object,
-    observation: V3BaselineEffectObservation | None = None,
-) -> V3RecordArtifactReceipt:
+    observation: V4BaselineEffectObservation | None = None,
+) -> V4RecordArtifactReceipt:
     """Re-hash the exact path before issuing an artifact receipt."""
 
-    if type(plan) is not V3RecordArtifactPlan:
-        raise _v3_baseline_error(
+    if type(plan) is not V4RecordArtifactPlan:
+        raise _v4_baseline_error(
             "BASELINE_EFFECT_PLAN_TYPE_INVALID",
             "artifact observation requires an exact record-artifact plan",
         )
-    facts = _v3_baseline_validate_observe_context(
+    facts = _v4_baseline_validate_observe_context(
         plan, observe_context
     )
-    _v3_baseline_verify_dispatch_observation(
+    _v4_baseline_verify_dispatch_observation(
         plan, facts, observation
     )
     bindings = plan.bindings
     path = _BaselinePath(str(bindings["artifact_path"]))
     actual_hash = _hash_artifact(path)
-    if actual_hash != _v3_baseline_thaw(bindings["planned_hash"]):
-        raise _v3_baseline_error(
+    if actual_hash != _v4_baseline_thaw(bindings["planned_hash"]):
+        raise _v4_baseline_error(
             "ARTIFACT_CHANGED",
             "artifact path content changed after immutable planning",
             details={"path": str(path)},
         )
-    receipt = _v3_baseline_build_receipt(
+    receipt = _v4_baseline_build_receipt(
         plan,
         facts,
         {
@@ -1918,7 +1918,7 @@ def observe_v3_record_artifact(
             "artifact_hash": actual_hash,
         },
     )
-    assert isinstance(receipt, V3RecordArtifactReceipt)
+    assert isinstance(receipt, V4RecordArtifactReceipt)
     return receipt
 
 
@@ -2658,7 +2658,7 @@ def command_baseline(args: argparse.Namespace) -> dict[str, Any]:
                 ):
                     raise FlowError(
                         "EVIDENCE_REGENERATION_REQUIRED",
-                        "legacy baseline no longer resolves to its recorded immutable object",
+                        "baseline no longer resolves to its recorded immutable object",
                         details={
                             "repository_id": repo["id"],
                             "recorded_base_sha": previous_baseline.get(
@@ -3356,7 +3356,7 @@ def command_record_index(args: argparse.Namespace) -> dict[str, Any]:
         )
         if automatic_state_transition:
             _require_automatic_action(
-                _flow(current),
+                current,
                 "record-index",
                 str(current.get("status")),
                 str(state_value.get("status")),
@@ -3533,7 +3533,7 @@ def _validate_impact_analysis_contract(
     metadata = _impact_analysis_canonical_projection(metadata)
     if metadata.get("schema") != "dev-flow-impact-analysis/v1":
         _impact_contract_error(
-            "schema-v2 tasks require dev-flow-impact-analysis/v1 metadata"
+            "current V4 tasks require dev-flow-impact-analysis/v1 metadata"
         )
     if metadata.get("strategy") != "funnel":
         _impact_contract_error("impact strategy must be funnel")
@@ -3950,8 +3950,8 @@ def command_set_route(args: argparse.Namespace) -> dict[str, Any]:
             route_record["impact_analysis_sha256"] = (
                 impact_metadata["impact_analysis_sha256"]
             )
-        if current.get("schema_version") == V3_TASK_SCHEMA_VERSION:
-            state_value = _v3_command_set_route_commit(
+        if current.get("schema_version") == V4_TASK_SCHEMA_VERSION:
+            state_value = _v4_command_set_route_commit(
                 current,
                 task_dir,
                 route=route,
@@ -4152,7 +4152,7 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
                     )
         route_intent: dict[str, Any] | None = None
         if (
-            current.get("schema_version") != V3_TASK_SCHEMA_VERSION
+            current.get("schema_version") != V4_TASK_SCHEMA_VERSION
             and args.gate == "route"
             and _uses_confirmation_contract(current)
         ):
@@ -4234,8 +4234,8 @@ def command_approve(args: argparse.Namespace) -> dict[str, Any]:
             approval["planning_context_sha256"] = _planning_context_sha256(
                 plan_context
             )
-        if current.get("schema_version") == V3_TASK_SCHEMA_VERSION:
-            state_value, approval = _v3_command_approve_commit(
+        if current.get("schema_version") == V4_TASK_SCHEMA_VERSION:
+            state_value, approval = _v4_command_approve_commit(
                 current,
                 task_dir,
                 args,

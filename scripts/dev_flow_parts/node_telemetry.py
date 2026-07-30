@@ -20,15 +20,7 @@ from pathlib import Path as _NodeTelemetryPath
 from types import MappingProxyType
 from typing import Iterator, Mapping, Sequence
 
-try:  # POSIX process lock; Windows uses msvcrt below.
-    import fcntl as _node_telemetry_fcntl
-except ImportError:  # pragma: no cover - exercised only on native Windows
-    _node_telemetry_fcntl = None  # type: ignore[assignment]
-
-try:  # Windows byte-range lock; absent on POSIX.
-    import msvcrt as _node_telemetry_msvcrt
-except ImportError:  # pragma: no cover - exercised only on POSIX
-    _node_telemetry_msvcrt = None  # type: ignore[assignment]
+import fcntl as _node_telemetry_fcntl
 
 
 NODE_TELEMETRY_SCHEMA = "dev-flow-node-telemetry/v1"
@@ -884,30 +876,16 @@ def _node_telemetry_acquire_os_lock(
 ) -> None:
     while True:
         try:
-            if _node_telemetry_fcntl is not None:
-                _node_telemetry_fcntl.lockf(
-                    handle.fileno(),  # type: ignore[attr-defined]
-                    (
-                        _node_telemetry_fcntl.LOCK_EX
-                        | _node_telemetry_fcntl.LOCK_NB
-                    ),
-                    1,
-                    0,
-                    _node_telemetry_os.SEEK_SET,
-                )
-            elif _node_telemetry_msvcrt is not None:
-                handle.seek(0)  # type: ignore[attr-defined]
-                _node_telemetry_msvcrt.locking(
-                    handle.fileno(),  # type: ignore[attr-defined]
-                    _node_telemetry_msvcrt.LK_NBLCK,
-                    1,
-                )
-            else:
-                raise OSError(
-                    _node_telemetry_errno.ENOSYS,
-                    "no supported telemetry lock backend",
-                    str(lock_path),
-                )
+            _node_telemetry_fcntl.lockf(
+                handle.fileno(),  # type: ignore[attr-defined]
+                (
+                    _node_telemetry_fcntl.LOCK_EX
+                    | _node_telemetry_fcntl.LOCK_NB
+                ),
+                1,
+                0,
+                _node_telemetry_os.SEEK_SET,
+            )
             return
         except OSError as exc:
             if (
@@ -928,21 +906,13 @@ def _node_telemetry_acquire_os_lock(
 def _node_telemetry_release_os_lock(
     handle: object,
 ) -> None:
-    if _node_telemetry_fcntl is not None:
-        _node_telemetry_fcntl.lockf(
-            handle.fileno(),  # type: ignore[attr-defined]
-            _node_telemetry_fcntl.LOCK_UN,
-            1,
-            0,
-            _node_telemetry_os.SEEK_SET,
-        )
-    elif _node_telemetry_msvcrt is not None:
-        handle.seek(0)  # type: ignore[attr-defined]
-        _node_telemetry_msvcrt.locking(
-            handle.fileno(),  # type: ignore[attr-defined]
-            _node_telemetry_msvcrt.LK_UNLCK,
-            1,
-        )
+    _node_telemetry_fcntl.lockf(
+        handle.fileno(),  # type: ignore[attr-defined]
+        _node_telemetry_fcntl.LOCK_UN,
+        1,
+        0,
+        _node_telemetry_os.SEEK_SET,
+    )
 
 
 def _node_telemetry_open_regular(
@@ -1017,8 +987,7 @@ def _node_telemetry_store_lock(
         handle = _node_telemetry_open_regular(
             lock_path, create=True
         )
-        if _node_telemetry_os.name != "nt":
-            _node_telemetry_os.chmod(lock_path, 0o600)
+        _node_telemetry_os.chmod(lock_path, 0o600)
         handle.seek(0, _node_telemetry_os.SEEK_END)
         if handle.tell() == 0:
             handle.write(b"\0")
@@ -1045,8 +1014,6 @@ def _node_telemetry_store_lock(
 def _node_telemetry_fsync_directory(
     directory: _NodeTelemetryPath,
 ) -> None:
-    if _node_telemetry_os.name == "nt":
-        return
     descriptor = _node_telemetry_os.open(
         directory, _node_telemetry_os.O_RDONLY
     )
@@ -1065,8 +1032,7 @@ def _node_telemetry_atomic_create(
     )
     temporary = _NodeTelemetryPath(temporary_name)
     try:
-        if _node_telemetry_os.name != "nt":
-            _node_telemetry_os.fchmod(descriptor, 0o600)
+        _node_telemetry_os.fchmod(descriptor, 0o600)
         with _node_telemetry_os.fdopen(descriptor, "wb") as handle:
             descriptor = -1
             handle.write(content)
@@ -1208,7 +1174,7 @@ def _node_telemetry_created_directory(
             "telemetry store path is not a controller-owned directory",
             str(path),
         )
-    if not existed and _node_telemetry_os.name != "nt":
+    if not existed:
         _node_telemetry_os.chmod(path, 0o700)
 
 

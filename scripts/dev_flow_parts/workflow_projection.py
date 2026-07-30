@@ -94,29 +94,6 @@ def _workflow_projection_resolution(
     return bundle, resolution
 
 
-def _workflow_projection_historical_status(
-    state: Mapping[str, object],
-    resolution: Mapping[str, object],
-) -> Mapping[str, object] | None:
-    status = _workflow_runtime_reserved_unexposed_v3(
-        state, resolution
-    )
-    return status if isinstance(status, Mapping) else None
-
-
-def _workflow_projection_historical_locator(
-    bundle: object,
-    node: Mapping[str, object],
-) -> dict[str, object]:
-    return {
-        "kind": "reserved-unexposed-v3",
-        "inspection": _workflow_projection_playbook(bundle, node)[
-            "locator"
-        ],
-        "safety_control": "unavailable",
-    }
-
-
 def _workflow_projection_playbook(
     bundle: object,
     node: Mapping[str, object],
@@ -384,15 +361,11 @@ def workflow_progress_projection(
             details={"node_id": status},
         )
     position = tuple(ordered).index(status)
-    historical_status = _workflow_projection_historical_status(
-        state, resolution
-    )
     pending_gates = []
-    if historical_status is None:
-        for edge in bundle.legal_edges(status):
-            gate = edge.get("gate")
-            if isinstance(gate, Mapping):
-                pending_gates.append(_workflow_projection_public(gate))
+    for edge in bundle.legal_edges(status):
+        gate = edge.get("gate")
+        if isinstance(gate, Mapping):
+            pending_gates.append(_workflow_projection_public(gate))
     labels = node.get("labels")
     if not isinstance(labels, Mapping):
         raise WorkflowProjectionError(
@@ -410,7 +383,6 @@ def workflow_progress_projection(
                 "schema",
                 "graph_sha256",
                 "bundle_sha256",
-                "adapter",
             )
             if key in resolution
         },
@@ -427,10 +399,6 @@ def workflow_progress_projection(
         "required_sections": list(node.get("required_sections", ())),
         "playbook": _workflow_projection_playbook(bundle, node),
     }
-    if historical_status is not None:
-        result["historical_status"] = _workflow_projection_public(
-            historical_status
-        )
     return result
 
 
@@ -447,17 +415,10 @@ def workflow_node_description(
             "WORKFLOW_NODE_UNKNOWN", "node identity is required"
         )
     node = bundle.node(selected)
-    historical_status = _workflow_projection_historical_status(
-        state, resolution
-    )
-    legal_edges = (
-        []
-        if historical_status is not None
-        else [
-            _workflow_projection_edge_action(bundle, edge, node)
-            for edge in bundle.legal_edges(selected)
-        ]
-    )
+    legal_edges = [
+        _workflow_projection_edge_action(bundle, edge, node)
+        for edge in bundle.legal_edges(selected)
+    ]
     result = {
         "contract": WORKFLOW_NODE_DESCRIPTION,
         "workflow": {
@@ -468,7 +429,6 @@ def workflow_node_description(
                 "schema",
                 "graph_sha256",
                 "bundle_sha256",
-                "adapter",
             )
             if key in resolution
         },
@@ -476,13 +436,6 @@ def workflow_node_description(
         "legal_actions": legal_edges,
         "playbook": _workflow_projection_playbook(bundle, node),
     }
-    if historical_status is not None:
-        result["historical_status"] = _workflow_projection_public(
-            historical_status
-        )
-        result["safety_locator"] = (
-            _workflow_projection_historical_locator(bundle, node)
-        )
     return result
 
 
@@ -598,42 +551,28 @@ def build_workflow_task_next(
             "task status is required for agent projection",
         )
     node = bundle.node(status)
-    historical_status = _workflow_projection_historical_status(
-        state, resolution
-    )
-    if historical_status is not None:
-        actions = []
-        condition: dict[str, object] = {
-            "kind": "historical-blocked",
-            "code": WORKFLOW_RESERVED_UNEXPOSED_BLOCKER,
-            "node_id": status,
-            "safety_control": "unavailable",
-            "reason": "v3-transitive-identity-closure-incomplete",
-        }
-        locator = _workflow_projection_historical_locator(bundle, node)
-    else:
-        actions = [
-            _workflow_projection_edge_action(
-                bundle, edge, node, compact=True
-            )
-            for edge in bundle.legal_edges(status)
-        ]
-        condition = {
-            "kind": (
-                "terminal"
-                if bool(node.get("terminal"))
-                else "blocked"
-                if status == "BLOCKED"
-                else "waiting"
-                if bool(node.get("waiting"))
-                else "ready"
-            ),
-            "node_id": status,
-            "required_sections": list(
-                node.get("required_sections", ())
-            ),
-        }
-        locator = _workflow_projection_playbook(bundle, node)
+    actions = [
+        _workflow_projection_edge_action(
+            bundle, edge, node, compact=True
+        )
+        for edge in bundle.legal_edges(status)
+    ]
+    condition: dict[str, object] = {
+        "kind": (
+            "terminal"
+            if bool(node.get("terminal"))
+            else "blocked"
+            if status == "BLOCKED"
+            else "waiting"
+            if bool(node.get("waiting"))
+            else "ready"
+        ),
+        "node_id": status,
+        "required_sections": list(
+            node.get("required_sections", ())
+        ),
+    }
+    locator = _workflow_projection_playbook(bundle, node)
     workflow_ref = {
         key: resolution[key]
         for key in (
@@ -642,7 +581,6 @@ def build_workflow_task_next(
             "schema",
             "graph_sha256",
             "bundle_sha256",
-            "adapter",
         )
         if key in resolution
     }

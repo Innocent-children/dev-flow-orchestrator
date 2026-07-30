@@ -4,6 +4,64 @@
 from __future__ import annotations
 
 
+def _workflow_v4_gate_outcome_builder(projection, _capabilities):
+    """Return only approval material already validated by the kernel."""
+
+    return {
+        "gate_id": projection.get("gate_id"),
+        "proposed_edge_id": projection.get("proposed_edge_id"),
+        "approval": projection.get("approval"),
+    }
+
+
+def _workflow_v4_reduce_invalidate_plan(_projection, _capabilities):
+    return {
+        "set": {"/review_snapshots": []},
+        "remove": ["/approvals/plan", "/approvals/review"],
+        "operations": ["increment-planning-generation"],
+    }
+
+
+def _workflow_v4_reduce_invalidate_review(_projection, _capabilities):
+    return {
+        "set": {"/review_snapshots": []},
+        "remove": ["/approvals/review"],
+        "operations": [],
+    }
+
+
+def _workflow_v4_reduce_impact_reassess(_projection, _capabilities):
+    return {
+        "set": {
+            "/route": None,
+            "/review_snapshots": [],
+            "/status": "INDEXED",
+        },
+        "remove": [
+            "/approvals/plan",
+            "/approvals/review",
+            "/approvals/route",
+            "/approvals/workspace",
+        ],
+        "operations": [
+            "increment-impact-generation",
+            "retire-current-workspaces",
+            "increment-workspace-generation",
+        ],
+    }
+
+
+def _workflow_v4_reduce_cancel(projection, _capabilities):
+    return {
+        "set": {
+            "/status": "CANCELLED",
+            "/cancelled": projection.get("cancelled"),
+        },
+        "remove": [],
+        "operations": [],
+    }
+
+
 def _v4_dispatch_executor(request: object, capabilities: object) -> object:
     """Authorize dispatch only after the durable V4 claim is contained."""
 
@@ -494,495 +552,297 @@ def _workflow_v4_manager_default_actions(
     )
 
 
-def install_v4_runtime_policy(
-    namespace: dict[str, object],
-) -> None:
-    """Install V4-only behavior after the sealed runtime is available."""
+def execute_v4_workflow_action_transaction(
+    state_value: dict[str, object],
+    task_dir: object,
+    invocation: object,
+    **keyword_arguments: object,
+) -> object:
+    """Execute one task-pinned V4 action through its sealed handler closure."""
 
-    if not isinstance(namespace, dict):
+    outcome = getattr(invocation, "action_outcome", None)
+    action_id = getattr(outcome, "action_id", None)
+    if not isinstance(action_id, str) or not action_id:
         raise WorkflowStateError(
-            "WORKFLOW_RUNTIME_NAMESPACE_INVALID",
-            "V4 runtime policy requires the shared module namespace",
+            "WORKFLOW_HANDLER_CLOSURE_INVALID",
+            "V4 transaction lacks an exact action identity",
         )
-    original = namespace.get("_manager_default_actions")
-    if not callable(original):
-        raise WorkflowStateError(
-            "WORKFLOW_RUNTIME_NAMESPACE_INVALID",
-            "manager capability projection boundary is unavailable",
-        )
-    if getattr(original, "_dev_flow_v4_wrapper", False):
-        return
+    handlers = _workflow_v4_handler_callables(state_value, action_id)
+    arguments = dict(keyword_arguments)
+    dispatcher = arguments.get("dispatcher")
+    observer = arguments.get("observer")
 
-    def manager_default_actions_with_v4(
-        state_value: dict[str, object],
-    ) -> tuple[str, ...]:
-        reference = state_value.get("workflow_ref")
-        if (
-            state_value.get("schema_version")
-            == V3_TASK_SCHEMA_VERSION
-            and isinstance(reference, Mapping)
-            and reference.get("version") == 4
-        ):
-            return _workflow_v4_manager_default_actions(state_value)
-        return original(state_value)
-
-    manager_default_actions_with_v4._dev_flow_v4_wrapper = True
-    manager_default_actions_with_v4.__name__ = (
-        "_manager_default_actions"
-    )
-    namespace["_manager_default_actions"] = (
-        manager_default_actions_with_v4
-    )
-
-    original_transaction = namespace.get(
-        "execute_v3_workflow_action_transaction"
-    )
-    if not callable(original_transaction):
-        raise WorkflowStateError(
-            "WORKFLOW_RUNTIME_NAMESPACE_INVALID",
-            "workflow action transaction boundary is unavailable",
-        )
-    if not getattr(
-        original_transaction, "_dev_flow_v4_wrapper", False
-    ):
-        def execute_workflow_action_transaction_with_v4(
-            state_value: dict[str, object],
-            task_dir: object,
-            invocation: object,
-            **keyword_arguments: object,
-        ) -> object:
-            reference = state_value.get("workflow_ref")
-            if not (
-                state_value.get("schema_version")
-                == V3_TASK_SCHEMA_VERSION
-                and isinstance(reference, Mapping)
-                and reference.get("version") == 4
-            ):
-                return original_transaction(
-                    state_value,
-                    task_dir,
-                    invocation,
-                    **keyword_arguments,
-                )
-            outcome = getattr(invocation, "action_outcome", None)
-            action_id = getattr(outcome, "action_id", None)
-            if not isinstance(action_id, str) or not action_id:
-                raise WorkflowStateError(
-                    "WORKFLOW_HANDLER_CLOSURE_INVALID",
-                    "V4 transaction lacks an exact action identity",
-                )
-            handlers = _workflow_v4_handler_callables(
-                state_value, action_id
+    if callable(dispatcher):
+        def authorized_dispatch(context: object) -> object:
+            _workflow_v4_handler_authorize(
+                handlers["containment"],
+                "containment",
+                {"durable_crosslink": True, "target_bound": True},
             )
-            arguments = dict(keyword_arguments)
-            dispatcher = arguments.get("dispatcher")
-            observer = arguments.get("observer")
-
-            if callable(dispatcher):
-                def dispatch_with_v4(context: object) -> object:
-                    _workflow_v4_handler_authorize(
-                        handlers["containment"],
-                        "containment",
-                        {
-                            "durable_crosslink": True,
-                            "target_bound": True,
-                        },
-                    )
-                    _workflow_v4_handler_authorize(
-                        handlers["dispatch"],
-                        "dispatch",
-                        {
-                            "claim_phase": "CLAIMED",
-                            "containment_phase": "SPAWN_PENDING",
-                            "single_dispatch": True,
-                        },
-                    )
-                    observed = dispatcher(context)
-                    if type(observed) is WorkflowActionEffectObservation:
-                        _workflow_v4_handler_authorize(
-                            handlers["observation"],
-                            "observation",
-                            {
-                                "redispatch": False,
-                                "target_bound": True,
-                            },
-                        )
-                    return observed
-
-                arguments["dispatcher"] = dispatch_with_v4
-
-            if callable(observer):
-                def observe_with_v4(context: object) -> object:
-                    observed = observer(context)
-                    _workflow_v4_handler_authorize(
-                        handlers["observation"],
-                        "observation",
-                        {
-                            "redispatch": False,
-                            "target_bound": True,
-                        },
-                    )
-                    return observed
-
-                arguments["observer"] = observe_with_v4
-
-            if arguments.get("target_execution_id") is not None:
+            _workflow_v4_handler_authorize(
+                handlers["dispatch"],
+                "dispatch",
+                {
+                    "claim_phase": "CLAIMED",
+                    "containment_phase": "SPAWN_PENDING",
+                    "single_dispatch": True,
+                },
+            )
+            observed = dispatcher(context)
+            if type(observed) is WorkflowActionEffectObservation:
                 _workflow_v4_handler_authorize(
-                    handlers["control"],
-                    "control",
-                    {
-                        "target_bound": True,
-                        "fresh_authority": True,
-                    },
+                    handlers["observation"],
+                    "observation",
+                    {"redispatch": False, "target_bound": True},
                 )
+            return observed
 
-            result = original_transaction(
-                state_value,
-                task_dir,
-                invocation,
-                **arguments,
+        arguments["dispatcher"] = authorized_dispatch
+
+    if callable(observer):
+        def authorized_observation(context: object) -> object:
+            observed = observer(context)
+            _workflow_v4_handler_authorize(
+                handlers["observation"],
+                "observation",
+                {"redispatch": False, "target_bound": True},
             )
-            if getattr(result, "status", None) in {
-                "COMMITTED",
-                "RECOVERED_COMMITTED",
-            }:
-                _workflow_v4_handler_authorize(
-                    handlers["settlement"],
-                    "settlement",
-                    {
-                        "receipt_verified": True,
-                        "fresh_authority": True,
-                    },
-                )
-            if getattr(result, "archive_path", None) is not None:
-                _workflow_v4_handler_authorize(
-                    handlers["archive"],
-                    "archive",
-                    {
-                        "terminal": True,
-                        "index_closed": True,
-                    },
-                )
-            return result
+            return observed
 
-        execute_workflow_action_transaction_with_v4._dev_flow_v4_wrapper = (
-            True
-        )
-        execute_workflow_action_transaction_with_v4.__name__ = (
-            "execute_v3_workflow_action_transaction"
-        )
-        namespace["execute_v3_workflow_action_transaction"] = (
-            execute_workflow_action_transaction_with_v4
+        arguments["observer"] = authorized_observation
+
+    if arguments.get("target_execution_id") is not None:
+        _workflow_v4_handler_authorize(
+            handlers["control"],
+            "control",
+            {"target_bound": True, "fresh_authority": True},
         )
 
-    original_recovery = namespace.get(
-        "recover_v3_workflow_action_transaction"
+    result = _execute_v4_workflow_action_transaction_core(
+        state_value,
+        task_dir,
+        invocation,
+        **arguments,
     )
-    if not callable(original_recovery):
-        raise WorkflowStateError(
-            "WORKFLOW_RUNTIME_NAMESPACE_INVALID",
-            "workflow action recovery boundary is unavailable",
+    if getattr(result, "status", None) in {
+        "COMMITTED",
+        "RECOVERED_COMMITTED",
+    }:
+        _workflow_v4_handler_authorize(
+            handlers["settlement"],
+            "settlement",
+            {"receipt_verified": True, "fresh_authority": True},
         )
-    if not getattr(original_recovery, "_dev_flow_v4_wrapper", False):
-        def recover_workflow_action_transaction_with_v4(
-            task_dir: object,
-            execution_id: str,
-            **keyword_arguments: object,
-        ) -> object:
-            task_path = _WorkflowTxPath(task_dir).resolve(strict=True)
-            state_value = load_state(task_path / "state.json")
-            reference = state_value.get("workflow_ref")
-            if not (
-                state_value.get("schema_version")
-                == V3_TASK_SCHEMA_VERSION
-                and isinstance(reference, Mapping)
-                and reference.get("version") == 4
-            ):
-                return original_recovery(
-                    task_dir,
-                    execution_id,
-                    **keyword_arguments,
-                )
+    if getattr(result, "archive_path", None) is not None:
+        _workflow_v4_handler_authorize(
+            handlers["archive"],
+            "archive",
+            {"terminal": True, "index_closed": True},
+        )
+    return result
 
-            arguments = dict(keyword_arguments)
-            live_authenticator = arguments.get(
-                "live_runtime_authenticator"
+
+def recover_v4_workflow_action_transaction(
+    task_dir: object,
+    execution_id: str,
+    **keyword_arguments: object,
+) -> object:
+    """Recover a V4 action without redispatch authority."""
+
+    task_path = _WorkflowTxPath(task_dir).resolve(strict=True)
+    state_value = load_state(task_path / "state.json")
+    arguments = dict(keyword_arguments)
+    live_authenticator = arguments.get("live_runtime_authenticator")
+    resolved_handlers: dict[str, object] | None = None
+    resolved_action_id: str | None = None
+
+    def handlers_for_journal(journal: object) -> dict[str, object]:
+        nonlocal resolved_handlers, resolved_action_id
+        plan = journal.get("plan") if isinstance(journal, Mapping) else None
+        action_id = plan.get("action_id") if isinstance(plan, Mapping) else None
+        if not isinstance(action_id, str) or not action_id:
+            bindings = (
+                journal.get("bindings")
+                if isinstance(journal, Mapping)
+                else None
             )
-            resolved_handlers: dict[str, object] | None = None
-            resolved_action_id: str | None = None
-
-            def handlers_for_journal(
-                journal: object,
-            ) -> dict[str, object]:
-                nonlocal resolved_handlers, resolved_action_id
-                plan = (
-                    journal.get("plan")
-                    if isinstance(journal, Mapping)
-                    else None
-                )
-                action_id = (
-                    plan.get("action_id")
-                    if isinstance(plan, Mapping)
-                    else None
-                )
-                if not isinstance(action_id, str) or not action_id:
-                    bindings = (
-                        journal.get("bindings")
-                        if isinstance(journal, Mapping)
-                        else None
-                    )
-                    edge_id = (
-                        bindings.get(
-                            "authorization_action_edge_id"
-                        )
-                        if isinstance(bindings, Mapping)
-                        else None
-                    )
-                    bundle = _workflow_transition_bundle(
-                        state_value
-                    )
-                    matches = [
-                        edge
-                        for edge in bundle.action_edges
-                        if edge.get("id") == edge_id
-                    ]
-                    trigger = (
-                        matches[0].get("trigger")
-                        if len(matches) == 1
-                        else None
-                    )
-                    action_id = (
-                        trigger.get("id")
-                        if isinstance(trigger, Mapping)
-                        else None
-                    )
-                if not isinstance(action_id, str) or not action_id:
-                    raise WorkflowStateError(
-                        "WORKFLOW_HANDLER_CLOSURE_INVALID",
-                        "V4 recovery journal lacks an exact action identity",
-                    )
-                if (
-                    resolved_handlers is None
-                    or resolved_action_id != action_id
-                ):
-                    resolved_handlers = _workflow_v4_handler_callables(
-                        state_value, action_id
-                    )
-                    resolved_action_id = action_id
-                return resolved_handlers
-
-            if callable(live_authenticator):
-                def authenticate_live_with_v4(
-                    journal: object,
-                    containment: object,
-                    binding: object,
-                ) -> bool:
-                    authenticated = live_authenticator(
-                        journal, containment, binding
-                    )
-                    if authenticated is not True:
-                        return False
-                    handlers = handlers_for_journal(journal)
-                    _workflow_v4_handler_authorize(
-                        handlers["reattachment"],
-                        "reattachment",
-                        {
-                            "authenticated_live_handle": True,
-                            "redispatch": False,
-                        },
-                    )
-                    return True
-
-                arguments["live_runtime_authenticator"] = (
-                    authenticate_live_with_v4
-                )
-
-            result = original_recovery(
-                task_dir,
-                execution_id,
-                **arguments,
+            edge_id = (
+                bindings.get("authorization_action_edge_id")
+                if isinstance(bindings, Mapping)
+                else None
             )
-            journal = getattr(result, "journal", None)
-            status = getattr(result, "status", None)
-            if isinstance(journal, Mapping):
-                handlers = handlers_for_journal(journal)
-                if status == "QUARANTINE_REQUIRED":
-                    _workflow_v4_handler_authorize(
-                        handlers["unresolved"],
-                        "unresolved",
-                        {
-                            "scope_blocked": True,
-                            "redispatch": False,
-                        },
-                    )
-                if status == "RECOVERED_COMMITTED":
-                    _workflow_v4_handler_authorize(
-                        handlers["accepted"],
-                        "accepted",
-                        {
-                            "stored_receipt_verified": True,
-                            "fresh_authority": True,
-                        },
-                    )
-                    _workflow_v4_handler_authorize(
-                        handlers["settlement"],
-                        "settlement",
-                        {
-                            "receipt_verified": True,
-                            "fresh_authority": True,
-                        },
-                    )
-                if getattr(result, "archive_path", None) is not None:
-                    _workflow_v4_handler_authorize(
-                        handlers["archive"],
-                        "archive",
-                        {
-                            "terminal": True,
-                            "index_closed": True,
-                        },
-                    )
-            return result
-
-        recover_workflow_action_transaction_with_v4._dev_flow_v4_wrapper = (
-            True
-        )
-        recover_workflow_action_transaction_with_v4.__name__ = (
-            "recover_v3_workflow_action_transaction"
-        )
-        namespace["recover_v3_workflow_action_transaction"] = (
-            recover_workflow_action_transaction_with_v4
-        )
-
-    original_reconciliation = namespace.get(
-        "reconcile_v3_workflow_action_quarantine"
-    )
-    if not callable(original_reconciliation):
-        raise WorkflowStateError(
-            "WORKFLOW_RUNTIME_NAMESPACE_INVALID",
-            "workflow action reconciliation boundary is unavailable",
-        )
-    if not getattr(
-        original_reconciliation, "_dev_flow_v4_wrapper", False
-    ):
-        def reconcile_workflow_action_quarantine_with_v4(
-            task_dir: object,
-            request: object,
-            **keyword_arguments: object,
-        ) -> object:
-            if getattr(request, "workflow_version", None) != "4":
-                return original_reconciliation(
-                    task_dir,
-                    request,
-                    **keyword_arguments,
-                )
-            task_path = _WorkflowTxPath(task_dir).resolve(strict=True)
-            state_value = load_state(task_path / "state.json")
             bundle = _workflow_transition_bundle(state_value)
-            edge_id = getattr(request, "action_edge_id", None)
             matches = [
                 edge
                 for edge in bundle.action_edges
                 if edge.get("id") == edge_id
             ]
-            trigger = (
-                matches[0].get("trigger")
-                if len(matches) == 1
-                else None
-            )
+            trigger = matches[0].get("trigger") if len(matches) == 1 else None
             action_id = (
                 trigger.get("id")
                 if isinstance(trigger, Mapping)
                 else None
             )
-            if not isinstance(action_id, str) and isinstance(
-                edge_id, str
-            ):
-                action_id = edge_id
-            if not isinstance(action_id, str) or not action_id:
-                raise WorkflowStateError(
-                    "WORKFLOW_HANDLER_CLOSURE_INVALID",
-                    "V4 reconciliation target lacks an exact action identity",
-                )
-            handlers = _workflow_v4_handler_callables(
+        if not isinstance(action_id, str) or not action_id:
+            raise WorkflowStateError(
+                "WORKFLOW_HANDLER_CLOSURE_INVALID",
+                "V4 recovery journal lacks an exact action identity",
+            )
+        if resolved_handlers is None or resolved_action_id != action_id:
+            resolved_handlers = _workflow_v4_handler_callables(
                 state_value, action_id
             )
+            resolved_action_id = action_id
+        return resolved_handlers
+
+    if callable(live_authenticator):
+        def authenticate_live(
+            journal: object,
+            containment: object,
+            binding: object,
+        ) -> bool:
+            authenticated = live_authenticator(
+                journal, containment, binding
+            )
+            if authenticated is not True:
+                return False
+            handlers = handlers_for_journal(journal)
             _workflow_v4_handler_authorize(
-                handlers["containment"],
-                "containment",
+                handlers["reattachment"],
+                "reattachment",
                 {
-                    "durable_crosslink": True,
-                    "target_bound": True,
+                    "authenticated_live_handle": True,
+                    "redispatch": False,
                 },
             )
-            result = original_reconciliation(
-                task_dir,
-                request,
-                **keyword_arguments,
-            )
-            status = getattr(result, "status", None)
-            if status == "ACCEPTED":
-                _workflow_v4_handler_authorize(
-                    handlers["accepted"],
-                    "accepted",
-                    {
-                        "stored_receipt_verified": True,
-                        "fresh_authority": True,
-                    },
-                )
-            elif status == "ABANDONED":
-                _workflow_v4_handler_authorize(
-                    handlers["abandoned"],
-                    "abandoned",
-                    {
-                        "controller_owned_live_evidence": True,
-                        "target_bound": True,
-                        "no_business_outcome": True,
-                    },
-                )
-            elif status == "COMPENSATED":
-                _workflow_v4_handler_authorize(
-                    handlers["compensation"],
-                    "compensation",
-                    {
-                        "workflow_gate_verified": True,
-                        "opaque_host_grant_consumed": True,
-                        "new_execution": True,
-                    },
-                )
-            elif status == "UNRESOLVED":
-                _workflow_v4_handler_authorize(
-                    handlers["unresolved"],
-                    "unresolved",
-                    {
-                        "scope_blocked": True,
-                        "redispatch": False,
-                    },
-                )
-            if getattr(result, "archive_path", None) is not None:
-                _workflow_v4_handler_authorize(
-                    handlers["archive"],
-                    "archive",
-                    {
-                        "terminal": True,
-                        "index_closed": True,
-                    },
-                )
-                _workflow_v4_handler_authorize(
-                    handlers["unblock"],
-                    "unblock",
-                    {
-                        "terminal_reconciliation": True,
-                        "archive_verified": True,
-                    },
-                )
-            return result
+            return True
 
-        reconcile_workflow_action_quarantine_with_v4._dev_flow_v4_wrapper = (
-            True
+        arguments["live_runtime_authenticator"] = authenticate_live
+
+    result = _recover_v4_workflow_action_transaction_core(
+        task_dir,
+        execution_id,
+        **arguments,
+    )
+    journal = getattr(result, "journal", None)
+    status = getattr(result, "status", None)
+    if isinstance(journal, Mapping):
+        handlers = handlers_for_journal(journal)
+        if status == "QUARANTINE_REQUIRED":
+            _workflow_v4_handler_authorize(
+                handlers["unresolved"],
+                "unresolved",
+                {"scope_blocked": True, "redispatch": False},
+            )
+        if status == "RECOVERED_COMMITTED":
+            _workflow_v4_handler_authorize(
+                handlers["accepted"],
+                "accepted",
+                {
+                    "stored_receipt_verified": True,
+                    "fresh_authority": True,
+                },
+            )
+            _workflow_v4_handler_authorize(
+                handlers["settlement"],
+                "settlement",
+                {"receipt_verified": True, "fresh_authority": True},
+            )
+        if getattr(result, "archive_path", None) is not None:
+            _workflow_v4_handler_authorize(
+                handlers["archive"],
+                "archive",
+                {"terminal": True, "index_closed": True},
+            )
+    return result
+
+
+def reconcile_v4_workflow_action_quarantine(
+    task_dir: object,
+    request: object,
+    **keyword_arguments: object,
+) -> object:
+    """Reconcile one quarantined V4 action through its exact handler closure."""
+
+    task_path = _WorkflowTxPath(task_dir).resolve(strict=True)
+    state_value = load_state(task_path / "state.json")
+    bundle = _workflow_transition_bundle(state_value)
+    edge_id = getattr(request, "action_edge_id", None)
+    matches = [
+        edge
+        for edge in bundle.action_edges
+        if edge.get("id") == edge_id
+    ]
+    trigger = matches[0].get("trigger") if len(matches) == 1 else None
+    action_id = (
+        trigger.get("id") if isinstance(trigger, Mapping) else None
+    )
+    if not isinstance(action_id, str) and isinstance(edge_id, str):
+        action_id = edge_id
+    if not isinstance(action_id, str) or not action_id:
+        raise WorkflowStateError(
+            "WORKFLOW_HANDLER_CLOSURE_INVALID",
+            "V4 reconciliation target lacks an exact action identity",
         )
-        reconcile_workflow_action_quarantine_with_v4.__name__ = (
-            "reconcile_v3_workflow_action_quarantine"
+    handlers = _workflow_v4_handler_callables(state_value, action_id)
+    _workflow_v4_handler_authorize(
+        handlers["containment"],
+        "containment",
+        {"durable_crosslink": True, "target_bound": True},
+    )
+    result = _reconcile_v4_workflow_action_quarantine_core(
+        task_dir,
+        request,
+        **keyword_arguments,
+    )
+    status = getattr(result, "status", None)
+    authorizations = {
+        "ACCEPTED": (
+            "accepted",
+            {
+                "stored_receipt_verified": True,
+                "fresh_authority": True,
+            },
+        ),
+        "ABANDONED": (
+            "abandoned",
+            {
+                "controller_owned_live_evidence": True,
+                "target_bound": True,
+                "no_business_outcome": True,
+            },
+        ),
+        "COMPENSATED": (
+            "compensation",
+            {
+                "workflow_gate_verified": True,
+                "opaque_host_grant_consumed": True,
+                "new_execution": True,
+            },
+        ),
+        "UNRESOLVED": (
+            "unresolved",
+            {"scope_blocked": True, "redispatch": False},
+        ),
+    }
+    authorization = authorizations.get(status)
+    if authorization is not None:
+        role, fields = authorization
+        _workflow_v4_handler_authorize(
+            handlers[role], role, fields
         )
-        namespace["reconcile_v3_workflow_action_quarantine"] = (
-            reconcile_workflow_action_quarantine_with_v4
+    if getattr(result, "archive_path", None) is not None:
+        _workflow_v4_handler_authorize(
+            handlers["archive"],
+            "archive",
+            {"terminal": True, "index_closed": True},
         )
+        _workflow_v4_handler_authorize(
+            handlers["unblock"],
+            "unblock",
+            {
+                "terminal_reconciliation": True,
+                "archive_verified": True,
+            },
+        )
+    return result

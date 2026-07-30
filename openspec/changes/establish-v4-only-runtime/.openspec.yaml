@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-07-30
+goal: 交付一个仅包含 full@4 和 lite@4 的纯净 schema-v4 plugin，不包含任何前代 workflow code、asset、wrapper 或 data-handling contract。

@@ -2499,7 +2499,7 @@ class RuntimeHandleRecord:
         )
 
     def workflow_reference(self) -> dict[str, object]:
-        """Return only the safe locator accepted by schema-v3 task state."""
+        """Return only the safe locator accepted by schema-v4 task state."""
 
         value: dict[str, object] = {
             "schema": RUNTIME_HANDLE_SCHEMA,

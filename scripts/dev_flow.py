@@ -42,8 +42,6 @@ _DEV_FLOW_PART_NAMES = (
     "workflow_registry.py",
     "workflow_handlers.py",
     "workflow_builtin_handlers.py",
-    "workflow_v3_handlers.py",
-    "workflow_v4_handlers.py",
     "workflow_catalog.py",
     "workflow_state.py",
     "transition_engine.py",
@@ -62,6 +60,7 @@ _DEV_FLOW_PART_NAMES = (
     "workflow_action_service.py",
     "workflow_action_transaction.py",
     "workflow_action_reconciliation.py",
+    "workflow_v4_handlers.py",
     "orchestration_action_adapters.py",
     "core.py",
     "mutation.py",
@@ -125,8 +124,6 @@ try:
     # initializer publishes its singleton only after the complete audit and
     # catalog load succeed, so a partial runtime is never observable.
     _WORKFLOW_RUNTIME_SERVICES = initialize_workflow_runtime(globals())
-    install_reserved_unexposed_v3_loader_policy(globals())
-    install_v4_runtime_policy(globals())
 finally:
     if (
         _DevFlowBootstrapModuleSentinel is not None

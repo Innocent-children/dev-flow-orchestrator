@@ -3,7 +3,13 @@
   "audit_policy": "dev-flow-handler-audit/v1",
   "registry": "gates",
   "implementation_file_sets": {
-    "approval-controller-v1": [
+    "v4-gate-outcome-v1": [
+      {
+        "path": "scripts/dev_flow_parts/workflow_v4_handlers.py",
+        "kind": "T"
+      }
+    ],
+    "gate-baseline-fetch-v1-v4-2": [
       {
         "path": "scripts/dev_flow_parts/baseline.py",
         "kind": "T"
@@ -41,13 +47,343 @@
         "kind": "T"
       },
       {
+        "path": "scripts/dev_flow_parts/transition_engine.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_runtime.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
         "path": "scripts/dev_flow_parts/workspace.py",
         "kind": "T"
       }
     ],
-    "v3-gate-outcome-v1": [
+    "gate-impact-degraded-v1-v4-6": [
       {
-        "path": "scripts/dev_flow_parts/workflow_v3_handlers.py",
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/transition_engine.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_runtime.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "gate-lite-v1-v4-10": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/transition_engine.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_runtime.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "gate-plan-v1-v4-14": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/transition_engine.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_runtime.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "gate-review-v1-v4-18": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/transition_engine.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_runtime.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "gate-route-v1-v4-22": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/transition_engine.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_runtime.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
+        "kind": "T"
+      }
+    ],
+    "gate-workspace-v1-v4-26": [
+      {
+        "path": "scripts/dev_flow_parts/baseline.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/cli.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/commands.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/core.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/git.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/mutation.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/process.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/review.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/scope.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/transition_engine.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_runtime.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workflow_transition_service.py",
+        "kind": "T"
+      },
+      {
+        "path": "scripts/dev_flow_parts/workspace.py",
         "kind": "T"
       }
     ]
@@ -62,9 +398,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "v3-gate-outcome-v1",
+      "implementation_file_set": "v4-gate-outcome-v1",
       "symbols": {
-        "builder": "_workflow_v3_gate_outcome_builder"
+        "builder": "_workflow_v4_gate_outcome_builder"
       },
       "audit": {
         "profile": "pure-v1",
@@ -79,39 +415,43 @@
         "approval-build"
       ],
       "capabilities": [
-        "legacy.approval-command"
+        "controller.approval-command"
       ],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "approval-controller-v1",
+      "implementation_file_set": "gate-baseline-fetch-v1-v4-2",
       "symbols": {
         "builder": "command_approve"
       },
       "audit": {
-        "profile": "legacy-controller-v1",
+        "profile": "controller-v1",
         "allowed_globals": [
-          "V3_TASK_SCHEMA_VERSION",
+          "V4_TASK_SCHEMA_VERSION",
           "WorkflowCatalogError",
           "WorkflowHandlerAuditError",
           "WorkflowStateError",
-          "_v3_command_approve_commit",
+          "_manager_engine_evaluation_state_v1",
+          "_v4_command_approve_commit",
           "manager_process_commit_gate_v1",
           "resolve_loaded_task_workflow",
           "validate_task_state_for_mutation",
-          "validate_v3_task_state"
+          "validate_v4_task_state"
         ],
         "allowed_imports": [
           "contextlib",
           "contextvars",
+          "copy",
+          "dataclasses",
           "datetime",
           "errno",
           "fcntl",
           "hashlib",
+          "hmac",
           "json",
-          "msvcrt",
           "os",
           "pathlib",
           "re",
+          "secrets",
           "shutil",
           "stat",
           "subprocess",
@@ -119,6 +459,8 @@
           "tempfile",
           "threading",
           "time",
+          "types",
+          "typing",
           "unicodedata",
           "urllib",
           "uuid"
@@ -134,9 +476,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "v3-gate-outcome-v1",
+      "implementation_file_set": "v4-gate-outcome-v1",
       "symbols": {
-        "builder": "_workflow_v3_gate_outcome_builder"
+        "builder": "_workflow_v4_gate_outcome_builder"
       },
       "audit": {
         "profile": "pure-v1",
@@ -151,39 +493,43 @@
         "approval-build"
       ],
       "capabilities": [
-        "legacy.approval-command"
+        "controller.approval-command"
       ],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "approval-controller-v1",
+      "implementation_file_set": "gate-impact-degraded-v1-v4-6",
       "symbols": {
         "builder": "command_approve"
       },
       "audit": {
-        "profile": "legacy-controller-v1",
+        "profile": "controller-v1",
         "allowed_globals": [
-          "V3_TASK_SCHEMA_VERSION",
+          "V4_TASK_SCHEMA_VERSION",
           "WorkflowCatalogError",
           "WorkflowHandlerAuditError",
           "WorkflowStateError",
-          "_v3_command_approve_commit",
+          "_manager_engine_evaluation_state_v1",
+          "_v4_command_approve_commit",
           "manager_process_commit_gate_v1",
           "resolve_loaded_task_workflow",
           "validate_task_state_for_mutation",
-          "validate_v3_task_state"
+          "validate_v4_task_state"
         ],
         "allowed_imports": [
           "contextlib",
           "contextvars",
+          "copy",
+          "dataclasses",
           "datetime",
           "errno",
           "fcntl",
           "hashlib",
+          "hmac",
           "json",
-          "msvcrt",
           "os",
           "pathlib",
           "re",
+          "secrets",
           "shutil",
           "stat",
           "subprocess",
@@ -191,6 +537,8 @@
           "tempfile",
           "threading",
           "time",
+          "types",
+          "typing",
           "unicodedata",
           "urllib",
           "uuid"
@@ -206,9 +554,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "v3-gate-outcome-v1",
+      "implementation_file_set": "v4-gate-outcome-v1",
       "symbols": {
-        "builder": "_workflow_v3_gate_outcome_builder"
+        "builder": "_workflow_v4_gate_outcome_builder"
       },
       "audit": {
         "profile": "pure-v1",
@@ -223,39 +571,43 @@
         "approval-build"
       ],
       "capabilities": [
-        "legacy.approval-command"
+        "controller.approval-command"
       ],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "approval-controller-v1",
+      "implementation_file_set": "gate-lite-v1-v4-10",
       "symbols": {
         "builder": "command_approve"
       },
       "audit": {
-        "profile": "legacy-controller-v1",
+        "profile": "controller-v1",
         "allowed_globals": [
-          "V3_TASK_SCHEMA_VERSION",
+          "V4_TASK_SCHEMA_VERSION",
           "WorkflowCatalogError",
           "WorkflowHandlerAuditError",
           "WorkflowStateError",
-          "_v3_command_approve_commit",
+          "_manager_engine_evaluation_state_v1",
+          "_v4_command_approve_commit",
           "manager_process_commit_gate_v1",
           "resolve_loaded_task_workflow",
           "validate_task_state_for_mutation",
-          "validate_v3_task_state"
+          "validate_v4_task_state"
         ],
         "allowed_imports": [
           "contextlib",
           "contextvars",
+          "copy",
+          "dataclasses",
           "datetime",
           "errno",
           "fcntl",
           "hashlib",
+          "hmac",
           "json",
-          "msvcrt",
           "os",
           "pathlib",
           "re",
+          "secrets",
           "shutil",
           "stat",
           "subprocess",
@@ -263,6 +615,8 @@
           "tempfile",
           "threading",
           "time",
+          "types",
+          "typing",
           "unicodedata",
           "urllib",
           "uuid"
@@ -278,9 +632,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "v3-gate-outcome-v1",
+      "implementation_file_set": "v4-gate-outcome-v1",
       "symbols": {
-        "builder": "_workflow_v3_gate_outcome_builder"
+        "builder": "_workflow_v4_gate_outcome_builder"
       },
       "audit": {
         "profile": "pure-v1",
@@ -295,39 +649,43 @@
         "approval-build"
       ],
       "capabilities": [
-        "legacy.approval-command"
+        "controller.approval-command"
       ],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "approval-controller-v1",
+      "implementation_file_set": "gate-plan-v1-v4-14",
       "symbols": {
         "builder": "command_approve"
       },
       "audit": {
-        "profile": "legacy-controller-v1",
+        "profile": "controller-v1",
         "allowed_globals": [
-          "V3_TASK_SCHEMA_VERSION",
+          "V4_TASK_SCHEMA_VERSION",
           "WorkflowCatalogError",
           "WorkflowHandlerAuditError",
           "WorkflowStateError",
-          "_v3_command_approve_commit",
+          "_manager_engine_evaluation_state_v1",
+          "_v4_command_approve_commit",
           "manager_process_commit_gate_v1",
           "resolve_loaded_task_workflow",
           "validate_task_state_for_mutation",
-          "validate_v3_task_state"
+          "validate_v4_task_state"
         ],
         "allowed_imports": [
           "contextlib",
           "contextvars",
+          "copy",
+          "dataclasses",
           "datetime",
           "errno",
           "fcntl",
           "hashlib",
+          "hmac",
           "json",
-          "msvcrt",
           "os",
           "pathlib",
           "re",
+          "secrets",
           "shutil",
           "stat",
           "subprocess",
@@ -335,6 +693,8 @@
           "tempfile",
           "threading",
           "time",
+          "types",
+          "typing",
           "unicodedata",
           "urllib",
           "uuid"
@@ -350,9 +710,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "v3-gate-outcome-v1",
+      "implementation_file_set": "v4-gate-outcome-v1",
       "symbols": {
-        "builder": "_workflow_v3_gate_outcome_builder"
+        "builder": "_workflow_v4_gate_outcome_builder"
       },
       "audit": {
         "profile": "pure-v1",
@@ -367,39 +727,43 @@
         "approval-build"
       ],
       "capabilities": [
-        "legacy.approval-command"
+        "controller.approval-command"
       ],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "approval-controller-v1",
+      "implementation_file_set": "gate-review-v1-v4-18",
       "symbols": {
         "builder": "command_approve"
       },
       "audit": {
-        "profile": "legacy-controller-v1",
+        "profile": "controller-v1",
         "allowed_globals": [
-          "V3_TASK_SCHEMA_VERSION",
+          "V4_TASK_SCHEMA_VERSION",
           "WorkflowCatalogError",
           "WorkflowHandlerAuditError",
           "WorkflowStateError",
-          "_v3_command_approve_commit",
+          "_manager_engine_evaluation_state_v1",
+          "_v4_command_approve_commit",
           "manager_process_commit_gate_v1",
           "resolve_loaded_task_workflow",
           "validate_task_state_for_mutation",
-          "validate_v3_task_state"
+          "validate_v4_task_state"
         ],
         "allowed_imports": [
           "contextlib",
           "contextvars",
+          "copy",
+          "dataclasses",
           "datetime",
           "errno",
           "fcntl",
           "hashlib",
+          "hmac",
           "json",
-          "msvcrt",
           "os",
           "pathlib",
           "re",
+          "secrets",
           "shutil",
           "stat",
           "subprocess",
@@ -407,6 +771,8 @@
           "tempfile",
           "threading",
           "time",
+          "types",
+          "typing",
           "unicodedata",
           "urllib",
           "uuid"
@@ -422,9 +788,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "v3-gate-outcome-v1",
+      "implementation_file_set": "v4-gate-outcome-v1",
       "symbols": {
-        "builder": "_workflow_v3_gate_outcome_builder"
+        "builder": "_workflow_v4_gate_outcome_builder"
       },
       "audit": {
         "profile": "pure-v1",
@@ -439,39 +805,43 @@
         "approval-build"
       ],
       "capabilities": [
-        "legacy.approval-command"
+        "controller.approval-command"
       ],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "approval-controller-v1",
+      "implementation_file_set": "gate-route-v1-v4-22",
       "symbols": {
         "builder": "command_approve"
       },
       "audit": {
-        "profile": "legacy-controller-v1",
+        "profile": "controller-v1",
         "allowed_globals": [
-          "V3_TASK_SCHEMA_VERSION",
+          "V4_TASK_SCHEMA_VERSION",
           "WorkflowCatalogError",
           "WorkflowHandlerAuditError",
           "WorkflowStateError",
-          "_v3_command_approve_commit",
+          "_manager_engine_evaluation_state_v1",
+          "_v4_command_approve_commit",
           "manager_process_commit_gate_v1",
           "resolve_loaded_task_workflow",
           "validate_task_state_for_mutation",
-          "validate_v3_task_state"
+          "validate_v4_task_state"
         ],
         "allowed_imports": [
           "contextlib",
           "contextvars",
+          "copy",
+          "dataclasses",
           "datetime",
           "errno",
           "fcntl",
           "hashlib",
+          "hmac",
           "json",
-          "msvcrt",
           "os",
           "pathlib",
           "re",
+          "secrets",
           "shutil",
           "stat",
           "subprocess",
@@ -479,6 +849,8 @@
           "tempfile",
           "threading",
           "time",
+          "types",
+          "typing",
           "unicodedata",
           "urllib",
           "uuid"
@@ -494,9 +866,9 @@
       "capabilities": [],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "v3-gate-outcome-v1",
+      "implementation_file_set": "v4-gate-outcome-v1",
       "symbols": {
-        "builder": "_workflow_v3_gate_outcome_builder"
+        "builder": "_workflow_v4_gate_outcome_builder"
       },
       "audit": {
         "profile": "pure-v1",
@@ -511,39 +883,43 @@
         "approval-build"
       ],
       "capabilities": [
-        "legacy.approval-command"
+        "controller.approval-command"
       ],
       "input_schema_ref": "schema.gate.projection/v1",
       "output_schema_ref": "schema.gate.result/v1",
-      "implementation_file_set": "approval-controller-v1",
+      "implementation_file_set": "gate-workspace-v1-v4-26",
       "symbols": {
         "builder": "command_approve"
       },
       "audit": {
-        "profile": "legacy-controller-v1",
+        "profile": "controller-v1",
         "allowed_globals": [
-          "V3_TASK_SCHEMA_VERSION",
+          "V4_TASK_SCHEMA_VERSION",
           "WorkflowCatalogError",
           "WorkflowHandlerAuditError",
           "WorkflowStateError",
-          "_v3_command_approve_commit",
+          "_manager_engine_evaluation_state_v1",
+          "_v4_command_approve_commit",
           "manager_process_commit_gate_v1",
           "resolve_loaded_task_workflow",
           "validate_task_state_for_mutation",
-          "validate_v3_task_state"
+          "validate_v4_task_state"
         ],
         "allowed_imports": [
           "contextlib",
           "contextvars",
+          "copy",
+          "dataclasses",
           "datetime",
           "errno",
           "fcntl",
           "hashlib",
+          "hmac",
           "json",
-          "msvcrt",
           "os",
           "pathlib",
           "re",
+          "secrets",
           "shutil",
           "stat",
           "subprocess",
@@ -551,6 +927,8 @@
           "tempfile",
           "threading",
           "time",
+          "types",
+          "typing",
           "unicodedata",
           "urllib",
           "uuid"

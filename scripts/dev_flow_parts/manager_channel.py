@@ -1,6 +1,6 @@
 # Loaded by scripts/dev_flow.py into its shared module namespace.
 # Do not import this implementation fragment directly.
-# Responsibility: manager-only secret transport and schema-v3 CLI authority.
+# Responsibility: manager-only secret transport and schema-v4 CLI authority.
 from __future__ import annotations
 
 import copy as _manager_copy
@@ -182,8 +182,7 @@ def _manager_system_monotonic_ns() -> int:
     clock_monotonic = getattr(time, "CLOCK_MONOTONIC", None)
     if callable(clock_gettime_ns) and clock_monotonic is not None:
         return int(clock_gettime_ns(clock_monotonic))
-    # Windows and current Python releases expose a process-independent
-    # performance-counter epoch through monotonic_ns().
+    # macOS exposes a process-independent monotonic epoch.
     return int(time.monotonic_ns())
 
 
@@ -315,7 +314,7 @@ def _manager_channel_descriptor(config: ManagerSecretChannelConfig) -> int:
                 "MANAGER_SECRET_CHANNEL_FORBIDDEN",
                 "manager secret channel must be an inherited pipe or local socket",
             )
-        if os.name != "nt" and is_socket:
+        if is_socket:
             channel_socket = _manager_socket.socket(fileno=duplicate)
             try:
                 if channel_socket.family != _manager_socket.AF_UNIX:
@@ -332,10 +331,6 @@ def _manager_channel_descriptor(config: ManagerSecretChannelConfig) -> int:
                     ) from exc
             finally:
                 duplicate = channel_socket.detach()
-        if (
-            os.name == "nt" and msvcrt is not None
-        ):  # pragma: no cover - Windows
-            msvcrt.setmode(duplicate, os.O_BINARY)
         result = duplicate
         duplicate = None
         return result
@@ -453,18 +448,8 @@ def _manager_local_principal(
     *,
     role: str = "manager",
 ) -> AgentPrincipal:
-    if hasattr(os, "getuid"):
-        user_identity = f"uid:{os.getuid()}"
-    else:  # pragma: no cover - native Windows
-        user_identity = "user:" + (
-            os.environ.get("USERNAME") or "unknown"
-        )
-    if hasattr(os, "uname"):
-        host_identity = "host:" + os.uname().nodename
-    else:  # pragma: no cover - native Windows
-        host_identity = "host:" + (
-            os.environ.get("COMPUTERNAME") or "unknown"
-        )
+    user_identity = f"uid:{os.getuid()}"
+    host_identity = "host:" + os.uname().nodename
     return validate_agent_principal(
         {
             "schema": AGENT_PRINCIPAL_SCHEMA,
@@ -812,7 +797,7 @@ def _manager_cli_authority_context(
             if config is None:
                 raise FlowError(
                     "MANAGER_SECRET_CHANNEL_REQUIRED",
-                    "schema-v3 mutation requires --manager-secret-fd",
+                    "schema-v4 mutation requires --manager-secret-fd",
                 )
             return resolve_manager_secret(config)
 
@@ -853,7 +838,6 @@ def _manager_pre_effect_state_digest(
             "MANAGER_PREAUTHORIZATION_INVALID",
             "manager preauthorization state projection is invalid",
         )
-    _prepare_state_compatibility_view(logical)
     return _manager_state_digest(logical)
 
 
@@ -908,14 +892,14 @@ def _manager_preauthorize_locked_state(
     effect_policy: str,
     package_action_id: str | None,
 ) -> None:
-    """Authenticate one v3 mutation before any protected effect can begin."""
+    """Authenticate one v4 mutation before any protected effect can begin."""
 
     if effect_policy not in {"formal", "generic", "preview", "registry"}:
         raise FlowError(
             "MANAGER_EFFECT_POLICY_INVALID",
             "locked state requires one sealed manager effect policy",
         )
-    if state_value.get("schema_version") != V3_TASK_SCHEMA_VERSION:
+    if state_value.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         return
     if effect_policy in {"formal", "preview", "registry"}:
         return
@@ -926,13 +910,13 @@ def _manager_preauthorize_locked_state(
     ):
         raise FlowError(
             "MANAGER_HANDLER_ACTION_INVALID",
-            "generic schema-v3 mutation has no sealed package action",
+            "generic schema-v4 mutation has no sealed package action",
         )
     invocation = _manager_authority_context_var.get()
     if not isinstance(invocation, _ManagerAuthorityInvocation):
         raise FlowError(
             "MANAGER_CAPABILITY_REQUIRED",
-            "schema-v3 agent-plane mutation requires manager capability proof",
+            "schema-v4 agent-plane mutation requires manager capability proof",
             details={"task_id": state_value.get("task_id")},
         )
     if invocation.preauthorization() is not None:
@@ -1126,20 +1110,20 @@ def _manager_orchestration_mapping(
     if not isinstance(value, dict):
         raise FlowError(
             "MANAGER_CAPABILITY_REGISTRY_UNAVAILABLE",
-            "schema-v3 task has no manager capability registry",
+            "schema-v4 task has no manager capability registry",
             details={"task_id": state_value.get("task_id")},
         )
     if value.get("schema") != "dev-flow-orchestration-state/v1":
         raise FlowError(
             "MANAGER_CAPABILITY_REGISTRY_INVALID",
-            "schema-v3 orchestration registry has an unsupported schema",
+            "schema-v4 orchestration registry has an unsupported schema",
             details={"task_id": state_value.get("task_id")},
         )
     capabilities = value.get("manager_capabilities")
     if not isinstance(capabilities, dict):
         raise FlowError(
             "MANAGER_CAPABILITY_REGISTRY_UNAVAILABLE",
-            "schema-v3 task has no manager capability registry",
+            "schema-v4 task has no manager capability registry",
             details={"task_id": state_value.get("task_id")},
         )
     return value
@@ -1224,7 +1208,7 @@ def _manager_validated_preauthorization_v1(
     if not isinstance(invocation, _ManagerAuthorityInvocation):
         raise FlowError(
             "MANAGER_CAPABILITY_REQUIRED",
-            "schema-v3 agent-plane mutation requires manager capability proof",
+            "schema-v4 agent-plane mutation requires manager capability proof",
             details={"task_id": old_state.get("task_id")},
         )
     request = invocation.request
@@ -1235,7 +1219,7 @@ def _manager_validated_preauthorization_v1(
     ):
         raise FlowError(
             "MANAGER_PREAUTHORIZATION_REQUIRED",
-            "schema-v3 mutation has no sealed pre-effect authorization",
+            "schema-v4 mutation has no sealed pre-effect authorization",
             details={"task_id": old_state.get("task_id")},
         )
     expected_preauthorization_seal = _manager_seal(
@@ -1748,7 +1732,7 @@ def _manager_workflow_action_journal_secret_v1() -> str:
     )
 
 
-def _evaluate_v3_manager_mutation(
+def _evaluate_v4_manager_mutation(
     old_state: dict[str, Any],
     new_state: dict[str, Any],
     *,
@@ -1767,7 +1751,7 @@ def _evaluate_v3_manager_mutation(
     if not isinstance(evaluation_state, dict):
         raise FlowError(
             "MANAGER_PREAUTHORIZATION_REQUIRED",
-            "schema-v3 mutation has no manager engine input",
+            "schema-v4 mutation has no manager engine input",
             details={"task_id": old_state.get("task_id")},
         )
     new_orchestration = _manager_orchestration_mapping(new_state)
@@ -1888,17 +1872,17 @@ def _manager_authorized_event(
 def _manager_default_actions(
     state_value: dict[str, Any],
 ) -> tuple[str, ...]:
-    if state_value.get("schema_version") != V3_TASK_SCHEMA_VERSION:
+    if state_value.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         raise FlowError(
             "MANAGER_CAPABILITY_SCHEMA_REQUIRED",
-            "manager capabilities are available only for schema-v3 tasks",
+            "manager capabilities are available only for schema-v4 tasks",
             details={"task_id": state_value.get("task_id")},
         )
     workflow_ref = state_value.get("workflow_ref")
     if not isinstance(workflow_ref, dict):
         raise FlowError(
             "MANAGER_CAPABILITY_WORKFLOW_INVALID",
-            "schema-v3 task has no pinned workflow identity",
+            "schema-v4 task has no pinned workflow identity",
         )
     flow = state_value.get("flow")
     if flow not in {"full", "lite"}:
@@ -1910,7 +1894,7 @@ def _manager_default_actions(
         Path(_json_bytes.__code__.co_filename).resolve().parents[2]
         / "workflows"
         / "bundles"
-        / f"{flow}-v3"
+        / f"{flow}-v4"
         / "workflow.json"
     )
     try:
@@ -3137,10 +3121,10 @@ def manager_registry_action_parameters_v1(
 ) -> dict[str, object]:
     """Build secret-free parameters for the future transaction coordinator."""
 
-    if state.get("schema_version") != V3_TASK_SCHEMA_VERSION:
+    if state.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         raise FlowError(
             "MANAGER_CAPABILITY_SCHEMA_REQUIRED",
-            "manager registry actions require a schema-v3 task",
+            "manager registry actions require a schema-v4 task",
         )
     revision = state.get("revision")
     if isinstance(revision, bool) or not isinstance(revision, int):
@@ -3184,13 +3168,13 @@ def manager_registry_action_parameters_v1(
         ):
             raise FlowError(
                 "MANAGER_CAPABILITY_REGISTRY_INVALID",
-                "schema-v3 manager capability registry is invalid",
+                "schema-v4 manager capability registry is invalid",
             )
         capabilities = orchestration["manager_capabilities"]
     else:
         raise FlowError(
             "MANAGER_CAPABILITY_REGISTRY_INVALID",
-            "schema-v3 orchestration registry must be an object",
+            "schema-v4 orchestration registry must be an object",
         )
     capability_id = parsed_verifier.capability_id
     publication: dict[str, object] | None
@@ -3475,10 +3459,10 @@ def _manager_registry_candidate(
     operation: str,
     verifier: ManagerCapabilityVerifier,
 ) -> tuple[dict[str, Any], _ManagerRegistryOperation]:
-    if old_state.get("schema_version") != V3_TASK_SCHEMA_VERSION:
+    if old_state.get("schema_version") != V4_TASK_SCHEMA_VERSION:
         raise FlowError(
             "MANAGER_CAPABILITY_SCHEMA_REQUIRED",
-            "manager capability registry requires a schema-v3 task",
+            "manager capability registry requires a schema-v4 task",
             details={"task_id": old_state.get("task_id")},
         )
     candidate = _manager_json_clone(old_state)
@@ -3496,13 +3480,13 @@ def _manager_registry_candidate(
         ):
             raise FlowError(
                 "MANAGER_CAPABILITY_REGISTRY_INVALID",
-                "schema-v3 orchestration registry has an unsupported schema",
+                "schema-v4 orchestration registry has an unsupported schema",
             )
         orchestration.setdefault("manager_capabilities", {})
     else:
         raise FlowError(
             "MANAGER_CAPABILITY_REGISTRY_INVALID",
-            "schema-v3 orchestration registry must be an object",
+            "schema-v4 orchestration registry must be an object",
         )
     capabilities = orchestration.get("manager_capabilities")
     if not isinstance(capabilities, dict):
@@ -3775,7 +3759,7 @@ def manager_process_commit_gate_v1(
                 "formal node authority cannot share a registry operation",
             )
         try:
-            return validate_v3_formal_manager_operation(
+            return validate_v4_formal_manager_operation(
                 formal_operation,
                 old_state,
                 candidate,
@@ -3801,7 +3785,7 @@ def manager_process_commit_gate_v1(
             event_type=event_type,
         )
         return None
-    authorization = _evaluate_v3_manager_mutation(
+    authorization = _evaluate_v4_manager_mutation(
         old_state,
         candidate,
         event_type=event_type,
