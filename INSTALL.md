@@ -302,7 +302,8 @@ Acceptance is complete only when the user confirms:
    `full@4` workflow smoke, including request → later reply → reload → exact
    retry for one gated Full action.
 
-Do not archive the active OpenSpec change before those checks are accepted.
+Do not treat the frozen candidate as accepted before those checks are
+confirmed.
 
 ## 11. Troubleshooting
 

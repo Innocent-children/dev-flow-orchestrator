@@ -27,9 +27,8 @@ Before handoff:
 1. run the affected focused greenfield test modules;
 2. validate every bundled Skill;
 3. validate architecture, plugin manifest, package, and candidate inventory;
-4. run strict OpenSpec validation;
-5. run `git diff --check`;
-6. obtain an independent read-only implementation review.
+4. run `git diff --check`;
+5. obtain an independent read-only implementation review.
 
 Never reset, stash, clean, stage, commit, push, or archive an active OpenSpec
 change without explicit authority.
