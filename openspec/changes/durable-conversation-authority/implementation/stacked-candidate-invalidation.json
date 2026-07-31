@@ -1,9 +1,0 @@
-{
-  "schema": "dev-flow-v4-stacked-candidate-invalidation/v1",
-  "change": "durable-conversation-authority",
-  "stacked_change": "refactor-v4-runtime-architecture",
-  "superseded_l2_candidate_sha256": "bdcd2a438f3b25e6f6e87ff68f374bc96e59bf498cc9e17849dad6515d044d1f",
-  "current_l2_candidate_sha256": "b2a1e599813d59e2788b7d2f3c434f0a85cd714c2f3d6f0e5e5222174a5cd315",
-  "reason": "The durable conversation authority change modifies the reviewed runtime, workflow identity, packaged skills, documentation and plugin manifest. The earlier stacked candidate remains historical evidence but is not the current releasable candidate.",
-  "stacked_change_archived": false
-}
