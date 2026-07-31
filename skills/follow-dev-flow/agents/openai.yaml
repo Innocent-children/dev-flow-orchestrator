@@ -1,7 +1,7 @@
 interface:
   display_name: "执行开发流程"
-  short_description: "运行可恢复、逐状态确认的受控开发流程"
-  default_prompt: "使用 $follow-dev-flow 启动或安全恢复这个 V4 workflow，并在每个需要确认的 action 前用中文征求明确授权。"
+  short_description: "在单仓库或多仓库中运行可恢复、持久聊天确认的受控开发流程"
+  default_prompt: "使用 $follow-dev-flow 启动或恢复这个 V4 workflow：Lite entry 直接继续；gated action 或可执行 recovery 创建持久聊天确认后结束当前轮，下一轮先重载 projection，再重试仍匹配且已确认的操作。"
 dependencies:
   tools:
     - type: "mcp"

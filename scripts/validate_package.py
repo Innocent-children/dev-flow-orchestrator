@@ -1,88 +1,179 @@
 #!/usr/bin/env python3
-"""Validate the single macOS V4 plugin package."""
+"""Validate the one macOS greenfield V4 plugin package."""
+
 from __future__ import annotations
 
-import argparse
+import ast
 import json
-import re
 from pathlib import Path
+import re
+import subprocess
+import sys
 
 
-EXPECTED_BUNDLES = {("full", 4), ("lite", 4)}
-EXPECTED_PROFILES = {
-    "full-single-repository",
-    "full-multi-repository",
-    "lite-single-repository",
-}
-EXPECTED_SUITES = {
-    "v4-static-closure",
-    "v4-core-runtime",
-    "v4-effect-recovery",
-    "v4-external-tools",
-    "v4-multi-repository",
-}
-EXPECTED_TOOLS = [
-    "task-next",
-    "node-description",
-    "evidence-read",
-    "action-preview",
-    "action-apply",
-    "worker-result",
-]
-MANIFEST_KEYS = {
-    "id",
-    "name",
-    "version",
-    "description",
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from dev_flow_orchestrator.mcp import TOOLS  # noqa: E402
+from dev_flow_orchestrator.engine import NODE_FAMILY_CATALOG  # noqa: E402
+from dev_flow_orchestrator.product import PROFILES  # noqa: E402
+from dev_flow_orchestrator.workflow import (  # noqa: E402
+    FULL_GRAPH,
+    LITE_GRAPH,
+    PREFLIGHT_CONTRACT,
+    REPOSITORY_CANCEL_CONTRACT,
+    REPOSITORY_GRAPH,
+    workflow_identity,
+)
+
+
+PUBLIC_RUNTIME = (
+    "scripts/dev_flow.py",
+    "scripts/dev_flow_mcp.py",
+    "hooks/dev_flow_hook.py",
+)
+REQUIRED = (
+    ".codex-plugin/plugin.json",
+    ".mcp.json",
+    "hooks/hooks.json",
+    "scripts/dev_flow_python_launcher",
+    "skills/analyze-change-impact/SKILL.md",
+    "skills/follow-dev-flow/SKILL.md",
+    "skills/review-dev-flow-change/SKILL.md",
+    "src/dev_flow_orchestrator/authority.py",
+    "src/dev_flow_orchestrator/controller.py",
+    "src/dev_flow_orchestrator/engine.py",
+    "src/dev_flow_orchestrator/product.py",
+    "src/dev_flow_orchestrator/repository_kernel.py",
+    "src/dev_flow_orchestrator/workflow.py",
+    "ARCHITECTURE.md",
+)
+FORBIDDEN_PATH_PARTS = (
+    "dev_flow_parts",
+    "workflows/bundles",
+    "workflows/runtime",
+    "workflows/provenance",
+)
+FORBIDDEN_AUTHORITY_ENTRYPOINTS = (
+    "scripts/dev_flow_authority.py",
+    "src/dev_flow_orchestrator/authority_cli.py",
+    "src/dev_flow_orchestrator/host_authority.py",
+)
+FORBIDDEN_SOURCE = re.compile(
+    r"dev_flow_parts|workflow_bundle_identity|CLI_FALLBACK_SCHEMA|"
+    r"\b(?:V2|V3|legacy)\b",
+    re.IGNORECASE,
+)
+CURRENT_SOURCE_CLOSURE = (
+    ".codex-plugin",
+    ".github",
+    ".gitattributes",
+    ".gitignore",
+    ".mcp.json",
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "CONTRIBUTING.md",
+    "INSTALL.md",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md",
+    "hooks",
+    "pyproject.toml",
+    "scripts",
     "skills",
-    "apps",
-    "mcpServers",
-    "interface",
-    "author",
-    "homepage",
-    "repository",
-    "license",
-    "keywords",
-}
-INTERFACE_KEYS = {
-    "displayName",
-    "shortDescription",
-    "longDescription",
-    "developerName",
-    "category",
-    "capabilities",
-    "websiteURL",
-    "privacyPolicyURL",
-    "termsOfServiceURL",
-    "brandColor",
-    "composerIcon",
-    "logo",
-    "logoDark",
-    "screenshots",
-    "defaultPrompt",
-    "default_prompt",
-}
-FORBIDDEN_IDENTITY = re.compile(
-    "(?:[" + "Vv" + "]" + "3|V" + "2|" + "leg" + "acy)"
+    "src",
+    "templates",
+    "tests",
+    "uv.lock",
+    "workflows",
 )
-FORBIDDEN_TASK_PREDECESSOR = re.compile(
-    "(?:task schema v"
-    + "2|schema-v"
-    + "2 tasks|a v"
-    + "2 risk contract|get\\([\"']schema_version[\"'],\\s*1\\))"
-)
-MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
-NONINSTALLABLE_VALIDATORS = {
-    "scripts/audit_runtime_imports.py",
-    "scripts/candidate_identity.py",
-    "scripts/run_bundled_validators.py",
-    "scripts/validate_package.py",
+SOURCE_SCAN_IGNORED_PARTS = {
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
 }
+# Keep the removed implementation signatures split so the validator itself is
+# part of the closure instead of becoming a privileged self-exclusion.
+POPUP_SOURCE_SIGNATURES = (
+    (
+        "approval-port",
+        re.compile(
+            r"\b(?:MacOS|Fake)?"
+            + "Approval"
+            + r"Port\b"
+        ),
+    ),
+    (
+        "apple-script-executable",
+        re.compile(
+            r"(?:/usr/bin/)?"
+            + "osa"
+            + r"script\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dialog-channel-schema",
+        re.compile(
+            "macos-system-"
+            + "dialog/v1",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dialog-script",
+        re.compile(
+            r"\bdisplay\s+"
+            + r"dialog\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dialog-title",
+        re.compile(
+            "Dev Flow "
+            + "Authority",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dialog-timeout",
+        re.compile(
+            r"(?:timeout\s*=\s*"
+            + r"120\b|120(?:-|\s+)second(?:s)?"
+            + r"[^\n]{0,80}\b(?:dialog|popup)\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "graphical-host-prerequisite",
+        re.compile(
+            r"(?:logged-in\s+)?graphical\s+"
+            + r"macOS\s+(?:session|user)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "macos-dialog-product-reference",
+        re.compile(
+            r"\bmacOS\s+(?:system|approval)\s+"
+            + r"dialog\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "popup-error-contract",
+        re.compile(
+            "HOST_"
+            + r"APPROVAL_(?:UNAVAILABLE|INVALID|DENIED)\b"
+        ),
+    ),
+)
 
 
-def _read_json(path: Path) -> object:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+def _json(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _check(condition: bool, errors: list[str], message: str) -> None:
@@ -90,312 +181,323 @@ def _check(condition: bool, errors: list[str], message: str) -> None:
         errors.append(message)
 
 
-def validate(root: Path) -> dict[str, object]:
-    errors: list[str] = []
-    manifest = _read_json(root / ".codex-plugin/plugin.json")
-    _check(isinstance(manifest, dict), errors, "plugin manifest must be an object")
-    if isinstance(manifest, dict):
-        _check(
-            not (set(manifest) - MANIFEST_KEYS),
-            errors,
-            "plugin manifest contains unsupported fields",
+def _current_source_paths(root: Path) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for relative in CURRENT_SOURCE_CLOSURE:
+        candidate = root / relative
+        candidates = (
+            [candidate]
+            if candidate.is_file() or candidate.is_symlink()
+            else sorted(candidate.rglob("*"))
+            if candidate.is_dir()
+            else []
         )
-        _check(
-            manifest.get("name") == "dev-flow-orchestrator",
-            errors,
-            "plugin name must remain dev-flow-orchestrator",
-        )
-        _check(
-            isinstance(manifest.get("version"), str)
-            and re.fullmatch(
-                r"4\.0\.0\+codex\.[A-Za-z0-9.-]+",
-                str(manifest.get("version")),
-            )
-            is not None,
-            errors,
-            "plugin version must be 4.0.0+codex.<cachebuster>",
-        )
-        _check(manifest.get("skills") == "./skills/", errors, "skills path mismatch")
-        _check(
-            manifest.get("mcpServers") == "./.mcp.json",
-            errors,
-            "MCP path mismatch",
-        )
-        _check("hooks" not in manifest, errors, "manifest must use default Hook discovery")
-        _check(
-            isinstance(manifest.get("description"), str)
-            and bool(manifest["description"].strip()),
-            errors,
-            "plugin description must be non-empty",
-        )
-        author = manifest.get("author")
-        _check(
-            isinstance(author, dict)
-            and isinstance(author.get("name"), str)
-            and bool(author["name"].strip()),
-            errors,
-            "plugin author.name must be non-empty",
-        )
-        interface = manifest.get("interface")
-        _check(
-            isinstance(interface, dict),
-            errors,
-            "plugin interface must be an object",
-        )
-        if isinstance(interface, dict):
-            _check(
-                not (set(interface) - INTERFACE_KEYS),
-                errors,
-                "plugin interface contains unsupported fields",
-            )
-            for field in (
-                "displayName",
-                "shortDescription",
-                "longDescription",
-                "developerName",
-                "category",
+        for path in candidates:
+            if (
+                not path.is_file()
+                or path.suffix in {".pyc", ".pyo"}
+                or any(part in SOURCE_SCAN_IGNORED_PARTS for part in path.parts)
             ):
-                _check(
-                    isinstance(interface.get(field), str)
-                    and bool(interface[field].strip()),
-                    errors,
-                    f"plugin interface.{field} must be non-empty",
+                continue
+            paths.append(path)
+    return tuple(
+        sorted(
+            set(paths),
+            key=lambda path: path.relative_to(root).as_posix(),
+        )
+    )
+
+
+def validate_popup_source_closure(root: Path = ROOT) -> dict:
+    """Audit every shipped/current product file, including this validator."""
+
+    files: list[str] = []
+    violations: list[dict[str, str]] = []
+    for path in _current_source_paths(root):
+        relative = path.relative_to(root).as_posix()
+        files.append(relative)
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeError:
+            continue
+        for signature, pattern in POPUP_SOURCE_SIGNATURES:
+            if pattern.search(source):
+                violations.append(
+                    {
+                        "path": relative,
+                        "signature": signature,
+                    }
                 )
-            _check(
-                isinstance(interface.get("capabilities"), list)
-                and all(
-                    isinstance(value, str) and bool(value.strip())
-                    for value in interface.get("capabilities", [])
-                ),
-                errors,
-                "plugin interface.capabilities must be an array of strings",
-            )
-            _check(
-                "defaultPrompt" in interface or "default_prompt" in interface,
-                errors,
-                "plugin interface requires a default prompt",
-            )
-
-    catalog = _read_json(root / "workflows/catalog.json")
-    bundles = catalog.get("bundles") if isinstance(catalog, dict) else None
-    bundle_keys = {
-        (entry.get("workflow_id"), entry.get("workflow_version"))
-        for entry in bundles or []
-        if isinstance(entry, dict)
+    return {
+        "files": files,
+        "violations": violations,
     }
-    _check(bundle_keys == EXPECTED_BUNDLES, errors, "catalog must contain only full@4 and lite@4")
-    _check(len(bundles or []) == 2, errors, "catalog must contain exactly two bundles")
 
-    activation = _read_json(root / "workflows/activation.json")
-    profiles = activation.get("profiles") if isinstance(activation, dict) else None
-    profile_ids = {
-        f"{entry.get('workflow_id')}-{entry.get('execution_profile')}"
-        for entry in profiles or []
-        if isinstance(entry, dict)
-    }
-    _check(profile_ids == EXPECTED_PROFILES, errors, "activation profile set mismatch")
-    _check(len(profiles or []) == 3, errors, "activation must contain exactly three profiles")
-    selected_suites = {
-        suite
-        for entry in profiles or []
-        if isinstance(entry, dict)
-        for suite in entry.get("required_suites", [])
-    }
-    _check(selected_suites == EXPECTED_SUITES, errors, "activation suite set mismatch")
 
-    mcp = _read_json(root / ".mcp.json")
+def validate(root: Path = ROOT) -> dict:
+    errors: list[str] = []
+    for relative in REQUIRED:
+        _check((root / relative).is_file(), errors, "missing " + relative)
+    for relative in FORBIDDEN_AUTHORITY_ENTRYPOINTS:
+        _check(
+            not (root / relative).exists(),
+            errors,
+            "separate authority entrypoint remains: " + relative,
+        )
+    for relative in PUBLIC_RUNTIME:
+        path = root / relative
+        if not path.is_file():
+            continue
+        source = path.read_text(encoding="utf-8")
+        _check("src" in source, errors, relative + " does not bootstrap src")
+        _check("exec(" not in source, errors, relative + " executes source")
+        _check(
+            FORBIDDEN_SOURCE.search(source) is None,
+            errors,
+            relative + " references predecessor runtime",
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-S", str(path), "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        _check(
+            completed.returncode == 0,
+            errors,
+            relative + " isolated launch failed",
+        )
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or ".git" in path.parts:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if any(part in relative for part in FORBIDDEN_PATH_PARTS):
+            errors.append("predecessor package path remains: " + relative)
+    runtime_root = root / "src" / "dev_flow_orchestrator"
+    for path in sorted(runtime_root.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        try:
+            ast.parse(source, filename=str(path))
+        except SyntaxError:
+            errors.append("runtime syntax invalid: " + path.name)
+        if FORBIDDEN_SOURCE.search(source):
+            errors.append("predecessor runtime name remains: " + path.name)
+    manifest = _json(root / ".codex-plugin" / "plugin.json")
+    _check(
+        isinstance(manifest, dict)
+        and manifest.get("name") == "dev-flow-orchestrator",
+        errors,
+        "plugin identity changed",
+    )
+    _check(
+        isinstance(manifest, dict)
+        and isinstance(manifest.get("version"), str)
+        and re.fullmatch(
+            r"4\.0\.0\+codex\.[A-Za-z0-9.-]+",
+            manifest["version"],
+        )
+        is not None,
+        errors,
+        "plugin version is not V4",
+    )
+    expected_profiles = {
+        ("full", "single-repository"),
+        ("full", "multi-repository"),
+        ("lite", "single-repository"),
+        ("lite", "multi-repository"),
+    }
+    _check(set(PROFILES) == expected_profiles, errors, "profile matrix mismatch")
+    _check(
+        len(
+            {
+                workflow_identity(workflow_id, topology)
+                for workflow_id, topology in PROFILES
+            }
+        )
+        == 4,
+        errors,
+        "profile workflow identities are not exact and distinct",
+    )
+    _check(
+        set(FULL_GRAPH) == {
+            "baseline",
+            "impact",
+            "route",
+            "workspace",
+            "planning",
+            "plan-approval",
+            "implement",
+            "verify",
+            "review",
+            "finalize",
+        },
+        errors,
+        "full graph mismatch",
+    )
+    _check(
+        set(LITE_GRAPH) == {"implement", "verify"},
+        errors,
+        "lite graph mismatch",
+    )
+    _check(
+        set(REPOSITORY_GRAPH)
+        == {
+            "repository-plan",
+            "repository-dispatch",
+            "repository-results",
+            "repository-barrier",
+            "repository-integration",
+        },
+        errors,
+        "repository graph mismatch",
+    )
+    repository_plan = REPOSITORY_GRAPH["repository-plan"]
+    _check(
+        "owners" not in repository_plan.payload_types
+        and repository_plan.required_authority == "task-revision+manager",
+        errors,
+        "repository owner is caller-selectable",
+    )
+    _check(
+        FULL_GRAPH["review"].payload_types.get("review_fingerprint")
+        == "sha256",
+        errors,
+        "full review does not bind an independent review fingerprint",
+    )
+    _check(
+        all(
+            "authority_id"
+            not in tool["inputSchema"].get("properties", {})
+            for tool in TOOLS
+        ),
+        errors,
+        "public MCP surface accepts caller-supplied authority",
+    )
+    contracts = [
+        PREFLIGHT_CONTRACT,
+        REPOSITORY_CANCEL_CONTRACT,
+        *FULL_GRAPH.values(),
+        *LITE_GRAPH.values(),
+        *REPOSITORY_GRAPH.values(),
+    ]
+    _check(
+        all(
+            contract.handler_id in NODE_FAMILY_CATALOG
+            and callable(NODE_FAMILY_CATALOG[contract.handler_id].handler)
+            and NODE_FAMILY_CATALOG[contract.handler_id].effect_port
+            == contract.effect_port
+            for contract in contracts
+        ),
+        errors,
+        "node handler/effect-port catalog mismatch",
+    )
+    engine_source = (
+        root / "src" / "dev_flow_orchestrator" / "engine.py"
+    ).read_text(encoding="utf-8")
+    _check(
+        "contract.output_kind" not in engine_source,
+        errors,
+        "engine dispatches reducers through output_kind",
+    )
+    mcp_source = (
+        root / "src" / "dev_flow_orchestrator" / "mcp.py"
+    ).read_text(encoding="utf-8")
+    _check(
+        "_validate_tool_arguments(name, arguments)" in mcp_source,
+        errors,
+        "MCP does not enforce its current tool schema",
+    )
+    mcp = _json(root / ".mcp.json")
     servers = mcp.get("mcpServers") if isinstance(mcp, dict) else None
     _check(
         isinstance(servers, dict) and set(servers) == {"dev-flow-macos"},
         errors,
-        "MCP configuration must contain one macOS profile",
+        "MCP must declare one macOS server",
     )
     if isinstance(servers, dict) and "dev-flow-macos" in servers:
         server = servers["dev-flow-macos"]
-        _check(server.get("enabled") is False, errors, "MCP profile must default disabled")
-        _check(server.get("command") == "/bin/sh", errors, "MCP launcher command mismatch")
-        _check(server.get("enabled_tools") == EXPECTED_TOOLS, errors, "MCP tool set mismatch")
-
-    hook_config = _read_json(root / "hooks/hooks.json")
-    serialized_hooks = json.dumps(hook_config, ensure_ascii=False)
-    unsupported_hook_key = "command" + "Win" + "dows"
-    _check(
-        unsupported_hook_key not in serialized_hooks,
-        errors,
-        "Hook contains an unsupported launch entry",
-    )
-    _check(
-        "$PLUGIN_ROOT/scripts/dev_flow_python_launcher" in serialized_hooks
-        and "$PLUGIN_ROOT/hooks/dev_flow_hook.py" in serialized_hooks,
-        errors,
-        "Hook commands must target packaged V4 handler",
-    )
-    pre_tool = hook_config.get("hooks", {}).get("PreToolUse", [])
-    _check(
-        bool(pre_tool) and pre_tool[0].get("matcher") == "^(Bash|apply_patch|Edit|Write)$",
-        errors,
-        "canonical Bash Hook matcher is missing",
-    )
-
-    required = [
-        "README.md",
-        "README.zh-CN.md",
-        "INSTALL.md",
-        "CONTRIBUTING.md",
-        ".mcp.json",
-        "hooks/hooks.json",
-        "hooks/dev_flow_hook.py",
-        "scripts/dev_flow.py",
-        "scripts/dev_flow_mcp.py",
-        "scripts/dev_flow_python_launcher",
-        "skills/analyze-change-impact/SKILL.md",
-        "skills/follow-dev-flow/SKILL.md",
-        "skills/review-dev-flow-change/SKILL.md",
-        "templates/marketplace-entry.json",
-        "templates/personal-marketplace.example.json",
-        "workflows/bundles/full-v4/workflow.json",
-        "workflows/bundles/lite-v4/workflow.json",
-    ]
-    for relative in required:
-        path = root / relative
-        _check(path.is_file() and not path.is_symlink(), errors, f"missing regular file: {relative}")
-
-    referenced: set[str] = set(required)
-    if isinstance(bundles, list):
-        for bundle in bundles:
-            if not isinstance(bundle, dict):
-                continue
-            root_value = bundle.get("root")
-            graph_value = bundle.get("graph")
-            if isinstance(root_value, str) and isinstance(graph_value, str):
-                referenced.add(f"workflows/{root_value}/{graph_value}")
-            for entry in bundle.get("files", []):
-                if (
-                    isinstance(entry, dict)
-                    and isinstance(root_value, str)
-                    and isinstance(entry.get("path"), str)
-                ):
-                    referenced.add(
-                        f"workflows/{root_value}/{entry['path']}"
-                    )
-    for relative in sorted(referenced):
-        path = root / relative
+        _check(server.get("enabled") is False, errors, "MCP must default disabled")
         _check(
-            path.is_file() and not path.is_symlink(),
+            server.get("enabled_tools") == [tool["name"] for tool in TOOLS],
             errors,
-            f"unresolved package reference: {relative}",
+            "MCP tool inventory mismatch",
         )
-
-    reference_documents = [
-        root / "README.md",
-        root / "README.zh-CN.md",
-        root / "INSTALL.md",
-        root / "CONTRIBUTING.md",
-        *(root / relative / "SKILL.md" for relative in (
-            Path("skills/analyze-change-impact"),
-            Path("skills/follow-dev-flow"),
-            Path("skills/review-dev-flow-change"),
-        )),
-    ]
-    for document in reference_documents:
-        text = document.read_text(encoding="utf-8")
-        for match in MARKDOWN_LINK.finditer(text):
-            target = match.group(1).split("#", 1)[0]
-            if (
-                not target
-                or "://" in target
-                or target.startswith(("mailto:", "#", "/"))
-            ):
-                continue
-            resolved = (document.parent / target).resolve()
-            _check(
-                resolved.is_relative_to(root)
-                and resolved.is_file()
-                and not resolved.is_symlink(),
-                errors,
-                "unresolved local documentation reference: "
-                + document.relative_to(root).as_posix()
-                + " -> "
-                + target,
-            )
-
-    portable_names: dict[str, str] = {}
-    for package_root in (
-        ".codex-plugin",
-        "hooks",
-        "scripts",
-        "skills",
-        "templates",
-        "workflows",
-    ):
-        for path in sorted((root / package_root).rglob("*")):
-            if not path.is_file() or path.suffix == ".pyc":
-                continue
-            relative = path.relative_to(root).as_posix()
-            folded = relative.casefold()
-            previous = portable_names.setdefault(folded, relative)
-            _check(
-                previous == relative,
-                errors,
-                f"case-ambiguous package paths: {previous}, {relative}",
-            )
-
-    scan_roots = [
-        root / ".codex-plugin",
-        root / "hooks",
-        root / "scripts",
-        root / "skills",
-        root / "templates",
-        root / "workflows",
-        root / "README.md",
-        root / "README.zh-CN.md",
-        root / "INSTALL.md",
-        root / "CONTRIBUTING.md",
-    ]
-    for candidate in scan_roots:
-        paths = [candidate] if candidate.is_file() else sorted(candidate.rglob("*"))
-        for path in paths:
-            if path.is_symlink():
-                errors.append(f"symlink is not packageable: {path.relative_to(root)}")
-                continue
-            if not path.is_file() or path.suffix == ".pyc":
-                continue
-            if path.relative_to(root).as_posix() in NONINSTALLABLE_VALIDATORS:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except UnicodeError:
-                continue
-            if FORBIDDEN_IDENTITY.search(text):
-                errors.append(f"predecessor identity in {path.relative_to(root).as_posix()}")
-            if FORBIDDEN_TASK_PREDECESSOR.search(text):
-                errors.append(
-                    "predecessor task-schema compatibility in "
-                    + path.relative_to(root).as_posix()
-                )
-
-    marketplace = _read_json(root / "templates/personal-marketplace.example.json")
-    entries = marketplace.get("plugins") if isinstance(marketplace, dict) else None
+        _check(
+            server.get("args", [])[-1:] == ["./scripts/dev_flow_mcp.py"],
+            errors,
+            "MCP does not launch the public greenfield adapter",
+        )
+    hooks = _json(root / "hooks" / "hooks.json")
+    serialized = json.dumps(hooks, ensure_ascii=False)
     _check(
-        isinstance(entries, list)
-        and len(entries) == 1
-        and entries[0].get("name") == "dev-flow-orchestrator",
+        "$PLUGIN_ROOT/hooks/dev_flow_hook.py" in serialized,
         errors,
-        "personal marketplace must contain one existing plugin identity",
+        "Hook does not launch the public greenfield adapter",
+    )
+    hook_groups = (
+        hooks.get("hooks")
+        if isinstance(hooks, dict)
+        else None
+    )
+    user_prompt_groups = (
+        hook_groups.get("UserPromptSubmit")
+        if isinstance(hook_groups, dict)
+        else None
+    )
+    expected_hook_command = (
+        '"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" '
+        '"$PLUGIN_ROOT/hooks/dev_flow_hook.py"'
+    )
+    user_prompt_commands = [
+        hook.get("command")
+        for group in user_prompt_groups or []
+        if isinstance(group, dict)
+        for hook in group.get("hooks", [])
+        if isinstance(hook, dict) and hook.get("type") == "command"
+    ]
+    _check(
+        isinstance(user_prompt_groups, list)
+        and len(user_prompt_groups) == 1
+        and user_prompt_commands == [expected_hook_command],
+        errors,
+        "Hook must expose exactly one packaged UserPromptSubmit command",
+    )
+    hook_source = (
+        root / "src" / "dev_flow_orchestrator" / "hook.py"
+    ).read_text(encoding="utf-8")
+    _check(
+        'os.environ.get("PLUGIN_DATA")' in hook_source
+        and 'os.environ.get("PLUGIN_DATA")' in mcp_source,
+        errors,
+        "Hook and MCP do not share the packaged PLUGIN_DATA contract",
+    )
+    popup_closure = validate_popup_source_closure(root)
+    errors.extend(
+        "removed popup source remains: {path} ({signature})".format(**item)
+        for item in popup_closure["violations"]
     )
     return {
-        "schema": "dev-flow-v4-package-validation/v1",
         "ok": not errors,
+        "platform": "macOS-current-host",
+        "profiles": len(PROFILES),
+        "full_nodes": len(FULL_GRAPH),
+        "lite_nodes": len(LITE_GRAPH),
+        "repository_nodes": len(REPOSITORY_GRAPH),
+        "popup_source_files": len(popup_closure["files"]),
         "errors": errors,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
-    args = parser.parse_args()
-    result = validate(args.root.resolve())
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    result = validate()
+    print(
+        json.dumps(
+            result,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
     return 0 if result["ok"] else 1
 
 

@@ -1,23 +1,19 @@
 # Install Dev Flow Orchestrator
 
-This guide covers a first installation, replacement under the same plugin
-identity, scope configuration, optional MCP setup, verification, and removal.
-
-Dev Flow Orchestrator is installed as the single plugin identity
-`dev-flow-orchestrator`. Its current package version is declared in
-`.codex-plugin/plugin.json`.
+This guide installs the single plugin identity `dev-flow-orchestrator` from a
+local Codex marketplace. It also covers replacement, data storage, Hook pickup,
+optional MCP, acceptance, and removal.
 
 ## 1. Requirements
 
-The supported host for this release is macOS.
+Supported and validated for this release:
 
-Required software:
-
+- macOS;
 - Git;
-- Python 3.9 or newer;
-- Codex with the `codex plugin` command.
+- Python 3.9–3.14;
+- Codex with the `codex plugin` command and `UserPromptSubmit` Hook support.
 
-Check the local tools:
+Check the host:
 
 ```sh
 sw_vers
@@ -26,47 +22,20 @@ python3 --version
 codex plugin --help
 ```
 
-The runtime uses only the Python standard library. There is no runtime package
-installation step such as `pip install`, `uv sync`, `npm install`, or
-`pnpm install`.
+The runtime uses only Python's standard library. Do not run `pip install`,
+`uv sync`, `npm install`, or `pnpm install` for this plugin.
 
-## 2. Choose the local marketplace root
+## 2. Put the source in a marketplace root
 
-The examples below use the user's home directory as the marketplace root:
+These instructions use `$HOME` as the marketplace root:
 
 ```text
-<MARKETPLACE_ROOT>/
+$HOME/
 ├── .agents/plugins/marketplace.json
 └── plugins/dev-flow-orchestrator/
 ```
 
-The repository includes matching templates:
-
-- `templates/personal-marketplace.example.json`: complete `personal`
-  marketplace file;
-- `templates/marketplace-entry.json`: one entry to merge into an existing
-  marketplace.
-
-The template source path is `./plugins/dev-flow-orchestrator`, resolved from
-`<MARKETPLACE_ROOT>`.
-
-## 3. Place the reviewed source
-
-Place the exact reviewed candidate at:
-
-```text
-<MARKETPLACE_ROOT>/plugins/dev-flow-orchestrator
-```
-
-For a fresh checkout from GitHub:
-
-```sh
-mkdir -p "$HOME/plugins"
-git clone https://github.com/Innocent-children/dev-flow-orchestrator.git \
-  "$HOME/plugins/dev-flow-orchestrator"
-```
-
-SSH alternative:
+Clone over SSH:
 
 ```sh
 mkdir -p "$HOME/plugins"
@@ -74,364 +43,366 @@ git clone git@github.com:Innocent-children/dev-flow-orchestrator.git \
   "$HOME/plugins/dev-flow-orchestrator"
 ```
 
-If a reviewed local candidate was supplied instead, copy that candidate to the
-same path without combining it with stale files from another copy. Preserve
-the candidate unchanged through acceptance.
-
-Confirm the plugin identity and host requirements:
+HTTPS alternative:
 
 ```sh
-python3 -m json.tool \
-  "$HOME/plugins/dev-flow-orchestrator/.codex-plugin/plugin.json"
+mkdir -p "$HOME/plugins"
+git clone https://github.com/Innocent-children/dev-flow-orchestrator.git \
+  "$HOME/plugins/dev-flow-orchestrator"
 ```
 
-The manifest name must be `dev-flow-orchestrator`, and its version must have
-major version `4`.
+If you received a reviewed local candidate, place that exact directory at
+`$HOME/plugins/dev-flow-orchestrator`. Do not overlay it on an older copy.
 
-## 4. Create or update the personal marketplace
+Validate the source before registration:
 
-Create this directory if it does not exist:
+```sh
+cd "$HOME/plugins/dev-flow-orchestrator"
+python3 -I -S scripts/validate_greenfield_architecture.py
+python3 -I -S scripts/validate_package.py
+python3 -m json.tool .codex-plugin/plugin.json
+```
+
+The manifest name must remain `dev-flow-orchestrator`.
+
+## 3. Create or update the personal marketplace
+
+For a new personal marketplace:
 
 ```sh
 mkdir -p "$HOME/.agents/plugins"
-```
-
-If this is a new personal marketplace, copy the bundled example:
-
-```sh
 cp \
   "$HOME/plugins/dev-flow-orchestrator/templates/personal-marketplace.example.json" \
   "$HOME/.agents/plugins/marketplace.json"
 ```
 
-If `~/.agents/plugins/marketplace.json` already contains other plugins, do not
-overwrite it. Merge the object from
-`templates/marketplace-entry.json` into its `plugins` array instead. The
-resulting entry is:
+If `~/.agents/plugins/marketplace.json` already exists, do not overwrite it.
+Merge the object from `templates/marketplace-entry.json` into the existing
+`plugins` array. Keep exactly one entry named `dev-flow-orchestrator`.
 
-```json
-{
-  "name": "dev-flow-orchestrator",
-  "source": {
-    "source": "local",
-    "path": "./plugins/dev-flow-orchestrator"
-  },
-  "policy": {
-    "installation": "AVAILABLE",
-    "authentication": "ON_INSTALL"
-  },
-  "category": "Productivity"
-}
-```
-
-Keep exactly one marketplace entry for the plugin name.
-
-Validate the JSON before registration:
+Validate the result:
 
 ```sh
 python3 -m json.tool "$HOME/.agents/plugins/marketplace.json"
 ```
 
-## 5. Register the marketplace
+## 4. Install
 
-Register the marketplace root, not the nested JSON file:
-
-```sh
-codex plugin marketplace add "$HOME"
-```
-
-Confirm that Codex sees it:
+The default personal marketplace at `~/.agents/plugins/marketplace.json` is
+discovered automatically. Do not register `$HOME` with `marketplace add`.
 
 ```sh
-codex plugin marketplace list
 codex plugin list
 ```
 
-Before installation, the expected row is similar to:
-
-```text
-dev-flow-orchestrator@personal  not installed
-```
-
-If a marketplace named `personal` is already registered at the same root, it
-does not need to be added again.
-
-## 6. Install the plugin
-
-Install the one marketplace entry:
+Install:
 
 ```sh
 codex plugin add dev-flow-orchestrator@personal
-```
-
-Confirm the result:
-
-```sh
 codex plugin list
 ```
 
-The expected state is one row for this identity:
+Expected outcome: exactly one installed and enabled
+`dev-flow-orchestrator@personal`.
 
-```text
-dev-flow-orchestrator@personal  installed, enabled
-```
+Start a new Codex session after installation. Existing sessions do not prove
+that the newly installed Skill, Hook, or MCP configuration was picked up.
 
-Do not install another copy from a different marketplace at the same time.
+## 5. Replace an existing installation
 
-Codex loads newly installed plugin capabilities in a new session. Close the
-current Codex session and start a new one before testing Skills, Hook, or MCP.
+Keep the same plugin identity and perform one atomic source cutover. A
+popup-era installed snapshot can remain in Codex's cache even after the
+marketplace source directory changes, so a replacement candidate must carry a
+new cachebuster version.
 
-## 7. Replace an installed copy
-
-Use the same plugin identity and marketplace entry.
-
-1. Obtain the reviewed replacement candidate.
-2. Replace the source at
-   `<MARKETPLACE_ROOT>/plugins/dev-flow-orchestrator` without overlaying stale
-   files.
+1. Obtain the complete reviewed replacement candidate with its new cachebuster.
+2. Replace `$HOME/plugins/dev-flow-orchestrator` as a whole; do not overlay
+   files on the popup-era source.
 3. Remove the installed snapshot:
 
    ```sh
    codex plugin remove dev-flow-orchestrator@personal
    ```
 
-4. Install the same identity again:
+4. Reinstall the same identity:
 
    ```sh
    codex plugin add dev-flow-orchestrator@personal
    ```
 
 5. Start a new Codex session.
-6. Run `codex plugin list` and confirm exactly one enabled instance.
+6. Confirm `codex plugin list` contains exactly one enabled instance at the new
+   version.
+7. Verify that the installed manifest has exactly one `UserPromptSubmit` Hook
+   and that Hook, CLI, and optional MCP all resolve the same `PLUGIN_DATA`
+   directory.
 
-Do not change the marketplace entry to a second plugin name.
+Do not install a sibling name or keep simultaneous copies from multiple
+marketplaces. Do not run old and new runtimes side by side. Old authority
+records are not migrated or accepted as conversation confirmation evidence.
 
-## 8. Configure activation scope
+## 6. Data directory
 
-The plugin is active in every directory by default. Scope state is stored in
-the plugin data directory.
+Task state must remain outside every target repository.
 
-Use the installed launcher:
-
-```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" scope
-```
-
-Exclude a directory recursively:
-
-```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" \
-  scope --mode all --add-exclude /path/to/excluded-directory
-```
-
-Activate only inside selected directories:
+Codex supplies `PLUGIN_DATA` to the installed Hook and MCP server. For direct
+CLI use, `--data-dir` is required:
 
 ```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" \
-  scope --mode allowlist \
-  --add /path/to/project-a \
-  --add /path/to/project-b
+PLUGIN_ROOT="$HOME/plugins/dev-flow-orchestrator"
+DATA_DIR="$HOME/Library/Application Support/dev-flow-orchestrator"
+
+"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
+  "$PLUGIN_ROOT/scripts/dev_flow.py" \
+  --data-dir "$DATA_DIR" --help
 ```
 
-Check one path:
+Use the same data directory for every command that operates on one task.
+Task, effect, and confirmation files are private, revisioned where applicable,
+locked, and atomically replaced. Confirmation directories use
+local-account-only permissions and remain outside target repositories. Do not
+edit them directly.
+
+CLI, MCP, and the packaged Hook must use this exact same directory. A
+confirmation recorded under another data directory cannot authorize the task,
+and copying old authority records into this directory does not convert them.
+Unsafe permissions or symlinks, malformed confirmation records, lock/write
+failure, and confirmation-index capacity failure all fail closed: the guarded
+operation remains unapplied and the controller does not repair or delete data
+automatically.
+
+There is no installation-wide include/exclude directory configuration. Each
+task explicitly declares one or more repository roots with repeatable
+`--repo`.
+
+## 7. Verify the CLI package
+
+Create a task in a disposable Git repository:
 
 ```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" \
-  scope --check /path/to/project
+"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
+  "$PLUGIN_ROOT/scripts/dev_flow.py" \
+  --data-dir "$DATA_DIR" \
+  start \
+  --workflow lite \
+  --workspace-strategy in-place \
+  --repo /path/to/disposable-repository \
+  --requirement "Installation smoke"
 ```
 
-Remove a configured exclusion:
+The command prints one JSON object. Use its `task_id`:
 
 ```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" \
-  scope --remove-exclude /path/to/excluded-directory
+"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
+  "$PLUGIN_ROOT/scripts/dev_flow.py" \
+  --data-dir "$DATA_DIR" next <task-id> \
+  --session-id <hook-injected-session-id>
 ```
 
-Reset scope and protected-path configuration:
+The initial action must be `task.preflight`. After preflight, a
+single-repository Lite task must enter `implement` directly; a
+multi-repository Lite task must enter `repository-plan`. Lite has no
+workflow-entry approval.
+
+Inspect `next` before every action. When its `required_authority` is
+`task-revision+<grant>`, submit the exact current operation through
+`$follow-dev-flow`, CLI, or MCP with the current bounded conversation-session
+routing:
 
 ```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" scope --clear
+"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
+  "$PLUGIN_ROOT/scripts/dev_flow.py" \
+  --data-dir "$DATA_DIR" apply <task-id> \
+  --expected-revision <revision> \
+  --action <action-id> \
+  --payload-json '<json-object>' \
+  --session-id <hook-injected-session-id>
 ```
 
-The deepest matching include or exclude directory wins. An equal match is
-excluded.
+The first call creates or reloads a durable `PENDING` request and performs no
+guarded state mutation, Git command, or external effect. The agent must show
+the exact bounded request, ask for the projected exact reply, and end the turn.
+There is no timeout.
 
-## 9. Choose the data directory
+In a later real Codex prompt, use bare `同意` or `approve` only when the
+projection says one request is unambiguous. Otherwise use
+`同意 <request-id>` or `approve <request-id>`. `拒绝`, `deny`, and their
+request-ID forms deny under the same ambiguity rules. The
+`UserPromptSubmit` Hook records that decision but does not apply the operation.
+Start the next turn by reloading `next`; only `CONFIRMED` permits the exact
+same operation to be retried and consumed once. Denial is terminal for that
+binding.
 
-Task state and scope configuration stay outside target repositories. The
-runtime resolves the state directory in this order:
+Do not poll, retry while pending, auto-confirm, invoke the Hook manually, or
+pass approval/actor/request/raw-prompt/serialized-record fields through CLI or
+MCP. The conversation session and turn are correlation and audit evidence,
+not macOS or authenticated-human identity. `--session-id` and optional
+`--request-turn-id` route the conversation only and must come from current
+Hook context rather than caller invention.
 
-1. command-line `--data-dir`;
-2. `DEV_FLOW_DATA_DIR`;
-3. Codex-provided `PLUGIN_DATA`;
-4. `~/Library/Application Support/dev-flow-orchestrator`.
+## 8. Verify Hook pickup
 
-For direct CLI use, the default is normally sufficient. To choose an explicit
-location:
+The plugin discovers `hooks/hooks.json` automatically.
+
+1. Start a new Codex session inside a repository used by a current task.
+2. Invoke `$follow-dev-flow` or submit a normal prompt.
+3. Confirm the injected context contains the installed controller locator,
+   data directory, task ID, revision, current `agent-v1` projection, and
+   correlation-only `conversation_routing`.
+4. Inspect the installed `hooks/hooks.json` and confirm there is exactly one
+   packaged `UserPromptSubmit` launch path.
+5. Confirm the injected controller locator, optional MCP process, and Hook all
+   resolve the same installed source and `PLUGIN_DATA`.
+6. For a disposable pending request, submit one exact reply through the real
+   Codex prompt UI. Confirm the refreshed projection records the decision but
+   the Hook does not change the task revision or apply the action.
+
+Malformed events and internal Hook errors fail open, but every guarded
+operation stays unapplied. Repository-local tests and manual execution of the
+Hook are not substitutes for this real Codex pickup check.
+
+## 9. Enable and verify MCP
+
+The packaged `dev-flow-macos` MCP server is optional and disabled by default.
+Enable it in the installed plugin's Codex settings, then start another new
+session.
+
+Tool discovery must expose exactly:
+
+- `task-start`
+- `task-show`
+- `task-next`
+- `task-preflight`
+- `action-apply`
+- `effect-inspect`
+- `effect-recover`
+
+MCP and CLI call the same controller through independent transports.
+
+For package-local protocol diagnosis:
 
 ```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" \
-  --data-dir "/path/to/dev-flow-data" list
+PLUGIN_DATA="$DATA_DIR" \
+  "$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
+  "$PLUGIN_ROOT/scripts/dev_flow_mcp.py"
 ```
 
-Use the same value for every command that operates on the same task. Do not
-place the data directory inside a target repository.
+The process waits for newline-delimited JSON-RPC on stdin; it is not an
+interactive shell.
 
-## 10. Verify Hook pickup
+## 10. User acceptance
 
-The plugin manifest discovers `hooks/hooks.json`. The Hook runs through the
-packaged macOS launcher and handles:
+Acceptance is complete only when the user confirms:
 
-- session start, resume, clear, and compact context restoration;
-- prompt-time task context;
-- bounded subagent assignment and result checks;
-- guardrails before Bash and file-editing tools.
+1. exactly one enabled `dev-flow-orchestrator` plugin is loaded from the frozen
+   candidate;
+2. exactly one real `UserPromptSubmit` confirmation Hook is loaded and Hook,
+   CLI, and optional MCP use the same data directory;
+3. a real-project `lite@4` multi-repository smoke and a representative
+   `full@4` workflow smoke, including request → later reply → reload → exact
+   retry for one gated Full action.
 
-After installation:
+Do not archive the active OpenSpec change before those checks are accepted.
 
-1. start a new Codex session inside an in-scope project;
-2. ask Codex to use `$follow-dev-flow`;
-3. confirm that the session receives the installed controller locator or task
-   checkpoint;
-4. confirm that an out-of-scope project is reported as out of scope when such
-   a rule is configured.
+## 11. Troubleshooting
 
-Do not treat repository-local Hook tests as a substitute for this host check.
+`Python handler does not exist`
+: Check that the marketplace source is the complete candidate and that
+  `scripts/dev_flow.py`, `scripts/dev_flow_mcp.py`, and
+  `scripts/dev_flow_python_launcher` are present.
 
-## 11. Enable and verify MCP
+`Python 3.9-3.14 was not found`
+: Install a supported Python or set `DEV_FLOW_PYTHON` to a verified absolute
+  interpreter path.
 
-The bundled `dev-flow-macos` MCP profile is optional, `required: false`, and
-disabled by default. Enable it in the installed plugin's Codex settings when
-you want typed MCP tools.
+`DATA_DIR_REQUIRED`
+: Pass `--data-dir` to CLI, `--data-dir` to a package-local MCP launch, or let
+  Codex provide `PLUGIN_DATA`.
 
-Start another new session after changing the setting. MCP initialization and
-tool discovery should expose exactly:
+`REVISION_CONFLICT`
+: Reload `next`, use the returned current revision, and do not replay stale
+  intent.
 
-- `task-next`;
-- `node-description`;
-- `evidence-read`;
-- `action-preview`;
-- `action-apply`;
-- `worker-result`.
+`CONFIRMATION_SESSION_REQUIRED`
+: Use the actual Hook-injected session routing. Do not invent a session or run
+  the Hook manually.
 
-If MCP remains disabled, `follow-dev-flow` continues to work through the exact
-CLI locator injected by the Hook.
+`CONFIRMATION_REPOSITORY_CONTEXT_REQUIRED` or `CONFIRMATION_EVENT_INVALID`
+: Confirm the request uses the current canonical task repository/workspace
+  context and that the real Hook supplied bounded session, turn, cwd, and
+  prompt fields.
 
-For package-local diagnosis only, the stdio server can be launched with:
+`CONFIRMATION_DENIED`
+: The exact binding is terminal. Do not retry or recreate it; reconsideration
+  requires a new controller-owned revision/binding or a new task.
 
-```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_mcp.py"
-```
+`CONFIRMATION_BINDING_MISMATCH`, `CONFIRMATION_STALE`, or
+`CONFIRMATION_CONSUMED`
+: Reload `next`. Repeat only a currently projected exact operation; never edit
+  confirmation records or replay a consumed request.
 
-This process waits for JSON-RPC input on standard input; it is not an
-interactive shell command.
+`CONFIRMATION_PENDING` or `CONFIRMATION_CLAIMED`
+: Pending still needs a later real prompt decision. Claimed belongs to the
+  exact effect lifecycle and must be inspected/recovered rather than
+  redispatched.
 
-## 12. Run the real-project smoke
+`EFFECT_ALREADY_CLAIMED` or `EFFECT_RECOVERY_ALREADY_CLAIMED`
+: The exact execution or recovery mode already has a durable owner. Inspect the
+  journal and resume only that recovery locator; do not create another request
+  or redispatch.
 
-In a real, disposable or otherwise appropriate Git project:
+`EFFECT_JOURNAL_INVALID`
+: Recovery could not prove that the journal, current task, canonical workspace
+  requests, and original confirmation describe the same execution. Stop and
+  use read-only inspection; do not edit the task, journal, or confirmation
+  files.
 
-1. configure the project as in scope;
-2. start a new Codex session;
-3. ask `$follow-dev-flow` to create a small V4 task;
-4. confirm the task pins either `lite@4` or `full@4`;
-5. preview and complete one representative action;
-6. confirm the resulting projection and receipt describe the next legal
-   action.
+Operator intervention reason `EFFECT_SETTLEMENT_UNPROVEN`,
+`EFFECT_ABSENCE_UNPROVEN`, or `EFFECT_RECOVERY_EVIDENCE_CHANGED`
+: Confirmation is not effect proof. Reinspect the execution and resolve the
+  real Git/evidence state before requesting a new exact recovery operation.
 
-The task must be newly created with the installed candidate. Do not edit task
-state files directly.
+`CONFIRMATION_EVENT_CONFLICT`
+: The same session/turn was observed with different prompt content. Inspect
+  the bounded diagnostic and submit a new real user turn.
 
-## 13. Acceptance checklist
+`CONFIRMATION_ACCOUNT_UNAVAILABLE`, `CONFIRMATION_STORE_INVALID`,
+`CONFIRMATION_STORE_UNAVAILABLE`, `CONFIRMATION_STORE_UNSAFE`,
+`CONFIRMATION_STORE_LOCK_FAILED`, `CONFIRMATION_STORE_CORRUPT`,
+`CONFIRMATION_STORE_CAPACITY`, or `CONFIRMATION_STORE_WRITE_FAILED`
+: Authority has failed closed. Use read-only inspection to check the exact data
+  directory, local-account-only permissions, symlinks, malformed records,
+  locks, filesystem capacity, and bounded ledger capacity. Do not auto-repair,
+  delete, or copy records between stores.
 
-Installation is accepted only after the user confirms all three items:
+A request remains `PENDING`
+: Confirm one installed `UserPromptSubmit` Hook was picked up in a new Codex
+  session and that Hook, CLI, and MCP use the same data directory. Only an
+  exact later real prompt decides the request.
 
-- exactly one enabled `dev-flow-orchestrator` plugin instance;
-- real Codex Hook pickup and MCP initialization/tool discovery;
-- one representative end-to-end action in a newly created real-project V4
-  task.
+Codex shows a sandbox or tool-permission prompt
+: That prompt belongs to the Codex host, not this plugin. Dev Flow does not
+  suppress, satisfy, or auto-confirm host-owned permission prompts.
 
-These checks are intentionally user-owned because they depend on the real
-Codex host, plugin cache, permissions, and project.
+MCP tools are absent
+: Confirm `dev-flow-macos` is enabled and start a new Codex session.
 
-## Troubleshooting
+Multiple plugin rows
+: Remove duplicate installations and reinstall only
+  `dev-flow-orchestrator@personal`.
 
-### `codex plugin list` does not show the plugin
-
-- Run `python3 -m json.tool` on the marketplace file.
-- Confirm the marketplace was registered from `<MARKETPLACE_ROOT>`, not from
-  `.agents/plugins`.
-- Confirm the source path resolves to
-  `<MARKETPLACE_ROOT>/plugins/dev-flow-orchestrator`.
-- Run `codex plugin marketplace list`.
-
-### The row says `not installed`
-
-Run:
-
-```sh
-codex plugin add dev-flow-orchestrator@personal
-```
-
-### More than one instance is installed
-
-Use `codex plugin list` to identify every marketplace selector. Remove the
-extra selector with:
-
-```sh
-codex plugin remove dev-flow-orchestrator@<marketplace>
-```
-
-Keep the one reviewed installation.
-
-### A project is unexpectedly inactive
-
-Inspect scope and the exact path:
-
-```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" scope
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" \
-  scope --check /path/to/project
-```
-
-Also confirm that direct CLI commands and Codex are using the same data
-directory.
-
-### Hook or MCP changes are not visible
-
-- Confirm the plugin is `installed, enabled`.
-- Start a new Codex session.
-- Confirm `.codex-plugin/plugin.json`, `hooks/hooks.json`, and `.mcp.json` exist
-  in the installed source.
-- Remember that `dev-flow-macos` MCP is disabled by default.
-- Confirm `python3 --version` is at least 3.9.
-
-### The launcher reports no supported Python
-
-Install or expose Python 3.9 or newer on `PATH`, then run:
-
-```sh
-"$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow_python_launcher" \
-  "$HOME/plugins/dev-flow-orchestrator/scripts/dev_flow.py" --help
-```
-
-## Remove the plugin
-
-Remove the installed snapshot:
+## 12. Remove
 
 ```sh
 codex plugin remove dev-flow-orchestrator@personal
 ```
 
-Removing the plugin does not authorize deletion of its source directory or
-data directory. Preserve or remove those separately according to your own
-retention requirements.
+Remove the marketplace entry only if it is no longer needed. Deleting the
+plugin package does not remove the external data directory. Task state,
+pending/denied decisions, tombstones, and private audit evidence are preserved
+by default.
+
+Data deletion is a separate destructive operator action. Consider it only
+after all active tasks and effects are resolved and confirmation/audit
+retention is no longer needed. Uninstall never treats old authority records as
+new confirmation evidence and never cleans either record set automatically.

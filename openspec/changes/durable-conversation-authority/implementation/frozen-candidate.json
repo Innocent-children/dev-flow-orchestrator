@@ -1,0 +1,36 @@
+{
+  "schema": "dev-flow-v4-frozen-candidate-evidence/v1",
+  "change": "durable-conversation-authority",
+  "plugin_version": "4.0.0+codex.20260731041657",
+  "platform": "macOS-current-host",
+  "candidate_file_count": 36,
+  "runtime_file_count": 30,
+  "l0_runtime_inventory_sha256": "effa65ab03cce0c629068f762b56653702ce4ff823253ed2f9a134dfb01fcfa2",
+  "l1_product_provenance_sha256": "b503bbae34dc99d177f82409e9447d62f4c27f88ad3501577a48371fca2eab5c",
+  "candidate_files_sha256": "22e8a1a13fb917ddef212e069f3d240990b44f78d07989dbd48573bec20cc629",
+  "l2_candidate_sha256": "b2a1e599813d59e2788b7d2f3c434f0a85cd714c2f3d6f0e5e5222174a5cd315",
+  "handler_sha256": {
+    "src/dev_flow_orchestrator/authority.py": "58a87151ee45337f21a5f1ecfd47eb2163b0754f91d616817d945946ac7099c6",
+    "src/dev_flow_orchestrator/controller.py": "cd7097d858ca3cd5d2f7dba37c9fd0f9dabb878369a441bbb26e2594e75d2430",
+    "src/dev_flow_orchestrator/engine.py": "2a0bbcf4e18e4269ba8e4baf359761a687bf0654e8a925d633034fc98f712b3c",
+    "src/dev_flow_orchestrator/repository_kernel.py": "124ec62a0f995809a44ceaa52bf12c4c9b6586debcca2c4f145da6a73af8fb75",
+    "src/dev_flow_orchestrator/workflow.py": "afdd7bb15f620ac25a02cc2a17fce00618d4b7096f0877cf55cb39ad43f505ac"
+  },
+  "focused_verification": {
+    "test_modules": 9,
+    "tests_passed": 83,
+    "architecture_validator": "PASS",
+    "package_validator": "PASS",
+    "skill_validators": "PASS",
+    "plugin_validator": "PASS",
+    "openspec_strict_validation": "PASS",
+    "git_diff_check": "PASS",
+    "authority_audit": "PASS"
+  },
+  "explicitly_not_verified": [
+    "prohibited full unittest discovery",
+    "native Windows validation",
+    "native Linux validation",
+    "installed-cache pickup in a new Codex task"
+  ]
+}

@@ -1,32 +1,35 @@
 # Contributing
 
-Preserve the single V4 product boundary:
+Keep the architecture easy to trace:
 
-- task schema is v4;
-- catalog entries are exactly `full@4` and `lite@4`;
-- activation profiles are exactly the three declared V4 profiles;
-- workflow-generation identities use direct V4 modules, handlers and
-  registries;
+- `product.py` owns the four-profile matrix;
+- `workflow.py` owns full, lite, and shared repository node contracts;
+- `engine.py` owns pure transition planning;
+- `controller.py` is the only task-state writer;
+- adapters parse and serialize only;
 - runtime code uses only the Python standard library;
-- workflow state stays outside target repositories;
-- Git-changing behavior stays deterministic and explicitly gated.
+- task state stays outside target repositories;
+- Git-changing effects remain deterministic, explicit, journaled, and gated.
 
-Use `codebase-memory` first for code discovery, then confirm material
-conclusions in source. Query OpenSpec for current JSON status and
-instructions; do not hard-code an artifact sequence.
+Do not add dynamic source loading, a service locator, duplicate workflow
+assets, or abstractions without a current second use.
 
-Run only the smallest focused test modules that directly cover a change.
-Running the full unittest suite or unittest discovery is prohibited. Validate
-only the current macOS host.
+Use `codebase-memory` for discovery and confirm material conclusions in source.
+Ask OpenSpec for current JSON status and instructions instead of hard-coding a
+phase sequence.
+
+Run only the smallest focused test modules that cover the changed behavior.
+Full unittest discovery is prohibited. Validate only the current macOS host;
+do not infer Windows or Linux support.
 
 Before handoff:
 
-1. run the activation profile's exact focused suites;
-2. validate every bundled Skill with `quick_validate.py`;
-3. validate the plugin manifest and package;
+1. run the affected focused greenfield test modules;
+2. validate every bundled Skill;
+3. validate architecture, plugin manifest, package, and candidate inventory;
 4. run strict OpenSpec validation;
 5. run `git diff --check`;
 6. obtain an independent read-only implementation review.
 
-Never reset, stash, clean, stage, commit, push, archive an active OpenSpec
-change, or modify a target repository beyond the user's explicit authority.
+Never reset, stash, clean, stage, commit, push, or archive an active OpenSpec
+change without explicit authority.

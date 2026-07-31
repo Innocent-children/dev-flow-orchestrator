@@ -1,0 +1,54 @@
+{
+  "schema": "dev-flow-v4-implementation-review-result/v1",
+  "change": "durable-conversation-authority",
+  "stacked_change": "refactor-v4-runtime-architecture",
+  "review_mode": "implementation-frozen",
+  "reviewed_at": "2026-07-31T13:50:31+08:00",
+  "reviewer": "independent-read-only-openspec-code-reviewer",
+  "verdict": "PASS",
+  "findings": [],
+  "reviewed_base": "cb6defc6698e11f57b026eeb9b2bebc4125ee271",
+  "reviewed_head": "cb6defc6698e11f57b026eeb9b2bebc4125ee271+uncommitted-frozen-candidate",
+  "artifact_digest": "4e45ddbc9f32e9b473fc95b50c8db46e601552cbe5b41b4af438a95e5df44657",
+  "guidance_snapshot_digest": "869a5e7267ee7988b9a4d9f3626e7f7f0d16eb25a41bd4eb82097ed2fcad0e28",
+  "full_review_fingerprint": "725cbc8bc76d841c34a02ad282ba95d2f1522ff062c32eec7f7cb4ee0cad9516",
+  "implementation_review_fingerprint": "1162ca78a5debd5ca40c5bcfd50594d7a6429a89dd9edb5b3201f6972d95db91",
+  "full_content_fingerprint": "56796f28e1849dcf65a18300f76987819fda7901cb88a74775cdaa350a447038",
+  "implementation_content_fingerprint": "da831628372c34c299c8eb4509835b61282089176fab178988216d010683cebe",
+  "l2_candidate_sha256": "b2a1e599813d59e2788b7d2f3c434f0a85cd714c2f3d6f0e5e5222174a5cd315",
+  "candidate_files_sha256": "22e8a1a13fb917ddef212e069f3d240990b44f78d07989dbd48573bec20cc629",
+  "verification": {
+    "focused_test_modules": 9,
+    "focused_tests_passed": 83,
+    "architecture_validator": "PASS",
+    "package_validator": "PASS",
+    "skill_validators": "PASS",
+    "plugin_validator": "PASS",
+    "openspec_strict_validation": "PASS",
+    "git_diff_check": "PASS",
+    "authority_audit": "PASS"
+  },
+  "explicitly_not_verified": [
+    "prohibited full unittest discovery",
+    "native Windows validation",
+    "native Linux validation",
+    "installed-cache pickup in a new Codex task"
+  ],
+  "final_metadata_refresh": {
+    "reviewed_at": "2026-07-31T14:22:56+08:00",
+    "reviewer": "independent-read-only-openspec-code-reviewer",
+    "verdict": "PASS",
+    "findings": [],
+    "scope": "Only tasks 5.2, 5.3 and 5.4 changed from unchecked to checked.",
+    "artifact_digest": "d0980f709c9ab10b292f5d606e955820b77e4326822efe628649c22b98940dd2",
+    "tracked_diff_sha256": "e77ba5643f60187f3038828a764c52be13b7d4f4c3c39a086272b79ec4458d1f",
+    "untracked_inventory_sha256": "69de489ac266e6df72f184a1f4afc6005c02d9f133dc74cec7a22995c95748ef",
+    "full_content_fingerprint": "78513e7c895d092b3e97d0dac50bf7ba7c29ce25e7444f098a092e7ff9c9c5c1",
+    "full_review_fingerprint": "26e8dbe977249d727738da70038c798a73f6ba41e39c418001db13c2eadfdf5d",
+    "candidate_identity_unchanged": true,
+    "implementation_review_fingerprint_unchanged": true
+  },
+  "residual_risks": [
+    "A losing participant in an extremely narrow cross-process recovery-claim race may receive EFFECT_JOURNAL_INVALID instead of EFFECT_RECOVERY_ALREADY_CLAIMED; both are fail-closed and the execution fence plus persisted claim prevent duplicate dispatch."
+  ]
+}

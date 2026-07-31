@@ -17,17 +17,20 @@ jobs:
           node-version: "22"
       - name: Provision pinned OpenSpec validator
         run: npm install --global @fission-ai/openspec@1.6.0
-      - name: Provision pinned validation-only YAML parser
-        run: python3 -m pip install PyYAML==6.0.2
-      - name: Bounded release validators
+      - name: Greenfield architecture and package validators
         run: |
-          python3 scripts/run_bundled_validators.py
+          python3 -I -S scripts/validate_greenfield_architecture.py
+          python3 -I -S scripts/validate_package.py
+          openspec validate --all --strict
       - name: Focused current V4 suites
         run: |
           python3 -m unittest \
-            tests.test_v4_static_closure \
-            tests.test_v4_core_runtime \
-            tests.test_v4_effect_recovery \
-            tests.test_v4_external_tools \
-            tests.test_v4_multi_repository \
-            tests.test_v4_package
+            tests.test_greenfield_skeleton \
+            tests.test_greenfield_core_workflow \
+            tests.test_greenfield_conversation_authority \
+            tests.test_greenfield_confirmation_races \
+            tests.test_greenfield_effect_recovery \
+            tests.test_greenfield_journal_fencing \
+            tests.test_greenfield_recovery_integrity \
+            tests.test_greenfield_multi_repository \
+            tests.test_greenfield_adapters

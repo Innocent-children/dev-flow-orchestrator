@@ -1,0 +1,49 @@
+{
+  "schema": "dev-flow-v4-implementation-review-request/v1",
+  "review_mode": "implementation-frozen",
+  "change": "refactor-v4-runtime-architecture",
+  "reviewed_base": "cb6defc6698e11f57b026eeb9b2bebc4125ee271",
+  "reviewed_head": "cb6defc6698e11f57b026eeb9b2bebc4125ee271+uncommitted-frozen-candidate",
+  "artifact_digest": "b36e794acd575e6b520ebd9dbe631a180bb3e44c956a0605c41c07e96e312e48",
+  "guidance_snapshot_digest": "869a5e7267ee7988b9a4d9f3626e7f7f0d16eb25a41bd4eb82097ed2fcad0e28",
+  "full_review_fingerprint": "f9fcde12519a85cd75aa957768aa97a1f5fc7da098204f84816799f60d11602e",
+  "implementation_review_fingerprint": "a87eadcee76db0389a04c9b1e4f051ababfb49f2dd15807bc5070639bb5d6b28",
+  "full_content_fingerprint": "a265c36f37e48bc1a2d696f9508dd6379283868124bbb6715044d654e0641ebd",
+  "implementation_content_fingerprint": "080e07e3ed9d548b2838d002c9473a38d139819aa87652ef214fd15d28f06a66",
+  "l2_candidate_sha256": "bdcd2a438f3b25e6f6e87ff68f374bc96e59bf498cc9e17849dad6515d044d1f",
+  "candidate_files_sha256": "c87ad57701e6b72b86b30291a0a607dd2f6c38c2d9876aa0120d2e73063ff3f4",
+  "tracked_diff_sha256": "2ef5c6eba4d2d2d9a499bc9308a30d771389026c54ba81315e062cefd5a1097d",
+  "untracked_inventory_sha256": "32a6e2704e10f0819b5939da8987875423d414ab5a69798341d5ef5899daedd9",
+  "fingerprint_contract": {
+    "canonical_json": "UTF-8 JSON with sorted keys and separators comma/colon",
+    "composite_fingerprint": "SHA-256 of the exact canonical JSON object named below, with no domain prefix, framing or trailing newline",
+    "artifact_digest": "SHA-256 of sorted per-file SHA-256 lines for active change files outside implementation/",
+    "guidance_snapshot_digest": "SHA-256 of root AGENTS.md",
+    "untracked_exclusions": [
+      "implementation/review-request.json",
+      "implementation/review-result.json",
+      "implementation/handoff.json"
+    ],
+    "full_content_fingerprint": {
+      "base": "reviewed_base",
+      "tracked_diff_sha256": "tracked_diff_sha256",
+      "untracked_inventory_sha256": "untracked_inventory_sha256",
+      "candidate_l2": "l2_candidate_sha256"
+    },
+    "implementation_content_fingerprint": {
+      "candidate_l2": "l2_candidate_sha256",
+      "candidate_files_sha256": "candidate_files_sha256"
+    },
+    "full_review_fingerprint": {
+      "artifact_digest": "artifact_digest",
+      "base": "reviewed_base",
+      "full_content_fingerprint": "full_content_fingerprint",
+      "guidance_snapshot_digest": "guidance_snapshot_digest"
+    },
+    "implementation_review_fingerprint": {
+      "base": "reviewed_base",
+      "implementation_content_fingerprint": "implementation_content_fingerprint",
+      "l2": "l2_candidate_sha256"
+    }
+  }
+}

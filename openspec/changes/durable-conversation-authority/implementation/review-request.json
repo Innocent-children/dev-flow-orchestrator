@@ -1,0 +1,79 @@
+{
+  "schema": "dev-flow-v4-implementation-review-request/v1",
+  "review_mode": "implementation-frozen",
+  "change": "durable-conversation-authority",
+  "stacked_change": "refactor-v4-runtime-architecture",
+  "dev_flow_task_id": "task-92464a84ec844ef0",
+  "dev_flow_review_revision": 9,
+  "reviewed_base": "cb6defc6698e11f57b026eeb9b2bebc4125ee271",
+  "reviewed_head": "cb6defc6698e11f57b026eeb9b2bebc4125ee271+uncommitted-frozen-candidate",
+  "artifact_digest": "4e45ddbc9f32e9b473fc95b50c8db46e601552cbe5b41b4af438a95e5df44657",
+  "guidance_snapshot_digest": "869a5e7267ee7988b9a4d9f3626e7f7f0d16eb25a41bd4eb82097ed2fcad0e28",
+  "full_review_fingerprint": "725cbc8bc76d841c34a02ad282ba95d2f1522ff062c32eec7f7cb4ee0cad9516",
+  "implementation_review_fingerprint": "1162ca78a5debd5ca40c5bcfd50594d7a6429a89dd9edb5b3201f6972d95db91",
+  "full_content_fingerprint": "56796f28e1849dcf65a18300f76987819fda7901cb88a74775cdaa350a447038",
+  "implementation_content_fingerprint": "da831628372c34c299c8eb4509835b61282089176fab178988216d010683cebe",
+  "l2_candidate_sha256": "b2a1e599813d59e2788b7d2f3c434f0a85cd714c2f3d6f0e5e5222174a5cd315",
+  "candidate_files_sha256": "22e8a1a13fb917ddef212e069f3d240990b44f78d07989dbd48573bec20cc629",
+  "tracked_diff_sha256": "e77ba5643f60187f3038828a764c52be13b7d4f4c3c39a086272b79ec4458d1f",
+  "untracked_inventory_sha256": "b35c9e0617b273e869731ed18f0c993ccc7fea41d632e79c086b3e641e0527f5",
+  "verification": {
+    "focused_test_modules": 9,
+    "focused_tests_passed": 83,
+    "architecture_validator": "PASS",
+    "package_validator": "PASS",
+    "skill_validators": "PASS",
+    "plugin_validator": "PASS",
+    "openspec_strict_validation": "PASS",
+    "git_diff_check": "PASS",
+    "authority_audit": "PASS"
+  },
+  "explicitly_not_verified": [
+    "prohibited full unittest discovery",
+    "native Windows validation",
+    "native Linux validation",
+    "installed-cache pickup in a new Codex task"
+  ],
+  "review_focus": [
+    "Lite topology entry and removal of every plugin-owned popup authority path",
+    "durable confirmation identity, exact UserPromptSubmit grammar, privacy, capacity and tombstone lifecycle",
+    "task, journal and confirmation lock order plus duplicate-dispatch crash windows",
+    "effect recovery proof, execution fencing, terminal compaction and tamper fail-closed behavior",
+    "multi-repository accepted-attempt authority evidence and consume-failure reconciliation",
+    "CLI, MCP, Hook, Skill, package closure, documentation and OpenSpec consistency"
+  ],
+  "fingerprint_contract": {
+    "canonical_json": "UTF-8 JSON with sorted keys and separators comma/colon",
+    "composite_fingerprint": "SHA-256 of the exact canonical JSON object named below, with no domain prefix, framing or trailing newline",
+    "artifact_digest": "SHA-256 of UTF-8 lines '<sha256>  <change-relative-path>\\n' for every active change file outside implementation/, sorted by path",
+    "guidance_snapshot_digest": "SHA-256 of root AGENTS.md",
+    "tracked_diff_sha256": "SHA-256 of git diff --no-ext-diff --binary at reviewed_base",
+    "untracked_inventory_sha256": "SHA-256 of UTF-8 lines '<sha256>  <repo-relative-path>\\n' for git ls-files --others --exclude-standard, sorted by path",
+    "untracked_exclusions": [
+      "implementation/review-request.json",
+      "implementation/review-result.json",
+      "implementation/handoff.json"
+    ],
+    "full_content_fingerprint": {
+      "base": "reviewed_base",
+      "candidate_l2": "l2_candidate_sha256",
+      "tracked_diff_sha256": "tracked_diff_sha256",
+      "untracked_inventory_sha256": "untracked_inventory_sha256"
+    },
+    "implementation_content_fingerprint": {
+      "candidate_files_sha256": "candidate_files_sha256",
+      "candidate_l2": "l2_candidate_sha256"
+    },
+    "full_review_fingerprint": {
+      "artifact_digest": "artifact_digest",
+      "base": "reviewed_base",
+      "full_content_fingerprint": "full_content_fingerprint",
+      "guidance_snapshot_digest": "guidance_snapshot_digest"
+    },
+    "implementation_review_fingerprint": {
+      "base": "reviewed_base",
+      "implementation_content_fingerprint": "implementation_content_fingerprint",
+      "l2": "l2_candidate_sha256"
+    }
+  }
+}

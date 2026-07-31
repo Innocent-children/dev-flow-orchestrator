@@ -1,0 +1,19 @@
+{
+  "schema": "dev-flow-v4-frozen-candidate-evidence/v1",
+  "change": "refactor-v4-runtime-architecture",
+  "plugin_version": "4.0.0+codex.20260731005928",
+  "platform": "macOS-current-host",
+  "candidate_file_count": 36,
+  "runtime_file_count": 30,
+  "l0_runtime_inventory_sha256": "3d6a3ae62e189a971d2c0c8751ecc8d97829ca987c53a6dd5b5e6d824b735281",
+  "l1_product_provenance_sha256": "ec3626a563e07f03e50f75059e49b7c46075206165c5e4c4ca9c6ce2bfac4877",
+  "candidate_files_sha256": "c87ad57701e6b72b86b30291a0a607dd2f6c38c2d9876aa0120d2e73063ff3f4",
+  "l2_candidate_sha256": "bdcd2a438f3b25e6f6e87ff68f374bc96e59bf498cc9e17849dad6515d044d1f",
+  "handler_sha256": {
+    "src/dev_flow_orchestrator/authority.py": "ee5936b6adab7564d17d40ab55bb473f12f6fea9ecc6ecda921493c2d3f3d0dc",
+    "src/dev_flow_orchestrator/controller.py": "680805e3564bfa8fadfefe97b2e755304e896155ddc2c11aa8bf6acb62105415",
+    "src/dev_flow_orchestrator/engine.py": "6f025f78c7e0aad22e9229d47c1013e554e2701b9c25eb7f13ec5803e7fcc5c0",
+    "src/dev_flow_orchestrator/repository_kernel.py": "06de2eee3d4bfaadd1e0475e44cfc6e5b6a5175c7b7c266986178ba73424ed5f",
+    "src/dev_flow_orchestrator/workflow.py": "95393527e8739fd83272b50bcae796b93c6daf3976efa993f3797045646415b9"
+  }
+}

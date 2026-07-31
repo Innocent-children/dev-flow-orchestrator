@@ -35,4 +35,6 @@ Return exactly one verdict:
 Lead with findings ordered by severity and include precise paths or symbols,
 consequence, smallest sufficient resolution, test evidence, skipped checks,
 snapshot limitations, and conditions for re-review. Say `No actionable
-findings` when appropriate.
+findings` when appropriate. Also return `review_fingerprint` as the lowercase
+SHA-256 of the bounded canonical review result so the full workflow can bind
+the independently produced artifact without inventing a second actor identity.
