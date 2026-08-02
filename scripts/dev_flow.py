@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed public bootstrap for the greenfield V4 CLI."""
+"""Fixed public bootstrap for the V5 CLI."""
 
 from pathlib import Path
 import sys

@@ -1,209 +1,156 @@
 # Architecture
 
-Dev Flow Orchestrator is one importable Python package with one product matrix
-and one mutation boundary. Physical modules match runtime ownership; there is
-no dynamic module registry or generated workflow bundle.
+Dev Flow Orchestrator V5 is one importable Python package with one mutation
+boundary and one declarative workflow definition source. Physical modules
+match runtime ownership; there is no dynamic module registry or generated
+workflow bundle.
 
 ## Dependency direction
 
 ```text
 CLI ─┐
-MCP ─┼─> Controller ─> Engine ─> Workflow / Repository kernel / Model
-Hook ┘        │
-              ├─> Confirmation store/index
-              ├─> Store ─> Filesystem primitives
-              ├─> Journal ─> Filesystem primitives
-              └─> Git client
+Hook ┴─> Controller ─┬─> Engine ─> Workflow ─> Model
+                    ├─> Store ──> Engine
+                    │      └────> Filesystem primitives
+                    ├─> Workflows ─> yaml_subset
+                    └─> GitClient (read-only)
 ```
 
-`model.py`, `product.py`, `workflow.py`, `repository_kernel.py`, and
-`engine.py` do not perform filesystem, process, environment, or network I/O.
+`model.py`, `product.py`, `workflow.py`, `engine.py` and `yaml_subset.py` do
+not perform filesystem, process, environment or network I/O. `workflows.py`
+loads definition files. The only target-repository effect is the bounded,
+read-only Git inspection run by the preflight node.
 
 ## Owners
 
 | Module | Owns | Does not own |
 |---|---|---|
-| `product.py` | Four profiles, workspace compatibility, suite binding, product identity | CLI selection, state, I/O |
-| `model.py` | Schema-v4 values and stable errors | persistence, Git, adapter protocols |
-| `workflow.py` | Current node contracts and graph-derived `agent-v1` projection | state writes, effect execution |
-| `repository_kernel.py` | Repository DAG, ordering, leases, attempts, results, retry, cancellation, barrier, integration binding | workflow-specific gates, I/O |
-| `engine.py` | Eligibility, payload checks, mutation plans, pure state candidates | locks, time, Git, serialization |
-| `authority.py` | Durable conversation requests, exact binding, prompt-event decisions, one-time claim/consume, replay ledger and private confirmation index | workflow policy, state transitions, authenticated-human claims |
-| `store.py` | Private paths, task locks, revision CAS, atomic state replace | workflow policy |
-| `journal.py` | Effect claim, receipt, quarantine, commit, abandonment | effect execution |
-| `git_client.py` | Bounded Git evidence and declared workspace effects | state transitions |
+| `product.py` | Schema/workflow version constants, plugin-data namespace, built-in workflow registry, product identity | selection, state, I/O |
+| `model.py` | Schema-v5 values, stable errors, canonical JSON | persistence, Git, workflow policy |
+| `workflow.py` | YAML document validation, node contracts, graph checks, identity, agent projection | state writes, I/O |
+| `workflows.py` | Built-in file resolution and custom-path loading | validation semantics |
+| `yaml_subset.py` | Strict YAML-subset parsing with line errors | workflow semantics |
+| `engine.py` | Eligibility, payload checks, mutation plans, deterministic state replay and transition validation | locks, Git, persistence |
+| `store.py` | Private paths, identity-bound safe reads, task locks, revision CAS, semantic validation boundary, atomic state replace | workflow declaration policy |
+| `git_client.py` | Bounded read-only Git evidence | state transitions |
 | `controller.py` | Application coordination and the only state-write entrypoint | wire protocols |
 | `cli.py` | argv and one-JSON-object responses | workflow policy |
-| `mcp.py` | JSON-RPC/MCP framing and current tool schemas | fallback, task writes |
-| `hook.py` | Scope lookup, context injection, bounded `UserPromptSubmit` forwarding, direct-state-write guard | confirmation policy, transitions |
+| `hook.py` | Scope lookup and context injection | transitions, policy |
 
-## Product dimensions
+## Workflow definitions
 
-The product matrix is the cross product of:
+A workflow declares one deterministic normal path from its entry to a terminal
+node, plus an optional shared cancel action targeting a terminal node. It is
+stored as YAML (or JSON) at `workflows/<id>.yaml`, or in a custom file selected
+by absolute path. The runtime executes exactly one action per non-terminal
+node, then moves to that node's single target.
 
-- workflow depth: `full@4` or `lite@4`;
-- topology: single repository or multiple repositories;
-- workspace strategy: `in-place`, `branch`, or `worktree`.
+### Node contract
 
-The first two dimensions produce exactly four profiles. Workspace strategy is
-compatible with every profile and never changes workflow depth.
+| Field | Required | Meaning |
+|---|---|---|
+| `action_id` | non-terminal | the action the agent applies |
+| `handler` | non-terminal | one of `preflight`, `evidence.record`, `test.record` |
+| `target` | non-terminal | `{node: <id>, status: <status>}` — where the task lands |
+| `terminal` | terminal | `true` = sink: no action, no target |
+| `payload` | no | `field: type` — all declared fields are required |
+| `writes` | no | must equal the handler's derived write set |
+| `effect` | no | `none` or `git.inspect-repository` (preflight only) |
+| `authority` | no | only `task-revision` accepted; other values rejected for now |
+| `driver` | no | opaque label (e.g. `{tool: openspec}`); the runtime never interprets it |
+| `description` | no | carried into the projection |
 
-Full preflight enters its baseline and full-only gates. Lite preflight has no
-workflow-entry approval: single-repository Lite targets `implement` /
-`IMPLEMENTING`; multi-repository Lite targets `repository-plan` /
-`ORCHESTRATING`.
+Payload types: `string`, `boolean`, `integer`, `object`, `sha256`.
+Validation rejects unknown fields, dangling targets, unreachable nodes,
+self-loops and multi-node cycles, duplicate action IDs, a missing terminal
+node, a second preflight node, and any payload on the preflight node. A cancel
+contract must record exactly `reason: string`, target a terminal node and land
+with `CANCELLED`. Violations use `WORKFLOW_INVALID` with the offending node in
+`details`.
 
-## Node contract
+### Identity pinning
 
-Every actionable node declares:
-
-- node and action ID;
-- target node and status;
-- required authority;
-- allowed state JSON pointers;
-- effect kind;
-- direct handler ID and effect port;
-- output kind and required payload fields;
-- accepted payload types and bounded size;
-- idempotency fields;
-- failure code and recovery action.
-
-The controller asks the engine for this contract at the current revision.
-Each contract's handler ID resolves through one static node-family catalog to
-a direct pure callable and the same declared effect port. The engine does not
-dispatch reducers by `output_kind`. Adapters do not contain a second state
-table.
-
-Each task also pins a digest of its selected workflow graph, repository graph,
-topology, and product identity. Loading rejects a task whose pinned identity
-does not match the installed graph.
+Each task pins `workflow_identity = sha256(product_identity + selector +
+canonical(document))`. Every load recomputes it against the current file:
+editing, moving or deleting a workflow file after a task started fails fast
+(`WORKFLOW_IDENTITY_MISMATCH` / `WORKFLOW_NOT_FOUND`). The selector is the
+built-in id (`lite`) or the absolute path used at `start`.
 
 ## Mutation boundary
 
-Effect-free action:
-
 ```text
-load under task lock → validate revision/action/payload/write set
-                     → resolve exact conversation confirmation when required
-                     → atomic state replace
+load state plus pinned definition → validate and plan current action →
+(preflight: read bounded Git evidence) → lock and re-read → revision CAS →
+validate deterministic replay and append-only transition → atomic replace
 ```
 
-External effect:
+Every mutation increments the revision exactly once, enforced at the store
+boundary (`TaskStore.update`). The agent protocol never carries a revision:
+`apply` reads it from the loaded state, and a concurrent writer's loser
+receives `REVISION_CONFLICT` whose `details.projection` is the fresh
+projection — the agent simply re-runs `next`. State is never corrupted.
+Every persisted read is replayed from the workflow entry using preflight and
+ordered evidence. Impossible node/status/revision combinations fail closed as
+`STATE_INVALID`; mutation candidates that change immutable fields or rewrite
+evidence fail as `STATE_WRITE_INVALID` before replacement.
 
-```text
-pure payload/plan validation → resolve exact conversation confirmation
-     → execution fence → durable claim
-     → dispatch once → durable receipt → release fence
-     → revision/plan revalidation → atomic state replace → journal commit
+## The agent-v1 projection
+
+`next` returns exactly one thing to do:
+
+```json
+{
+  "schema": "dev-flow-agent-v1",
+  "task_id": "task-9f2c4a1b3d7e",
+  "requirement": "Implement the persisted task requirement",
+  "revision": 2,
+  "workflow": {"id": "lite", "version": 5, "identity": "<64 hex>"},
+  "status": "IMPLEMENTING",
+  "current_node": "implement",
+  "repo_context": {
+    "repository_id": "repo-<12 hex>",
+    "path": "/absolute/path/to/repo",
+    "preflight": {"schema": "dev-flow-v5-git-preflight/v1", "...": "opaque evidence"}
+  },
+  "action": {
+    "action_id": "task.implementation.complete",
+    "node_id": "implement",
+    "target": {"node": "verify", "status": "VERIFYING"},
+    "payload": {"summary": "string"},
+    "handler": "evidence.record",
+    "writes": ["/current_node", "/revision", "/status", "/updated_at", "/evidence"],
+    "driver": null,
+    "description": null
+  },
+  "done": false
+}
 ```
 
-When confirmation is required but not ready, resolution creates or reloads a
-private request and returns without a task write, Git operation, journal claim,
-or business effect. A later `UserPromptSubmit` observation records only an
-exact decision. A subsequent controller call reloads and revalidates the
-binding before planning and consumes it only at the declared successful
-lifecycle point.
-
-An uncertain effect is quarantined. Recovery requires an explicit `settle`,
-`abandon`, `reattach`, or `compensate` request. Mode eligibility is checked
-before confirmation and its evidence digest is included in the exact request.
-After confirmation, the controller acquires the same per-execution fence,
-reloads the journal, and proves the mode again before any terminal mutation.
-Unavailable or changed proof returns operator intervention; unavailable
-reattach or compensation does so without creating a request. Conversation
-agreement is not effect evidence.
-
-## Confirmation lifecycle
-
-A canonical request binds task, workflow identity, revision, action, grant,
-local execution account, actor role, validated payload, repository/lease
-scope, repository context, and Codex session. It has no clock expiry:
-
-```text
-PENDING → CONFIRMED → CONSUMED
-PENDING → CONFIRMED → CLAIMED → CONSUMED
-PENDING → DENIED
-binding drift without success evidence → STALE
-```
-
-The exact first apply creates `PENDING` and ends that agent turn. A later
-exact `同意` / `approve` or request-ID reply can change only the confirmation
-record; it cannot execute the action. The next turn reloads `agent-v1` and
-retries only a still-current `CONFIRMED` binding. Denial is terminal for the
-exact binding. There is no polling, background apply, public confirmation
-issuer, caller approval flag, or manual Hook path.
-
-One data-directory confirmation lock serializes request selection, the
-`(session_id, turn_id)` event ledger, decisions, consumption, reconciliation,
-and compaction across tasks. For a prompt event, the controller derives the
-eligible active-task set from canonical cwd before selecting requests; stored
-event evidence contains cwd, eligible-task-set, and prompt digests rather than
-raw cwd or prompt. The confirmation lock is never nested with task, journal, or
-workspace locks. The task CAS or deterministic journal claim resolves racing
-confirmed retries, while successful task/journal evidence reconciles a crash
-between commit and confirmation consumption.
-
-## Command mapping
-
-| Public operation | Controller method | State/effect owner |
-|---|---|---|
-| `start` / `task-start` | `Controller.start` | `TaskStore.create` |
-| `show` / `task-show` | `Controller.show` | read only |
-| `next` / `task-next` | `Controller.next` | graph-derived read only |
-| `preflight` / `task-preflight` | `Controller.preflight` | Git read + CAS commit |
-| `apply` / `action-apply` | `Controller.apply` | current node contract |
-| `effect-inspect` | `Controller.effect_inspect` | journal read only |
-| `effect-recover` | `Controller.recover_effect` | journal/controller recovery |
-| `UserPromptSubmit` Hook | confirmation observer | confirmation record only |
-
-## Repository kernel
-
-Both multi-repository profiles call the same pure kernel:
-
-```text
-canonical set → owners + pinned HEADs + dependency DAG → ready leases
-              → scoped results/retries
-              → all-pass barrier → integration binding
-```
-
-`full@4` reaches this kernel after its planning approval.
-Multi-repository `lite@4` reaches it directly after preflight. The kernel
-contains no full/lite branch, and its own declared authority requirements are
-identical for both workflows.
+At a terminal node `action` is `null` and `done` is `true`, regardless of the
+workflow's chosen display status. `apply` returns the same projection, so the
+agent never needs an extra round trip.
 
 ## Persistence layout
 
-For an explicit data directory:
-
 ```text
-<data-dir>/
-  tasks/<task-id>/state.json
-  locks/<task-id>.lock
-  confirmations/index.json
-  locks/confirmation.lock
-  effects/<task-id>/<plan-binding>.json
-  workspaces/<task-id>/<repository-id>/
+<PLUGIN_DATA>/
+  tasks/                         # retained V4 data; V5 never reads it
+  v5/
+    tasks/<task-id>/state.json
+    locks/<task-id>.lock
 ```
 
-Directories use local-account-only permissions, files are private, and writes
-use atomic replace. State paths are not target-repository paths. Unsafe
-permissions or symlinks, corruption, lock/write failure, and capacity
-exhaustion fail closed for guarded authority; the Hook itself remains
-fail-open and no automatic repair or deletion occurs.
+Directories use local-account-only permissions, files are private, writes use
+atomic replace, and state paths are never target-repository paths.
 
 ## Public bootstraps
 
-`scripts/dev_flow.py`, `scripts/dev_flow_mcp.py`, and
-`hooks/dev_flow_hook.py` only add the fixed
-package-owned `src` directory to the isolated interpreter path and import one
-`main` function. Exactly one packaged `UserPromptSubmit` path forwards bounded
-session, turn, cwd, and prompt evidence to the same controller/data directory
-used by CLI and MCP. Hook context labels its bounded
-`conversation_routing={session_id,request_turn_id}` as correlation-only.
-Public adapters accept no caller-issued confirmation. None execute source text,
-select another runtime, or dispatch by environment.
-
-The configured lifecycle event is conversation correlation and audit evidence,
-not independent operating-system or authenticated-human identity. Codex
-host-owned sandbox, filesystem, or tool-permission prompts are outside this
-plugin's boundary and are not suppressed or auto-confirmed.
+`scripts/dev_flow_python_launcher` selects a supported interpreter, then runs
+`scripts/dev_flow.py` or `hooks/dev_flow_hook.py`; the Python bootstraps only
+add the fixed package-owned `src` directory and import one `main` function.
+The Hook registers exactly `SessionStart`,
+`UserPromptSubmit` and `PreToolUse`: it injects the controller locator plus
+the fresh projection for tasks covering the cwd, and denies direct writes
+into the plugin data directory. Its injected locator already contains the
+launcher, CLI handler and exact V5 state directory. The guard is advisory,
+fail-open, and never writes task state.

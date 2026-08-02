@@ -1,16 +1,15 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "4.0.0+codex.20260731041657",
-  "description": "A clear, resumable V4 development workflow for Codex on macOS.",
+  "version": "5.0.0+codex.20260801104200",
+  "description": "A clear, resumable configurable workflow state machine for Codex on macOS.",
   "author": {
     "name": "Local developer"
   },
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Dev Flow Orchestrator",
-    "shortDescription": "Run clear single- or multi-repository V4 workflows",
-    "longDescription": "Runs one greenfield V4 controller on macOS. full@4 and lite@4 both support single- and multi-repository work, use explicit workspace selection, keep state outside repositories, and share one bounded repository orchestration kernel.",
+    "shortDescription": "Run declarative single-repository development workflows",
+    "longDescription": "Runs one V5 controller on macOS. Workflow definitions are declarative YAML files: states, transitions and node contracts are data, not code. Each task pins the exact workflow document that created it, and the agent reads one next-action projection at a time. State stays outside target repositories.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [
@@ -19,9 +18,9 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Start this requirement with the guarded development workflow.",
+      "Start this requirement with the configured development workflow.",
       "Resume the active development workflow from its saved state.",
-      "Review the complete implementation against its approved scope."
+      "Continue the current task exactly as its next projection directs."
     ]
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed public bootstrap for the greenfield V4 Hook."""
+"""Fixed public bootstrap for the V5 Hook."""
 
 from pathlib import Path
 import sys
@@ -13,5 +13,10 @@ from dev_flow_orchestrator.hook import main  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(
-        main(controller_path=str(_PLUGIN_ROOT / "scripts" / "dev_flow.py"))
+        main(
+            controller_argv=(
+                str(_PLUGIN_ROOT / "scripts" / "dev_flow_python_launcher"),
+                str(_PLUGIN_ROOT / "scripts" / "dev_flow.py"),
+            )
+        )
     )

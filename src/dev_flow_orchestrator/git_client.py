@@ -1,21 +1,52 @@
-"""Bounded macOS Git evidence through argument-vector subprocess calls."""
+"""Bounded read-only Git evidence through argument-vector subprocess calls.
+
+The controller treats Git output as opaque evidence: ``git status`` is
+hashed, never interpreted. Unusual repository states (submodules, LFS,
+sparse checkouts, in-progress operations) surface as recorded evidence,
+not as detection logic in the runtime.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import os
 from pathlib import Path
+import selectors
+import signal
 import subprocess
-from typing import Mapping, Optional
+import time
+from typing import Optional
 
 from .model import DevFlowError
 
 
 MAX_GIT_OUTPUT_BYTES = 1024 * 1024
+GIT_COMMAND_TIMEOUT_SECONDS = 30
+GIT_TERMINATE_GRACE_SECONDS = 1
+GIT_READ_CHUNK_BYTES = 64 * 1024
 
 
 class GitClient:
     """Read current repository evidence without mutating Git state."""
+
+    @staticmethod
+    def _terminate(process: subprocess.Popen) -> None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            process.wait(timeout=GIT_TERMINATE_GRACE_SECONDS)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            process.wait(timeout=GIT_TERMINATE_GRACE_SECONDS)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
     @staticmethod
     def _run(repository: Path, *arguments: str) -> bytes:
@@ -27,15 +58,24 @@ class GitClient:
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_OPTIONAL_LOCKS": "0",
         }
-        command = ["git", "-C", str(repository), *arguments]
+        command = [
+            "git",
+            "-c",
+            "core.fsmonitor=false",
+            "-C",
+            str(repository),
+            *arguments,
+        ]
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=False,
+                stdin=subprocess.DEVNULL,
                 env=environment,
+                start_new_session=True,
             )
         except OSError as exc:
             raise DevFlowError(
@@ -43,28 +83,105 @@ class GitClient:
                 "Git could not be executed",
                 details={"error": str(exc)},
             ) from exc
-        if (
-            len(completed.stdout) > MAX_GIT_OUTPUT_BYTES
-            or len(completed.stderr) > MAX_GIT_OUTPUT_BYTES
-        ):
+        stdout = bytearray()
+        stderr = bytearray()
+        selector = selectors.DefaultSelector()
+        deadline = time.monotonic() + GIT_COMMAND_TIMEOUT_SECONDS
+        try:
+            if process.stdout is None or process.stderr is None:
+                GitClient._terminate(process)
+                raise DevFlowError(
+                    "GIT_UNAVAILABLE",
+                    "Git output pipes could not be created",
+                )
+            selector.register(process.stdout, selectors.EVENT_READ, stdout)
+            selector.register(process.stderr, selectors.EVENT_READ, stderr)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    GitClient._terminate(process)
+                    raise DevFlowError(
+                        "GIT_COMMAND_TIMEOUT",
+                        "Git command exceeded the preflight time budget",
+                        details={
+                            "arguments": list(arguments),
+                            "timeout_seconds": GIT_COMMAND_TIMEOUT_SECONDS,
+                        },
+                    )
+                events = selector.select(remaining)
+                if not events:
+                    GitClient._terminate(process)
+                    raise DevFlowError(
+                        "GIT_COMMAND_TIMEOUT",
+                        "Git command exceeded the preflight time budget",
+                        details={
+                            "arguments": list(arguments),
+                            "timeout_seconds": GIT_COMMAND_TIMEOUT_SECONDS,
+                        },
+                    )
+                for key, _ in events:
+                    chunk = os.read(key.fileobj.fileno(), GIT_READ_CHUNK_BYTES)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                        continue
+                    key.data.extend(chunk)
+                    if len(stdout) + len(stderr) > MAX_GIT_OUTPUT_BYTES:
+                        GitClient._terminate(process)
+                        raise DevFlowError(
+                            "GIT_OUTPUT_TOO_LARGE",
+                            "Git output exceeds the preflight budget",
+                            details={
+                                "arguments": list(arguments),
+                                "limit_bytes": MAX_GIT_OUTPUT_BYTES,
+                                "stdout_bytes": len(stdout),
+                                "stderr_bytes": len(stderr),
+                            },
+                        )
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                returncode = process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired as exc:
+                GitClient._terminate(process)
+                raise DevFlowError(
+                    "GIT_COMMAND_TIMEOUT",
+                    "Git command exceeded the preflight time budget",
+                    details={
+                        "arguments": list(arguments),
+                        "timeout_seconds": GIT_COMMAND_TIMEOUT_SECONDS,
+                    },
+                ) from exc
+        except DevFlowError:
+            raise
+        except (OSError, ValueError, KeyError) as exc:
+            GitClient._terminate(process)
             raise DevFlowError(
-                "GIT_OUTPUT_TOO_LARGE",
-                "Git output exceeds the preflight budget",
-            )
-        if completed.returncode != 0:
+                "GIT_COMMAND_FAILED",
+                "Git evidence collection failed",
+                details={
+                    "arguments": list(arguments),
+                    "error": str(exc),
+                },
+            ) from exc
+        finally:
+            selector.close()
+            for stream in (process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+        if returncode != 0:
             raise DevFlowError(
                 "GIT_COMMAND_FAILED",
                 "required Git evidence is unavailable",
                 details={
                     "arguments": list(arguments),
-                    "returncode": completed.returncode,
-                    "stderr": completed.stderr.decode(
+                    "returncode": returncode,
+                    "stderr": bytes(stderr).decode(
                         "utf-8",
                         errors="replace",
                     )[:1024],
                 },
             )
-        return completed.stdout
+        return bytes(stdout)
 
     @classmethod
     def _text(cls, repository: Path, *arguments: str) -> str:
@@ -122,7 +239,7 @@ class GitClient:
         if not git_common_path.is_absolute():
             git_common_path = root / git_common_path
         return {
-            "schema": "dev-flow-v4-git-preflight/v1",
+            "schema": "dev-flow-v5-git-preflight/v1",
             "repository_root": str(root),
             "git_common_dir": str(git_common_path.resolve()),
             "head": head,
@@ -131,131 +248,3 @@ class GitClient:
             "status_sha256": hashlib.sha256(status).hexdigest(),
             "status_bytes": len(status),
         }
-
-    @classmethod
-    def prepare_workspace(
-        cls,
-        repository_path: str,
-        strategy: str,
-        destination: Path,
-        expected_head: object,
-    ) -> dict:
-        evidence = cls.inspect(repository_path)
-        if (
-            not isinstance(expected_head, str)
-            or evidence["head"] != expected_head
-        ):
-            raise DevFlowError(
-                "REPOSITORY_DRIFT",
-                "repository HEAD changed after preflight",
-                details={
-                    "expected_head": expected_head,
-                    "observed_head": evidence["head"],
-                },
-            )
-        if strategy == "in-place":
-            workspace_path = evidence["repository_root"]
-        elif strategy == "branch":
-            if evidence["branch"] is None:
-                raise DevFlowError(
-                    "WORKSPACE_BRANCH_REQUIRED",
-                    "branch workspace requires a named current branch",
-                )
-            workspace_path = evidence["repository_root"]
-        elif strategy == "worktree":
-            if destination.exists():
-                raise DevFlowError(
-                    "WORKSPACE_EXISTS",
-                    "managed worktree destination already exists",
-                    details={"path": str(destination)},
-                )
-            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            os.chmod(destination.parent, 0o700)
-            cls._run(
-                Path(repository_path),
-                "worktree",
-                "add",
-                "--detach",
-                str(destination),
-                evidence["head"],
-            )
-            workspace_path = str(destination.resolve())
-        else:
-            raise DevFlowError(
-                "WORKSPACE_STRATEGY_INVALID",
-                "workspace strategy is not supported",
-                details={"workspace_strategy": strategy},
-            )
-        return {
-            "schema": "dev-flow-v4-workspace-receipt/v1",
-            "strategy": strategy,
-            "path": workspace_path,
-            "head": evidence["head"],
-            "branch": evidence["branch"],
-        }
-
-    @classmethod
-    def observe_workspace(cls, request: Mapping[str, object]) -> dict:
-        repository_path = request.get("repository_path")
-        strategy = request.get("strategy")
-        destination = request.get("destination")
-        expected_head = request.get("expected_head")
-        if not all(
-            isinstance(value, str)
-            for value in (
-                repository_path,
-                strategy,
-                destination,
-                expected_head,
-            )
-        ):
-            raise DevFlowError(
-                "EFFECT_REQUEST_INVALID",
-                "workspace observation request is incomplete",
-            )
-        observed_path = (
-            destination
-            if strategy == "worktree"
-            else repository_path
-        )
-        evidence = cls.inspect(observed_path)
-        if evidence["head"] != expected_head:
-            raise DevFlowError(
-                "EFFECT_OBSERVATION_MISMATCH",
-                "workspace HEAD does not match the claimed effect",
-            )
-        return {
-            "schema": "dev-flow-v4-workspace-receipt/v1",
-            "strategy": strategy,
-            "path": evidence["repository_root"],
-            "head": evidence["head"],
-            "branch": evidence["branch"],
-        }
-
-    @classmethod
-    def workspace_effect_absent(cls, request: Mapping[str, object]) -> bool:
-        strategy = request.get("strategy")
-        if strategy in {"in-place", "branch"}:
-            return True
-        repository_path = request.get("repository_path")
-        destination = request.get("destination")
-        if not isinstance(repository_path, str) or not isinstance(destination, str):
-            raise DevFlowError(
-                "EFFECT_REQUEST_INVALID",
-                "workspace absence request is incomplete",
-            )
-        destination_path = Path(destination).resolve()
-        if destination_path.exists():
-            return False
-        listing = cls._text(
-            Path(repository_path),
-            "worktree",
-            "list",
-            "--porcelain",
-        )
-        registered = {
-            str(Path(line[len("worktree ") :]).resolve())
-            for line in listing.splitlines()
-            if line.startswith("worktree ")
-        }
-        return str(destination_path) not in registered

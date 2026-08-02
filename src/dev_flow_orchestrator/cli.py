@@ -1,4 +1,4 @@
-"""JSON command-line adapter for the greenfield V4 controller."""
+"""JSON command-line adapter for the V5 controller."""
 
 from __future__ import annotations
 
@@ -9,31 +9,11 @@ from typing import Optional, Sequence
 
 from .controller import Controller
 from .model import DevFlowError
-from .product import WORKFLOW_IDS, WORKSPACE_STRATEGIES
-
-
-ROUTING_ID_MAX_BYTES = 256
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise DevFlowError("ARGUMENT_INVALID", message)
-
-
-def _routing_id(value: str) -> str:
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeError as exc:
-        raise argparse.ArgumentTypeError(
-            "conversation routing IDs must be valid UTF-8"
-        ) from exc
-    if not value.strip() or len(encoded) > ROUTING_ID_MAX_BYTES:
-        raise argparse.ArgumentTypeError(
-            "conversation routing IDs must be 1..{} UTF-8 bytes".format(
-                ROUTING_ID_MAX_BYTES
-            )
-        )
-    return value
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -43,47 +23,30 @@ def _parser() -> argparse.ArgumentParser:
 
     start = commands.add_parser("start")
     start.add_argument("--requirement", required=True)
-    start.add_argument("--workflow", choices=WORKFLOW_IDS, required=True)
     start.add_argument(
-        "--workspace-strategy",
-        choices=WORKSPACE_STRATEGIES,
+        "--workflow",
         required=True,
+        help="built-in workflow id (lite) or absolute path to a workflow file",
     )
-    start.add_argument("--repo", action="append", required=True)
+    start.add_argument("--repo", required=True, help="absolute repository path")
     start.add_argument("--task-id")
 
     show = commands.add_parser("show")
     show.add_argument("task_id")
 
-    preflight = commands.add_parser("preflight")
-    preflight.add_argument("task_id")
-    preflight.add_argument("--expected-revision", type=int, required=True)
-
     next_action = commands.add_parser("next")
     next_action.add_argument("task_id")
-    next_action.add_argument("--session-id", type=_routing_id)
 
     apply_action = commands.add_parser("apply")
     apply_action.add_argument("task_id")
     apply_action.add_argument("--action", required=True)
-    apply_action.add_argument("--expected-revision", type=int, required=True)
     apply_action.add_argument("--payload-json", default="{}")
-    apply_action.add_argument("--session-id", type=_routing_id)
-    apply_action.add_argument("--request-turn-id", type=_routing_id)
 
-    effect_inspect = commands.add_parser("effect-inspect")
-    effect_inspect.add_argument("task_id")
+    cancel = commands.add_parser("cancel")
+    cancel.add_argument("task_id")
+    cancel.add_argument("--reason", required=True)
 
-    effect_recover = commands.add_parser("effect-recover")
-    effect_recover.add_argument("task_id")
-    effect_recover.add_argument("--execution-id", required=True)
-    effect_recover.add_argument(
-        "--mode",
-        choices=("settle", "abandon", "reattach", "compensate"),
-        required=True,
-    )
-    effect_recover.add_argument("--session-id", type=_routing_id)
-    effect_recover.add_argument("--request-turn-id", type=_routing_id)
+    list_action = commands.add_parser("list")
 
     return parser
 
@@ -94,8 +57,7 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
         state = controller.start(
             requirement=arguments.requirement,
             workflow=arguments.workflow,
-            workspace_strategy=arguments.workspace_strategy,
-            repositories=arguments.repo,
+            repository=arguments.repo,
             task_id=arguments.task_id,
         )
         return {
@@ -110,24 +72,11 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
             "command": "show",
             "task": state.as_dict(),
         }
-    if arguments.command == "preflight":
-        receipt = controller.preflight(
-            arguments.task_id,
-            arguments.expected_revision,
-        )
-        return {
-            "ok": True,
-            "command": "preflight",
-            "receipt": receipt.as_dict(),
-        }
     if arguments.command == "next":
         return {
             "ok": True,
             "command": "next",
-            "projection": controller.next(
-                arguments.task_id,
-                session_id=arguments.session_id,
-            ),
+            "projection": controller.next(arguments.task_id),
         }
     if arguments.command == "apply":
         try:
@@ -142,40 +91,26 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
                 "ARGUMENT_JSON_INVALID",
                 "--payload-json must be an object",
             )
-        receipt = controller.apply(
-            arguments.task_id,
-            arguments.expected_revision,
-            arguments.action,
-            payload,
-            session_id=arguments.session_id,
-            request_turn_id=arguments.request_turn_id,
-        )
         return {
             "ok": True,
             "command": "apply",
-            "receipt": receipt.as_dict(),
+            **controller.apply(arguments.task_id, arguments.action, payload),
         }
-    if arguments.command == "effect-inspect":
+    if arguments.command == "cancel":
         return {
             "ok": True,
-            "command": "effect-inspect",
-            "inspection": controller.effect_inspect(arguments.task_id),
+            "command": "cancel",
+            **controller.cancel(arguments.task_id, reason=arguments.reason),
         }
-    if arguments.command == "effect-recover":
+    if arguments.command == "list":
         return {
             "ok": True,
-            "command": "effect-recover",
-            "recovery": controller.recover_effect(
-                arguments.task_id,
-                arguments.execution_id,
-                arguments.mode,
-                session_id=arguments.session_id,
-                request_turn_id=arguments.request_turn_id,
-            ),
+            "command": "list",
+            "tasks": [state.as_dict() for state in controller.list_tasks()],
         }
     raise DevFlowError(
         "ACTION_UNSUPPORTED",
-        "action is not implemented by the greenfield runtime",
+        "action is not implemented by this runtime",
     )
 
 

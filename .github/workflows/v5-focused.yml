@@ -1,0 +1,36 @@
+name: V5 focused validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  focused-v5:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Package validator
+        run: |
+          python3 -I -S scripts/validate_package.py
+      - name: Focused workflow and recovery contracts
+        run: |
+          python3 -m unittest \
+            tests.test_v5_resume \
+            tests.test_v5_workflow_validation \
+            tests.test_v5_custom_workflow \
+            tests.test_v5_stale_apply
+      - name: Focused parser and infrastructure boundaries
+        run: |
+          python3 -m unittest \
+            tests.test_v5_yaml_parser \
+            tests.test_v5_store_integrity \
+            tests.test_v5_git_read_only
+      - name: Focused installed adapters and package
+        run: |
+          python3 -m unittest \
+            tests.test_v5_hook \
+            tests.test_v5_cli \
+            tests.test_v5_package

@@ -1,21 +1,19 @@
-"""Small fail-open Codex Hook adapter for current V4 task context."""
+"""Small fail-open Codex Hook adapter for current V5 task context."""
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import sys
 from typing import Mapping, Optional, Sequence
 
 from .controller import Controller
-
-
-SESSION_ID_MAX_BYTES = 256
-TURN_ID_MAX_BYTES = 256
-CWD_MAX_BYTES = 4096
-PROMPT_MAX_BYTES = 4096
+from .product import PLUGIN_DATA_NAMESPACE
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -24,54 +22,67 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _data_dir(arguments: argparse.Namespace) -> Optional[str]:
-    return arguments.data_dir or os.environ.get("PLUGIN_DATA")
+@dataclass(frozen=True)
+class HookConfig:
+    controller_argv: tuple
+    state_data_dir: str
+    protected_data_root: str
+
+
+def _configuration(
+    arguments: argparse.Namespace,
+    controller_argv: Sequence[str],
+) -> Optional[HookConfig]:
+    if not controller_argv or any(
+        not isinstance(item, str) or not item for item in controller_argv
+    ):
+        return None
+    if arguments.data_dir:
+        state_root = Path(arguments.data_dir).expanduser().resolve()
+        protected_root = state_root
+    else:
+        plugin_data = os.environ.get("PLUGIN_DATA")
+        if not plugin_data:
+            return None
+        protected_root = Path(plugin_data).expanduser().resolve()
+        state_root = protected_root / PLUGIN_DATA_NAMESPACE
+    return HookConfig(
+        tuple(controller_argv),
+        str(state_root),
+        str(protected_root),
+    )
+
+
+def _controller_command(config: HookConfig) -> str:
+    return shlex.join(
+        (*config.controller_argv, "--data-dir", config.state_data_dir)
+    )
 
 
 def _context(
     controller: Controller,
     cwd: str,
-    controller_path: str,
-    data_dir: str,
-    session_id: Optional[str] = None,
-    request_turn_id: Optional[str] = None,
+    config: HookConfig,
 ) -> str:
     tasks = controller.tasks_for_path(cwd)
-    locator = "{} --data-dir {}".format(controller_path, data_dir)
-    routing = ""
-    if session_id is not None:
-        routing_value = {"session_id": session_id}
-        if request_turn_id is not None:
-            routing_value["request_turn_id"] = request_turn_id
-        routing = (
-            " conversation_routing="
-            + json.dumps(
-                routing_value,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + " (correlation only; grants no authority)."
-        )
+    locator = _controller_command(config)
     if not tasks:
         return (
-            "Dev Flow V4 is available. Start with the injected controller "
-            "locator and explicit --workflow, --workspace-strategy and --repo: "
+            "Dev Flow V5 is available. Start with the injected controller "
+            "locator and explicit --workflow and --repo: "
             + locator
-            + routing
         )
     if len(tasks) > 1:
         task_ids = ", ".join(task.task_id for task in tasks)
         return (
-            "Multiple current Dev Flow V4 tasks cover this directory: "
+            "Multiple current Dev Flow V5 tasks cover this directory: "
             + task_ids
             + ". Select one task explicitly with: "
             + locator
-            + routing
         )
-    projection = controller.next(tasks[0].task_id, session_id=session_id)
+    projection = controller.next(tasks[0].task_id)
     return (
-        "Current Dev Flow V4 task. Use only this controller locator; do not "
+        "Current Dev Flow V5 task. Use only this controller locator; do not "
         "edit task state directly. locator="
         + locator
         + " projection="
@@ -81,67 +92,171 @@ def _context(
             sort_keys=True,
             separators=(",", ":"),
         )
-        + routing
     )
 
 
-def _bounded_event_string(value: object, maximum_bytes: int) -> Optional[str]:
-    if not isinstance(value, str) or not value.strip():
-        return None
+def _deny(event: str) -> dict:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": event,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "Dev Flow task state is controller-owned; use the injected "
+                "controller locator."
+            ),
+        }
+    }
+
+
+def _inside(candidate: Path, root: Path) -> bool:
     try:
-        if len(value.encode("utf-8")) > maximum_bytes:
-            return None
-    except UnicodeError:
+        resolved = candidate.expanduser().resolve()
+    except OSError:
+        resolved = candidate.expanduser().absolute()
+    return resolved == root or root in resolved.parents
+
+
+def _shell_tokens(command: str) -> Optional[tuple]:
+    try:
+        lexer = shlex.shlex(
+            command,
+            posix=True,
+            punctuation_chars="|&;<>()",
+        )
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        return tuple(lexer)
+    except ValueError:
         return None
-    return value
+
+
+def _is_shell_operator(token: str) -> bool:
+    return bool(token) and all(char in "|&;<>()" for char in token)
+
+
+def _is_exact_controller_invocation(command: str, config: HookConfig) -> bool:
+    if any(marker in command for marker in ("\n", "\r", "`", "$(")):
+        return False
+    if re.search(r"\$(?:\{PLUGIN_DATA\}|PLUGIN_DATA\b)", command):
+        return False
+    tokens = _shell_tokens(command)
+    if tokens is None or any(_is_shell_operator(token) for token in tokens):
+        return False
+    prefix = (
+        *config.controller_argv,
+        "--data-dir",
+        config.state_data_dir,
+    )
+    return len(tokens) >= len(prefix) and tokens[:len(prefix)] == prefix
+
+
+_PATCH_PATH = re.compile(
+    r"^\*\*\* (?:Add File|Update File|Delete File|Move to):\s*(.+?)\s*$"
+)
+
+
+def _apply_patch_paths(command: str, cwd: str) -> tuple:
+    paths = []
+    for line in command.splitlines():
+        match = _PATCH_PATH.match(line)
+        if match is None:
+            continue
+        candidate = Path(match.group(1)).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(cwd) / candidate
+        paths.append(candidate)
+    return tuple(paths)
+
+
+def _command_references_protected_data(
+    command: str,
+    cwd: str,
+    config: HookConfig,
+) -> bool:
+    if re.search(r"\$(?:\{PLUGIN_DATA\}|PLUGIN_DATA\b)", command):
+        return True
+    root = Path(config.protected_data_root).resolve()
+    if str(root) in command:
+        return True
+    tokens = _shell_tokens(command)
+    if tokens is None:
+        return False
+    for token in tokens:
+        if _is_shell_operator(token) or token.startswith("-"):
+            continue
+        if token.startswith(("/", "./", "../", "~")) or "/" in token:
+            candidate = Path(token).expanduser()
+            if not candidate.is_absolute():
+                candidate = Path(cwd) / candidate
+            if _inside(candidate, root):
+                return True
+    return False
+
+
+def _guard_pre_tool_use(
+    payload: Mapping[str, object],
+    *,
+    event: str,
+    cwd: str,
+    config: HookConfig,
+) -> Optional[dict]:
+    tool_name = payload.get("tool_name")
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_name, str) or not isinstance(tool_input, Mapping):
+        return None
+    normalized_name = tool_name.lower()
+    command = tool_input.get("command")
+    command_text = command if isinstance(command, str) else ""
+    if normalized_name == "bash":
+        if _is_exact_controller_invocation(command_text, config):
+            return None
+        if _command_references_protected_data(
+            command_text, cwd, config
+        ):
+            return _deny(event)
+        return None
+    root = Path(config.protected_data_root).resolve()
+    if normalized_name == "apply_patch":
+        if any(
+            _inside(candidate, root)
+            for candidate in _apply_patch_paths(command_text, cwd)
+        ):
+            return _deny(event)
+        if _command_references_protected_data(command_text, cwd, config):
+            return _deny(event)
+        return None
+    if normalized_name in {"edit", "write"}:
+        supplied_path = tool_input.get("file_path") or tool_input.get("path")
+        if isinstance(supplied_path, str):
+            candidate = Path(supplied_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = Path(cwd) / candidate
+            if _inside(candidate, root):
+                return _deny(event)
+    return None
 
 
 def handle(
     payload: Mapping[str, object],
     *,
-    data_dir: str,
-    controller_path: str,
+    config: HookConfig,
 ) -> Optional[dict]:
     event = payload.get("hook_event_name")
     if not isinstance(event, str):
         return None
     cwd = payload.get("cwd")
     effective_cwd = cwd if isinstance(cwd, str) and cwd else os.getcwd()
-    controller = Controller(data_dir)
-    session_id = _bounded_event_string(
-        payload.get("session_id"),
-        SESSION_ID_MAX_BYTES,
-    )
-    request_turn_id = _bounded_event_string(
-        payload.get("turn_id"),
-        TURN_ID_MAX_BYTES,
-    )
-    if event == "UserPromptSubmit":
-        observed_cwd = _bounded_event_string(cwd, CWD_MAX_BYTES)
-        prompt = _bounded_event_string(
-            payload.get("prompt"),
-            PROMPT_MAX_BYTES,
+    if event == "PreToolUse":
+        guarded = _guard_pre_tool_use(
+            payload,
+            event=event,
+            cwd=effective_cwd,
+            config=config,
         )
-        if (
-            session_id is not None
-            and request_turn_id is not None
-            and observed_cwd is not None
-            and prompt is not None
-        ):
-            controller.observe_user_prompt(
-                session_id=session_id,
-                turn_id=request_turn_id,
-                cwd=observed_cwd,
-                prompt=prompt,
-            )
-    context = _context(
-        controller,
-        effective_cwd,
-        controller_path,
-        data_dir,
-        session_id=session_id,
-        request_turn_id=request_turn_id,
-    )
+        if guarded is not None:
+            return guarded
+    controller = Controller(config.state_data_dir)
+    context = _context(controller, effective_cwd, config)
     if event in {"SessionStart", "UserPromptSubmit"}:
         return {
             "hookSpecificOutput": {
@@ -151,31 +266,6 @@ def handle(
         }
     if event != "PreToolUse":
         return None
-    tool_name = payload.get("tool_name")
-    tool_input = payload.get("tool_input")
-    if (
-        isinstance(tool_name, str)
-        and tool_name.lower() in {"apply_patch", "edit", "write"}
-        and isinstance(tool_input, Mapping)
-    ):
-        supplied_path = tool_input.get("file_path") or tool_input.get("path")
-        if isinstance(supplied_path, str):
-            candidate = Path(supplied_path).expanduser()
-            if not candidate.is_absolute():
-                candidate = Path(effective_cwd) / candidate
-            root = Path(data_dir).expanduser().resolve()
-            resolved = candidate.resolve()
-            if resolved == root or root in resolved.parents:
-                return {
-                    "hookSpecificOutput": {
-                        "hookEventName": event,
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            "Dev Flow task state is controller-owned; use the "
-                            "injected CLI or MCP action."
-                        ),
-                    }
-                }
     if controller.tasks_for_path(effective_cwd):
         return {
             "hookSpecificOutput": {
@@ -189,27 +279,27 @@ def handle(
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
-    controller_path: Optional[str] = None,
+    controller_argv: Optional[Sequence[str]] = None,
 ) -> int:
     try:
         arguments = _parser().parse_args(argv)
-        data_dir = _data_dir(arguments)
-        if not data_dir:
+        plugin_root = Path(__file__).resolve().parents[2]
+        config = _configuration(
+            arguments,
+            controller_argv
+            or (
+                str(plugin_root / "scripts" / "dev_flow_python_launcher"),
+                str(plugin_root / "scripts" / "dev_flow.py"),
+            ),
+        )
+        if config is None:
             return 0
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         if not isinstance(payload, Mapping):
             return 0
         output = handle(
             payload,
-            data_dir=data_dir,
-            controller_path=(
-                controller_path
-                or str(
-                    Path(__file__).resolve().parents[2]
-                    / "scripts"
-                    / "dev_flow.py"
-                )
-            ),
+            config=config,
         )
         if output is not None:
             sys.stdout.write(

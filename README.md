@@ -1,350 +1,162 @@
 # Dev Flow Orchestrator
 
-[中文](README.zh-CN.md) · [Install](INSTALL.md) · [Architecture](ARCHITECTURE.md) ·
-[Contributing](CONTRIBUTING.md)
+[简体中文](README_CN.md) · [Installation](INSTALL.md) ·
+[Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
-Dev Flow Orchestrator is a macOS Codex plugin for explicit, resumable software
-work. It has one plugin identity, one V4 runtime, and one controller that owns
-all task-state transitions.
+Dev Flow Orchestrator turns a software requirement into a resumable Codex
+task. It keeps the task moving through clear stages, saves progress between
+sessions, and gives Codex one concrete next step at a time.
 
-The runtime was designed as a small greenfield core:
+Codex still writes the code and runs the verification. The plugin coordinates
+the sequence and records the result of each stage. Its standard `lite`
+workflow covers repository preflight, implementation, and verification, while
+custom workflow files can describe project-specific sequences.
 
-- task state is schema v4 and stays outside target repositories;
-- workflow depth, repository topology, and workspace strategy are independent;
-- both `full@4` and `lite@4` support one or multiple repositories;
-- every node declares its action, authority, write set, effect, failure, and
-  recovery behavior;
-- CLI, MCP, Hook, and Skills are thin adapters over the same controller;
-- runtime Python code uses only the standard library.
+## What it gives you
 
-This release is validated only on the current macOS host. It does not claim
-native Windows or Linux support.
+- Resume a development task in a later Codex session by task ID.
+- Work on one clear stage at a time instead of reconstructing progress from
+  chat history.
+- Check the target Git repository before implementation begins.
+- Complete verification only after recording a passing command result.
+- Keep workflow state outside the target repository.
+- Add code-impact analysis, implementation review, or a custom workflow when
+  the task needs more structure.
 
-## The four paths
-
-Repository count never upgrades `lite@4` to `full@4`.
-
-| Workflow | Topology | Path |
-|---|---|---|
-| `full@4` | single repository | preflight → baseline → impact → route → workspace → planning → plan approval → implement → verify → review → finalize |
-| `full@4` | multiple repositories | full-only gates → shared repository plan/lease/result/barrier/integration → implement → verify → review → finalize |
-| `lite@4` | single repository | preflight → implement → verify |
-| `lite@4` | multiple repositories | preflight → shared repository plan/lease/result/barrier/integration → implement → verify |
-
-`in-place`, `branch`, and `worktree` are explicit workspace strategies. They do
-not select the workflow. Lite has no workflow-entry approval. A shared
-repository action can still require the same exact confirmation as Full when
-its own node contract declares additional authority.
-
-## Scope model
-
-There is no global include-directory, exclude-directory, or allowlist
-configuration. A task's scope is the exact set of repository paths supplied by
-repeatable `--repo` arguments. The Hook finds current tasks by those repository
-and prepared-workspace roots.
+Each task works with one Git repository.
 
 ## Requirements
 
 - macOS;
-- Git;
 - Python 3.9–3.14;
-- Codex with plugin and `UserPromptSubmit` Hook support.
+- Git, with the target path set to a worktree root that already has a commit;
+- Codex with plugin and Hook support.
 
-No `pip`, `npm`, or other runtime dependency installation is required.
+The plugin runtime uses the Python standard library and does not require a
+package installation step. The bundled Skills use the external
+`codebase-memory-mcp` integration for code discovery.
 
 ## Install
 
-Follow [INSTALL.md](INSTALL.md) for the complete source placement, personal
-marketplace, replacement, Hook, optional MCP, and acceptance procedure.
-
-The common install flow is:
+For a new personal marketplace:
 
 ```sh
 mkdir -p "$HOME/plugins"
 git clone git@github.com:Innocent-children/dev-flow-orchestrator.git \
   "$HOME/plugins/dev-flow-orchestrator"
 
+cd "$HOME/plugins/dev-flow-orchestrator"
+python3 -I -S scripts/validate_package.py
+
 mkdir -p "$HOME/.agents/plugins"
-cp \
-  "$HOME/plugins/dev-flow-orchestrator/templates/personal-marketplace.example.json" \
+cp templates/personal-marketplace.example.json \
   "$HOME/.agents/plugins/marketplace.json"
 
 codex plugin add dev-flow-orchestrator@personal
-codex plugin list
 ```
 
-If the marketplace file already exists, merge
-`templates/marketplace-entry.json` into its `plugins` array instead of
-overwriting the file. The default personal marketplace is discovered
-automatically. Keep exactly one installed plugin with this identity.
+Use the `cp` command only when
+`~/.agents/plugins/marketplace.json` does not exist. If it already exists,
+merge `templates/marketplace-entry.json` into its `plugins` array.
 
-An installed popup-era candidate can remain cached after its source is
-replaced. Upgrade it through the atomic cachebuster/remove/reinstall procedure
-in [INSTALL.md](INSTALL.md), then start a new Codex session. The cutover does
-not migrate old authority records into conversation confirmation evidence.
-Uninstall removes the package but preserves its external task, confirmation,
-and audit data by default.
+Start a new Codex task after installation, open `/hooks`, and review and trust
+the installed Hook definition. See [INSTALL.md](INSTALL.md) for HTTPS cloning,
+existing marketplace setup, upgrades, verification, troubleshooting, and
+removal.
 
-## Use from Codex
+## Start and resume a task
 
-The public Skill is `follow-dev-flow`:
+Daily use goes through `$follow-dev-flow`.
+
+Start a task with the repository path, workflow, and requirement:
 
 ```text
-Use $follow-dev-flow to start this requirement with lite@4 in these repositories:
-/path/to/service
-/path/to/client
+Use $follow-dev-flow to start a task with the lite workflow in this repository:
+/absolute/path/to/repository
 
 Requirement:
-<text>
+<what must be delivered>
 ```
+
+Keep the returned task ID. To continue later:
 
 ```text
 Use $follow-dev-flow to resume task <task-id>.
 ```
 
-Supporting Skills:
+The installed Hook reconnects Codex to an active task when the current
+directory is inside its repository. The Skill then follows the next stage,
+records the result, and continues until the task is done.
 
-- `analyze-change-impact` performs read-only, source-confirmed impact analysis;
-- `review-dev-flow-change` performs a fresh read-only implementation review.
+## The `lite` workflow
 
-The Skill uses the exact CLI locator injected by the Hook, or the current MCP
-tools when MCP is enabled. The two transports are independent.
-
-## CLI
-
-Use one explicit data directory for all commands belonging to the same task:
-
-```sh
-PLUGIN_ROOT=/path/to/dev-flow-orchestrator
-DATA_DIR="$HOME/Library/Application Support/dev-flow-orchestrator"
-
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" --help
-```
-
-The data directory must not be inside a target repository.
-
-### Create a task
-
-Single-repository `lite@4`:
-
-```sh
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" \
-  start \
-  --workflow lite \
-  --workspace-strategy in-place \
-  --repo /path/to/project \
-  --requirement "Update the bounded feature"
-```
-
-Multi-repository `lite@4`:
-
-```sh
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" \
-  start \
-  --workflow lite \
-  --workspace-strategy branch \
-  --repo /path/to/service \
-  --repo /path/to/client \
-  --requirement "Update the shared contract and both consumers"
-```
-
-Use `--workflow full` for the full path. `--task-id` is optional; otherwise the
-controller creates one.
-
-### Read and advance
-
-```sh
-# Full state
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" show <task-id>
-
-# Compact agent-v1 projection
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" next <task-id> \
-  --session-id <hook-injected-session-id>
-
-# Preflight Git evidence at revision 0
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" preflight <task-id> --expected-revision 0
-
-# Apply the exact current action
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" apply <task-id> \
-  --expected-revision <revision> \
-  --action <action-id> \
-  --payload-json '{"field":"value"}' \
-  --session-id <hook-injected-session-id>
-```
-
-### Durable conversation confirmation
-
-If `next` reports `required_authority` as `task-revision+<grant>`, the first
-exact `apply` validates the current task, revision, action, payload, role and
-scope, then creates or reloads a private durable confirmation request. It
-returns `PENDING` without changing workflow state, running Git, or dispatching
-an external effect. The request has no clock timeout.
-
-The agent must show the bounded request, ask for an exact chat reply, and end
-the turn. A later `UserPromptSubmit` event accepts:
-
-- bare `同意` or `approve` only when one request is unambiguous in the current
-  session and repository context;
-- `同意 <request-id>` or `approve <request-id>` for an exact displayed request;
-- `拒绝` / `deny` and their request-ID forms under the same ambiguity rules.
-
-Additional prose does not decide a request. The Hook only records the
-conversation decision; it never applies an action. On the next turn the agent
-reloads `next`. Only a still-current `CONFIRMED` request permits one exact retry
-of the same revision, action, payload, and scope. Pending or ambiguous requests
-wait, and denial is terminal for that exact binding. Do not poll, auto-confirm,
-retry while pending, fabricate a reply, or invoke the Hook manually.
-
-There is no public confirmation/authority issuer, caller approval boolean,
-caller `--actor`, raw-prompt input, or serialized record. `session_id`,
-`turn_id`, local account, and controller-derived cwd/eligible-task and prompt
-digests are correlation and audit evidence from the configured Codex
-conversation channel. Raw cwd and prompt text are not retained. This evidence
-is not independent operating-system or authenticated-human identity proof.
-`--session-id` and optional `--request-turn-id` only route the request; they do
-not grant authority and must not be invented.
-
-Always reload `next` after a successful mutation, lost response, or revision
-conflict. Do not edit persisted task or confirmation JSON.
-
-### Multi-repository execution
-
-Full reaches the shared repository kernel after its full-only gates. Lite
-multi-repository enters it directly after preflight. Both use the same shared
-nodes:
-
-1. `repository.plan.record` records the exact repository ID set,
-   controller-derived owner, pinned Git HEADs, dependency DAG,
-   concurrency, and retry limit;
-2. `repository.lease.issue` creates ready, bounded leases bound to one owner
-   and pinned HEAD;
-3. `repository.result.accept` binds a `PASS` or `FAIL` result digest to one
-   repository lease and attempt;
-4. `repository.barrier.close` closes only after every repository passes;
-5. `repository.integration.record` binds the integrated result;
-6. `repository.cancel` revokes active leases when explicitly requested.
-
-Repository IDs are available in `show`. Ordering and CAS are controller-owned.
-
-### Effect recovery
-
-Workspace Git effects use a durable journal:
-
-```sh
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" effect-inspect <task-id>
-
-"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" \
-  "$PLUGIN_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" effect-recover <task-id> \
-  --execution-id <sha256> \
-  --mode <settle|abandon|reattach|compensate> \
-  --session-id <hook-injected-session-id>
-```
-
-Recovery validates the execution, journal binding, evidence, and selected mode
-before creating a confirmation request and binds the resulting evidence digest
-to that request. An actionable mode uses the same durable request, later prompt
-decision, fresh projection, and exact-retry lifecycle as `apply`. The retry
-reloads and proves the outcome again under the same per-execution fence used by
-live dispatch. Changed or unavailable proof returns bounded operator
-intervention and cannot settle or abandon the effect. When reattach or
-compensation is unavailable, the controller returns that intervention before
-asking for confirmation. Conversation agreement never proves effect absence,
-settlement, receipt validity, reattachment, or compensation, and recovery
-never guesses an outcome or redispatches an uncertain effect.
-
-## Codex integration
-
-### Hook
-
-The packaged Hook injects the exact controller/data-directory locator and the
-current `agent-v1` projection for in-scope tasks. It labels injected
-`conversation_routing={session_id,request_turn_id}` as correlation-only, not
-authority. On `UserPromptSubmit` it forwards bounded `session_id`, `turn_id`,
-`cwd`, and exact prompt evidence to the controller's confirmation observer.
-The controller derives the eligible active-task set from canonical cwd; the
-Hook then injects the refreshed projection. The Hook never selects or applies
-an action, dispatches an effect, or writes task state. Malformed events and
-internal Hook errors fail open while the guarded operation stays unapplied.
-
-### MCP
-
-The optional `dev-flow-macos` MCP server is disabled by default. When enabled,
-it exposes exactly:
-
-- `task-start`
-- `task-show`
-- `task-next`
-- `task-preflight`
-- `action-apply`
-- `effect-inspect`
-- `effect-recover`
-
-All mutating tools call the same controller methods as CLI.
-
-## Architecture
+`lite` is the standard workflow included with the plugin:
 
 ```text
-src/dev_flow_orchestrator/
-  product.py             one four-profile product matrix
-  model.py               immutable schema-v4 values
-  workflow.py            full, lite, and shared repository node contracts
-  repository_kernel.py   pure DAG/lease/result/barrier logic
-  engine.py              pure eligibility and mutation planning
-  authority.py           durable conversation confirmation evidence
-  controller.py          sole state writer and effect coordinator
-  store.py               private lock/CAS/atomic persistence
-  journal.py             durable effect outcomes and recovery
-  git_client.py          bounded Git reads and workspace effects
-  cli.py                 JSON CLI adapter
-  mcp.py                 stdio MCP adapter
-  hook.py                advisory fail-open Hook
-
-scripts/                 fixed public bootstraps and validators
-skills/                  public workflow and read-only guidance
-hooks/hooks.json         Codex Hook registration
-.mcp.json                optional macOS MCP registration
+preflight → implement → verify → done
+any unfinished stage ── cancel ──→ cancelled
 ```
 
-The direct Python modules are the complete runtime and workflow definition.
+| Stage | What happens |
+|---|---|
+| `preflight` | The plugin performs a bounded, read-only Git inspection and records the starting repository state. |
+| `implement` | Codex makes the requested change and records an implementation summary. |
+| `verify` | Codex runs the relevant check and records its command and result. The task finishes only with a passing result. |
 
-## Safety boundaries
+Preflight requires the exact root of a non-bare Git worktree with an existing
+`HEAD` commit. A dirty worktree and detached `HEAD` are supported.
 
-- state is private and outside target repositories;
-- every mutation uses revision CAS and atomic replace;
-- external effects use plan → dispatch → receipt → commit;
-- uncertain effects are quarantined and single-dispatch;
-- Git subprocesses use argument vectors and bounded output;
-- the Hook is advisory and cannot write task state;
-- confirmation data is local-account-private and outside repositories;
-- unsafe permissions, symlinks, corruption, lock/write failure, or capacity
-  exhaustion fail closed for guarded authority without automatic repair;
-- Codex host-owned sandbox, filesystem, and tool-permission prompts are a
-  separate boundary and are not suppressed or auto-confirmed by this plugin;
-- no automatic stash, reset, clean, commit, push, rebase, merge, or force-push
-  behavior is provided.
+To stop an unfinished task, explicitly ask Codex to cancel it and provide a
+reason. Cancellation is available from every unfinished `lite` stage.
 
-## Development
+## Additional capabilities
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Full test discovery is prohibited for
-this repository; run only focused modules that cover the changed behavior.
+The plugin includes two supporting Skills:
 
-## License
+- `$analyze-change-impact` traces the likely impact of a change and confirms
+  material findings in source;
+- `$review-dev-flow-change` performs an independent, read-only implementation
+  review.
 
-See [LICENSE](LICENSE).
+You can also pass an absolute JSON or YAML workflow path instead of `lite`.
+Custom workflows use the step types provided by the runtime and may attach
+driver metadata such as `tool: openspec` to tell Codex which tool should handle
+a stage. A running task remains bound to the selected workflow, so keep that
+file available and unchanged until the task finishes.
+
+See [Workflow definitions](ARCHITECTURE.md#workflow-definitions) for the file
+format, supported handlers, payload contracts, and extension points.
+
+## State and safety
+
+- Task state is stored in the plugin data directory, not in the target
+  repository. The state directory and repository must be separate directory
+  trees.
+- State updates use locks and atomic replacement. Do not edit task state files
+  by hand.
+- Git preflight is read-only. The controller does not automatically stash,
+  reset, clean, commit, checkout, merge, or push.
+- `$follow-dev-flow` asks for explicit authorization before cancellation and
+  before `stash`, `reset`, `clean`, `force-push`, `rebase`, `merge`, `commit`,
+  or `push` operations.
+
+The Hook restores task context and guards the plugin data path for common
+shell and editing tools. It is an operational guardrail rather than a security
+sandbox: if the Hook cannot process an event, it does not block the host
+operation. Workflow validation and state transitions remain the controller's
+responsibility.
+
+## CLI and further documentation
+
+The packaged CLI exposes `start`, `show`, `next`, `apply`, `cancel`, and
+`list`. Direct CLI use requires an explicit `--data-dir`; use the packaged
+Python launcher and keep the same data directory for every command on a task.
+The [installation guide](INSTALL.md#7-verify-the-cli-package) contains a
+complete command-line walkthrough.
+
+- [INSTALL.md](INSTALL.md): installation, upgrades, verification, and
+  troubleshooting.
+- [ARCHITECTURE.md](ARCHITECTURE.md): workflow format, projections, state, and
+  module boundaries.
+- [CONTRIBUTING.md](CONTRIBUTING.md): development and validation guidance.
+- [LICENSE](LICENSE): license terms.

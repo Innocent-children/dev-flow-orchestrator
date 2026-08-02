@@ -1,0 +1,48 @@
+# Dev Flow Orchestrator workflow definition.
+# A workflow has one deterministic entry-to-terminal normal path plus an
+# optional shared cancel action targeting a terminal node. The runtime
+# executes exactly one action per non-terminal node, then moves to its target. Editing this file
+# changes the flow; no code change is needed unless a node uses a
+# handler the runtime does not ship.
+schema: dev-flow-workflow/v1
+id: lite
+version: 5
+description: "Minimal single-repository workflow: implement, then verify."
+
+entry: preflight
+
+nodes:
+  preflight:
+    action_id: task.preflight
+    handler: preflight                # built-in: records read-only Git evidence
+    target: {node: implement, status: IMPLEMENTING}
+    effect: git.inspect-repository    # the only effect port the skeleton runs
+    # no payload: evidence comes from Git, not from the agent
+
+  implement:
+    action_id: task.implementation.complete
+    handler: evidence.record          # built-in: append evidence, advance
+    target: {node: verify, status: VERIFYING}
+    payload: {summary: string}
+    # driver: {tool: openspec}        # OPTIONAL label, carried opaquely.
+    #                                  # The runtime never interprets it.
+    #                                  # Projects without OpenSpec omit it.
+    #                                  # Zero code difference either way.
+
+  verify:
+    action_id: evidence.test.record
+    handler: test.record              # built-in: requires passed: true
+    target: {node: done, status: DONE}
+    payload:
+      passed: boolean
+      command: string
+
+  done: {terminal: true}              # sink: no action, no target
+
+  cancelled: {terminal: true}         # sink, target of the shared cancel action
+
+cancel:
+  action_id: task.cancel
+  handler: evidence.record
+  target: {node: cancelled, status: CANCELLED}
+  payload: {reason: string}

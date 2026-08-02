@@ -5,152 +5,38 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import re
 from types import MappingProxyType
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Callable, Mapping, Optional
 
 from .model import (
     DevFlowError,
     MutationPlan,
-    NodeDecision,
     RepositoryRecord,
     TaskState,
     canonical_json_bytes,
 )
-from .workflow import NodeContract, current_contract
-from .workflow import REPOSITORY_CANCEL_CONTRACT, REPOSITORY_GRAPH
-from .repository_kernel import (
-    accept_result,
-    build_plan,
-    cancel_plan,
-    close_barrier,
-    issue_ready_leases,
-    record_integration,
+from .workflow import (
+    NodeContract,
+    WorkflowDefinition,
+    current_contract,
 )
 
 
-def decide_preflight(
-    state: TaskState,
-    expected_revision: int,
-) -> NodeDecision:
-    if state.revision != expected_revision:
-        raise DevFlowError(
-            "REVISION_CONFLICT",
-            "task revision is stale",
-            details={
-                "task_id": state.task_id,
-                "expected_revision": expected_revision,
-                "actual_revision": state.revision,
-            },
-        )
-    if state.status != "INTAKE" or state.current_node != "preflight":
-        raise DevFlowError(
-            "ACTION_NOT_AVAILABLE",
-            "preflight is not available at the current node",
-            details={
-                "status": state.status,
-                "current_node": state.current_node,
-            },
-        )
-    contract = current_contract(state)
-    plan = MutationPlan(
-        action_id=contract.action_id,
-        task_id=state.task_id,
-        expected_revision=expected_revision,
-        source_node=state.current_node,
-        target_node=contract.target_node,
-        effect_kind=contract.effect_kind,
-        allowed_writes=contract.allowed_state_writes,
-    )
-    return NodeDecision(
-        action_id=plan.action_id,
-        eligible=True,
-        reason=None,
-        plan=plan,
-    )
-
-
-def plan_preflight(state: TaskState, expected_revision: int) -> MutationPlan:
-    decision = decide_preflight(state, expected_revision)
-    if not decision.eligible or decision.plan is None:
-        raise DevFlowError(
-            "ACTION_NOT_AVAILABLE",
-            decision.reason or "preflight is not eligible",
-        )
-    return decision.plan
-
-
-def apply_preflight(
-    state: TaskState,
-    plan: MutationPlan,
-    evidence: Mapping[str, Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    current_plan = plan_preflight(state, plan.expected_revision)
-    if current_plan != plan:
-        raise DevFlowError(
-            "PLAN_BINDING_MISMATCH",
-            "preflight plan is no longer current",
-        )
-    contract = current_contract(state)
-    expected_ids = {
-        repository.repository_id
-        for repository in state.repositories
-    }
-    if set(evidence) != expected_ids:
-        raise DevFlowError(
-            "PREFLIGHT_EVIDENCE_INVALID",
-            "preflight evidence does not cover the exact repository set",
-        )
-    repositories = tuple(
-        RepositoryRecord(
-            repository.repository_id,
-            repository.path,
-            evidence[repository.repository_id],
-            repository.workspace,
-        )
-        for repository in state.repositories
-    )
-    return TaskState(
-        task_id=state.task_id,
-        requirement=state.requirement,
-        revision=state.revision + 1,
-        created_at=state.created_at,
-        updated_at=timestamp,
-        workflow_id=state.workflow_id,
-        workflow_version=state.workflow_version,
-        workflow_identity=state.workflow_identity,
-        topology=state.topology,
-        workspace_strategy=state.workspace_strategy,
-        required_suites=state.required_suites,
-        status=contract.target_status,
-        current_node=plan.target_node,
-        repositories=repositories,
-        approvals=state.approvals,
-        evidence=state.evidence,
-        effects=state.effects,
-    )
-
-
-def validate_write_set(
-    plan: MutationPlan,
-    writes: Sequence[str],
-) -> None:
-    undeclared = sorted(set(writes) - set(plan.allowed_writes))
-    if undeclared:
-        raise DevFlowError(
-            "STATE_WRITE_UNDECLARED",
-            "mutation plan contains an undeclared state write",
-            details={"writes": undeclared},
-        )
+NODE_OUTPUT_INVALID = "NODE_OUTPUT_INVALID"
 
 
 def plan_current_action(
     state: TaskState,
+    definition: WorkflowDefinition,
     action_id: str,
     expected_revision: int,
-    *,
-    authority_id: Optional[str] = None,
-    actor_id: Optional[str] = None,
 ) -> tuple:
+    """Plan the exact action for the current node at the given revision.
+
+    The revision is read from the controller's load, never from the agent
+    protocol; the store revalidates it under the task lock before any
+    write. ``apply`` re-plans under the lock and rejects drift, so a
+    raced or stale call fails before the state is touched.
+    """
     if state.revision != expected_revision:
         raise DevFlowError(
             "REVISION_CONFLICT",
@@ -161,36 +47,29 @@ def plan_current_action(
                 "actual_revision": state.revision,
             },
         )
-    if (
-        action_id == REPOSITORY_CANCEL_CONTRACT.action_id
-        and state.current_node in REPOSITORY_GRAPH
-    ):
-        contract = replace(
-            REPOSITORY_CANCEL_CONTRACT,
-            node_id=state.current_node,
-        )
-    else:
-        contract = current_contract(state)
+    contract = current_contract(state, definition)
     if contract.action_id != action_id:
-        raise DevFlowError(
-            "ACTION_NOT_AVAILABLE",
-            "action is not available at the current node",
-            details={
-                "action_id": action_id,
-                "current_node": state.current_node,
-                "expected_action_id": contract.action_id,
-            },
-        )
+        cancel = definition.cancel_contract
+        if cancel is not None and cancel.action_id == action_id:
+            contract = cancel
+        else:
+            raise DevFlowError(
+                "ACTION_NOT_AVAILABLE",
+                "action is not available at the current node",
+                details={
+                    "action_id": action_id,
+                    "current_node": state.current_node,
+                    "expected_action_id": contract.action_id,
+                },
+            )
     plan = MutationPlan(
         action_id=contract.action_id,
         task_id=state.task_id,
         expected_revision=expected_revision,
         source_node=contract.node_id,
         target_node=contract.target_node,
-        effect_kind=contract.effect_kind,
+        effect_kind=contract.effect_port,
         allowed_writes=contract.allowed_state_writes,
-        authority_id=authority_id,
-        actor_id=actor_id,
     )
     return contract, plan
 
@@ -202,25 +81,25 @@ def validate_action_payload(
     value = dict(payload or {})
     missing = [
         field
-        for field in contract.required_payload_fields
+        for field in contract.payload_types
         if field not in value
     ]
     if missing:
         raise DevFlowError(
-            contract.failure_code,
+            NODE_OUTPUT_INVALID,
             "node output is incomplete",
             details={"missing_fields": missing},
         )
     unknown = sorted(set(value) - set(contract.payload_types))
     if unknown:
         raise DevFlowError(
-            contract.failure_code,
+            NODE_OUTPUT_INVALID,
             "node output contains undeclared fields",
             details={"unknown_fields": unknown},
         )
     if len(canonical_json_bytes(value)) > 16 * 1024:
         raise DevFlowError(
-            contract.failure_code,
+            NODE_OUTPUT_INVALID,
             "node output exceeds the bounded payload budget",
         )
     for field, expected_type in contract.payload_types.items():
@@ -240,7 +119,7 @@ def validate_action_payload(
             and not isinstance(item, bool)
         ) or (
             expected_type == "object"
-            and isinstance(item, dict)
+            and isinstance(item, Mapping)
         ) or (
             expected_type == "sha256"
             and isinstance(item, str)
@@ -248,7 +127,7 @@ def validate_action_payload(
         )
         if not valid:
             raise DevFlowError(
-                contract.failure_code,
+                NODE_OUTPUT_INVALID,
                 "node output field has the wrong type or size",
                 details={"field": field, "expected_type": expected_type},
             )
@@ -278,33 +157,30 @@ class NodeFamily:
 
 def _record(
     contract: NodeContract,
-    plan: MutationPlan,
     output: Mapping[str, object],
     timestamp: str,
 ) -> dict:
     return {
-        "schema": "dev-flow-v4-node-output/v1",
+        "schema": "dev-flow-v5-node-output/v1",
         "action_id": contract.action_id,
         "node_id": contract.node_id,
         "recorded_at": timestamp,
-        "authority_id": plan.authority_id,
-        "actor_id": plan.actor_id,
         "payload": dict(output),
     }
 
 
-def _transition(
+def _advance(
     state: TaskState,
     contract: NodeContract,
     timestamp: str,
-    **changes,
+    **changes: object,
 ) -> TaskState:
     return replace(
         state,
         revision=state.revision + 1,
         updated_at=timestamp,
-        status=changes.pop("status", contract.target_status),
-        current_node=changes.pop("current_node", contract.target_node),
+        status=contract.target_status,
+        current_node=contract.target_node,
         **changes,
     )
 
@@ -317,34 +193,12 @@ def _record_evidence(
     effect_result: Optional[Mapping[str, object]],
     timestamp: str,
 ) -> TaskState:
-    del effect_result
-    return _transition(
+    del plan, effect_result
+    return _advance(
         state,
         contract,
         timestamp,
-        evidence=(*state.evidence, _record(contract, plan, output, timestamp)),
-    )
-
-
-def _record_approval(
-    state: TaskState,
-    contract: NodeContract,
-    plan: MutationPlan,
-    output: Mapping[str, object],
-    effect_result: Optional[Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    del effect_result
-    if output.get("approved") is not True:
-        raise DevFlowError(
-            "APPROVAL_REQUIRED",
-            "node requires explicit approval",
-        )
-    return _transition(
-        state,
-        contract,
-        timestamp,
-        approvals=(*state.approvals, _record(contract, plan, output, timestamp)),
+        evidence=(*state.evidence, _record(contract, output, timestamp)),
     )
 
 
@@ -365,7 +219,7 @@ def _record_test(
     return _record_evidence(state, contract, plan, output, None, timestamp)
 
 
-def _record_review(
+def apply_preflight(
     state: TaskState,
     contract: NodeContract,
     plan: MutationPlan,
@@ -373,259 +227,44 @@ def _record_review(
     effect_result: Optional[Mapping[str, object]],
     timestamp: str,
 ) -> TaskState:
-    del effect_result
-    if output.get("verdict") != "PASS":
+    del plan, output
+    if not isinstance(effect_result, Mapping):
         raise DevFlowError(
-            "REVIEW_NOT_PASSING",
-            "independent review verdict must be PASS",
+            "PREFLIGHT_EVIDENCE_INVALID",
+            "preflight requires Git inspection evidence",
         )
-    return _record_evidence(state, contract, plan, output, None, timestamp)
-
-
-def _attach_workspace(
-    state: TaskState,
-    contract: NodeContract,
-    plan: MutationPlan,
-    output: Mapping[str, object],
-    effect_result: Optional[Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    del output
-    if effect_result is None:
+    expected_ids = {
+        repository.repository_id
+        for repository in state.repositories
+    }
+    if set(effect_result) != expected_ids:
         raise DevFlowError(
-            "EFFECT_RECEIPT_REQUIRED",
-            "workspace node requires its Git effect receipt",
-        )
-    workspace_records = effect_result.get("repositories")
-    if not isinstance(workspace_records, Mapping):
-        raise DevFlowError(
-            "EFFECT_RECEIPT_INVALID",
-            "workspace receipt does not cover repositories",
+            "PREFLIGHT_EVIDENCE_INVALID",
+            "preflight evidence does not cover the exact repository set",
         )
     repositories = tuple(
-        replace(
-            repository,
-            workspace=workspace_records.get(repository.repository_id),
+        RepositoryRecord(
+            repository.repository_id,
+            repository.path,
+            effect_result[repository.repository_id],
         )
         for repository in state.repositories
     )
-    if any(repository.workspace is None for repository in repositories):
-        raise DevFlowError(
-            "EFFECT_RECEIPT_INVALID",
-            "workspace receipt does not cover the exact repository set",
-        )
-    effect = {
-        "schema": "dev-flow-v4-effect-summary/v1",
-        "action_id": contract.action_id,
-        "authority_id": plan.authority_id,
-        "execution_id": effect_result.get("execution_id"),
-        "receipt": dict(effect_result),
-    }
-    return _transition(
-        state,
-        contract,
-        timestamp,
-        repositories=repositories,
-        effects=(*state.effects, effect),
-    )
-
-
-def _record_repository_plan(
-    state: TaskState,
-    contract: NodeContract,
-    plan: MutationPlan,
-    output: Mapping[str, object],
-    effect_result: Optional[Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    del effect_result
-    if plan.actor_id is None:
-        raise DevFlowError(
-            "AUTHORITY_REQUIRED",
-            "repository ownership requires a host-confirmed principal",
-        )
-    orchestration = build_plan(
-        [repository.repository_id for repository in state.repositories],
-        output.get("dependencies"),
-        plan.actor_id,
-        {
-            repository.repository_id: (
-                repository.preflight or {}
-            ).get("head")
-            for repository in state.repositories
-        },
-        output.get("concurrency"),
-        output.get("max_retries"),
-    )
-    orchestration["authority_id"] = plan.authority_id
-    return _transition(
-        state,
-        contract,
-        timestamp,
-        orchestration=orchestration,
-    )
-
-
-def _require_orchestration(state: TaskState) -> Mapping[str, object]:
-    if state.orchestration is None:
-        raise DevFlowError(
-            "REPOSITORY_STATE_INVALID",
-            "repository plan has not been recorded",
-        )
-    return state.orchestration
-
-
-def _dispatch_repositories(
-    state: TaskState,
-    contract: NodeContract,
-    plan: MutationPlan,
-    output: Mapping[str, object],
-    effect_result: Optional[Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    del plan, output, effect_result
-    orchestration = issue_ready_leases(_require_orchestration(state))
-    if not any(
-        lease.get("status") == "ACTIVE"
-        for lease in orchestration["leases"].values()
-    ):
-        raise DevFlowError(
-            "REPOSITORY_DISPATCH_EMPTY",
-            "repository plan has no ready lease",
-        )
-    return _transition(
-        state,
-        contract,
-        timestamp,
-        orchestration=orchestration,
-    )
-
-
-def _accept_repository_result(
-    state: TaskState,
-    contract: NodeContract,
-    plan: MutationPlan,
-    output: Mapping[str, object],
-    effect_result: Optional[Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    orchestration = accept_result(
-        _require_orchestration(state),
-        repository_id=output.get("repository_id"),
-        lease_id=output.get("lease_id"),
-        outcome=output.get("outcome"),
-        result_sha256=output.get("result_sha256"),
-        actor_id=plan.actor_id,
-        authority_id=plan.authority_id,
-        observed_head=(
-            None
-            if effect_result is None
-            else effect_result.get("observed_head")
-        ),
-    )
-    target_node = contract.target_node
-    target_status = contract.target_status
-    if orchestration.get("status") == "BARRIER_READY":
-        target_node = "repository-barrier"
-    elif orchestration.get("status") == "BLOCKED":
-        target_status = "BLOCKED"
-    return _transition(
-        state,
-        contract,
-        timestamp,
-        current_node=target_node,
-        status=target_status,
-        orchestration=orchestration,
-    )
-
-
-def _close_repository_barrier(
-    state: TaskState,
-    contract: NodeContract,
-    plan: MutationPlan,
-    output: Mapping[str, object],
-    effect_result: Optional[Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    del plan, output, effect_result
-    return _transition(
-        state,
-        contract,
-        timestamp,
-        orchestration=close_barrier(_require_orchestration(state)),
-    )
-
-
-def _record_repository_integration(
-    state: TaskState,
-    contract: NodeContract,
-    plan: MutationPlan,
-    output: Mapping[str, object],
-    effect_result: Optional[Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    del plan, effect_result
-    return _transition(
-        state,
-        contract,
-        timestamp,
-        orchestration=record_integration(
-            _require_orchestration(state),
-            output.get("integration_sha256"),
-        ),
-    )
-
-
-def _cancel_repositories(
-    state: TaskState,
-    contract: NodeContract,
-    plan: MutationPlan,
-    output: Mapping[str, object],
-    effect_result: Optional[Mapping[str, object]],
-    timestamp: str,
-) -> TaskState:
-    del effect_result
-    return _transition(
-        state,
-        contract,
-        timestamp,
-        orchestration=cancel_plan(
-            _require_orchestration(state),
-            output.get("reason"),
-            authority_id=plan.authority_id,
-        ),
-    )
+    return _advance(state, contract, timestamp, repositories=repositories)
 
 
 NODE_FAMILY_CATALOG = MappingProxyType(
     {
         "preflight": NodeFamily(apply_preflight, "git.inspect-repository"),
         "evidence.record": NodeFamily(_record_evidence, "none"),
-        "approval.record": NodeFamily(_record_approval, "none"),
         "test.record": NodeFamily(_record_test, "none"),
-        "review.record": NodeFamily(_record_review, "none"),
-        "workspace.attach": NodeFamily(
-            _attach_workspace,
-            "git.prepare-workspace",
-        ),
-        "repository.plan": NodeFamily(_record_repository_plan, "none"),
-        "repository.dispatch": NodeFamily(_dispatch_repositories, "none"),
-        "repository.result": NodeFamily(
-            _accept_repository_result,
-            "git.inspect-result-head",
-        ),
-        "repository.barrier": NodeFamily(_close_repository_barrier, "none"),
-        "repository.integration": NodeFamily(
-            _record_repository_integration,
-            "none",
-        ),
-        "repository.cancel": NodeFamily(_cancel_repositories, "none"),
     }
 )
 
 
 def apply_current_action(
     state: TaskState,
+    definition: WorkflowDefinition,
     contract: NodeContract,
     plan: MutationPlan,
     *,
@@ -635,10 +274,9 @@ def apply_current_action(
 ) -> TaskState:
     current_contract_value, current_plan = plan_current_action(
         state,
+        definition,
         plan.action_id,
         plan.expected_revision,
-        authority_id=plan.authority_id,
-        actor_id=plan.actor_id,
     )
     if current_contract_value != contract or current_plan != plan:
         raise DevFlowError(
@@ -664,3 +302,275 @@ def apply_current_action(
         effect_result,
         timestamp,
     )
+
+
+def _state_invalid(reason: str, **details: object) -> DevFlowError:
+    return DevFlowError(
+        "STATE_INVALID",
+        "task state is inconsistent with its workflow",
+        details={"reason": reason, **details},
+    )
+
+
+def _write_invalid(reason: str, **details: object) -> DevFlowError:
+    return DevFlowError(
+        "STATE_WRITE_INVALID",
+        "task mutation produced an inconsistent state",
+        details={"reason": reason, **details},
+    )
+
+
+def _validate_state_shape(
+    state: TaskState,
+    definition: WorkflowDefinition,
+) -> None:
+    try:
+        reconstructed = TaskState.from_dict(
+            state.as_dict(),
+            definition=definition,
+        )
+    except DevFlowError as exc:
+        raise _state_invalid(
+            "state_shape_invalid",
+            cause=exc.code,
+            cause_details=exc.details,
+        ) from exc
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise _state_invalid(
+            "state_shape_invalid",
+            cause=type(exc).__name__,
+        ) from exc
+    if reconstructed != state:
+        raise _state_invalid("state_shape_invalid")
+    if state.current_node not in definition.nodes:
+        raise _state_invalid(
+            "current_node_unknown",
+            current_node=state.current_node,
+        )
+    if len(state.repositories) != 1:
+        raise _state_invalid(
+            "repository_set_invalid",
+            repository_count=len(state.repositories),
+        )
+
+
+def _replay_evidence_record(
+    record: object,
+    index: int,
+    cursor_node: str,
+    definition: WorkflowDefinition,
+) -> tuple:
+    if not isinstance(record, Mapping):
+        raise _state_invalid("evidence_record_invalid", evidence_index=index)
+    expected_fields = {
+        "schema",
+        "action_id",
+        "node_id",
+        "recorded_at",
+        "payload",
+    }
+    if set(record) != expected_fields:
+        raise _state_invalid(
+            "evidence_record_invalid",
+            evidence_index=index,
+            fields=sorted(str(field) for field in record),
+        )
+    if record.get("schema") != "dev-flow-v5-node-output/v1":
+        raise _state_invalid(
+            "evidence_record_invalid",
+            evidence_index=index,
+            field="schema",
+        )
+    recorded_at = record.get("recorded_at")
+    payload = record.get("payload")
+    if not isinstance(recorded_at, str) or not recorded_at:
+        raise _state_invalid(
+            "evidence_record_invalid",
+            evidence_index=index,
+            field="recorded_at",
+        )
+    if not isinstance(payload, Mapping):
+        raise _state_invalid(
+            "evidence_record_invalid",
+            evidence_index=index,
+            field="payload",
+        )
+    if cursor_node in definition.terminal_nodes:
+        raise _state_invalid(
+            "evidence_action_mismatch",
+            evidence_index=index,
+            current_node=cursor_node,
+        )
+
+    current = definition.nodes[cursor_node]
+    contract = current
+    action_id = record.get("action_id")
+    if current.handler_id == "preflight" and action_id == current.action_id:
+        raise _state_invalid(
+            "preflight_state_invalid",
+            evidence_index=index,
+        )
+    if action_id != current.action_id:
+        cancel = definition.cancel_contract
+        if cancel is None or action_id != cancel.action_id:
+            raise _state_invalid(
+                "evidence_action_mismatch",
+                evidence_index=index,
+                action_id=action_id,
+                current_node=cursor_node,
+                expected_action_id=current.action_id,
+            )
+        contract = cancel
+    if record.get("node_id") != contract.node_id:
+        raise _state_invalid(
+            "evidence_action_mismatch",
+            evidence_index=index,
+            node_id=record.get("node_id"),
+            expected_node_id=contract.node_id,
+        )
+    try:
+        validated = validate_action_payload(contract, payload)
+    except DevFlowError as exc:
+        raise _state_invalid(
+            "evidence_record_invalid",
+            evidence_index=index,
+            cause=exc.code,
+            cause_details=exc.details,
+        ) from exc
+    if contract.handler_id == "test.record" and validated.get("passed") is not True:
+        raise _state_invalid(
+            "evidence_record_invalid",
+            evidence_index=index,
+            cause="TEST_NOT_PASSING",
+        )
+    return contract.target_node, contract.target_status, recorded_at
+
+
+def validate_persisted_state(
+    state: TaskState,
+    definition: WorkflowDefinition,
+) -> None:
+    """Fail closed unless a state can be replayed from its workflow entry."""
+    _validate_state_shape(state, definition)
+
+    cursor_node = definition.entry_node
+    cursor_status = "INTAKE"
+    cursor_revision = 0
+    last_evidence_timestamp = None
+
+    repository = state.repositories[0]
+    if repository.preflight is not None:
+        entry_contract = definition.nodes[definition.entry_node]
+        if entry_contract.handler_id != "preflight":
+            raise _state_invalid("preflight_state_invalid")
+        cursor_node = entry_contract.target_node
+        cursor_status = entry_contract.target_status
+        cursor_revision += 1
+
+    for index, record in enumerate(state.evidence):
+        cursor_node, cursor_status, recorded_at = _replay_evidence_record(
+            record,
+            index,
+            cursor_node,
+            definition,
+        )
+        cursor_revision += 1
+        last_evidence_timestamp = recorded_at
+
+    if state.revision != cursor_revision:
+        raise _state_invalid(
+            "revision_path_mismatch",
+            expected_revision=cursor_revision,
+            stored_revision=state.revision,
+        )
+    if state.current_node != cursor_node:
+        raise _state_invalid(
+            "current_node_path_mismatch",
+            expected_node=cursor_node,
+            stored_node=state.current_node,
+        )
+    if state.status != cursor_status:
+        raise _state_invalid(
+            "status_path_mismatch",
+            expected_status=cursor_status,
+            stored_status=state.status,
+        )
+    if state.revision == 0:
+        if repository.preflight is not None or state.evidence:
+            raise _state_invalid("preflight_state_invalid")
+        if state.created_at != state.updated_at:
+            raise _state_invalid(
+                "revision_path_mismatch",
+                expected_updated_at=state.created_at,
+                stored_updated_at=state.updated_at,
+            )
+    if last_evidence_timestamp is not None and state.updated_at != last_evidence_timestamp:
+        raise _state_invalid(
+            "evidence_record_invalid",
+            expected_updated_at=last_evidence_timestamp,
+            stored_updated_at=state.updated_at,
+        )
+
+
+def validate_state_transition(
+    current: TaskState,
+    candidate: TaskState,
+    definition: WorkflowDefinition,
+) -> None:
+    """Validate one append-only, revision-gated state transition."""
+    immutable_fields = (
+        "task_id",
+        "requirement",
+        "created_at",
+        "workflow_id",
+        "workflow_version",
+        "workflow_identity",
+        "schema_version",
+        "product_identity",
+    )
+    for field in immutable_fields:
+        if getattr(candidate, field) != getattr(current, field):
+            raise _write_invalid("immutable_field_changed", field=field)
+    if candidate.revision != current.revision + 1:
+        raise _write_invalid(
+            "revision_path_mismatch",
+            expected_revision=current.revision + 1,
+            candidate_revision=candidate.revision,
+        )
+    current_repository_identity = tuple(
+        (repository.repository_id, repository.path)
+        for repository in current.repositories
+    )
+    candidate_repository_identity = tuple(
+        (repository.repository_id, repository.path)
+        for repository in candidate.repositories
+    )
+    if candidate_repository_identity != current_repository_identity:
+        raise _write_invalid("immutable_field_changed", field="repositories")
+    if len(current.repositories) != 1 or len(candidate.repositories) != 1:
+        raise _write_invalid(
+            "repository_set_invalid",
+            repository_count=len(candidate.repositories),
+        )
+
+    preflight_transition = (
+        not current.evidence
+        and candidate.evidence == current.evidence
+        and current.repositories[0].preflight is None
+        and candidate.repositories[0].preflight is not None
+    )
+    evidence_transition = (
+        candidate.repositories == current.repositories
+        and len(candidate.evidence) == len(current.evidence) + 1
+        and candidate.evidence[:-1] == current.evidence
+    )
+    if not preflight_transition and not evidence_transition:
+        raise _write_invalid("transition_shape_invalid")
+    try:
+        validate_persisted_state(candidate, definition)
+    except DevFlowError as exc:
+        raise _write_invalid(
+            exc.details.get("reason", "candidate_state_invalid"),
+            cause=exc.code,
+            cause_details=exc.details,
+        ) from exc

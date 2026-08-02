@@ -25,53 +25,6 @@
         ]
       }
     ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
-            "timeout": 10,
-            "statusMessage": "Loading the scoped Dev Flow assignment"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
-            "timeout": 10,
-            "statusMessage": "Checking the Dev Flow worker result"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PostCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
-            "timeout": 10,
-            "statusMessage": "Finishing the Dev Flow compaction checkpoint"
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "^(Bash|apply_patch|Edit|Write)$",

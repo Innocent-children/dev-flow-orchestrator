@@ -1,6 +1,6 @@
 ---
 name: analyze-change-impact
-description: Analyze a requested code change across one or more repositories using codebase-memory discovery and direct source confirmation. Use before route approval to identify affected files, symbols, call paths, contracts, tests, risks, unknowns, and repository coordination without modifying code or Git state.
+description: Analyze a requested code change in one repository using codebase-memory discovery and direct source confirmation. Use before implementation to identify affected files, symbols, call paths, contracts, tests, risks, and unknowns without modifying code or Git state.
 ---
 
 # Analyze Change Impact
@@ -17,11 +17,10 @@ Produce a read-only impact report.
 4. Treat graph results as discovery evidence. Confirm every material
    conclusion in the actual source and cite repository-relative paths and
    symbols.
-5. Cover every registered repository. Mark coverage degraded when a required
-   index, source confirmation, or bounded query cannot be completed.
+5. Mark coverage degraded when a required index, source confirmation, or
+   bounded query cannot be completed.
 6. Report affected components, call/data paths, public contracts, test impact,
-   security boundaries, cross-repository order, risks, unknowns, and a reasoned
-   direct-or-OpenSpec route recommendation.
+   security boundaries, risks, and unknowns.
 
 Distinguish confirmed, inferred, and unknown evidence. Do not edit source,
 OpenSpec artifacts, controller state, or Git state.
