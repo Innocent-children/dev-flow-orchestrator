@@ -1,4 +1,4 @@
-"""Small fail-open Codex Hook adapter for current V5 task context."""
+"""Small fail-open Codex Hook adapter for current V6 task context."""
 
 from __future__ import annotations
 
@@ -68,21 +68,22 @@ def _context(
     locator = _controller_command(config)
     if not tasks:
         return (
-            "Dev Flow V5 is available. Start with the injected controller "
-            "locator and explicit --workflow and --repo: "
+            "Dev Flow V6 is available. Invoke $follow-dev-flow, then use the "
+            "injected controller locator with an official --workflow and --repo: "
             + locator
         )
     if len(tasks) > 1:
         task_ids = ", ".join(task.task_id for task in tasks)
         return (
-            "Multiple current Dev Flow V5 tasks cover this directory: "
+            "Multiple current Dev Flow V6 tasks cover this directory: "
             + task_ids
             + ". Select one task explicitly with: "
             + locator
         )
     projection = controller.next(tasks[0].task_id)
     return (
-        "Current Dev Flow V5 task. Use only this controller locator; do not "
+        "Current Dev Flow V6 task. Invoke $follow-dev-flow and use only this "
+        "controller locator; do not "
         "edit task state directly. locator="
         + locator
         + " projection="

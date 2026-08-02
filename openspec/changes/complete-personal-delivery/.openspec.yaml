@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-08-02
+goal: Complete the Stage 1 personal-delivery product by adding a versioned
+  delivery contract, official workflow family, typed artifacts and evidence
+  lineage, bounded rework, scope decisions, optional tool drivers, and a
+  terminal Delivery Dossier for single-repository Codex tasks.

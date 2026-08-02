@@ -1,0 +1,184 @@
+schema: dev-flow-workflow/v2
+id: bugfix
+version: 6
+description: "Bug-fix delivery with diagnosis, repository-backed planning, regression verification, and independent review."
+entry: preflight
+revision_target: impact
+
+nodes:
+  preflight:
+    action_id: task.preflight
+    handler: preflight
+    target: {node: impact, status: ANALYZING}
+    effect: git.inspect-repository
+    artifact: {type: repository-baseline, workspace: produces-source, inputs: []}
+
+  impact:
+    action_id: impact.record
+    handler: artifact.record
+    target: {node: planning, status: PLANNING}
+    payload: {summary: string, driver_result: object}
+    artifact:
+      type: bug-analysis
+      workspace: context
+      inputs: [{type: repository-baseline, edge: governing}]
+    driver:
+      tool: codebase-memory
+      optional: true
+      fallback: "Trace the failure and affected callers in source; record degraded graph coverage and source confirmations."
+      produces: bug-analysis
+
+  planning:
+    action_id: plan.record
+    handler: artifact.record
+    target: {node: implement, status: IMPLEMENTING}
+    payload: {summary: string, resources: object, driver_result: object}
+    artifact:
+      type: bugfix-plan
+      workspace: produces-source
+      inputs:
+        - {type: repository-baseline, edge: source-predecessor}
+        - {type: bug-analysis, edge: governing}
+    driver:
+      tool: openspec
+      optional: true
+      fallback: "Create an equivalent repository-backed fix plan and record governing resources plus degraded driver status."
+      produces: bugfix-plan
+
+  implement:
+    action_id: implementation.record
+    handler: artifact.record
+    target: {node: documentation, status: DOCUMENTING}
+    payload: {summary: string}
+    artifact:
+      type: implementation
+      workspace: produces-source
+      inputs:
+        - {type: bugfix-plan, edge: source-predecessor}
+        - {type: bug-analysis, edge: governing}
+
+  documentation:
+    action_id: documentation.record
+    handler: artifact.record
+    target: {node: verify, status: VERIFYING}
+    payload: {summary: string}
+    artifact:
+      type: documentation
+      workspace: produces-source
+      inputs:
+        - {type: implementation, edge: source-predecessor}
+        - {type: bugfix-plan, edge: governing}
+
+  verify:
+    action_id: verification.record
+    handler: verification.record
+    target: {node: review, status: REVIEWING}
+    payload: {passed: boolean, command: string, coverage: object, summary: string}
+    artifact:
+      type: verification-result
+      workspace: verifies-source
+      inputs:
+        - {type: documentation, edge: governing}
+        - {type: bugfix-plan, edge: governing}
+    rework:
+      failure: {node: verification_rework, status: IMPLEMENTING}
+      max_attempts: 2
+      exhausted: {node: finalize_verification_incomplete, status: FINALIZING}
+
+  verification_rework:
+    action_id: verification.rework.record
+    handler: artifact.record
+    target: {node: documentation, status: DOCUMENTING}
+    payload: {summary: string}
+    artifact:
+      type: implementation
+      workspace: produces-source
+      inputs:
+        - {type: documentation, edge: source-predecessor}
+        - {type: verification-result, edge: causal}
+        - {type: bugfix-plan, edge: governing}
+
+  review:
+    action_id: review.record
+    handler: review.record
+    target: {node: finalize_success, status: FINALIZING}
+    payload: {outcome: string, assurance: string, findings: object, summary: string, driver_result: object}
+    artifact:
+      type: review-result
+      workspace: verifies-source
+      inputs:
+        - {type: verification-result, edge: governing}
+        - {type: documentation, edge: governing}
+    rework:
+      failure: {node: review_rework, status: IMPLEMENTING}
+      max_attempts: 2
+      exhausted: {node: finalize_review_incomplete, status: FINALIZING}
+    driver:
+      tool: independent-review
+      optional: true
+      fallback: "Perform a bounded self-review, record self assurance, and report independent assurance as unavailable."
+      produces: review-result
+
+  review_rework:
+    action_id: review.rework.record
+    handler: artifact.record
+    target: {node: documentation, status: DOCUMENTING}
+    payload: {summary: string}
+    artifact:
+      type: implementation
+      workspace: produces-source
+      inputs:
+        - {type: documentation, edge: source-predecessor}
+        - {type: review-result, edge: causal}
+        - {type: bugfix-plan, edge: governing}
+
+  finalize_success:
+    action_id: delivery.finalize.success
+    handler: delivery.finalize
+    target: {node: done, status: DONE}
+    payload: {summary: string, remaining_risks: object, handoff: string}
+    artifact:
+      type: delivery-dossier
+      workspace: verifies-source
+      inputs:
+        - {type: verification-result, edge: governing}
+        - {type: review-result, edge: governing}
+        - {type: documentation, edge: governing}
+    finalize: success
+
+  finalize_verification_incomplete:
+    action_id: delivery.finalize.verification-incomplete
+    handler: delivery.finalize
+    target: {node: incomplete, status: INCOMPLETE}
+    payload: {summary: string, remaining_risks: object, handoff: string}
+    artifact:
+      type: delivery-dossier
+      workspace: verifies-source
+      inputs:
+        - {type: verification-result, edge: governing}
+        - {type: documentation, edge: governing}
+    finalize: incomplete
+
+  finalize_review_incomplete:
+    action_id: delivery.finalize.review-incomplete
+    handler: delivery.finalize
+    target: {node: incomplete, status: INCOMPLETE}
+    payload: {summary: string, remaining_risks: object, handoff: string}
+    artifact:
+      type: delivery-dossier
+      workspace: verifies-source
+      inputs:
+        - {type: verification-result, edge: governing}
+        - {type: review-result, edge: governing}
+        - {type: documentation, edge: governing}
+    finalize: incomplete
+
+  done: {terminal: true}
+  incomplete: {terminal: true}
+  cancelled: {terminal: true}
+
+cancel:
+  action_id: task.cancel
+  handler: artifact.record
+  target: {node: cancelled, status: CANCELLED}
+  payload: {reason: string}

@@ -31,7 +31,7 @@ def make_repository(root: Path, name: str = "work") -> Path:
     return repository
 
 
-class V5TestCase(unittest.TestCase):
+class RepositoryTestCase(unittest.TestCase):
     """Temporary data dir plus a scratch git repository and controller."""
 
     def setUp(self) -> None:

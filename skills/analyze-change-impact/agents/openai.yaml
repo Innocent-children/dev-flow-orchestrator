@@ -1,11 +1,11 @@
 interface:
   display_name: "Analyze Change Impact"
-  short_description: "Map change impact with source-backed graph evidence"
-  default_prompt: "Use $analyze-change-impact to produce a read-only, source-confirmed impact report for this requirement."
+  short_description: "Map V6 impact with confirmed graph evidence"
+  default_prompt: "Use $analyze-change-impact to produce a bounded, phase-selected, source-confirmed V6 impact report."
 dependencies:
   tools:
     - type: "mcp"
       value: "codebase-memory-mcp"
-      description: "Indexes pinned baselines and uses explicit project IDs for architecture, search, and trace tools"
+      description: "Uses distinct baseline/current project IDs for phase-selected discovery"
 policy:
   allow_implicit_invocation: false

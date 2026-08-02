@@ -1,4 +1,4 @@
-"""Hook context injection, data-dir write guard, and subprocess launch."""
+"""V6 Hook context injection, data-dir write guard, and subprocess launch."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.hook import HookConfig, _controller_command, handle
-from v5_support import V5TestCase
+from support import RepositoryTestCase
 
 
 def event_payload(event: str, cwd: str) -> dict:
@@ -29,7 +29,7 @@ def event_payload(event: str, cwd: str) -> dict:
     }
 
 
-class HookTests(V5TestCase):
+class HookTests(RepositoryTestCase):
     def config(
         self,
         state_data_dir: Optional[str] = None,
@@ -63,9 +63,43 @@ class HookTests(V5TestCase):
         projection = json.loads(
             context.split("projection=", 1)[1].strip()
         )
+        self.assertEqual(
+            set(projection),
+            {
+                "schema",
+                "task_id",
+                "revision",
+                "workflow",
+                "status",
+                "current_node",
+                "contract",
+                "repository",
+                "freshness",
+                "action",
+                "dossier",
+                "done",
+            },
+        )
+        self.assertEqual(projection["schema"], "dev-flow-agent-v2")
         self.assertEqual(projection["task_id"], task_id)
-        self.assertEqual(projection["requirement"], "A test requirement")
+        self.assertEqual(projection["workflow"]["version"], 6)
+        self.assertEqual(
+            projection["contract"],
+            {
+                "revision": 1,
+                "digest": projection["contract"]["digest"],
+                "summary": "A test requirement",
+                "criterion_ids": ["requirement"],
+            },
+        )
+        self.assertEqual(
+            projection["repository"]["path"],
+            str(self.repository.resolve()),
+        )
         self.assertEqual(projection["action"]["action_id"], "task.preflight")
+        self.assertIsInstance(projection["action"]["binding"], dict)
+        self.assertIsNone(projection["dossier"])
+        self.assertFalse(projection["done"])
         locator = context.split(" locator=", 1)[1].split(" projection=", 1)[0]
         self.assertEqual(shlex.split(locator)[:2], list(self.config().controller_argv))
 
@@ -117,7 +151,7 @@ class HookTests(V5TestCase):
 
     def test_subprocess_launch_with_plugin_data(self) -> None:
         plugin_data = self.root / "plugin data"
-        state_data = plugin_data / "v5"
+        state_data = plugin_data / "v6"
         controller = Controller(str(state_data))
         task_id = controller.start(
             requirement="subprocess requirement",
@@ -181,8 +215,8 @@ class HookTests(V5TestCase):
     def test_bash_data_references_are_denied(self) -> None:
         for command in (
             "touch {}/tasks/x".format(self.data_dir),
-            'printf x > "$PLUGIN_DATA/v5/tasks/x"',
-            'printf x > "${PLUGIN_DATA}/v5/tasks/x"',
+            'printf x > "{}PLUGIN_DATA/v6/tasks/x"'.format("$"),
+            'printf x > "{}{{PLUGIN_DATA}}/v6/tasks/x"'.format("$"),
         ):
             payload = {
                 "hook_event_name": "PreToolUse",
@@ -247,14 +281,20 @@ class HookTests(V5TestCase):
         output = handle(payload, config=self.config())["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "deny")
 
-    def test_retained_v4_directory_does_not_block_v5_context(self) -> None:
+    def test_retained_v5_directory_does_not_block_v6_context(self) -> None:
         plugin_data = self.root / "plugin-data"
-        legacy = plugin_data / "tasks" / "legacy" / "state.json"
-        legacy.parent.mkdir(parents=True)
-        legacy.write_text('{"schema_version": 4}\n', encoding="utf-8")
-        state_data = plugin_data / "v5"
+        retained_state = (
+            plugin_data / "v5" / "tasks" / "retained" / "state.json"
+        )
+        retained_state.parent.mkdir(parents=True)
+        retained_state_bytes = b'{"schema_version":5}\n'
+        retained_state.write_bytes(retained_state_bytes)
+        retained_marker = plugin_data / "v5" / "retained-marker"
+        retained_marker_bytes = b"retained-v5\n"
+        retained_marker.write_bytes(retained_marker_bytes)
+        state_data = plugin_data / "v6"
         task_id = Controller(str(state_data)).start(
-            requirement="isolated V5",
+            requirement="isolated V6",
             workflow="lite",
             repository=str(self.repository),
         ).task_id
@@ -264,9 +304,11 @@ class HookTests(V5TestCase):
         )
         context = result["hookSpecificOutput"]["additionalContext"]
         self.assertIn(task_id, context)
-        self.assertEqual(
-            legacy.read_text(encoding="utf-8"),
-            '{"schema_version": 4}\n',
+        self.assertIn(shlex.quote(str(state_data)), context)
+        self.assertEqual(retained_state.read_bytes(), retained_state_bytes)
+        self.assertEqual(retained_marker.read_bytes(), retained_marker_bytes)
+        self.assertTrue(
+            (state_data / "tasks" / task_id / "state.json").is_file()
         )
 
 

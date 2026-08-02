@@ -1,48 +1,85 @@
-# Dev Flow Orchestrator workflow definition.
-# A workflow has one deterministic entry-to-terminal normal path plus an
-# optional shared cancel action targeting a terminal node. The runtime
-# executes exactly one action per non-terminal node, then moves to its target. Editing this file
-# changes the flow; no code change is needed unless a node uses a
-# handler the runtime does not ship.
-schema: dev-flow-workflow/v1
+schema: dev-flow-workflow/v2
 id: lite
-version: 5
-description: "Minimal single-repository workflow: implement, then verify."
-
+version: 6
+description: "Fast personal delivery with implementation, bounded verification, and a Delivery Dossier."
 entry: preflight
+revision_target: implement
 
 nodes:
   preflight:
     action_id: task.preflight
-    handler: preflight                # built-in: records read-only Git evidence
+    handler: preflight
     target: {node: implement, status: IMPLEMENTING}
-    effect: git.inspect-repository    # the only effect port the skeleton runs
-    # no payload: evidence comes from Git, not from the agent
+    effect: git.inspect-repository
+    artifact:
+      type: repository-baseline
+      workspace: produces-source
+      inputs: []
 
   implement:
-    action_id: task.implementation.complete
-    handler: evidence.record          # built-in: append evidence, advance
+    action_id: implementation.record
+    handler: artifact.record
     target: {node: verify, status: VERIFYING}
     payload: {summary: string}
-    # driver: {tool: openspec}        # OPTIONAL label, carried opaquely.
-    #                                  # The runtime never interprets it.
-    #                                  # Projects without OpenSpec omit it.
-    #                                  # Zero code difference either way.
+    artifact:
+      type: implementation
+      workspace: produces-source
+      inputs: [{type: repository-baseline, edge: source-predecessor}]
 
   verify:
-    action_id: evidence.test.record
-    handler: test.record              # built-in: requires passed: true
+    action_id: verification.record
+    handler: verification.record
+    target: {node: finalize_success, status: FINALIZING}
+    payload: {passed: boolean, command: string, coverage: object, summary: string}
+    artifact:
+      type: verification-result
+      workspace: verifies-source
+      inputs: [{type: implementation, edge: governing}]
+    rework:
+      failure: {node: verification_rework, status: IMPLEMENTING}
+      max_attempts: 2
+      exhausted: {node: finalize_verification_incomplete, status: FINALIZING}
+
+  verification_rework:
+    action_id: verification.rework.record
+    handler: artifact.record
+    target: {node: verify, status: VERIFYING}
+    payload: {summary: string}
+    artifact:
+      type: implementation
+      workspace: produces-source
+      inputs:
+        - {type: implementation, edge: source-predecessor}
+        - {type: verification-result, edge: causal}
+
+  finalize_success:
+    action_id: delivery.finalize.success
+    handler: delivery.finalize
     target: {node: done, status: DONE}
-    payload:
-      passed: boolean
-      command: string
+    payload: {summary: string, remaining_risks: object, handoff: string}
+    artifact:
+      type: delivery-dossier
+      workspace: verifies-source
+      inputs: [{type: verification-result, edge: governing}]
+    finalize: success
 
-  done: {terminal: true}              # sink: no action, no target
+  finalize_verification_incomplete:
+    action_id: delivery.finalize.verification-incomplete
+    handler: delivery.finalize
+    target: {node: incomplete, status: INCOMPLETE}
+    payload: {summary: string, remaining_risks: object, handoff: string}
+    artifact:
+      type: delivery-dossier
+      workspace: verifies-source
+      inputs: [{type: verification-result, edge: governing}]
+    finalize: incomplete
 
-  cancelled: {terminal: true}         # sink, target of the shared cancel action
+  done: {terminal: true}
+  incomplete: {terminal: true}
+  cancelled: {terminal: true}
 
 cancel:
   action_id: task.cancel
-  handler: evidence.record
+  handler: artifact.record
   target: {node: cancelled, status: CANCELLED}
   payload: {reason: string}

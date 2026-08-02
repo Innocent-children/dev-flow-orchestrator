@@ -1,40 +1,51 @@
 # Dev Flow Orchestrator
 
 [简体中文](README_CN.md) · [Installation](INSTALL.md) ·
-[Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
+[Roadmap](ROADMAP.md) · [Architecture](ARCHITECTURE.md) ·
+[Contributing](CONTRIBUTING.md)
 
-Dev Flow Orchestrator turns a software requirement into a resumable Codex
-task. It keeps the task moving through clear stages, saves progress between
-sessions, and gives Codex one concrete next step at a time.
+Dev Flow Orchestrator V6 is a local-first delivery controller for Codex. It
+turns one software requirement into a resumable, evidence-backed task and
+projects one authoritative next action at a time. Codex performs the work;
+the controller preserves the delivery contract, workflow state, decisions,
+typed artifacts, assurance evidence, and final Delivery Dossier.
 
-Codex still writes the code and runs the verification. The plugin coordinates
-the sequence and records the result of each stage. Its standard `lite`
-workflow covers repository preflight, implementation, and verification, while
-custom workflow files can describe project-specific sequences.
+## Current product
 
-## What it gives you
+V6 provides complete personal delivery in one Git repository:
 
-- Resume a development task in a later Codex session by task ID.
-- Work on one clear stage at a time instead of reconstructing progress from
-  chat history.
-- Check the target Git repository before implementation begins.
-- Complete verification only after recording a passing command result.
-- Keep workflow state outside the target repository.
-- Add code-impact analysis, implementation review, or a custom workflow when
-  the task needs more structure.
+- a structured, versioned delivery contract with stable acceptance-criterion
+  IDs, scope, constraints, risks, non-goals, and open questions;
+- six official workflows: `lite`, `feature`, `bugfix`, `investigation`,
+  `refactor`, and `full`;
+- append-only contract revisions and attributable criterion or review-
+  assurance waivers;
+- typed artifacts with producer metadata, contract binding, repository
+  snapshots, input lineage, digests, and derived freshness;
+- bounded verification and review rework with explicit `DONE` and
+  `INCOMPLETE` dossier outcomes;
+- optional OpenSpec, codebase-memory, and independent-review driver paths
+  with explicit degraded or unavailable results;
+- resumability across Codex sessions through the same controller and task ID.
 
-Each task works with one Git repository.
+The supported execution boundary is one task, one repository, the repository's
+current worktree, and one Codex executor. The controller does not create or
+switch branches or worktrees, coordinate parallel agents, or span
+repositories. A dirty worktree and detached `HEAD` are supported when the
+supplied repository path is the exact root of an initialized non-bare Git
+worktree.
 
 ## Requirements
 
 - macOS;
 - Python 3.9–3.14;
-- Git, with the target path set to a worktree root that already has a commit;
+- Git and a target worktree with an existing `HEAD` commit;
 - Codex with plugin and Hook support.
 
-The plugin runtime uses the Python standard library and does not require a
-package installation step. The bundled Skills use the external
-`codebase-memory-mcp` integration for code discovery.
+Runtime code uses only the Python standard library. OpenSpec,
+codebase-memory, and an independent reviewer are optional workflow
+capabilities; their absence is recorded explicitly and never silently raises
+the assurance level.
 
 ## Install
 
@@ -55,108 +66,124 @@ cp templates/personal-marketplace.example.json \
 codex plugin add dev-flow-orchestrator@personal
 ```
 
-Use the `cp` command only when
-`~/.agents/plugins/marketplace.json` does not exist. If it already exists,
-merge `templates/marketplace-entry.json` into its `plugins` array.
+Run the `cp` command only when
+`~/.agents/plugins/marketplace.json` does not exist. Otherwise merge
+`templates/marketplace-entry.json` into its `plugins` array. Start a new Codex
+task after installation, open `/hooks`, and review and trust the installed
+Hook definition. See [INSTALL.md](INSTALL.md) for upgrades, V5 retention and
+rollback inspection, installed verification, troubleshooting, and removal.
 
-Start a new Codex task after installation, open `/hooks`, and review and trust
-the installed Hook definition. See [INSTALL.md](INSTALL.md) for HTTPS cloning,
-existing marketplace setup, upgrades, verification, troubleshooting, and
-removal.
-
-## Start and resume a task
+## Choose a workflow
 
 Daily use goes through `$follow-dev-flow`.
 
-Start a task with the repository path, workflow, and requirement:
+| Workflow | Delivery path | Assurance budget |
+|---|---|---|
+| `lite` | preflight → implementation → verification → dossier | 2 verification attempts |
+| `feature` | impact → repository-backed plan → implementation → documentation → verification → independent review → dossier | 2 verification and 2 review attempts |
+| `bugfix` | diagnosis → repository-backed fix plan → implementation → documentation → regression verification → independent review → dossier | 2 verification and 2 review attempts |
+| `investigation` | impact → investigation report → verification → dossier | 2 verification attempts; no fabricated implementation |
+| `refactor` | structural impact → invariant-backed plan → implementation → documentation → verification → independent review → dossier | 2 verification and 2 review attempts |
+| `full` | complete impact and planning → implementation → documentation → verification → independent review → dossier | 3 verification and 3 review attempts |
+
+Every official workflow begins with bounded, read-only Git preflight, supports
+explicit cancellation from each unfinished stage, and finalizes every
+non-cancelled result through a Delivery Dossier. A valid absolute path to a
+linear workflow-v1 JSON or YAML document is also accepted for a new V6 task;
+the selected definition and adapter identity are pinned for that task.
+
+## Start and resume
+
+Ask Codex to start a task with an explicit repository, workflow, and delivery
+contract:
 
 ```text
-Use $follow-dev-flow to start a task with the lite workflow in this repository:
+Use $follow-dev-flow to start a feature task in:
 /absolute/path/to/repository
 
-Requirement:
+Create a structured delivery contract for:
 <what must be delivered>
 ```
 
-Keep the returned task ID. To continue later:
+The contract schema is `dev-flow-delivery-contract/v1`. It contains exactly
+`schema`, `revision`, `summary`, `acceptance_criteria`, `scope`, `constraints`,
+`risks`, `non_goals`, and `open_questions`; initial contract revision is `1`.
+For a fast `lite` task, omitting `--contract-json` creates a bounded minimal
+contract from the non-empty requirement.
+
+Keep the returned task ID. Resume with:
 
 ```text
 Use $follow-dev-flow to resume task <task-id>.
 ```
 
-The installed Hook reconnects Codex to an active task when the current
-directory is inside its repository. The Skill then follows the next stage,
-records the result, and continues until the task is done.
+The installed Hook reconnects Codex when the current directory is inside the
+task repository. Its locator already contains the installed launcher, CLI,
+and exact V6 data directory. The Skill obtains a fresh `dev-flow-agent-v2`
+projection with `next`, performs its single action, and passes the exact
+`projection.action.binding` back with `apply --binding-json`. Bindings pin the
+task revision, contract, inputs, source predecessor, and starting workspace
+snapshot; stale work is rejected with a fresh projection.
 
-## The `lite` workflow
+## Evidence, decisions, and completion
 
-`lite` is the standard workflow included with the plugin:
+Workflow-v2 artifacts declare one workspace role:
 
-```text
-preflight → implement → verify → done
-any unfinished stage ── cancel ──→ cancelled
-```
+- `context` records read-only analysis;
+- `produces-source` consumes a pinned source predecessor and records the
+  successor worktree snapshot;
+- `verifies-source` must observe the newest source authority exactly.
 
-| Stage | What happens |
-|---|---|
-| `preflight` | The plugin performs a bounded, read-only Git inspection and records the starting repository state. |
-| `implement` | Codex makes the requested change and records an implementation summary. |
-| `verify` | Codex runs the relevant check and records its command and result. The task finishes only with a passing result. |
+Inputs use `governing`, `source-predecessor`, or `causal` lineage. Governing
+repository resources participate in freshness; reported resources preserve
+provenance only. OpenSpec proposal, design, and spec files are governing.
+`tasks.md` is recorded once as raw reported progress and once with the
+`openspec-tasks-v1` semantic normalizer, which ignores only checkbox state.
 
-Preflight requires the exact root of a non-bare Git worktree with an existing
-`HEAD` commit. A dirty worktree and detached `HEAD` are supported.
+Verification reports every acceptance criterion as `proven` or `unverified`.
+Only a current explicit `criterion-waiver` decision can derive `waived`.
+Review approval requires independent assurance. When independent review is
+unavailable, a self-review can record findings but cannot claim approval; an
+exact current `assurance-waiver` for the review node is required for the
+unavailable result to follow the successful route. Otherwise bounded rework
+ends with an `INCOMPLETE` dossier.
 
-To stop an unfinished task, explicitly ask Codex to cancel it and provide a
-reason. Cancellation is available from every unfinished `lite` stage.
+A later contract revision records the complete replacement contract, reason,
+and actor label. The same record captures the current worktree as the new
+contract's `revision-source` and returns the workflow to its declared impact
+or implementation entry. Earlier artifacts remain immutable historical
+evidence and cannot satisfy the revised scope.
 
-## Additional capabilities
+`show <task-id>` exposes the complete read-only ledger and dossier. The
+terminal dossier contains the effective contract, acceptance coverage,
+current verification, review assurance, documentation evidence, decisions,
+artifact provenance and freshness, repository snapshots, remaining risks,
+outcome, and handoff recommendation.
 
-The plugin includes two supporting Skills:
+## State, safety, and compatibility
 
-- `$analyze-change-impact` traces the likely impact of a change and confirms
-  material findings in source;
-- `$review-dev-flow-change` performs an independent, read-only implementation
-  review.
+- The controller is the only task-state writer. State uses locks, revision
+  compare-and-swap, deterministic replay, and atomic replacement.
+- Task state lives outside target repositories. The installed V6 Hook uses
+  `<PLUGIN_DATA>/v6`; it protects the plugin data root from common direct
+  shell and edit operations.
+- Repository snapshots are bounded, content-sensitive, and read-only. The
+  controller never automatically stashes, resets, cleans, commits, checks
+  out, rebases, merges, pushes, force-pushes, or deletes user work.
+- The Hook is a fail-open operational guardrail. Workflow validation and
+  state-transition authority remain in the controller.
+- V5 task data remains unchanged in `<PLUGIN_DATA>/v5`. V6 neither loads nor
+  migrates it. Inspecting or resuming a V5 task requires the retained V5
+  package snapshot and its V5 controller locator.
 
-You can also pass an absolute JSON or YAML workflow path instead of `lite`.
-Custom workflows use the step types provided by the runtime and may attach
-driver metadata such as `tool: openspec` to tell Codex which tool should handle
-a stage. A running task remains bound to the selected workflow, so keep that
-file available and unchanged until the task finishes.
+## Further documentation
 
-See [Workflow definitions](ARCHITECTURE.md#workflow-definitions) for the file
-format, supported handlers, payload contracts, and extension points.
-
-## State and safety
-
-- Task state is stored in the plugin data directory, not in the target
-  repository. The state directory and repository must be separate directory
-  trees.
-- State updates use locks and atomic replacement. Do not edit task state files
-  by hand.
-- Git preflight is read-only. The controller does not automatically stash,
-  reset, clean, commit, checkout, merge, or push.
-- `$follow-dev-flow` asks for explicit authorization before cancellation and
-  before `stash`, `reset`, `clean`, `force-push`, `rebase`, `merge`, `commit`,
-  or `push` operations.
-
-The Hook restores task context and guards the plugin data path for common
-shell and editing tools. It is an operational guardrail rather than a security
-sandbox: if the Hook cannot process an event, it does not block the host
-operation. Workflow validation and state transitions remain the controller's
-responsibility.
-
-## CLI and further documentation
-
-The packaged CLI exposes `start`, `show`, `next`, `apply`, `cancel`, and
-`list`. Direct CLI use requires an explicit `--data-dir`; use the packaged
-Python launcher and keep the same data directory for every command on a task.
-The [installation guide](INSTALL.md#7-verify-the-cli-package) contains a
-complete command-line walkthrough.
-
-- [INSTALL.md](INSTALL.md): installation, upgrades, verification, and
-  troubleshooting.
-- [ARCHITECTURE.md](ARCHITECTURE.md): workflow format, projections, state, and
-  module boundaries.
-- [CONTRIBUTING.md](CONTRIBUTING.md): development and validation guidance.
+- [INSTALL.md](INSTALL.md): installation, V5-to-V6 upgrade and rollback
+  inspection, installed acceptance, and troubleshooting.
+- [ARCHITECTURE.md](ARCHITECTURE.md): contracts, workflow-v2, bindings,
+  lineage, replay, projections, and module ownership.
+- [ROADMAP.md](ROADMAP.md): delivered Stage 1 capability and later product
+  horizons.
+- [CONTRIBUTING.md](CONTRIBUTING.md): focused validation and contribution
+  rules.
 - [LICENSE](LICENSE): license terms.

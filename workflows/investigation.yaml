@@ -1,0 +1,106 @@
+schema: dev-flow-workflow/v2
+id: investigation
+version: 6
+description: "Evidence-led investigation that produces a verified report without fabricating an implementation."
+entry: preflight
+revision_target: impact
+
+nodes:
+  preflight:
+    action_id: task.preflight
+    handler: preflight
+    target: {node: impact, status: ANALYZING}
+    effect: git.inspect-repository
+    artifact: {type: repository-baseline, workspace: produces-source, inputs: []}
+
+  impact:
+    action_id: impact.record
+    handler: artifact.record
+    target: {node: investigate, status: INVESTIGATING}
+    payload: {summary: string, driver_result: object}
+    artifact:
+      type: impact-report
+      workspace: context
+      inputs: [{type: repository-baseline, edge: governing}]
+    driver:
+      tool: codebase-memory
+      optional: true
+      fallback: "Inspect the relevant source and runtime evidence directly; record degraded graph coverage and source confirmations."
+      produces: impact-report
+
+  investigate:
+    action_id: investigation.record
+    handler: artifact.record
+    target: {node: verify, status: VERIFYING}
+    payload: {summary: string, evidence: object}
+    artifact:
+      type: investigation-report
+      workspace: context
+      inputs:
+        - {type: impact-report, edge: governing}
+        - {type: repository-baseline, edge: governing}
+
+  verify:
+    action_id: verification.record
+    handler: verification.record
+    target: {node: finalize_success, status: FINALIZING}
+    payload: {passed: boolean, command: string, coverage: object, summary: string}
+    artifact:
+      type: verification-result
+      workspace: verifies-source
+      inputs:
+        - {type: investigation-report, edge: governing}
+        - {type: repository-baseline, edge: governing}
+    rework:
+      failure: {node: investigation_rework, status: INVESTIGATING}
+      max_attempts: 2
+      exhausted: {node: finalize_verification_incomplete, status: FINALIZING}
+
+  investigation_rework:
+    action_id: investigation.rework.record
+    handler: artifact.record
+    target: {node: verify, status: VERIFYING}
+    payload: {summary: string, evidence: object}
+    artifact:
+      type: investigation-report
+      workspace: context
+      inputs:
+        - {type: investigation-report, edge: governing}
+        - {type: verification-result, edge: causal}
+        - {type: repository-baseline, edge: governing}
+
+  finalize_success:
+    action_id: delivery.finalize.success
+    handler: delivery.finalize
+    target: {node: done, status: DONE}
+    payload: {summary: string, remaining_risks: object, handoff: string}
+    artifact:
+      type: delivery-dossier
+      workspace: verifies-source
+      inputs:
+        - {type: verification-result, edge: governing}
+        - {type: investigation-report, edge: governing}
+    finalize: success
+
+  finalize_verification_incomplete:
+    action_id: delivery.finalize.verification-incomplete
+    handler: delivery.finalize
+    target: {node: incomplete, status: INCOMPLETE}
+    payload: {summary: string, remaining_risks: object, handoff: string}
+    artifact:
+      type: delivery-dossier
+      workspace: verifies-source
+      inputs:
+        - {type: verification-result, edge: governing}
+        - {type: investigation-report, edge: governing}
+    finalize: incomplete
+
+  done: {terminal: true}
+  incomplete: {terminal: true}
+  cancelled: {terminal: true}
+
+cancel:
+  action_id: task.cancel
+  handler: artifact.record
+  target: {node: cancelled, status: CANCELLED}
+  payload: {reason: string}

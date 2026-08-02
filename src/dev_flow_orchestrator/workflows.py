@@ -1,4 +1,4 @@
-"""Workflow definition loading: built-in files and custom paths.
+"""V6 workflow definition loading: official assets and pinned custom paths.
 
 Selection tokens are either a built-in id (the stem of a file under the
 packaged ``workflows/`` directory) or an absolute path to a workflow
@@ -114,13 +114,25 @@ def load_definition(selector: str) -> WorkflowDefinition:
 def task_definition(state: TaskState) -> WorkflowDefinition:
     """Load the definition pinned by a task and verify its identity."""
     definition = load_definition(state.workflow_id)
-    if definition.version != state.workflow_version:
+    if (
+        definition.version != state.workflow_version
+        or definition.schema != state.workflow_schema
+        or definition.adapter_identity != state.workflow_adapter_identity
+    ):
         raise _error(
             "WORKFLOW_IDENTITY_MISMATCH",
-            "task workflow version is not installed",
+            "task workflow language or adapter is not installed",
             task_id=state.task_id,
-            expected=state.workflow_version,
-            loaded=definition.version,
+            expected={
+                "version": state.workflow_version,
+                "schema": state.workflow_schema,
+                "adapter_identity": state.workflow_adapter_identity,
+            },
+            loaded={
+                "version": definition.version,
+                "schema": definition.schema,
+                "adapter_identity": definition.adapter_identity,
+            },
         )
     if definition.identity != state.workflow_identity:
         raise _error(

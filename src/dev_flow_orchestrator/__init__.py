@@ -1,4 +1,4 @@
-"""V5 runtime for the dev-flow-orchestrator Codex plugin."""
+"""V6 runtime for the dev-flow-orchestrator Codex plugin."""
 
 from .controller import Controller
 from .model import DevFlowError

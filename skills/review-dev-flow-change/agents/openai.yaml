@@ -1,11 +1,11 @@
 interface:
   display_name: "Review Dev Flow Change"
-  short_description: "Independently gate the complete Git change snapshot"
-  default_prompt: "Use $review-dev-flow-change to independently review this V5 change before handoff."
+  short_description: "Review an exact V6 delivery snapshot"
+  default_prompt: "Use $review-dev-flow-change to independently review this exact V6 snapshot and return a fingerprinted verdict."
 dependencies:
   tools:
     - type: "mcp"
       value: "codebase-memory-mcp"
-      description: "Uses the explicitly selected current workspace project for review discovery"
+      description: "Uses the selected current-workspace project for source-confirmed review discovery"
 policy:
   allow_implicit_invocation: false

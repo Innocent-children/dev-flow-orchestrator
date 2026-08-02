@@ -1,8 +1,7 @@
-"""Private schema-v5 filesystem state store and lock boundary."""
+"""Private schema-v6 filesystem state store and lock boundary."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Callable, Tuple
 
@@ -13,7 +12,13 @@ from .filesystem import (
     exclusive_file_lock,
     read_regular_file_at,
 )
-from .model import DevFlowError, TaskState, canonical_json_bytes, validate_task_id
+from .model import (
+    DevFlowError,
+    TaskState,
+    canonical_json_bytes,
+    strict_json_loads,
+    validate_task_id,
+)
 from .product import PRODUCT_IDENTITY, TASK_SCHEMA_VERSION
 from .workflow import WorkflowDefinition
 from .workflows import load_definition, task_definition
@@ -85,7 +90,7 @@ class TaskStore:
                 details={"path": str(path), "error": str(exc)},
             ) from exc
         try:
-            value = json.loads(raw.decode("utf-8"))
+            value = strict_json_loads(raw.decode("utf-8"))
         except (UnicodeError, ValueError) as exc:
             raise DevFlowError(
                 "STATE_INVALID",

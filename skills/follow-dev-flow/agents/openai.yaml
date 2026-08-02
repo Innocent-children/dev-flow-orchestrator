@@ -1,11 +1,11 @@
 interface:
   display_name: "执行开发流程"
-  short_description: "在单个 Git 仓库中启动或继续 V5 受控开发流程"
-  default_prompt: "使用 $follow-dev-flow 在当前单个 Git 仓库中启动或继续 V5 开发流程，并按控制器投影执行下一项动作。"
+  short_description: "在单个 Git 仓库中启动或继续 V6 结构化个人交付流程"
+  default_prompt: "使用 $follow-dev-flow 在当前单个 Git 仓库中启动或继续 V6 交付任务，并按绑定的控制器投影执行下一动作。"
 dependencies:
   tools:
     - type: "mcp"
       value: "codebase-memory-mcp"
-      description: "Maintains explicit baseline and current-workspace projects and traces change impact"
+      description: "Provides phase-selected impact discovery with distinct baseline/current project IDs"
 policy:
   allow_implicit_invocation: true

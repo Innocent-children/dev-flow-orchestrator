@@ -1,14 +1,14 @@
-"""JSON command-line adapter for the V5 controller."""
+"""Strict JSON command-line adapter for the V6 controller."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from .controller import Controller
-from .model import DevFlowError
+from .model import DevFlowError, strict_json_loads
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
@@ -26,10 +26,14 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--workflow",
         required=True,
-        help="built-in workflow id (lite) or absolute path to a workflow file",
+        help=(
+            "official id (lite, feature, bugfix, investigation, refactor, full) "
+            "or an absolute workflow-v1/v2 path"
+        ),
     )
-    start.add_argument("--repo", required=True, help="absolute repository path")
+    start.add_argument("--repo", required=True, help="absolute repository root")
     start.add_argument("--task-id")
+    start.add_argument("--contract-json")
 
     show = commands.add_parser("show")
     show.add_argument("task_id")
@@ -41,36 +45,63 @@ def _parser() -> argparse.ArgumentParser:
     apply_action.add_argument("task_id")
     apply_action.add_argument("--action", required=True)
     apply_action.add_argument("--payload-json", default="{}")
+    apply_action.add_argument("--binding-json", required=True)
+
+    revision = commands.add_parser("revise-contract")
+    revision.add_argument("task_id")
+    revision.add_argument("--contract-json", required=True)
+    revision.add_argument("--reason", required=True)
+    revision.add_argument("--actor-label", required=True)
+
+    decision = commands.add_parser("decide")
+    decision.add_argument("task_id")
+    decision.add_argument("--decision-json", required=True)
 
     cancel = commands.add_parser("cancel")
     cancel.add_argument("task_id")
     cancel.add_argument("--reason", required=True)
 
-    list_action = commands.add_parser("list")
-
+    commands.add_parser("list")
     return parser
+
+
+def _json_object(value: str, flag: str) -> Mapping[str, object]:
+    try:
+        parsed = strict_json_loads(value)
+    except (UnicodeError, ValueError) as exc:
+        raise DevFlowError(
+            "ARGUMENT_JSON_INVALID",
+            "{} is not strict JSON".format(flag),
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise DevFlowError(
+            "ARGUMENT_JSON_INVALID",
+            "{} must be a JSON object".format(flag),
+        )
+    return parsed
 
 
 def _dispatch(arguments: argparse.Namespace) -> dict:
     controller = Controller(arguments.data_dir)
     if arguments.command == "start":
+        contract = (
+            None
+            if arguments.contract_json is None
+            else _json_object(arguments.contract_json, "--contract-json")
+        )
         state = controller.start(
             requirement=arguments.requirement,
             workflow=arguments.workflow,
             repository=arguments.repo,
             task_id=arguments.task_id,
+            contract=contract,
         )
-        return {
-            "ok": True,
-            "command": "start",
-            "task": state.as_dict(),
-        }
+        return {"ok": True, "command": "start", "task": state.as_dict()}
     if arguments.command == "show":
-        state = controller.show(arguments.task_id)
         return {
             "ok": True,
             "command": "show",
-            "task": state.as_dict(),
+            "task": controller.show_view(arguments.task_id),
         }
     if arguments.command == "next":
         return {
@@ -79,22 +110,37 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
             "projection": controller.next(arguments.task_id),
         }
     if arguments.command == "apply":
-        try:
-            payload = json.loads(arguments.payload_json)
-        except ValueError as exc:
-            raise DevFlowError(
-                "ARGUMENT_JSON_INVALID",
-                "--payload-json is not valid JSON",
-            ) from exc
-        if not isinstance(payload, dict):
-            raise DevFlowError(
-                "ARGUMENT_JSON_INVALID",
-                "--payload-json must be an object",
-            )
+        payload = _json_object(arguments.payload_json, "--payload-json")
+        binding = _json_object(arguments.binding_json, "--binding-json")
         return {
             "ok": True,
             "command": "apply",
-            **controller.apply(arguments.task_id, arguments.action, payload),
+            **controller.apply(
+                arguments.task_id,
+                arguments.action,
+                payload,
+                binding=binding,
+            ),
+        }
+    if arguments.command == "revise-contract":
+        return {
+            "ok": True,
+            "command": "revise-contract",
+            **controller.revise_contract(
+                arguments.task_id,
+                contract=_json_object(arguments.contract_json, "--contract-json"),
+                reason=arguments.reason,
+                actor_label=arguments.actor_label,
+            ),
+        }
+    if arguments.command == "decide":
+        return {
+            "ok": True,
+            "command": "decide",
+            **controller.decide(
+                arguments.task_id,
+                decision=_json_object(arguments.decision_json, "--decision-json"),
+            ),
         }
     if arguments.command == "cancel":
         return {
@@ -108,16 +154,12 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
             "command": "list",
             "tasks": [state.as_dict() for state in controller.list_tasks()],
         }
-    raise DevFlowError(
-        "ACTION_UNSUPPORTED",
-        "action is not implemented by this runtime",
-    )
+    raise DevFlowError("ACTION_UNSUPPORTED", "command is not implemented")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
-        arguments = _parser().parse_args(argv)
-        result = _dispatch(arguments)
+        result = _dispatch(_parser().parse_args(argv))
         exit_code = 0
     except DevFlowError as exc:
         result = exc.as_dict()
@@ -128,6 +170,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
+            allow_nan=False,
         )
     )
     return exit_code

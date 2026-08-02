@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed public bootstrap for the V5 Hook."""
+"""Fixed public bootstrap for the V6 Hook."""
 
 from pathlib import Path
 import sys
