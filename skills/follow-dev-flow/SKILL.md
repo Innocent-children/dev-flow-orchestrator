@@ -384,6 +384,40 @@ current aggregate evidence.
 
 Do not describe an incomplete or waived result as independently approved.
 
+## Close a confirmed repository mismatch
+
+Treat a confirmed semantic repository mismatch as an operator-decision
+boundary. Confirm from the effective contract and the declared members'
+source that the immutable repository set cannot satisfy the accepted outcome.
+Uncertainty is still impact or diagnosis work and does not authorize
+cancellation.
+
+When the mismatch is confirmed:
+
+1. Stop the projected action. Do not change a member or apply the current
+   workflow action. Obtain a fresh projection and check whether its exact
+   `current_node` is listed in the selected workflow's `cancel.stages`.
+2. Tell the user the exact task ID, the accepted requirement, the mismatching
+   repository set, and that the task remains active. If the current user
+   request does not already authorize cancellation of that exact task, request
+   explicit user authorization and stop for the decision.
+3. Without that authority, do not call `cancel`, claim that the task ended,
+   start a replacement task, or substitute another repository. Membership is
+   immutable and the active task remains the controller's source of truth.
+4. After authorization, use the injected locator to cancel the exact task with
+   a factual reason. Do not treat the user's choice as permission for any
+   repository effect, including stash, reset, clean, checkout, or modifying
+   member files.
+5. Report the task as ended only when the returned projection has all three
+   terminal facts: `done: true`, `status: CANCELLED`, and
+   `current_node: cancelled`.
+
+If cancellation is unavailable at the current node or fails because the exact
+repository set cannot be captured, report that the task remains active and
+name the required finalizer, member restoration, or operator action.
+Do not substitute another repository or describe the failed attempt as
+terminal.
+
 ## Cancel and preserve user authority
 
 Cancel only after explicit user instruction and only when the current node is

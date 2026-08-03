@@ -317,6 +317,51 @@ class PackageValidationTests(unittest.TestCase):
             "follow-dev-flow Skill is missing current-version delivery guidance",
         )
 
+    def test_main_skill_requires_mismatch_authorization_guidance(self) -> None:
+        skill = self.candidate / "skills" / "follow-dev-flow" / "SKILL.md"
+        current = skill.read_text(encoding="utf-8")
+        mismatch_authorization = (
+            "request\n"
+            "   explicit user authorization and stop for the decision."
+        )
+        self.assertEqual(current.count(mismatch_authorization), 1)
+        changed = current.replace(
+            mismatch_authorization,
+            "continue without an operator decision.",
+            1,
+        )
+        self.assertNotEqual(changed, current)
+        skill.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "follow-dev-flow Skill does not close confirmed repository mismatches",
+        )
+
+    def test_main_skill_requires_mismatch_terminal_verification(self) -> None:
+        skill = self.candidate / "skills" / "follow-dev-flow" / "SKILL.md"
+        current = skill.read_text(encoding="utf-8")
+        changed = current.replace("`status: CANCELLED`", "`status: stopped`")
+        self.assertNotEqual(changed, current)
+        skill.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "follow-dev-flow Skill does not close confirmed repository mismatches",
+        )
+
+    def test_main_skill_requires_mismatch_no_git_mutation_boundary(self) -> None:
+        skill = self.candidate / "skills" / "follow-dev-flow" / "SKILL.md"
+        current = skill.read_text(encoding="utf-8")
+        changed = current.replace(
+            "stash, reset, clean, checkout",
+            "stash or checkout",
+        )
+        self.assertNotEqual(changed, current)
+        skill.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "follow-dev-flow Skill does not close confirmed repository mismatches",
+        )
+
     def test_one_repository_only_main_skill_agent_guidance_is_reported(self) -> None:
         metadata = (
             self.candidate

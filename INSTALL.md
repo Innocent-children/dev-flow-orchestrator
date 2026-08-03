@@ -358,6 +358,26 @@ the selected workflow's `cancel.stages` declaration:
 The six official workflows declare cancellation at a strict majority of their
 normal nonterminal stages. Delivery finalizers never expose cancellation.
 
+### Recover a task started with the wrong repository set
+
+A Hook match proves only that the current path belongs to an active task's
+declared repository set. It does not prove that the repositories can satisfy
+the accepted requirement. When `$follow-dev-flow` confirms a semantic mismatch
+from the effective contract and source, it must:
+
+1. stop the projected workflow action without changing a member;
+2. identify the exact task and mismatch, state that the task remains active,
+   and request explicit cancellation authority unless the current request
+   already supplies it for that task;
+3. after authorization, call `<ctl> cancel` for the exact task; and
+4. report completion only after the projection contains `done: true`,
+   `status: CANCELLED`, and `current_node: cancelled`.
+
+Without authorization, or when cancellation is unavailable or cannot capture
+the complete repository set, the task remains active. Restore the declared
+member, complete a required finalizer, or take the reported operator action;
+do not replace immutable membership or start an implicit replacement task.
+
 ## 9. Verify installed Hook and Skill pickup
 
 1. Start a new Codex task inside any member of a disposable initialized

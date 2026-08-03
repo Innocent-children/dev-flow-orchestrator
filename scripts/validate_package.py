@@ -750,6 +750,16 @@ def _validate_repository_topology(root: Path, errors: list[str]) -> None:
         )
 
 
+def _markdown_section(document: str, heading: str) -> str:
+    start = document.casefold().find(heading.casefold())
+    if start < 0:
+        return ""
+    end = document.find("\n## ", start + len(heading))
+    if end < 0:
+        return document[start:]
+    return document[start:end]
+
+
 def _validate_manifest(
     root: Path,
     manifest: Optional[dict],
@@ -1172,6 +1182,27 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
             ("one to eight", "1-8", "1–8", "一至八"),
             errors,
             "follow-dev-flow Skill does not state the bounded repository boundary",
+        )
+        mismatch_guidance = _markdown_section(
+            document,
+            "## Close a confirmed repository mismatch",
+        )
+        _require_tokens(
+            mismatch_guidance,
+            (
+                "confirmed semantic repository mismatch",
+                "Stop the projected action",
+                "exact task ID",
+                "task remains active",
+                "explicit user authorization",
+                "`done: true`",
+                "`status: CANCELLED`",
+                "`current_node: cancelled`",
+                "Do not substitute another repository",
+                "stash, reset, clean, checkout",
+            ),
+            errors,
+            "follow-dev-flow Skill does not close confirmed repository mismatches",
         )
         _check(
             document.count("--repo") >= 3,

@@ -102,6 +102,14 @@ stage. A custom workflow must be a valid `dev-flow-workflow/0.2.0` JSON or YAML 
 selected by absolute path. Its identity binds the selector, schema, and
 canonical document. Repository count never selects or changes a workflow.
 
+If Codex confirms that the accepted requirement cannot be satisfied by the
+task's immutable repository set, it stops the projected action and reports
+that the exact task remains active. Cancellation still requires explicit user
+authority for that task. Codex reports it as ended only after the controller
+returns `done: true`, `status: CANCELLED`, and `current_node: cancelled`; a
+failed or unavailable cancellation never substitutes another repository or
+claims a terminal result.
+
 ## Start and resume
 
 Ask Codex to start a task with an explicit workflow, delivery contract, and
