@@ -95,6 +95,7 @@ REQUIRED_STATIC = (
     "src/dev_flow_orchestrator/yaml_subset.py",
     "templates/marketplace-entry.json",
     "templates/personal-marketplace.example.json",
+    "tests/test_install_script.py",
 )
 FORBIDDEN_PATHS = (
     ".mcp.json",

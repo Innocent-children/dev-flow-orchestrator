@@ -14,6 +14,8 @@ jobs:
           python-version: "3.12"
       - name: Candidate package validator
         run: python3 -I -S scripts/validate_package.py
+      - name: Installer source and activation boundaries
+        run: python3 -I -S tests/test_install_script.py -v
       - name: Workflow language, parser, and package contracts
         run: |
           python3 -I -S tests/test_workflow_validation.py -v

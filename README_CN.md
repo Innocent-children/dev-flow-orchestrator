@@ -57,7 +57,11 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 ```
 
 安装器会检查环境、克隆或更新源码、校验软件包、安全合并 personal marketplace 条目、
-安装插件并输出第一条 Prompt。如果你希望执行前检查所有步骤，请先阅读
+安装插件并输出第一条 Prompt。安装器以 `main` 为权威源码 ref：首次安装会显式选择
+`main`；已有源码必须具有预期的 origin、干净且已附着的 `main`，并且只能快进到本次
+抓取的提交。其他分支、本地超前或分叉历史以及 Git 报告的本地改动都会停止安装，安装器
+不会自动 switch、reset、stash 或 clean。快进也会拒绝覆盖发生路径冲突的 ignored 本地
+内容，同时保留无关的 ignored 内容。如果你希望执行前检查所有步骤，请先阅读
 [scripts/install.sh](scripts/install.sh)，或者使用[手动安装指南](INSTALL.md)。
 
 安装后新建 Codex 任务，在 `/hooks` 中检查并信任已安装 Hook，然后尝试：
@@ -131,7 +135,8 @@ release 后续操作都由用户拥有并在 Dev Flow 之外完成。只要每�
 
 ```sh
 mkdir -p "$HOME/plugins"
-git clone git@github.com:Innocent-children/dev-flow-orchestrator.git \
+git clone --branch main --single-branch \
+  git@github.com:Innocent-children/dev-flow-orchestrator.git \
   "$HOME/plugins/dev-flow-orchestrator"
 
 cd "$HOME/plugins/dev-flow-orchestrator"

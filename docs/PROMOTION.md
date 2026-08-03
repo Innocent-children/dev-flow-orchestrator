@@ -64,7 +64,11 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 ```
 
 Current platform support is macOS with Python 3.9–3.14, Git, and Codex
-plugin/Hook support. Review the installed Hook in `/hooks` before trusting it.
+plugin/Hook support. The installer selects authoritative `main` explicitly and
+only fast-forwards an existing clean `main` checkout from the expected origin.
+It refuses an ignored local path that the incoming commit would overwrite and
+preserves unrelated ignored content; other unsafe checkout states require
+manual intervention. Review the installed Hook in `/hooks` before trusting it.
 
 ## Show and tell draft
 

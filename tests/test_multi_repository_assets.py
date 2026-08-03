@@ -196,6 +196,30 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
             ),
         )
 
+    def test_public_manual_install_clones_pin_authoritative_main(self) -> None:
+        repository_urls = (
+            "git@github.com:Innocent-children/dev-flow-orchestrator.git",
+            "https://github.com/Innocent-children/dev-flow-orchestrator.git",
+        )
+        for relative_path in ("README.md", "README_CN.md", "INSTALL.md"):
+            document = _read(relative_path)
+            shell_blocks = re.findall(r"```sh\n(.*?)```", document, re.DOTALL)
+            clone_commands: list[str] = []
+            for block in shell_blocks:
+                continued_block = re.sub(r"\\\n\s*", " ", block)
+                clone_commands.extend(
+                    line.strip()
+                    for line in continued_block.splitlines()
+                    if line.strip().startswith("git clone ")
+                    and any(url in line for url in repository_urls)
+                )
+
+            self.assertTrue(clone_commands, relative_path)
+            for command in clone_commands:
+                with self.subTest(relative_path=relative_path, command=command):
+                    self.assertIn("--branch main", command)
+                    self.assertIn("--single-branch", command)
+
     def test_packaged_skills_cover_member_scope_and_aggregate_assurance(self) -> None:
         follow = _read("skills/follow-dev-flow/SKILL.md")
         impact = _read("skills/analyze-change-impact/SKILL.md")

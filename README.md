@@ -63,9 +63,16 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 
 The installer checks the host, clones or updates the source, validates the
 package, safely merges the personal marketplace entry, installs the plugin,
-and prints a first prompt. If you prefer to inspect every step before running
-it, review [scripts/install.sh](scripts/install.sh) or follow the
-[manual installation guide](INSTALL.md).
+and prints a first prompt. It treats `main` as the authoritative source ref:
+fresh installs select it explicitly, while an existing source must have the
+expected origin, a clean attached `main`, and history that can only fast-forward
+to the fetched commit. Other branches, local-ahead or diverged history, and
+reported local changes stop without an automatic switch, reset, stash, or
+clean. The fast-forward also refuses to overwrite an ignored local path, while
+unrelated ignored content remains in place. If you prefer to inspect every
+step before running it, review
+[scripts/install.sh](scripts/install.sh) or follow the [manual installation
+guide](INSTALL.md).
 
 After installation, start a new Codex task, review and trust the installed Hook
 in `/hooks`, then try:
@@ -150,7 +157,8 @@ For a new personal marketplace, if you do not use the one-command installer:
 
 ```sh
 mkdir -p "$HOME/plugins"
-git clone git@github.com:Innocent-children/dev-flow-orchestrator.git \
+git clone --branch main --single-branch \
+  git@github.com:Innocent-children/dev-flow-orchestrator.git \
   "$HOME/plugins/dev-flow-orchestrator"
 
 cd "$HOME/plugins/dev-flow-orchestrator"

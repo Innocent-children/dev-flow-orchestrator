@@ -96,6 +96,7 @@ Typical focused commands are:
 python3 -I -S tests/test_workflow_validation.py -v
 python3 -I -S tests/test_yaml_subset.py -v
 python3 -I -S tests/test_package.py -v
+python3 -I -S tests/test_install_script.py -v
 python3 -I -S tests/test_multi_repository_assets.py -v
 python3 -I -S tests/test_delivery_runtime.py -v
 python3 -I -S tests/test_controller_contracts.py -v

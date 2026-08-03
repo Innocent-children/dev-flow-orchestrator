@@ -2,12 +2,64 @@
 set -eu
 
 REPOSITORY_URL="${DEV_FLOW_REPOSITORY_URL:-https://github.com/Innocent-children/dev-flow-orchestrator.git}"
+REPOSITORY_REF="main"
 SOURCE_ROOT="${DEV_FLOW_SOURCE_ROOT:-$HOME/plugins/dev-flow-orchestrator}"
 MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace.json}"
 
 fail() {
   printf 'Dev Flow installation failed: %s\n' "$1" >&2
   exit 1
+}
+
+verify_and_update_source() {
+  EXISTING_REMOTE="$(git -C "$SOURCE_ROOT" remote get-url origin 2>/dev/null || true)"
+  if [ "$EXISTING_REMOTE" != "$REPOSITORY_URL" ]; then
+    fail "$SOURCE_ROOT origin is '$EXISTING_REMOTE', expected '$REPOSITORY_URL'."
+  fi
+
+  CURRENT_BRANCH="$(git -C "$SOURCE_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  if [ "$CURRENT_BRANCH" != "$REPOSITORY_REF" ]; then
+    fail "$SOURCE_ROOT is on '${CURRENT_BRANCH:-a detached HEAD}', expected branch '$REPOSITORY_REF'."
+  fi
+
+  SOURCE_STATUS="$(git -C "$SOURCE_ROOT" status --porcelain 2>/dev/null)" \
+    || fail "Cannot inspect the working tree at $SOURCE_ROOT."
+  if [ -n "$SOURCE_STATUS" ]; then
+    fail "$SOURCE_ROOT has local changes; preserve or commit them before reinstalling."
+  fi
+
+  printf 'Fetching the authoritative %s branch...\n' "$REPOSITORY_REF"
+  if ! git -C "$SOURCE_ROOT" fetch --no-tags origin "refs/heads/$REPOSITORY_REF"; then
+    fail "Cannot fetch authoritative ref 'refs/heads/$REPOSITORY_REF' from '$REPOSITORY_URL'."
+  fi
+
+  APPROVED_HEAD="$(git -C "$SOURCE_ROOT" rev-parse --verify 'FETCH_HEAD^{commit}' 2>/dev/null)" \
+    || fail "The fetched authoritative ref does not resolve to a commit."
+  CURRENT_HEAD="$(git -C "$SOURCE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" \
+    || fail "$SOURCE_ROOT HEAD does not resolve to a commit."
+
+  if [ "$CURRENT_HEAD" != "$APPROVED_HEAD" ]; then
+    if git -C "$SOURCE_ROOT" merge-base --is-ancestor "$CURRENT_HEAD" "$APPROVED_HEAD"; then
+      printf 'Fast-forwarding the existing source checkout...\n'
+      git -C "$SOURCE_ROOT" merge --ff-only --no-overwrite-ignore "$APPROVED_HEAD" \
+        || fail "Could not fast-forward $SOURCE_ROOT to authoritative $REPOSITORY_REF without overwriting local work."
+    elif git -C "$SOURCE_ROOT" merge-base --is-ancestor "$APPROVED_HEAD" "$CURRENT_HEAD"; then
+      fail "$SOURCE_ROOT has local commits beyond authoritative origin/$REPOSITORY_REF; preserve them and restore a clean authoritative checkout manually."
+    else
+      fail "$SOURCE_ROOT has diverged from authoritative origin/$REPOSITORY_REF; reconcile it manually before reinstalling."
+    fi
+  fi
+
+  VERIFIED_HEAD="$(git -C "$SOURCE_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" \
+    || fail "$SOURCE_ROOT HEAD does not resolve to a commit after update."
+  if [ "$VERIFIED_HEAD" != "$APPROVED_HEAD" ]; then
+    fail "$SOURCE_ROOT HEAD does not match the fetched authoritative origin/$REPOSITORY_REF commit."
+  fi
+  SOURCE_STATUS="$(git -C "$SOURCE_ROOT" status --porcelain 2>/dev/null)" \
+    || fail "Cannot inspect the working tree at $SOURCE_ROOT after update."
+  if [ -n "$SOURCE_STATUS" ]; then
+    fail "$SOURCE_ROOT changed during update; refusing to validate or activate it."
+  fi
 }
 
 command -v git >/dev/null 2>&1 || fail "Git is required."
@@ -30,21 +82,17 @@ fi
 
 if [ ! -e "$SOURCE_ROOT" ]; then
   mkdir -p "$(dirname "$SOURCE_ROOT")"
-  printf 'Cloning Dev Flow Orchestrator...\n'
-  git clone --depth 1 "$REPOSITORY_URL" "$SOURCE_ROOT"
+  printf 'Cloning Dev Flow Orchestrator from authoritative branch %s...\n' "$REPOSITORY_REF"
+  if ! git clone --depth 1 --branch "$REPOSITORY_REF" --single-branch "$REPOSITORY_URL" "$SOURCE_ROOT"; then
+    fail "Cannot clone authoritative branch '$REPOSITORY_REF' from '$REPOSITORY_URL'."
+  fi
 elif [ -d "$SOURCE_ROOT/.git" ]; then
-  EXISTING_REMOTE="$(git -C "$SOURCE_ROOT" remote get-url origin 2>/dev/null || true)"
-  if [ "$EXISTING_REMOTE" != "$REPOSITORY_URL" ]; then
-    fail "$SOURCE_ROOT origin is '$EXISTING_REMOTE', expected '$REPOSITORY_URL'."
-  fi
-  if [ -n "$(git -C "$SOURCE_ROOT" status --porcelain)" ]; then
-    fail "$SOURCE_ROOT has local changes; preserve or commit them before reinstalling."
-  fi
-  printf 'Updating the existing source checkout...\n'
-  git -C "$SOURCE_ROOT" pull --ff-only
+  printf 'Checking the existing source checkout...\n'
 else
   fail "$SOURCE_ROOT already exists and is not a Git checkout."
 fi
+
+verify_and_update_source
 
 printf 'Validating the package...\n'
 "$PYTHON" -I -S "$SOURCE_ROOT/scripts/validate_package.py"

@@ -24,8 +24,17 @@ Dev Flow entry; installs the plugin; and prints the first prompt. Review
 [`scripts/install.sh`](scripts/install.sh) before running it if you do not want
 to pipe a remote script directly to `sh`.
 
-The installer refuses to overwrite local source changes or a non-Git path. If
-the plugin is already installed, finish or explicitly cancel active tasks,
+The installer treats `main` as its non-configurable authoritative source ref.
+A fresh install selects `main` explicitly. An existing source proceeds only
+when its origin matches the configured repository URL, its attached branch is
+clean `main`, and its current commit is equal to or can fast-forward to the
+fetched `main` commit. The fast-forward refuses to overwrite an ignored local
+path that collides with incoming `main`, but preserves unrelated ignored
+content. It refuses another branch, detached HEAD, reported local changes,
+local-ahead history, divergence, or a non-Git path without switching,
+resetting, stashing, cleaning, or overwriting the checkout.
+
+If the plugin is already installed, finish or explicitly cancel active tasks,
 then follow the replacement steps below. The remaining sections document the
 same process manually and provide the full installed acceptance checks.
 
@@ -68,7 +77,8 @@ Clone over SSH:
 
 ```sh
 mkdir -p "$HOME/plugins"
-git clone git@github.com:Innocent-children/dev-flow-orchestrator.git \
+git clone --branch main --single-branch \
+  git@github.com:Innocent-children/dev-flow-orchestrator.git \
   "$HOME/plugins/dev-flow-orchestrator"
 ```
 
@@ -76,7 +86,8 @@ HTTPS alternative:
 
 ```sh
 mkdir -p "$HOME/plugins"
-git clone https://github.com/Innocent-children/dev-flow-orchestrator.git \
+git clone --branch main --single-branch \
+  https://github.com/Innocent-children/dev-flow-orchestrator.git \
   "$HOME/plugins/dev-flow-orchestrator"
 ```
 
