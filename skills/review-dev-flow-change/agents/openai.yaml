@@ -1,11 +1,11 @@
 interface:
   display_name: "Review Dev Flow Change"
-  short_description: "Review an exact V6 delivery snapshot"
-  default_prompt: "Use $review-dev-flow-change to independently review this exact V6 snapshot and return a fingerprinted verdict."
+  short_description: "Review an exact 0.2.0 aggregate repository-set snapshot"
+  default_prompt: "Use $review-dev-flow-change to independently review the exact aggregate snapshot for a set of one to eight repositories and return one fingerprinted task-wide verdict."
 dependencies:
   tools:
     - type: "mcp"
       value: "codebase-memory-mcp"
-      description: "Uses the selected current-workspace project for source-confirmed review discovery"
+      description: "Uses per-member current-workspace projects for source-confirmed aggregate review discovery"
 policy:
   allow_implicit_invocation: false

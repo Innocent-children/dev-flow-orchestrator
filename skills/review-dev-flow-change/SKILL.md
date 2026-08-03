@@ -1,6 +1,6 @@
 ---
 name: review-dev-flow-change
-description: Independently review one V6 task's exact current single-repository snapshot and return a bounded verdict bound to base revision, artifact digest, guidance snapshot digest, and workspace snapshot. Use for an official review.record stage or a read-only pre-handoff review.
+description: Independently review one 0.2.0 task's exact aggregate snapshot for a set of one to eight repositories and return one bounded task-wide verdict bound to every member base plus the artifact, guidance, and snapshot digests. Use for an official review.record stage or a read-only pre-handoff review.
 ---
 
 # Review Dev Flow Change
@@ -10,19 +10,21 @@ artifacts, Git state, controller state, task records, or evidence.
 
 ## Build the exact review snapshot
 
-Collect from the V6 projection and full read-only task view:
+Collect from the 0.2.0 projection and full read-only task view:
 
 - task/workflow/node ID, effective contract revision and digest;
-- repository path and current review action binding;
-- `base_revision`: the `HEAD` recorded by the current contract's repository
-  baseline or `revision-source`;
+- repository-set ID and complete canonical member inventory, plus the current
+  review action binding;
+- each member's repository ID and `HEAD` from the current contract's baseline
+  or aggregate `revision-source`;
 - `workspace_snapshot_digest`: the action binding's
-  `starting_snapshot_digest`;
+  `starting_snapshot_digest`, which is the aggregate repository-set digest;
 - every current input `record_id`, `record_digest`, `artifact_digest`,
-  `snapshot_digest`, type, and edge;
-- every current governing resource path, normalizer, and semantic digest;
+  `snapshot_digest`, type, edge, and member scope when present;
+- every current governing resource's repository ID, path, normalizer, and
+  semantic digest;
 - requirement, criteria, scope, constraints, risks, non-goals, decisions, and
-  applicable repository guidance.
+  applicable guidance for every member.
 
 Derive two lowercase SHA-256 values from UTF-8 canonical JSON (object keys
 sorted, no insignificant whitespace, arrays kept in declared order):
@@ -30,9 +32,13 @@ sorted, no insignificant whitespace, arrays kept in declared order):
 - `artifact_digest`: digest the current action-input manifest listed above;
 - `guidance_snapshot_digest`: digest the sorted manifest of every governing
   contract/guidance/resource input actually used by the review, including its
-  path or stable label, normalizer, and semantic/content digest.
+  repository ID, path or stable label, normalizer, and semantic/content digest.
 
-Record the manifests as well as their digests. Never invent a missing digest.
+Include the canonical member and per-member base/snapshot manifests in the
+fingerprinted review input. Never default to one member,
+reorder or omit a member, or treat equal relative paths from different members
+as the same resource. Record the manifests as well as their digests. Never
+invent a missing digest.
 If the base, inputs, guidance, or workspace cannot be bound exactly at the
 start, return `unavailable` and do not issue independent approval. If a bound
 snapshot later drifts, discard that attempt, obtain a fresh action binding,
@@ -50,21 +56,25 @@ concrete paths returned by OpenSpec. Do not assume a fixed phase sequence.
 
 ## Inspect the complete change
 
-1. Compare committed changes from `base_revision` through current `HEAD`.
-2. Inspect staged, unstaged, and every untracked non-ignored path.
+1. In every member, compare committed changes from its recorded base revision
+   through current `HEAD`.
+2. In every member, inspect staged, unstaged, and every untracked non-ignored
+   path.
 3. Account for renames, deletions, modes, symlinks, gitlinks/submodules,
-   generated files, and bound governing resources.
+   generated files, and repository-scoped governing resources.
 4. Map every acceptance criterion, scope item, constraint, and non-goal to
    implementation and focused test evidence.
 5. Inspect correctness, error paths, boundary inputs, interruption, retry,
    concurrency, idempotency, authorization, secret handling, path safety,
    persistence/replay, and documentation where applicable.
-6. Use the explicitly selected current-workspace codebase-memory project for
-   discovery and confirm every material finding in source. Mark graph evidence
-   stale or degraded when its generation cannot be matched.
-7. Recompute or re-read the base, artifact, guidance, and workspace snapshot
-   fingerprints after review. Any drift invalidates the entire result; obtain
-   a new action binding and rerun.
+6. For each repository ID, use its explicitly selected current-workspace
+   codebase-memory project for discovery, inspect cross-repository contracts,
+   and confirm every material finding in the corresponding source. Never share
+   a graph project across members. Mark graph evidence stale or degraded when
+   its member generation cannot be matched.
+7. Recompute or re-read every member base, artifact, guidance, member snapshot,
+   and aggregate workspace fingerprint after review. Drift in any member
+   invalidates the entire result; obtain a new action binding and rerun.
 
 Use existing focused command results only when they are bound to the reviewed
 snapshot. State skipped, external, platform-specific, or manual checks
@@ -85,7 +95,9 @@ Use exactly one review status:
 
 Independence comes from a genuinely separate reviewer context. The Skill name
 alone does not establish independence. A self-review can report useful
-findings, but it cannot return independent approval.
+findings, but it cannot return independent approval. Assurance belongs to the
+whole task: never approve members independently or reuse an unchanged member's
+partial approval after aggregate drift.
 
 Use verdicts as follows:
 
@@ -104,12 +116,20 @@ Return one JSON-compatible object:
 
 ```json
 {
-  "schema": "dev-flow-independent-review/v1",
+  "schema": "dev-flow-independent-review/0.2.0",
   "status": "available",
   "verdict": "PASS",
   "assurance": "independent",
   "snapshot": {
-    "base_revision": "<git object id>",
+    "repository_set_id": "<repository-set-id>",
+    "repositories": {
+      "<repository-id>": {
+        "root": "<absolute-worktree-root>",
+        "base_revision": "<git-object-id>",
+        "head_revision": "<git-object-id>",
+        "workspace_snapshot_digest": "<member-sha256>"
+      }
+    },
     "workspace_snapshot_digest": "<sha256>",
     "artifact_digest": "<sha256>",
     "guidance_snapshot_digest": "<sha256>",
@@ -124,6 +144,14 @@ Return one JSON-compatible object:
   "review_fingerprint": "<sha256>"
 }
 ```
+
+The `snapshot` always binds the canonical repository-set inventory, every
+member's base and snapshot summary, the aggregate `workspace_snapshot_digest`,
+and repository-scoped input and guidance manifests. This is unchanged when the
+exact set has one member. `criterion_results`, findings, and test evidence
+cover the complete set and its integration behavior; they do not express
+per-member approval. Return one verdict and one fingerprint for the aggregate
+snapshot.
 
 Lead `findings.items` with highest severity and include path/symbol, consequence,
 smallest sufficient resolution, and required re-review evidence. Use an empty

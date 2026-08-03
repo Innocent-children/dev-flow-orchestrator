@@ -1,4 +1,4 @@
-"""Pure V6 delivery contracts, ledger seals, lineage and dossier views."""
+"""Pure delivery contracts, ledger seals, lineage and dossier views."""
 
 from __future__ import annotations
 
@@ -8,10 +8,19 @@ from types import MappingProxyType
 from typing import Iterable, Mapping, Optional, Sequence
 
 from .model import DevFlowError, canonical_json_bytes, freeze_json, json_value
-from .product import ACTION_BINDING_SCHEMA, ARTIFACT_SCHEMA, RECORD_SCHEMA
+from .product import (
+    ACTION_BINDING_SCHEMA,
+    ARTIFACT_SCHEMA,
+    DELIVERY_CONTRACT_SCHEMA,
+    DELIVERY_DOSSIER_SCHEMA,
+    OPENSPEC_TASKS_NORMALIZER,
+    RECORD_SCHEMA,
+    REPOSITORY_SET_SNAPSHOT_SCHEMA,
+    product_domain,
+)
 
 
-CONTRACT_SCHEMA = "dev-flow-delivery-contract/v1"
+CONTRACT_SCHEMA = DELIVERY_CONTRACT_SCHEMA
 CONTRACT_FIELDS = {
     "schema",
     "revision",
@@ -140,7 +149,7 @@ def minimal_contract(requirement: str) -> Mapping[str, object]:
 
 def contract_digest(contract: Mapping[str, object]) -> str:
     return hashlib.sha256(
-        b"dev-flow-contract/v1\x00" + canonical_json_bytes(contract)
+        product_domain("delivery-contract") + canonical_json_bytes(contract)
     ).hexdigest()
 
 
@@ -176,7 +185,7 @@ def _seal(prefix: bytes, value: Mapping[str, object]) -> str:
 def seal_artifact(value: Mapping[str, object]) -> Mapping[str, object]:
     base = {str(key): json_value(item) for key, item in value.items() if key != "digest"}
     base["schema"] = ARTIFACT_SCHEMA
-    digest = _seal(b"dev-flow-artifact/v1\x00", base)
+    digest = _seal(product_domain("artifact"), base)
     return freeze_json({**base, "digest": digest})
 
 
@@ -187,7 +196,7 @@ def validate_artifact(value: object) -> Mapping[str, object]:
     digest = plain.pop("digest", None)
     if plain.get("schema") != ARTIFACT_SCHEMA or not isinstance(digest, str):
         raise _error("STATE_INVALID", "artifact schema or digest is invalid")
-    if _seal(b"dev-flow-artifact/v1\x00", plain) != digest:
+    if _seal(product_domain("artifact"), plain) != digest:
         raise _error("STATE_INVALID", "artifact digest does not match its content")
     return freeze_json({**plain, "digest": digest})
 
@@ -199,7 +208,7 @@ def seal_record(value: Mapping[str, object]) -> Mapping[str, object]:
         if key not in ("record_id", "digest")
     }
     base["schema"] = RECORD_SCHEMA
-    digest = _seal(b"dev-flow-record/v1\x00", base)
+    digest = _seal(product_domain("record"), base)
     return freeze_json({**base, "record_id": "rec-{}".format(digest[:24]), "digest": digest})
 
 
@@ -211,7 +220,7 @@ def validate_record_seal(value: object) -> Mapping[str, object]:
     digest = plain.pop("digest", None)
     if plain.get("schema") != RECORD_SCHEMA or not isinstance(digest, str):
         raise _error("STATE_INVALID", "record schema or digest is invalid")
-    expected = _seal(b"dev-flow-record/v1\x00", plain)
+    expected = _seal(product_domain("record"), plain)
     if digest != expected or record_id != "rec-{}".format(expected[:24]):
         raise _error("STATE_INVALID", "record seal does not match its content")
     if "artifact" in plain and plain["artifact"] is not None:
@@ -322,7 +331,9 @@ def assurance_waiver(
     return None
 
 
-def resource_requests(payload: Mapping[str, object]) -> tuple:
+def resource_requests(
+    payload: Mapping[str, object], repository_ids: Sequence[str]
+) -> tuple:
     value = payload.get("resources")
     if value is None:
         return ()
@@ -333,9 +344,19 @@ def resource_requests(payload: Mapping[str, object]) -> tuple:
         raise _error("NODE_OUTPUT_INVALID", "resource item list is invalid")
     normalized = []
     seen = set()
+    member_ids = tuple(repository_ids)
     for item in items:
-        if not isinstance(item, Mapping) or set(item) != {"path", "role", "normalizer"}:
+        expected_fields = {"path", "role", "normalizer", "repository_id"}
+        if not isinstance(item, Mapping) or set(item) != expected_fields:
             raise _error("NODE_OUTPUT_INVALID", "resource item fields are invalid")
+        repository_id = item.get("repository_id")
+        if repository_id not in member_ids:
+            raise _error(
+                "NODE_OUTPUT_INVALID",
+                "resource repository id is invalid",
+                repository_id=repository_id,
+                expected_repository_ids=list(member_ids),
+            )
         path = item.get("path")
         role = item.get("role")
         normalizer = item.get("normalizer")
@@ -343,13 +364,20 @@ def resource_requests(payload: Mapping[str, object]) -> tuple:
             raise _error("NODE_OUTPUT_INVALID", "resource path is invalid")
         if role not in ("governing", "reported"):
             raise _error("NODE_OUTPUT_INVALID", "resource role is invalid")
-        if normalizer not in ("none", "openspec-tasks-v1"):
+        if normalizer not in ("none", OPENSPEC_TASKS_NORMALIZER):
             raise _error("NODE_OUTPUT_INVALID", "resource normalizer is invalid")
-        identity = (path, role, normalizer)
+        identity = (repository_id, path, role, normalizer)
         if identity in seen:
             raise _error("NODE_OUTPUT_INVALID", "resource item is duplicated")
         seen.add(identity)
-        normalized.append({"path": path, "role": role, "normalizer": normalizer})
+        normalized.append(
+            {
+                "repository_id": repository_id,
+                "path": path,
+                "role": role,
+                "normalizer": normalizer,
+            }
+        )
     return tuple(normalized)
 
 
@@ -359,7 +387,7 @@ _TASK_BOX = re.compile(rb"(?m)^([ \t]*-[ \t]+)\[[ xX]\]")
 def normalize_resource_bytes(data: bytes, normalizer: str) -> bytes:
     if normalizer == "none":
         return data
-    if normalizer == "openspec-tasks-v1":
+    if normalizer == OPENSPEC_TASKS_NORMALIZER:
         return _TASK_BOX.sub(rb"\1[ ]", data)
     raise _error("RESOURCE_NORMALIZER_INVALID", "resource normalizer is unsupported")
 
@@ -387,27 +415,78 @@ def governing_resource_requests(records: Sequence[object], contract: Mapping[str
             ):
                 continue
             key = (
+                resource.get("repository_id"),
                 resource.get("path"),
                 resource.get("role"),
                 resource.get("normalizer", "none"),
             )
-            if key not in seen and isinstance(key[0], str):
+            if (
+                key not in seen
+                and isinstance(key[0], str)
+                and isinstance(key[1], str)
+            ):
                 seen.add(key)
-                result.append({"path": key[0], "role": key[1], "normalizer": key[2]})
+                result.append(
+                    {
+                        "repository_id": key[0],
+                        "path": key[1],
+                        "role": key[2],
+                        "normalizer": key[3],
+                    }
+                )
     return tuple(result)
 
 
 def _snapshot_resource_map(snapshot: Optional[Mapping[str, object]]) -> dict:
-    if not isinstance(snapshot, Mapping):
+    if (
+        not isinstance(snapshot, Mapping)
+        or snapshot.get("schema") != REPOSITORY_SET_SNAPSHOT_SCHEMA
+    ):
         return {}
-    resources = snapshot.get("resources")
-    if not isinstance(resources, (list, tuple)):
+    members = snapshot.get("repositories")
+    if not isinstance(members, (list, tuple)):
         return {}
-    return {
-        (item.get("path"), item.get("normalizer", "none")): item
-        for item in resources
-        if isinstance(item, Mapping)
-    }
+    result = {}
+    for member in members:
+        if not isinstance(member, Mapping):
+            continue
+        repository_id = member.get("repository_id")
+        member_snapshot = member.get("snapshot")
+        resources = (
+            member_snapshot.get("resources")
+            if isinstance(member_snapshot, Mapping)
+            else None
+        )
+        if not isinstance(repository_id, str) or not isinstance(
+            resources, (list, tuple)
+        ):
+            continue
+        for item in resources:
+            if isinstance(item, Mapping):
+                result[
+                    (
+                        repository_id,
+                        item.get("path"),
+                        item.get("normalizer", "none"),
+                    )
+                ] = item
+    return result
+
+
+def _changed_repository_ids(left: object, right: object) -> tuple:
+    left_map = _repository_snapshot_map(left)
+    right_map = _repository_snapshot_map(right)
+    if not left_map or not right_map:
+        return ()
+    repository_ids = sorted(set(left_map) | set(right_map))
+    return tuple(
+        repository_id
+        for repository_id in repository_ids
+        if not isinstance(left_map.get(repository_id), Mapping)
+        or not isinstance(right_map.get(repository_id), Mapping)
+        or left_map[repository_id].get("digest")
+        != right_map[repository_id].get("digest")
+    )
 
 
 def artifact_freshness(
@@ -462,19 +541,42 @@ def artifact_freshness(
             for resource in resources:
                 if not isinstance(resource, Mapping) or resource.get("role") != "governing":
                     continue
-                current = resource_map.get((resource.get("path"), resource.get("normalizer", "none")))
+                repository_id = resource.get("repository_id")
+                current = resource_map.get(
+                    (
+                        repository_id,
+                        resource.get("path"),
+                        resource.get("normalizer", "none"),
+                    )
+                )
                 if current is None or current.get("semantic_sha256") != resource.get("semantic_sha256"):
                     reasons.append("governing_resource_changed")
+                    if isinstance(repository_id, str):
+                        reasons.append(
+                            "governing_resource_changed:" + repository_id
+                        )
         role = artifact.get("workspace_role")
         if role == "verifies-source" and latest_source is not None:
             snapshot = artifact.get("snapshot")
             source_snapshot = latest_source[1].get("snapshot")
             if not isinstance(snapshot, Mapping) or not isinstance(source_snapshot, Mapping) or snapshot.get("digest") != source_snapshot.get("digest"):
                 reasons.append("source_replaced")
+                reasons.extend(
+                    "source_replaced:" + repository_id
+                    for repository_id in _changed_repository_ids(
+                        snapshot, source_snapshot
+                    )
+                )
         if latest_source is not None and record_id == latest_source[0].get("record_id"):
             snapshot = artifact.get("snapshot")
             if not isinstance(snapshot, Mapping) or not isinstance(current_snapshot, Mapping) or snapshot.get("digest") != current_snapshot.get("digest"):
                 reasons.append("workspace_changed")
+                reasons.extend(
+                    "workspace_changed:" + repository_id
+                    for repository_id in _changed_repository_ids(
+                        snapshot, current_snapshot
+                    )
+                )
         if latest_by_type.get(artifact.get("type")) != record_id:
             reasons.append("superseded")
         result[str(record_id)] = {
@@ -500,6 +602,18 @@ def artifact_freshness(
                     upstream = result.get(str(item.get("record_id")))
                     if upstream is not None and not upstream["current"]:
                         reasons.add("governing_input_stale")
+                        reasons.update(
+                            reason
+                            for reason in upstream["reasons"]
+                            if isinstance(reason, str)
+                            and reason.startswith(
+                                (
+                                    "governing_resource_changed:",
+                                    "source_replaced:",
+                                    "workspace_changed:",
+                                )
+                            )
+                        )
             normalized = sorted(reasons)
             if normalized != entry["reasons"]:
                 entry["reasons"] = normalized
@@ -598,7 +712,9 @@ def _artifact_summary(artifact: Mapping[str, object]) -> str:
 def seal_action_binding(value: Mapping[str, object]) -> Mapping[str, object]:
     base = {str(key): json_value(item) for key, item in value.items() if key != "digest"}
     base["schema"] = ACTION_BINDING_SCHEMA
-    return freeze_json({**base, "digest": _seal(b"dev-flow-action-binding/v1\x00", base)})
+    return freeze_json(
+        {**base, "digest": _seal(product_domain("action-binding"), base)}
+    )
 
 
 def validate_action_binding(value: object) -> Mapping[str, object]:
@@ -642,7 +758,7 @@ def validate_action_binding(value: object) -> Mapping[str, object]:
         )
     ):
         raise _error("ACTION_BINDING_INVALID", "action binding fields are invalid")
-    if _seal(b"dev-flow-action-binding/v1\x00", plain) != digest:
+    if _seal(product_domain("action-binding"), plain) != digest:
         raise _error("ACTION_BINDING_INVALID", "action binding digest is invalid")
     return freeze_json({**plain, "digest": digest})
 
@@ -682,7 +798,16 @@ def coverage_view(
     verification_payload: Optional[Mapping[str, object]],
 ) -> dict:
     waivers = criterion_waivers(records, contract)
-    submitted = verification_payload.get("coverage", {}) if isinstance(verification_payload, Mapping) else {}
+    coverage = (
+        verification_payload.get("coverage", {})
+        if isinstance(verification_payload, Mapping)
+        else {}
+    )
+    submitted = (
+        coverage.get("criteria", {})
+        if isinstance(coverage, Mapping)
+        else {}
+    )
     result = {}
     for item in contract["acceptance_criteria"]:
         criterion_id = item["id"]
@@ -694,7 +819,7 @@ def coverage_view(
     return result
 
 
-def generate_dossier(
+def _dossier_base(
     *,
     contract: Mapping[str, object],
     records: Sequence[object],
@@ -718,7 +843,17 @@ def generate_dossier(
         None,
     )
     latest_verification = None if latest_verification_pair is None else latest_verification_pair[1]
-    latest_review = None if latest_review_pair is None else latest_review_pair[1]
+    latest_review_state = (
+        freshness.get(str(latest_review_pair[0].get("record_id")), {})
+        if latest_review_pair is not None
+        else {}
+    )
+    latest_review = (
+        latest_review_pair[1]
+        if latest_review_pair is not None
+        and latest_review_state.get("current") is True
+        else None
+    )
     verification_body = latest_verification.get("body") if isinstance(latest_verification, Mapping) else None
     review_body = latest_review.get("body") if isinstance(latest_review, Mapping) else None
     review_assurance = None
@@ -762,7 +897,7 @@ def generate_dossier(
         None,
     )
     return {
-        "schema": "dev-flow-delivery-dossier/v1",
+        "schema": DELIVERY_DOSSIER_SCHEMA,
         "outcome": outcome,
         "contract": json_value(contract),
         "contract_digest": contract_digest(contract),
@@ -788,4 +923,179 @@ def generate_dossier(
         "repository_snapshot": json_value(current_snapshot),
         "remaining_risks": supplied.get("remaining_risks", {}),
         "handoff_recommendation": supplied.get("handoff_recommendation", ""),
+    }
+
+
+def _snapshot_summary(snapshot: object) -> Optional[dict]:
+    if not isinstance(snapshot, Mapping):
+        return None
+    return {
+        key: json_value(snapshot.get(key))
+        for key in (
+            "digest",
+            "repository_root",
+            "git_common_dir",
+            "head",
+            "branch",
+            "clean",
+            "status_sha256",
+            "status_bytes",
+        )
+    }
+
+
+def _repository_snapshot_map(snapshot: object) -> dict:
+    if not isinstance(snapshot, Mapping) or snapshot.get("schema") != REPOSITORY_SET_SNAPSHOT_SCHEMA:
+        return {}
+    members = snapshot.get("repositories")
+    if not isinstance(members, (list, tuple)):
+        return {}
+    return {
+        item.get("repository_id"): item.get("snapshot")
+        for item in members
+        if isinstance(item, Mapping) and isinstance(item.get("repository_id"), str)
+    }
+
+
+def generate_dossier(
+    *,
+    contract: Mapping[str, object],
+    records: Sequence[object],
+    current_snapshot: Mapping[str, object],
+    outcome: str,
+    supplied: Mapping[str, object],
+    repositories: Sequence[object],
+) -> dict:
+    """Generate the current repository-set Delivery Dossier."""
+    base = _dossier_base(
+        contract=contract,
+        records=records,
+        current_snapshot=current_snapshot,
+        outcome=outcome,
+        supplied=supplied,
+    )
+    current_digest = contract_digest(contract)
+    current_contract_pairs = [
+        pair
+        for pair in artifact_records(records)
+        if pair[1].get("contract_digest") == current_digest
+    ]
+    all_pairs = artifact_records(records)
+    freshness = artifact_freshness(records, contract, current_snapshot)
+    verification_attempts = []
+    review_attempts = []
+    current_verification = None
+    for record, artifact in all_pairs:
+        artifact_type = artifact.get("type")
+        if artifact_type not in ("verification-result", "review-result"):
+            continue
+        entry = freshness.get(str(record.get("record_id")), {})
+        body = artifact.get("body")
+        attempt = {
+            "record_id": record.get("record_id"),
+            "producer": json_value(artifact.get("producer")),
+            "current": bool(entry.get("current", False)),
+            "stale_reasons": json_value(entry.get("reasons", [])),
+            "result": json_value(body) if isinstance(body, Mapping) else None,
+        }
+        if artifact_type == "verification-result":
+            verification_attempts.append(attempt)
+            if attempt["current"] and isinstance(body, Mapping):
+                current_verification = json_value(body)
+        else:
+            review_attempts.append(attempt)
+
+    baseline_map = _repository_snapshot_map(base.get("repository_baseline"))
+    final_map = _repository_snapshot_map(current_snapshot)
+    members = []
+    changed_repositories = []
+    for repository in repositories:
+        repository_id = getattr(repository, "repository_id", None)
+        path = getattr(repository, "path", None)
+        baseline = baseline_map.get(repository_id)
+        final = final_map.get(repository_id)
+        changed = (
+            isinstance(baseline, Mapping)
+            and isinstance(final, Mapping)
+            and baseline.get("digest") != final.get("digest")
+        )
+        if changed:
+            changed_repositories.append(repository_id)
+        members.append(
+            {
+                "repository_id": repository_id,
+                "path": path,
+                "baseline": _snapshot_summary(baseline),
+                "final": _snapshot_summary(final),
+                "changed": changed,
+            }
+        )
+
+    scoped_resources = []
+    for record, artifact in current_contract_pairs:
+        resources = artifact.get("resources")
+        if not isinstance(resources, (list, tuple)):
+            continue
+        artifact_state = freshness.get(str(record.get("record_id")), {})
+        for resource in resources:
+            if not isinstance(resource, Mapping):
+                continue
+            scoped_resources.append(
+                {
+                    "record_id": record.get("record_id"),
+                    "artifact_type": artifact.get("type"),
+                    "current": bool(artifact_state.get("current", False)),
+                    "stale_reasons": json_value(artifact_state.get("reasons", [])),
+                    "resource": json_value(resource),
+                }
+            )
+
+    latest_source = next(
+        (
+            (record, artifact)
+            for record, artifact in reversed(current_contract_pairs)
+            if artifact.get("workspace_role") == "produces-source"
+        ),
+        None,
+    )
+    source_entry = (
+        freshness.get(str(latest_source[0].get("record_id")), {})
+        if latest_source is not None
+        else {}
+    )
+    verification_entry = next(
+        (
+            freshness.get(str(record.get("record_id")), {})
+            for record, artifact in reversed(current_contract_pairs)
+            if artifact.get("type") == "verification-result"
+        ),
+        {},
+    )
+    stale_reasons = sorted(
+        set(source_entry.get("reasons", ()))
+        | set(verification_entry.get("reasons", ()))
+    )
+
+    return {
+        **base,
+        "schema": DELIVERY_DOSSIER_SCHEMA,
+        "repository_set": {
+            "id": current_snapshot.get("repository_set_id"),
+            "digest": current_snapshot.get("digest"),
+            "members": members,
+        },
+        "changed_repositories": changed_repositories,
+        "verification_attempts": verification_attempts,
+        "review_attempts": review_attempts,
+        "verification": current_verification,
+        "resources": scoped_resources,
+        "aggregate_freshness": {
+            "current": bool(source_entry.get("current", False))
+            and bool(verification_entry.get("current", False)),
+            "source_current": bool(source_entry.get("current", False)),
+            "verification_current": bool(
+                verification_entry.get("current", False)
+            ),
+            "stale_reasons": stale_reasons,
+        },
     }

@@ -7,7 +7,7 @@
 **Planning model:** capability horizons sequenced by dependency and advanced by
 outcome evidence
 
-**Last reviewed:** 2026-08-02
+**Last reviewed:** 2026-08-03
 
 ## North-star product vision
 
@@ -47,19 +47,22 @@ In that end state, developers focus on decisions that require judgment: scope,
 design, risk, exceptions, and final approval. The orchestrator carries the full
 delivery context forward and advances routine coordination work.
 
-## Current product: V6 complete personal delivery
+## Current product: 0.2.0 complete personal delivery
 
-Stage 1 is delivered in V6. A developer can carry a feature, bug fix,
+Stage 1 is delivered in 0.2.0. A developer can carry a feature, bug fix,
 investigation, refactor, or fast change from structured intent to a current
 Delivery Dossier through one resumable local task. The shipped product
 provides:
 
 - `lite`, `feature`, `bugfix`, `investigation`, `refactor`, and `full`
-  workflows, plus pinned absolute-path linear workflow-v1 definitions;
+  workflows, plus pinned absolute-path `dev-flow-workflow/0.2.0` definitions;
 - a versioned delivery contract, append-only revisions, decisions, criterion
   waivers, and exact review-assurance waivers;
 - typed artifacts with contract binding, producer, safe repository snapshot,
   input lineage, governing resources, digests, and derived freshness;
+- one exact canonical set of one to eight user-prepared local Git
+  worktrees, with aggregate snapshot, scoped resource, verification, review,
+  freshness, and Dossier evidence;
 - optional OpenSpec, codebase-memory, and independent-review stages with
   explicit degraded or unavailable results;
 - finite verification and review rework with successful or incomplete dossier
@@ -67,28 +70,31 @@ provides:
 - one controller authority shared by the CLI, Hook, and Skills, backed by
   locks, revision CAS, deterministic replay, and atomic replacement.
 
-The current support boundary is one task, one repository, its current
-worktree, and one Codex executor. V6 state is isolated under the V6 plugin-data
-namespace; retained V5 tasks remain inspectable with a retained V5
-installation.
+The current support boundary is one task, one immutable repository set, one
+current action, and one Codex executor. Every set cardinality uses
+`dev-flow-agent/0.2.0`, aggregate repository-set snapshots, repository-scoped
+resources, structured member/integration verification, and Delivery Dossier
+0.2.0. The core neither manages branches/worktrees nor
+publishes Git changes, coordinates parallel agents, operates external
+CI/PR/release systems, or reuses partial assurance from unchanged members.
 
 ## Independent product dimensions
 
 The capability model treats every dimension as independently selectable.
 Workflow depth, repository topology, execution topology, and workspace strategy
-combine through explicit compatibility rules. Git branches and workflow
-branches remain distinct concepts.
+combine through one explicit supported-capability matrix. Git branches and
+workflow branches remain distinct concepts.
 
-| Dimension | V6 current selection | Later horizon choices |
+| Dimension | 0.2.0 current selection | Later horizon choices |
 |---|---|---|
-| Workflow depth | six official personal workflows and pinned linear custom definitions | reusable workflow packages and further delivery families |
+| Workflow depth | six official personal workflows and pinned `dev-flow-workflow/0.2.0` custom definitions | reusable workflow packages and further delivery families |
 | Control flow | one current action with finite verification/review failure routes | general named outcomes, optional stages, fan-out, and join |
 | Task topology | one task | parent-child graphs, initiatives, and batches |
-| Repository topology | one repository | monorepo component scopes and exact multi-repository sets |
+| Repository topology | one exact canonical set of 1–8 local worktrees | monorepo component scopes, repository roles, and dependency topology |
 | Workspace strategy | the supplied current worktree | existing or managed branch/worktree strategies with ownership |
 | Execution topology | one Codex executor | role-separated and parallel executors |
 | Collaboration mode | local personal delivery | verifiable handoff and shared team coordination |
-| Assurance level | criterion coverage, focused verification, optional independent review, and explicit waivers | integration, CI, and release gates |
+| Assurance level | criterion coverage, focused per-member and repository-set integration verification, optional independent review, and explicit waivers | external CI and release gates plus dependency-aware partial reuse |
 
 One authoritative capability matrix should drive runtime validation, workflow
 selection, UI availability, test coverage, packaging, and documentation. The
@@ -96,12 +102,12 @@ matrix defines every supported combination and product restriction explicitly.
 
 ## Capability destination map
 
-| Capability area | V6 product | Destination | User value |
+| Capability area | 0.2.0 product | Destination | User value |
 |---|---|---|---|
 | Intent and scope | Versioned contract, stable criteria, revisions, decisions, and waivers | Policy-backed approvals and delegated scope authority | Every implementation and proof is traceable to accepted intent |
-| Workflow portfolio | Six official personal workflows plus pinned linear custom definitions | Reusable workflow packages and additional risk/domain families | Users select delivery rigor suited to the work |
+| Workflow portfolio | Six official personal workflows plus pinned `dev-flow-workflow/0.2.0` custom definitions | Reusable workflow packages and additional risk/domain families | Users select delivery rigor suited to the work |
 | Execution model | One task, one current action, one executor | Dependency graphs, claims, leases, fan-out, join, and operator intervention | Complex work can be divided, recovered, and recombined |
-| Repositories and workspaces | One repository and its supplied current worktree | Independent repository sets and branch/worktree strategies with ownership and recovery | Large changes progress with explicit isolation |
+| Repositories and workspaces | One exact set of 1–8 supplied current worktrees with immutable membership and aggregate recovery | Component scopes, roles, dependencies, and branch/worktree strategies with ownership | Large changes progress with explicit scope and isolation |
 | Decisions and authority | Contract-bound criterion and review-assurance waivers with actor labels | Authenticated roles, quorum, approvals, and exact effect authorization | Judgment remains attributable and narrowly scoped |
 | Assurance and evidence | Typed lineage, freshness, criterion coverage, bounded review/verification, and Delivery Dossier | Continuous assurance across CI, integration, and release artifacts | “Done” is backed by current proof or an explicit exception |
 | Product experience | CLI, Hook pickup, one-action projection, and full task view | Searchable cockpit, timeline, artifact explorer, approval inbox, and why-next explanation | Users understand progress and blockers through supported views |
@@ -110,19 +116,19 @@ matrix defines every supported combination and product restriction explicitly.
 ## Feature horizons at a glance
 
 The sequence follows product dependencies. Current support is Horizon 1, the
-shipped V6 capability. Horizons 2–7 are planned product directions.
+shipped 0.2.0 capability. Horizons 2–7 are planned product directions.
 
 | Horizon | Status | User outcome | Depends on |
 |---|---|---|---|
-| 1. Complete personal delivery | Delivered in V6 | Take a real change from intent to an evidence-backed Delivery Dossier | V6 local controller and ledger |
+| 1. Complete personal delivery | Delivered in 0.2.0 | Take a real change from intent to an evidence-backed Delivery Dossier | Dev Flow 0.2.0 local controller and ledger |
 | 2. Interactive workflow workbench | Planned | Manage many tasks, decisions, and reusable workflows from one cockpit | Horizon 1 artifacts and outcomes |
 | 3. Isolated workspace orchestration | Planned | Run independent tasks through explicit in-place, branch, or worktree strategies | Horizon 2 authority model and a recoverable effect protocol |
 | 4. Project-scale task and multi-agent orchestration | Planned | Decompose an initiative and coordinate parallel Codex executors | Horizons 2 and 3 |
-| 5. Multi-repository delivery and continuous assurance | Planned | Deliver one change across repositories and external quality systems | Horizons 1–4 |
+| 5. Extended multi-repository delivery and continuous assurance | Planned | Add dependency-aware reuse and external quality systems to the shipped exact-set core | Horizons 1–4 |
 | 6. Team delivery network | Planned | Hand off, assign, approve, audit, and optionally share task state | Stable task, artifact, identity, and permission protocols |
 | 7. Open ecosystem and adaptive orchestration | Planned | Publish trusted delivery capabilities and receive explainable recommendations | Mature workflows, evidence, and team operating model |
 
-## Horizon 1 — Complete personal delivery (delivered in V6)
+## Horizon 1 — Complete personal delivery (delivered in 0.2.0)
 
 ### Delivered outcome
 
@@ -135,30 +141,40 @@ findings, bounded repair cycles, and accepted scope revisions.
 
 - Structured and minimal starts produce a bounded delivery contract with
   stable acceptance IDs.
+- Repeated `--repo` binds one to eight exact canonical, user-prepared Git
+  worktree roots as immutable task membership; the Hook resumes from any
+  unambiguous member.
 - Six official workflows provide fast, planning-led, investigation, refactor,
   and high-assurance personal delivery paths.
 - Typed artifacts retain producer, contract, source snapshot, governing
-  resources, input lineage, digest, and freshness.
+  repository-scoped resources, input lineage, digest, and freshness.
 - OpenSpec, codebase-memory, and independent review have declared available,
   degraded, and unavailable behavior while the controller remains tool-agnostic.
 - Verification and review persist all attempts, consume finite rework budgets,
   and route exhausted work to an incomplete dossier.
+- `dev-flow-workflow/0.2.0` definitions declare cancellation for a strict majority of normal
+  nonterminal stages; delivery finalizers are never cancellable.
 - Contract revisions create a new-contract revision source and reenter declared
   planning; decisions and exact waivers remain attributable and replayable.
+- Repository-set verification exactly covers criteria, every member, and one
+  integration result; any member drift invalidates aggregate assurance without
+  partial proof reuse.
 - Successful and incomplete Delivery Dossiers summarize current coverage,
-  assurance, documentation, risks, decisions, provenance, and handoff.
+  assurance, documentation, risks, decisions, provenance, and handoff, with
+  canonical member diagnostics in Delivery Dossier 0.2.0.
 
 ### Delivery evidence
 
-- Focused V6 journeys cover every official workflow, success and exhaustion,
+- Focused 0.2.0 journeys cover every official workflow, success and exhaustion,
   optional-driver available/degraded paths, cancellation, decisions, and
   contract-revision recovery.
 - Restart and stale-binding paths preserve exactly one current action and
-  reject evidence bound to outdated inputs or worktree snapshots.
+  reject evidence bound to outdated inputs or aggregate snapshots.
+- Missing or moved members block repository-dependent progress without partial
+  evidence until the exact persisted root is restored; stored-ledger inspection
+  remains available.
 - Acceptance coverage distinguishes proven, explicitly waived, and unverified
   criteria; self-review never becomes independent approval.
-- V6 uses its own data namespace, leaves retained V5 data unchanged, and
-  documents explicit V5 rollback inspection.
 - Installed snapshot identity and real Hook/Skill pickup remain explicit
   release-evidence fields whenever those conditions require host observation.
 
@@ -239,8 +255,8 @@ recovery, and every authorized Git effect.
 
 ### Milestone proof
 
-- Every official single-repository workflow passes installed journeys under
-  each workspace strategy it claims to support.
+- Every official workflow passes installed journeys for each claimed
+  repository-topology and workspace-strategy combination.
 - Crash after resource creation, lease expiry, name collision, base movement,
   user edits, dirty worktrees, and partial Git effects all have deterministic
   diagnosis and recovery.
@@ -294,18 +310,17 @@ joined into one evidence-backed result.
 - Parallel execution demonstrates reduced lead time while preserving workspace
   isolation and a stable or lower unresolved-conflict rate.
 
-## Horizon 5 — Multi-repository delivery and continuous assurance (planned)
+## Horizon 5 — Extended multi-repository delivery and continuous assurance (planned)
 
 ### What becomes possible
 
-One delivery plan can coordinate an API, service, client, SDK, migration,
-documentation, or infrastructure change across repositories, preserve partial
-progress, and return trustworthy evidence to Issue, PR, CI, and release
-systems.
+Building on the shipped exact-set local core, one delivery plan can add
+repository roles and dependency order, safely preserve independently reusable
+proof, and return trustworthy evidence to Issue, PR, CI, and release systems.
 
 ### Key capabilities
 
-- Declare an exact repository set with roles, component scopes, baselines,
+- Enrich the existing exact repository set with roles, component scopes,
   ownership, dependencies, and integration order.
 - Support monorepo component scopes as well as true multi-repository change
   sets.
@@ -314,29 +329,30 @@ systems.
 - Perform cross-repository impact analysis, dependency-aware planning,
   parallelizable implementation, per-repository verification, integration
   validation, and unified finalization.
-- Preserve completed repository results when another repository fails,
-  disappears, moves, or requires operator intervention.
+- Introduce dependency-aware partial assurance reuse only after its invalidation
+  and integration semantics have explicit proof; the current core deliberately
+  reruns assurance for the aggregate set.
 - Add an assurance graph mapping every acceptance criterion to plans, code
   changes, focused tests, review findings, CI checks, integration results,
   documentation, and release artifacts.
 - Track evidence provenance and freshness. Code, dependency, baseline, or
   configuration changes precisely invalidate their dependent evidence.
-- Provide explicit adapters for OpenSpec, codebase-memory, issue trackers, Git
+- Provide explicit connectors for OpenSpec, codebase-memory, issue trackers, Git
   hosts, CI systems, and artifact stores.
 - Import external context and evidence; where a connector can mutate external
   state, require scoped authorization and a persisted receipt.
 - Produce repository-level and aggregate PR-ready or release-ready dossiers,
-  including dependency order, compatibility results, unresolved items, and
+  including dependency order, contract-conformance results, unresolved items, and
   handoff instructions.
 
 ### Milestone proof
 
-- Real API/consumer, library/application, and migration rollout journeys cover
+- Real API/consumer, library/application, and coordinated rollout journeys cover
   chain, fan-out/fan-in, and partial-failure topologies.
-- Preflight resolves every repository in the exact declared set and reports
-  each missing entry before execution.
-- Recovery preserves accepted per-repository work and schedules precisely the
-  invalidated units.
+- Role and dependency admission extends the shipped exact-set preflight without
+  weakening canonical membership or missing-member recovery.
+- Recovery preserves independently accepted per-repository proof and schedules
+  precisely the dependency-invalidated units.
 - Completion requires all mandatory per-repository evidence and global
   integration evidence.
 - Code or dependency changes invalidate linked proof before execution
@@ -405,16 +421,16 @@ within the explicitly accepted scope, assurance level, and authority.
 
 - Provide an authoring studio for workflow, artifact, assurance, policy, and
   connector packages, with visual composition, validation, simulation,
-  conformance fixtures, and compatibility previews.
+  conformance fixtures, and contract/capability previews.
 - Publish versioned workflow packs, capability manifests, project profiles,
   policy packs, and connector contracts.
 - Add a trusted registry with signatures, provenance, permission previews,
-  compatibility negotiation, pinning, revocation, health status, and
+  version/capability negotiation, pinning, revocation, health status, and
   reproducible installation.
 - Define separate capability classes for data-only extensions, read-only
   drivers, and connectors that can produce external effects.
 - Run third-party executable connectors outside the core controller through an
-  isolated adapter protocol with scoped requests and attributable responses.
+  isolated connector protocol with scoped requests and attributable responses.
 - Scope connector access to declared repositories, network destinations,
   secrets, artifact types, operations, and retention rules.
 - Recommend workflows, assurance profiles, task graphs, repository scopes,
@@ -432,7 +448,7 @@ within the explicitly accepted scope, assurance level, and authority.
 
 ### Milestone proof
 
-- Compatibility and least-privilege checks gate every extension installation
+- Contract, capability, and least-privilege checks gate every extension installation
   and invocation.
 - Revocation takes effect when it is known locally or signed validity expires;
   temporary connector outages preserve task progress.
@@ -454,7 +470,7 @@ evidence across the full set.
 | Foundation lane | Required product capability | Release evidence |
 |---|---|---|
 | Reproducible release | Validate the exact tracked candidate, identify every installed snapshot, and reproduce package, Skill, manifest, and documentation evidence | Every published version reproduces package, Skill, manifest, workflow identity, and bilingual documentation validation from its tracked tree |
-| Identity and compatibility | Separate release, state-format, workflow-language, selected-workflow, capability, connector, artifact, and agent-protocol identities; classify active tasks before upgrade | Upgrade simulation classifies every active task and verifies the owned identity domain for each compatibility decision |
+| Identity and version authority | Separate release, state-format, workflow-language, selected-workflow, capability, connector, artifact, and agent-protocol identities; classify active tasks before a version change | Version-change simulation classifies every active task and verifies the owned identity domain for each decision |
 | Diagnosis and data lifecycle | Provide `version`, `doctor`, exhaustive health inventory, stable error catalog, bounded support export, retention, archive, import, and exact-scope removal | A read-only health view inventories every task entry, installed snapshot, capability condition, and available recovery or removal action |
 | Safety and recoverable effects | Bound inputs and locks; persist intent, authorization, receipts, retries, and reconciliation for external effects | Installed effect journeys prove scoped authority, idempotent receipt handling, interruption recovery, and exact resource ownership |
 | Security and privacy | Default to local storage, least privilege, redaction, explicit data egress, secret isolation, actor attribution, and revocation | Handoff and connector journeys prove redaction, explicit egress, secret isolation, actor attribution, and revocation |
@@ -470,8 +486,10 @@ trustworthy:
    UIs, agents, and connectors all submit commands to the same authority.
    Terminal graph membership defines completion, and the Hook is advisory and
    passes control through on internal errors.
-2. **One claimed worker receives one clear current action.** A project may
-   expose a bounded runnable set, with ownership explicit for every action.
+2. **One claimed worker receives one clear current action.** Current 0.2.0 has
+   one Codex and one task-wide action even for multiple repositories. A future
+   project graph may expose a bounded runnable set, with ownership explicit for
+   every action.
 3. **Artifacts and evidence carry lineage.** Proof names its inputs, baseline,
    producer, time, schema, and digest; changed inputs invalidate affected
    proof.
@@ -495,8 +513,8 @@ trustworthy:
    carry a data-only privilege profile. Repository, secret, and mutation access
    each require an explicit capability declaration and authorization.
    Executable and networked connector logic runs outside the core controller
-   behind an enforced capability boundary and isolated adapter protocol.
-10. **Compatibility follows shipped reality.** Migration, recovery, and
+   behind an enforced capability boundary and isolated connector protocol.
+10. **Data evolution follows shipped reality.** Transformations, recovery, and
     deprecation serve real persisted data and identified releases.
 
 ## Product measures
@@ -530,7 +548,7 @@ Measures come from installed acceptance evidence and opt-in local reports.
 - Maintain the cross-cutting foundations as release gates for every affected
   feature.
 - Keep `ROADMAP.md` and `ROADMAP_CN.md` semantically aligned.
-- Keep the roadmap centered on shipped capability and compatibility
+- Keep the roadmap centered on shipped capability and product
   commitments; record completed implementation detail in release records.
 
 ## Definition of done for a roadmap capability
@@ -546,7 +564,7 @@ A capability is complete when all of the following hold:
 4. authority, state ownership, artifact lineage, workspace ownership, effects,
    privacy, and dependency direction are explicit;
 5. the smallest focused contract tests and installed end-to-end journeys pass;
-6. diagnosis, compatibility, upgrade, rollback limits, retention, removal,
+6. diagnosis, version evolution, recovery limits, retention, removal,
    packaging, and bilingual documentation are updated where affected; and
 7. an independent read-only review confirms that implementation, evidence, and
    the roadmap outcome agree.

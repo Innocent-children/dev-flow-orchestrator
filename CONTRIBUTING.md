@@ -1,8 +1,8 @@
 # Contributing
 
-Contributions preserve the V6 product contract: one task, one Git repository,
-the current worktree, one Codex executor, one projected action, and one
-controller-owned append-only ledger.
+Contributions preserve the 0.2.0 product contract: one task over an exact
+canonical set of one to eight user-prepared local Git worktrees, one Codex
+executor, one projected action, and one controller-owned append-only ledger.
 
 ## Product and authority boundaries
 
@@ -14,14 +14,23 @@ controller-owned append-only ledger.
 - Keep task state outside target repositories. The controller is the sole
   state-transition writer; Hook, CLI, Skills, and optional drivers submit to
   that boundary.
+- Treat `TaskState.repositories` as immutable membership authority. Admission,
+  snapshotting, mutation, replay, freshness, recovery, and finalization must
+  cover the complete canonical set atomically; never default to one member,
+  drop an unavailable member, or reconstruct caller order.
 - Keep repository inspection bounded and read-only. Do not add implicit
   stash, reset, clean, checkout, commit, rebase, merge, push, force-push, or
   deletion behavior.
+- Do not couple repository topology to workflow depth, managed branch/worktree
+  effects, Git publication, parallel agents, or external CI/PR/release effects.
+  The current core performs none of those and does not reuse partial assurance
+  from unchanged members.
 - Preserve action-binding, contract, input-lineage, resource, source-
   predecessor, snapshot, and revision CAS checks across every mutation path.
-- Treat codebase-memory as discovery evidence. Use distinct baseline and
-  current-workspace project IDs, select by workflow phase, and confirm material
-  conclusions in source.
+- Treat codebase-memory as discovery evidence. For each `repository_id`, use
+  distinct baseline and current-workspace project IDs, never share graph IDs
+  across members or generations, select by workflow phase, and confirm material
+  conclusions in the named repository source.
 - Ask OpenSpec for current JSON status and instructions. Repository-backed
   planning is source-producing and binds concrete governing/reported
   resources; no fixed phase sequence belongs in runtime code.
@@ -31,10 +40,14 @@ controller-owned append-only ledger.
 
 ## Module ownership
 
-- `product.py`: V6 identity vocabulary and official workflow catalog.
-- `model.py`: immutable task values, strict JSON, errors, and receipts.
-- `workflow.py`: workflow-v1/v2 contracts, adapters, graph validation, and
-  selected-definition identity.
+- `product.py`: 0.2.0 identity vocabulary, official workflow catalog, and the
+  authoritative repository-topology capability.
+- `model.py`: immutable task values and canonical repository membership,
+  strict JSON, errors, and receipts.
+- `snapshot.py`: aggregate repository-set snapshots and nested member
+  workspace snapshots, validation, lookup, and digests.
+- `workflow.py`: `dev-flow-workflow/0.2.0` contracts, stage-scoped cancellation, graph
+  validation, and selected-definition identity.
 - `delivery.py`: contracts, decisions, seals, bindings, resources, freshness,
   coverage, and dossiers.
 - `engine.py`: replay, mutation plans, assurance routing, records, projections,
@@ -42,25 +55,33 @@ controller-owned append-only ledger.
 - `store.py`: path safety, locks, revision CAS, and atomic persistence.
 - `git_client.py`: bounded content-sensitive read-only snapshots.
 - `controller.py`: application coordination and all state mutations.
-- `cli.py` and `hook.py`: wire adapters; neither owns workflow policy.
+- `cli.py` and `hook.py`: wire interfaces; neither owns workflow policy.
 
 Keep these dependencies explicit. Avoid global execution order, string-based
 late binding, overlapping service layers, or filesystem/process access in the
 pure domain modules.
 
-## Workflow and compatibility changes
+## Current workflow and identity changes
 
 Official workflows are `lite`, `feature`, `bugfix`, `investigation`,
-`refactor`, and `full`. Workflow-v2 nodes declare typed artifacts, workspace
+`refactor`, and `full`. `dev-flow-workflow/0.2.0` nodes declare typed artifacts, workspace
 roles, inputs, finite assurance rework, exhausted dossier paths, and optional-
-driver fallback metadata. Linear workflow-v1 files remain accepted through
-their explicit adapter for new V6 tasks.
+driver degraded/unavailable metadata. Every workflow declares a shared cancel
+action with explicit `cancel.stages`; official definitions cover the normal
+majority of non-terminal stages and exclude all `delivery.finalize` nodes.
 
-Changes to task schema, workflow language/adapter, selected workflow, catalog,
-record, artifact, driver, projection, package, and data namespace have
-different compatibility effects. Update only the identity domain owned by the
-changed contract and prove the expected isolation. V5 data remains in the V5
-namespace and requires a V5 installation for inspection.
+`PRODUCT_IDENTITY` is the authority for the current task, record, artifact,
+action-binding, repository-set snapshot, nested workspace snapshot,
+workflow, agent, verification-coverage, Delivery-Dossier, data
+namespace, and one-to-eight topology. Selected-workflow identity binds only the
+selector, schema, and canonical document. Any change to these current
+authorities must update the corresponding product contract and focused proof.
+
+Repository topology is selected independently of the official workflow. Every
+cardinality uses `dev-flow-agent/0.2.0`, an exact
+`dev-flow-repository-set-snapshot/0.2.0`, required `repository_id` resources,
+structured `criteria`/`repositories`/`integration` verification, aggregate
+freshness/review, and Delivery Dossier 0.2.0.
 
 ## Validation
 
@@ -72,24 +93,26 @@ explicitly unverified.
 Typical focused commands are:
 
 ```sh
-python3 -I -S tests/test_v6_workflow_validation.py -v
-python3 -I -S tests/test_workflow_v1_validation.py -v
+python3 -I -S tests/test_workflow_validation.py -v
 python3 -I -S tests/test_yaml_subset.py -v
-python3 -I -S tests/test_v6_package.py -v
-python3 -I -S tests/test_v6_delivery_runtime.py -v
-python3 -I -S tests/test_workflow_v1_runtime.py -v
-python3 -I -S tests/test_v6_controller_contracts.py -v
-python3 -I -S tests/test_v6_store_integrity.py -v
-python3 -I -S tests/test_v6_stale_mutations.py -v
-python3 -I -S tests/test_v6_cli.py -v
-python3 -I -S tests/test_v6_hook.py -v
-python3 -I -S tests/test_v6_git_snapshot.py -v
-python3 -I -S tests/test_v6_installed_journeys.py -v
+python3 -I -S tests/test_package.py -v
+python3 -I -S tests/test_multi_repository_assets.py -v
+python3 -I -S tests/test_delivery_runtime.py -v
+python3 -I -S tests/test_controller_contracts.py -v
+python3 -I -S tests/test_store_integrity.py -v
+python3 -I -S tests/test_stale_mutations.py -v
+python3 -I -S tests/test_cli.py -v
+python3 -I -S tests/test_hook.py -v
+python3 -I -S tests/test_git_snapshot.py -v
+python3 -I -S tests/test_multi_repository_core.py -v
+python3 -I -S tests/test_multi_repository_controller.py -v
+python3 -I -S tests/test_multi_repository_delivery.py -v
+python3 -I -S tests/test_installed_journeys.py -v
 python3 -I -S scripts/validate_package.py
 python3 -m json.tool .codex-plugin/plugin.json
 ```
 
-Choose only the applicable commands from the V6 focused CI matrix. Validate
+Choose only the applicable commands from the 0.2.0 focused CI matrix. Validate
 the active OpenSpec change with its current CLI instructions.
 
 Validate every bundled Skill after editing it:
@@ -98,15 +121,21 @@ Validate every bundled Skill after editing it:
 python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/analyze-change-impact
 python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/follow-dev-flow
 python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/review-dev-flow-change
+python3 /Users/innocent-children/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
 ```
+
+The bundled validators require a development interpreter with PyYAML; this is
+not a plugin runtime dependency.
 
 Release evidence distinguishes source-checkout checks from installed behavior.
 An installed acceptance pass identifies the immutable installed snapshot and
 covers the six official workflows, Hook/Skill pickup, structured/minimal
 starts, binding-required apply, contract revision recovery, decisions and
 waivers, optional-driver available/degraded paths, bounded assurance success
-and exhaustion, dossier inspection, V5 retention, and explicit V5 rollback
-inspection. Conditions that require a real new Codex task remain marked
+and exhaustion, one-member and larger exact-set admission through the same
+protocol, any-member Hook pickup, member-loss recovery, structured
+member/integration verification, and aggregate dossier inspection. Conditions
+that require a real new Codex task remain marked
 manual or unverified when the environment cannot observe them.
 
 Before handoff:
@@ -114,5 +143,6 @@ Before handoff:
 - inspect the complete tracked and untracked diff;
 - run whitespace/error checks for changed files;
 - confirm English and Chinese product claims have the same scope and strength;
-- perform an independent read-only review against the exact current snapshot;
+- perform one independent read-only review against the exact current aggregate
+  repository-set snapshot;
 - report every skipped or manual check precisely.

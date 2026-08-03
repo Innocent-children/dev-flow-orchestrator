@@ -1,4 +1,4 @@
-"""Focused V6 content-sensitive Git workspace snapshot tests."""
+"""Focused current content-sensitive Git workspace snapshot tests."""
 
 from __future__ import annotations
 
@@ -19,6 +19,10 @@ sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.git_client import GitClient, validate_snapshot
 from dev_flow_orchestrator.model import DevFlowError
+from dev_flow_orchestrator.product import (
+    OPENSPEC_TASKS_NORMALIZER,
+    WORKSPACE_SNAPSHOT_SCHEMA,
+)
 from support import RepositoryTestCase, make_repository
 
 
@@ -44,6 +48,12 @@ class GitSnapshotTests(RepositoryTestCase):
         executable.write_text("#!/bin/sh\n" + body, encoding="utf-8")
         executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
         return directory
+
+    def test_snapshot_is_the_current_git_evidence_boundary(self) -> None:
+        self.assertFalse(hasattr(GitClient, "inspect"))
+        snapshot = GitClient.snapshot(str(self.repository))
+        self.assertEqual(snapshot["schema"], WORKSPACE_SNAPSHOT_SCHEMA)
+        self.assertEqual(validate_snapshot(snapshot), snapshot)
 
     def test_repository_fsmonitor_is_not_executed(self) -> None:
         marker = self.root / "fsmonitor-ran"
@@ -123,7 +133,7 @@ class GitSnapshotTests(RepositoryTestCase):
         )
         requests = (
             resource("tasks.md", "reported", "none"),
-            resource("tasks.md", "governing", "openspec-tasks-v1"),
+            resource("tasks.md", "governing", OPENSPEC_TASKS_NORMALIZER),
             resource("future.md", "governing", "none"),
         )
         first = GitClient.snapshot(str(self.repository), requests)
@@ -139,15 +149,15 @@ class GitSnapshotTests(RepositoryTestCase):
             self._resource(second, "tasks.md", "none")["raw_sha256"],
         )
         self.assertEqual(
-            self._resource(first, "tasks.md", "openspec-tasks-v1")["semantic_sha256"],
-            self._resource(second, "tasks.md", "openspec-tasks-v1")["semantic_sha256"],
+            self._resource(first, "tasks.md", OPENSPEC_TASKS_NORMALIZER)["semantic_sha256"],
+            self._resource(second, "tasks.md", OPENSPEC_TASKS_NORMALIZER)["semantic_sha256"],
         )
 
         tasks.write_bytes(b"- [x] changed obligation\n")
         third = GitClient.snapshot(str(self.repository), requests)
         self.assertNotEqual(
-            self._resource(second, "tasks.md", "openspec-tasks-v1")["semantic_sha256"],
-            self._resource(third, "tasks.md", "openspec-tasks-v1")["semantic_sha256"],
+            self._resource(second, "tasks.md", OPENSPEC_TASKS_NORMALIZER)["semantic_sha256"],
+            self._resource(third, "tasks.md", OPENSPEC_TASKS_NORMALIZER)["semantic_sha256"],
         )
 
     def test_symlink_hashes_target_bytes_and_special_file_is_rejected(self) -> None:

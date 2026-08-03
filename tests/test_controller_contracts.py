@@ -1,4 +1,4 @@
-"""Generation-current controller boundary contracts."""
+"""Current controller boundary contracts."""
 
 from __future__ import annotations
 
@@ -15,6 +15,12 @@ sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.model import DevFlowError
+from dev_flow_orchestrator.product import (
+    AGENT_PROTOCOL_SCHEMA,
+    RECEIPT_SCHEMA,
+    REPOSITORY_SET_SNAPSHOT_SCHEMA,
+    VERIFICATION_COVERAGE_SCHEMA,
+)
 from support import RepositoryTestCase, make_repository
 
 
@@ -27,6 +33,26 @@ class ControllerContractTests(RepositoryTestCase):
             payload,
             binding=projection["action"]["binding"],
         )
+
+    def passing_verification(self, task_id: str, command: str) -> dict:
+        state = self.controller.show(task_id)
+        return {
+            "passed": True,
+            "command": command,
+            "coverage": {
+                "schema": VERIFICATION_COVERAGE_SCHEMA,
+                "criteria": {"requirement": "proven"},
+                "repositories": {
+                    repository.repository_id: {
+                        "command": command,
+                        "passed": True,
+                    }
+                    for repository in state.repositories
+                },
+                "integration": {"command": command, "passed": True},
+            },
+            "summary": "Verification passed",
+        }
 
     def test_data_directory_must_be_disjoint_from_repository(self) -> None:
         cases = []
@@ -49,7 +75,7 @@ class ControllerContractTests(RepositoryTestCase):
                     controller.start(
                         requirement="Keep state outside the repository",
                         workflow="lite",
-                        repository=str(repository),
+                        repositories=(str(repository),),
                     )
                 self.assertEqual(
                     context.exception.code, "DATA_DIR_INSIDE_REPOSITORY"
@@ -67,7 +93,7 @@ class ControllerContractTests(RepositoryTestCase):
         state = self.controller.start(
             requirement="Named task",
             workflow="lite",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
             task_id="task-custom",
         )
 
@@ -148,6 +174,45 @@ class ControllerContractTests(RepositoryTestCase):
 
         self.assertEqual(context.exception.code, "ACTION_NOT_AVAILABLE")
 
+    def test_entry_stage_cancel_is_a_replayable_first_record(self) -> None:
+        task_id = self.start_lite("Cancel before preflight")
+
+        result = self.controller.cancel(
+            task_id,
+            reason="No delivery work should begin",
+        )
+
+        self.assertEqual(result["projection"]["status"], "CANCELLED")
+        self.assertTrue(result["projection"]["done"])
+        state = self.controller.show(task_id)
+        self.assertEqual(state.revision, 1)
+        self.assertEqual(len(state.records), 1)
+        record = state.records[0]
+        self.assertEqual(record["kind"], "action")
+        self.assertEqual(record["producer"]["node_id"], "cancel")
+        self.assertEqual(
+            record["snapshot"]["schema"],
+            REPOSITORY_SET_SNAPSHOT_SCHEMA,
+        )
+        self.assertEqual(Controller(self.data_dir).show(task_id), state)
+
+    def test_cancel_is_rejected_outside_declared_stages(self) -> None:
+        task_id = self.start_lite()
+        self.apply_current(task_id, {})
+        self.apply_current(task_id, {"summary": "Implemented"})
+        self.apply_current(
+            task_id,
+            self.passing_verification(task_id, "python3 -m unittest focused"),
+        )
+        before = self.controller.show(task_id)
+        self.assertEqual(before.current_node, "finalize_success")
+
+        with self.assertRaises(DevFlowError) as context:
+            self.controller.cancel(task_id, reason="Too late for this stage")
+
+        self.assertEqual(context.exception.code, "ACTION_NOT_AVAILABLE")
+        self.assertEqual(self.controller.show(task_id), before)
+
     def test_missing_task_is_rejected(self) -> None:
         with self.assertRaises(DevFlowError) as context:
             self.controller.next("task-nope")
@@ -158,7 +223,7 @@ class ControllerContractTests(RepositoryTestCase):
             self.controller.start(
                 requirement="   ",
                 workflow="lite",
-                repository=str(self.repository),
+                repositories=(str(self.repository),),
             )
         self.assertEqual(context.exception.code, "REQUIREMENT_INVALID")
 
@@ -167,7 +232,7 @@ class ControllerContractTests(RepositoryTestCase):
             self.controller.start(
                 requirement="Unknown workflow",
                 workflow="workflow-that-does-not-exist",
-                repository=str(self.repository),
+                repositories=(str(self.repository),),
             )
         self.assertEqual(context.exception.code, "WORKFLOW_NOT_FOUND")
 
@@ -184,7 +249,7 @@ class ControllerContractTests(RepositoryTestCase):
         self.assertEqual(
             result["receipt"],
             {
-                "schema": "dev-flow-v6-receipt/v1",
+                "schema": RECEIPT_SCHEMA,
                 "task_id": task_id,
                 "action_id": "task.preflight",
                 "committed_revision": 1,
@@ -193,6 +258,21 @@ class ControllerContractTests(RepositoryTestCase):
             },
         )
         self.assertEqual(result["projection"]["revision"], 1)
+        self.assertEqual(result["projection"]["schema"], AGENT_PROTOCOL_SCHEMA)
+        self.assertEqual(
+            len(result["projection"]["repository_set"]["repositories"]),
+            1,
+        )
+        self.assertEqual(
+            result["projection"]["action"]["binding"][
+                "starting_snapshot_digest"
+            ],
+            result["projection"]["repository_set"]["digest"],
+        )
+        self.assertEqual(
+            self.controller.show_view(task_id)["current_snapshot"]["schema"],
+            REPOSITORY_SET_SNAPSHOT_SCHEMA,
+        )
         self.assertEqual(
             result["projection"]["action"]["action_id"], "implementation.record"
         )

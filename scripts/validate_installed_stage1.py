@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Stage 1 acceptance journeys against one installed V6 snapshot.
+"""Run Stage 1 acceptance journeys against one installed product snapshot.
 
 This runner intentionally imports only the Python standard library.  Every
 controller, Hook, and package-validation observation crosses an installed
@@ -21,11 +21,23 @@ import tempfile
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-EVIDENCE_SCHEMA = "dev-flow-installed-stage1-evidence/v1"
-EXTERNAL_EVIDENCE_SCHEMA = "dev-flow-stage1-external-evidence/v1"
-DRIVER_RESULT_SCHEMA = "dev-flow-driver-result/v1"
-RETAINED_V5_EVIDENCE_SCHEMA = "dev-flow-retained-v5-inspection/v1"
-CONTRACT_SCHEMA = "dev-flow-delivery-contract/v1"
+PRODUCT_VERSION = "0.2.0"
+
+
+def _product_schema(kind: str) -> str:
+    return "dev-flow-{}/{}".format(kind, PRODUCT_VERSION)
+
+
+EVIDENCE_SCHEMA = _product_schema("installed-evidence")
+EXTERNAL_EVIDENCE_SCHEMA = _product_schema("external-evidence")
+DRIVER_RESULT_SCHEMA = _product_schema("driver-result")
+CONTRACT_SCHEMA = _product_schema("delivery-contract")
+AGENT_PROTOCOL_SCHEMA = _product_schema("agent")
+VERIFICATION_COVERAGE_SCHEMA = _product_schema("verification-coverage")
+DELIVERY_DOSSIER_SCHEMA = _product_schema("delivery-dossier")
+WORKFLOW_SCHEMA = _product_schema("workflow")
+TREE_SNAPSHOT_SCHEMA = _product_schema("tree-snapshot")
+OPENSPEC_TASKS_NORMALIZER = "openspec-tasks/{}".format(PRODUCT_VERSION)
 OFFICIAL_WORKFLOWS = (
     "bugfix",
     "feature",
@@ -47,8 +59,6 @@ VOLATILE_TREE_NAMES = {
     ".ruff_cache",
     "__pycache__",
 }
-VERSION_V6 = re.compile(r"^6\.0\.0\+codex\.[0-9A-Za-z.-]+$")
-VERSION_V5 = re.compile(r"^5\.0\.0\+codex\.[0-9A-Za-z.-]+$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -173,69 +183,9 @@ def _validate_external_driver_evidence(value: object) -> list:
     return summaries
 
 
-def _validate_retained_v5_external_evidence(
-    value: object,
-    retained: Mapping[str, object],
-) -> dict:
-    _require(isinstance(value, Mapping), "external retained_v5 must be an object")
-    _require(
-        value.get("schema") == RETAINED_V5_EVIDENCE_SCHEMA,
-        "external retained_v5 schema is invalid",
-    )
-    _require(
-        value.get("root_snapshot_digest") == retained.get("snapshot_digest_before"),
-        "external retained_v5 evidence is bound to another installed V5 snapshot",
-    )
-    _require(value.get("read_only") is True, "external retained_v5 inspection is not read-only")
-    _require(
-        value.get("operations") == ["list", "show"],
-        "external retained_v5 inspection must record list then show",
-    )
-    _require(
-        _sha256_value(value.get("controller_locator_sha256")),
-        "external retained_v5 controller locator digest is invalid",
-    )
-    before = value.get("before")
-    after = value.get("after")
-    _require(
-        isinstance(before, Mapping) and isinstance(after, Mapping),
-        "external retained_v5 before/after evidence is invalid",
-    )
-    for phase, observation in (("before", before), ("after", after)):
-        _require(
-            _sha256_value(observation.get("state_digest"))
-            and _sha256_value(observation.get("list_output_sha256"))
-            and _sha256_value(observation.get("show_output_sha256")),
-            "external retained_v5 {} digests are invalid".format(phase),
-        )
-        task = observation.get("task")
-        _require(
-            isinstance(task, Mapping)
-            and isinstance(task.get("task_id"), str)
-            and task.get("task_id"),
-            "external retained_v5 {} task summary is invalid".format(phase),
-        )
-    _require(
-        before.get("state_digest") == after.get("state_digest")
-        and before.get("task") == after.get("task"),
-        "retained V5 controller state changed during installed V6 journeys",
-    )
-    return {
-        "schema": RETAINED_V5_EVIDENCE_SCHEMA,
-        "root_snapshot_digest": value.get("root_snapshot_digest"),
-        "controller_locator_sha256": value.get("controller_locator_sha256"),
-        "operations": ["list", "show"],
-        "read_only": True,
-        "before": dict(before),
-        "after": dict(after),
-        "unchanged": True,
-    }
-
-
 def _validate_external_release_evidence(
     value: object,
     installed_digest: str,
-    retained: object,
 ) -> dict:
     _require(isinstance(value, Mapping), "external release evidence must be an object")
     _require(
@@ -244,24 +194,15 @@ def _validate_external_release_evidence(
     )
     _require(
         value.get("installed_snapshot_digest") == installed_digest,
-        "external release evidence is bound to another installed V6 snapshot",
+        "external release evidence is bound to another installed product snapshot",
     )
     driver_executions = _validate_external_driver_evidence(
         value.get("driver_executions")
-    )
-    _require(
-        isinstance(retained, Mapping)
-        and retained.get("status") != "not-provided",
-        "retained V5 installed snapshot is required for release evidence",
-    )
-    retained_external = _validate_retained_v5_external_evidence(
-        value.get("retained_v5"), retained
     )
     return {
         "schema": EXTERNAL_EVIDENCE_SCHEMA,
         "installed_snapshot_digest": installed_digest,
         "driver_executions": driver_executions,
-        "retained_v5": retained_external,
     }
 
 
@@ -269,7 +210,7 @@ def _tree_digest(root: Path, *, ignore_volatile: bool) -> str:
     """Hash path identity, kind, executable bits, and bytes without following links."""
     _require(root.is_dir(), "tree root is not a directory: {}".format(root))
     digest = hashlib.sha256()
-    digest.update(b"dev-flow-tree-snapshot/v1\x00")
+    digest.update(TREE_SNAPSHOT_SCHEMA.encode("ascii") + b"\x00")
     pending = [root]
     entries = []
     while pending:
@@ -363,13 +304,24 @@ def _projection_summary(projection: object) -> object:
                 else None
             ),
         }
-    repository = projection.get("repository")
-    repository_summary = None
-    if isinstance(repository, Mapping):
-        repository_summary = {
-            "id": repository.get("id"),
-            "path": repository.get("path"),
-            "snapshot": repository.get("snapshot"),
+    repository_set = projection.get("repository_set")
+    repository_set_summary = None
+    if isinstance(repository_set, Mapping):
+        members = repository_set.get("repositories")
+        repository_set_summary = {
+            "id": repository_set.get("id"),
+            "digest": repository_set.get("digest"),
+            "repositories": [
+                {
+                    "id": member.get("id"),
+                    "path": member.get("path"),
+                    "snapshot": member.get("snapshot"),
+                }
+                for member in members
+                if isinstance(member, Mapping)
+            ]
+            if isinstance(members, list)
+            else None,
         }
     return {
         "schema": projection.get("schema"),
@@ -379,7 +331,7 @@ def _projection_summary(projection: object) -> object:
         "status": projection.get("status"),
         "current_node": projection.get("current_node"),
         "contract": projection.get("contract"),
-        "repository": repository_summary,
+        "repository_set": repository_set_summary,
         "action": action_summary,
         "dossier": projection.get("dossier"),
         "done": projection.get("done"),
@@ -391,7 +343,7 @@ def _task_summary(task: object) -> object:
         return task
     records = task.get("records")
     return {
-        "schema_version": task.get("schema_version"),
+        "version": task.get("version"),
         "product_identity": task.get("product_identity"),
         "task_id": task.get("task_id"),
         "revision": task.get("revision"),
@@ -401,6 +353,8 @@ def _task_summary(task: object) -> object:
         "record_count": len(records) if isinstance(records, list) else None,
         "effective_contract": task.get("effective_contract"),
         "effective_contract_digest": task.get("effective_contract_digest"),
+        "repository_set_id": task.get("repository_set_id"),
+        "repositories": task.get("repositories"),
     }
 
 
@@ -454,7 +408,8 @@ def _command_result_summary(value: object) -> object:
             "has_additional_context": isinstance(context, str),
             "context_kind": (
                 "current-task"
-                if isinstance(context, str) and "Current Dev Flow V6 task" in context
+                if isinstance(context, str)
+                and "Current Dev Flow {} task".format(PRODUCT_VERSION) in context
                 else "availability"
             ),
         }
@@ -594,6 +549,57 @@ class CommandRecorder:
         _require(parsed.get("ok") is not False, "process {} returned failure JSON".format(index))
         return parsed, index
 
+    def run_json_failure(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        kind: str,
+        timeout: int = 60,
+    ) -> Tuple[dict, int]:
+        """Record one expected controller rejection without hiding its evidence."""
+        index = len(self.evidence["commands"]) + 1
+        entry = {
+            "process_index": index,
+            "fresh_process": True,
+            "kind": kind,
+            "argv": self._display_argv(argv),
+            "cwd": self._display(str(cwd.resolve())),
+        }
+        try:
+            completed = subprocess.run(
+                [str(item) for item in argv],
+                cwd=str(cwd),
+                env=self.environment,
+                text=True,
+                encoding="utf-8",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            entry["result"] = {"started": False, "error": self._display(str(exc))}
+            self.evidence["commands"].append(entry)
+            raise AcceptanceFailure(
+                "process {} could not complete: {}".format(index, exc)
+            ) from exc
+        entry["returncode"] = completed.returncode
+        if completed.stderr:
+            entry["stderr"] = self._display(completed.stderr.strip())
+        parsed = _strict_json(completed.stdout, "process {} stdout".format(index))
+        _require(
+            isinstance(parsed, dict),
+            "process {} must return one JSON object".format(index),
+        )
+        entry["result"] = self._display_value(_command_result_summary(parsed))
+        self.evidence["commands"].append(entry)
+        _require(
+            completed.returncode != 0 and parsed.get("ok") is False,
+            "process {} did not produce the expected rejection".format(index),
+        )
+        return parsed, index
+
     def run_text(
         self,
         argv: Sequence[str],
@@ -656,7 +662,7 @@ class InstalledController:
         handler: Path,
         data_dir: Path,
         cwd: Path,
-        kind_prefix: str = "v6-cli",
+        kind_prefix: str = "product-cli",
     ) -> None:
         self.recorder = recorder
         self.launcher = launcher
@@ -679,11 +685,11 @@ class InstalledController:
             kind="{}:{}".format(self.kind_prefix, command),
         )
 
-    def start(
+    def start_repositories(
         self,
         task_id: str,
         workflow: str,
-        repository: Path,
+        repositories: Sequence[Path],
         requirement: str,
         contract: Optional[Mapping[str, object]] = None,
     ) -> Tuple[dict, int]:
@@ -692,11 +698,10 @@ class InstalledController:
             requirement,
             "--workflow",
             workflow,
-            "--repo",
-            str(repository),
-            "--task-id",
-            task_id,
         ]
+        for repository in repositories:
+            arguments.extend(("--repo", str(repository)))
+        arguments.extend(("--task-id", task_id))
         if contract is not None:
             arguments.extend(("--contract-json", _json_text(contract)))
         return self._call("start", arguments)
@@ -728,6 +733,35 @@ class InstalledController:
                 "--binding-json",
                 _json_text(binding),
             ),
+        )
+
+    def apply_failure(
+        self,
+        task_id: str,
+        projection: Mapping[str, object],
+        payload: Mapping[str, object],
+    ) -> Tuple[dict, int]:
+        action = projection.get("action")
+        _require(isinstance(action, Mapping), "projection action is unavailable")
+        binding = action.get("binding")
+        _require(isinstance(binding, Mapping), "projection action binding is unavailable")
+        return self.recorder.run_json_failure(
+            (
+                str(self.launcher),
+                str(self.handler),
+                "--data-dir",
+                str(self.data_dir),
+                "apply",
+                task_id,
+                "--action",
+                str(action.get("action_id")),
+                "--payload-json",
+                _json_text(payload),
+                "--binding-json",
+                _json_text(binding),
+            ),
+            cwd=self.cwd,
+            kind="{}:apply-expected-failure".format(self.kind_prefix),
         )
 
     def decide(self, task_id: str, decision: Mapping[str, object]) -> Tuple[dict, int]:
@@ -765,14 +799,10 @@ class Stage1Acceptance:
         self,
         plugin_root: Path,
         scratch: Path,
-        retained_v5_root: Optional[Path],
-        retained_v5_data: Optional[Path],
         evidence: dict,
     ) -> None:
         self.plugin_root = plugin_root
         self.scratch = scratch
-        self.retained_v5_root = retained_v5_root
-        self.retained_v5_data = retained_v5_data
         self.evidence = evidence
         self.launcher = plugin_root / "scripts" / "dev_flow_python_launcher"
         self.cli_handler = plugin_root / "scripts" / "dev_flow.py"
@@ -786,10 +816,6 @@ class Stage1Acceptance:
             }
         )
         replacements = [(scratch, "<SCRATCH>"), (plugin_root, "<PLUGIN_ROOT>")]
-        if retained_v5_root is not None:
-            replacements.append((retained_v5_root, "<RETAINED_V5_ROOT>"))
-        if retained_v5_data is not None:
-            replacements.append((retained_v5_data, "<RETAINED_V5_DATA>"))
         self.recorder = CommandRecorder(evidence, replacements, environment)
         self.source_sequence: Dict[str, int] = {}
 
@@ -874,6 +900,7 @@ class Stage1Acceptance:
         repository: Path,
         task_id: str,
         version: int,
+        repository_id: str,
     ) -> dict:
         change = "openspec/changes/{}".format(task_id)
         directory = repository / change
@@ -881,34 +908,36 @@ class Stage1Acceptance:
         proposal = directory / "proposal.md"
         tasks = directory / "tasks.md"
         proposal.write_text(
-            "# Installed plan {}\n\nGoverning obligation v{}.\n".format(
+            "# Installed plan {}\n\nGoverning obligation revision {}.\n".format(
                 task_id, version
             ),
             encoding="utf-8",
         )
         tasks.write_text(
-            "- [ ] verify installed journey v{}\n".format(version),
+            "- [ ] verify installed journey revision {}\n".format(version),
             encoding="utf-8",
         )
-        return {
-            "items": [
-                {
-                    "path": "{}/proposal.md".format(change),
-                    "role": "governing",
-                    "normalizer": "none",
-                },
-                {
-                    "path": "{}/tasks.md".format(change),
-                    "role": "reported",
-                    "normalizer": "none",
-                },
-                {
-                    "path": "{}/tasks.md".format(change),
-                    "role": "governing",
-                    "normalizer": "openspec-tasks-v1",
-                },
-            ]
-        }
+        items = [
+            {
+                "repository_id": repository_id,
+                "path": "{}/proposal.md".format(change),
+                "role": "governing",
+                "normalizer": "none",
+            },
+            {
+                "repository_id": repository_id,
+                "path": "{}/tasks.md".format(change),
+                "role": "reported",
+                "normalizer": "none",
+            },
+            {
+                "repository_id": repository_id,
+                "path": "{}/tasks.md".format(change),
+                "role": "governing",
+                "normalizer": OPENSPEC_TASKS_NORMALIZER,
+            },
+        ]
+        return {"items": items}
 
     def _standard_payload(
         self,
@@ -934,6 +963,39 @@ class Stage1Acceptance:
         driver = action.get("driver")
         driver_tool = driver.get("tool") if isinstance(driver, Mapping) else None
         node_id = str(action.get("node_id"))
+        repository_set = projection.get("repository_set")
+        members = (
+            repository_set.get("repositories")
+            if isinstance(repository_set, Mapping)
+            else None
+        )
+        member_records = (
+            tuple(item for item in members if isinstance(item, Mapping))
+            if isinstance(members, list)
+            else ()
+        )
+        repository_ids = tuple(
+            str(item.get("id"))
+            for item in member_records
+            if isinstance(item.get("id"), str)
+        )
+        repository_id = next(
+            (
+                str(item.get("id"))
+                for item in member_records
+                if item.get("path") == str(repository)
+                and isinstance(item.get("id"), str)
+            ),
+            None,
+        )
+        _require(
+            projection.get("schema") == AGENT_PROTOCOL_SCHEMA
+            and 1 <= len(repository_ids) <= 8
+            and len(set(repository_ids)) == len(repository_ids)
+            and repository_id is not None,
+            "{} repository-set projection is incomplete".format(task_id),
+        )
+        integration_command = "python3 -m unittest focused-installed-integration-check"
         payload = {}
         for field in sorted(str(item) for item in payload_types):
             if field == "summary":
@@ -948,7 +1010,7 @@ class Stage1Acceptance:
                         "evidence_class": "controller-contract-simulation",
                         "purpose": (
                             "Exercise installed controller validation, persistence, "
-                            "fallback, and replay behavior"
+                            "driver outcome routing, and replay behavior"
                         ),
                     },
                     "limitations": [
@@ -957,22 +1019,44 @@ class Stage1Acceptance:
                 }
             elif field == "resources":
                 payload[field] = self._resource_payload(
-                    repository, task_id, resource_version
+                    repository,
+                    task_id,
+                    resource_version,
+                    repository_id=repository_id,
                 )
             elif field == "evidence":
                 payload[field] = {"finding": "installed behavior confirmed"}
             elif field == "passed":
                 payload[field] = passed
             elif field == "command":
-                payload[field] = "python3 -m unittest focused-installed-check"
+                payload[field] = integration_command
             elif field == "coverage":
-                payload[field] = {
+                criteria = {
                     str(criterion_id): (
                         "unverified"
                         if criterion_id in set(unverified_criteria)
                         else "proven"
                     )
                     for criterion_id in criterion_ids
+                }
+                payload[field] = {
+                    "schema": VERIFICATION_COVERAGE_SCHEMA,
+                    "criteria": criteria,
+                    "repositories": {
+                        member_id: {
+                            "command": (
+                                "python3 -m unittest focused-installed-{}-check".format(
+                                    member_id
+                                )
+                            ),
+                            "passed": passed,
+                        }
+                        for member_id in repository_ids
+                    },
+                    "integration": {
+                        "command": integration_command,
+                        "passed": passed,
+                    },
                 }
             elif field == "outcome":
                 payload[field] = "unavailable" if review_unavailable else "approved"
@@ -1090,24 +1174,36 @@ class Stage1Acceptance:
         artifact = pair["artifact"]
         snapshot = artifact.get("snapshot")
         _require(isinstance(snapshot, Mapping), "baseline snapshot is unavailable")
+        snapshot_summary = {
+            key: snapshot.get(key)
+            for key in (
+                "schema",
+                "digest",
+                "head",
+                "branch",
+                "clean",
+                "status_sha256",
+                "status_bytes",
+                "repository_set_id",
+            )
+        }
+        members = snapshot.get("repositories")
+        if isinstance(members, list):
+            snapshot_summary["repositories"] = [
+                {
+                    "repository_id": member.get("repository_id"),
+                    "snapshot": member.get("snapshot"),
+                }
+                for member in members
+                if isinstance(member, Mapping)
+            ]
         return {
             "record_id": record.get("record_id"),
             "record_digest": record.get("digest"),
             "artifact_type": artifact.get("type"),
             "artifact_digest": artifact.get("digest"),
             "contract_revision": artifact.get("contract_revision"),
-            "snapshot": {
-                key: snapshot.get(key)
-                for key in (
-                    "schema",
-                    "digest",
-                    "head",
-                    "branch",
-                    "clean",
-                    "status_sha256",
-                    "status_bytes",
-                )
-            },
+            "snapshot": snapshot_summary,
         }
 
     def _dossier_summary(self, pair: Mapping[str, object]) -> dict:
@@ -1144,6 +1240,11 @@ class Stage1Acceptance:
                 if isinstance(body.get("repository_snapshot"), Mapping)
                 else None
             ),
+            "repository_set": body.get("repository_set"),
+            "changed_repositories": body.get("changed_repositories"),
+            "verification_attempts": body.get("verification_attempts"),
+            "resources": body.get("resources"),
+            "aggregate_freshness": body.get("aggregate_freshness"),
             "remaining_risks": body.get("remaining_risks"),
             "handoff_recommendation": body.get("handoff_recommendation"),
         }
@@ -1168,10 +1269,14 @@ class Stage1Acceptance:
         response, show_process = controller.show(task_id)
         task = response.get("task")
         _require(isinstance(task, Mapping), "{} show view is unavailable".format(task_id))
+        _require(
+            terminal_projection.get("schema") == AGENT_PROTOCOL_SCHEMA,
+            "{} terminal projection schema is invalid".format(task_id),
+        )
         baseline = self._baseline_summary(self._artifact(task, baseline_type))
         dossier = self._dossier_summary(self._artifact(task, "delivery-dossier"))
         _require(
-            dossier.get("schema") == "dev-flow-delivery-dossier/v1",
+            dossier.get("schema") == DELIVERY_DOSSIER_SCHEMA,
             "{} dossier schema is invalid".format(task_id),
         )
         _require(
@@ -1244,7 +1349,7 @@ class Stage1Acceptance:
                     "outcome": "waived",
                     "rationale": (
                         "Independent reviewer is unavailable in the installed "
-                        "single-operator acceptance journey"
+                        "one-Codex acceptance journey"
                     ),
                     "actor_label": "installed-acceptance",
                 }
@@ -1284,10 +1389,10 @@ class Stage1Acceptance:
             task_id = "stage1-official-{}".format(workflow)
             repository = self._make_repository("official-{}".format(workflow))
             controller = self._controller("official-{}".format(workflow), repository)
-            started, start_process = controller.start(
+            started, start_process = controller.start_repositories(
                 task_id,
                 workflow,
-                repository,
+                (repository,),
                 "Installed {} delivery".format(workflow),
             )
             task = started.get("task")
@@ -1296,8 +1401,8 @@ class Stage1Acceptance:
             _require(
                 isinstance(workflow_view, Mapping)
                 and workflow_view.get("id") == workflow
-                and workflow_view.get("version") == 6,
-                "{} did not start the installed V6 workflow".format(task_id),
+                and workflow_view.get("version") == PRODUCT_VERSION,
+                "{} did not start the installed current workflow".format(task_id),
             )
             self._record_task(task_id)
             terminal = self._complete_success(
@@ -1332,12 +1437,383 @@ class Stage1Acceptance:
                 }
             )
 
+    def exact_set_journey(self) -> None:
+        task_id = "stage1-exact-set"
+        primary = self._make_repository("exact-set-primary")
+        secondary = self._make_repository("exact-set-secondary")
+        plugin_data = self.scratch / "exact-set-plugin-data"
+        primary_controller = InstalledController(
+            self.recorder,
+            self.launcher,
+            self.cli_handler,
+            plugin_data / PRODUCT_VERSION,
+            primary,
+        )
+        secondary_controller = InstalledController(
+            self.recorder,
+            self.launcher,
+            self.cli_handler,
+            plugin_data / PRODUCT_VERSION,
+            secondary,
+        )
+        started, start_process = primary_controller.start_repositories(
+            task_id,
+            "feature",
+            (primary, secondary),
+            "Deliver one installed change across an exact repository set",
+        )
+        task = started.get("task")
+        members = task.get("repositories") if isinstance(task, Mapping) else None
+        _require(
+            isinstance(members, list) and len(members) == 2,
+            "exact-set start did not persist both repositories",
+        )
+        repository_ids = tuple(
+            str(item.get("id"))
+            for item in members
+            if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+        )
+        _require(
+            len(repository_ids) == 2 and len(set(repository_ids)) == 2,
+            "exact-set start did not derive two repository IDs",
+        )
+        self._record_task(task_id)
+
+        primary_projection, primary_next_process = self._next(
+            primary_controller, task_id, "preflight"
+        )
+        secondary_projection, secondary_resume_process = self._next(
+            secondary_controller, task_id, "preflight"
+        )
+        for projection in (primary_projection, secondary_projection):
+            repository_set = projection.get("repository_set")
+            projected_members = (
+                repository_set.get("repositories")
+                if isinstance(repository_set, Mapping)
+                else None
+            )
+            _require(
+                projection.get("schema") == AGENT_PROTOCOL_SCHEMA
+                and isinstance(projected_members, list)
+                and {
+                    item.get("id")
+                    for item in projected_members
+                    if isinstance(item, Mapping)
+                }
+                == set(repository_ids),
+                "secondary-member resume did not return the complete current projection",
+            )
+
+        hook_environment = dict(self.recorder.environment)
+        hook_environment["PLUGIN_DATA"] = str(plugin_data)
+        original_environment = self.recorder.environment
+        self.recorder.environment = hook_environment
+        try:
+            hook_output, secondary_hook_process = self.recorder.run_json(
+                (
+                    str(self.launcher),
+                    str(self.plugin_root / "hooks" / "dev_flow_hook.py"),
+                ),
+                cwd=secondary,
+                kind="installed-hook:exact-set-secondary-SessionStart",
+                input_text=_json_text(
+                    {
+                        "hook_event_name": "SessionStart",
+                        "cwd": str(secondary),
+                        "session_id": "installed-exact-set-secondary",
+                    }
+                ),
+                timeout=30,
+            )
+        finally:
+            self.recorder.environment = original_environment
+        specific = hook_output.get("hookSpecificOutput")
+        context = (
+            specific.get("additionalContext")
+            if isinstance(specific, Mapping)
+            else None
+        )
+        _require(
+            isinstance(context, str)
+            and "Current Dev Flow {} task".format(PRODUCT_VERSION) in context
+            and task_id in context
+            and "projection=" in context,
+            "installed Hook did not discover the exact-set task from its secondary member",
+        )
+        hook_projection = _strict_json(
+            context.split(" projection=", 1)[1],
+            "installed exact-set secondary Hook projection",
+        )
+        hook_repository_set = (
+            hook_projection.get("repository_set")
+            if isinstance(hook_projection, Mapping)
+            else None
+        )
+        hook_members = (
+            hook_repository_set.get("repositories")
+            if isinstance(hook_repository_set, Mapping)
+            else None
+        )
+        _require(
+            isinstance(hook_projection, Mapping)
+            and hook_projection.get("schema") == AGENT_PROTOCOL_SCHEMA
+            and hook_projection.get("task_id") == task_id
+            and isinstance(hook_members, list)
+            and {
+                item.get("id")
+                for item in hook_members
+                if isinstance(item, Mapping)
+            }
+            == set(repository_ids),
+            "installed secondary-member Hook pickup omitted repository-set scope",
+        )
+
+        stale_action = primary_projection.get("action")
+        stale_binding = (
+            stale_action.get("binding") if isinstance(stale_action, Mapping) else None
+        )
+        _require(
+            isinstance(stale_binding, Mapping),
+            "exact-set preflight binding is unavailable",
+        )
+        drift_path = secondary / "member-drift.txt"
+        drift_path.write_text("secondary member drift\n", encoding="utf-8")
+        rejected, drift_rejection_process = secondary_controller.apply_failure(
+            task_id,
+            primary_projection,
+            {},
+        )
+        error = rejected.get("error")
+        _require(
+            isinstance(error, Mapping)
+            and error.get("code") == "ACTION_BINDING_STALE",
+            "secondary-member drift did not reject the stale aggregate binding",
+        )
+
+        fresh_preflight, fresh_preflight_process = self._next(
+            secondary_controller, task_id, "preflight"
+        )
+        fresh_action = fresh_preflight.get("action")
+        fresh_binding = (
+            fresh_action.get("binding") if isinstance(fresh_action, Mapping) else None
+        )
+        _require(
+            isinstance(fresh_binding, Mapping)
+            and fresh_binding.get("starting_snapshot_digest")
+            != stale_binding.get("starting_snapshot_digest"),
+            "secondary-member drift did not change the aggregate snapshot binding",
+        )
+        self._apply(
+            secondary_controller,
+            task_id,
+            secondary,
+            fresh_preflight,
+            fresh_preflight_process,
+            {},
+        )
+        terminal = self._complete_success(
+            secondary_controller,
+            task_id,
+            primary,
+            "feature",
+        )
+        outcome = self._inspect_terminal(
+            secondary_controller,
+            task_id,
+            terminal,
+            expected_status="DONE",
+            expected_outcome="success",
+        )
+        dossier = outcome["dossier"]
+        repository_set = dossier.get("repository_set")
+        dossier_members = (
+            repository_set.get("members")
+            if isinstance(repository_set, Mapping)
+            else None
+        )
+        _require(
+            dossier.get("schema") == DELIVERY_DOSSIER_SCHEMA
+            and isinstance(dossier_members, list)
+            and {
+                item.get("repository_id")
+                for item in dossier_members
+                if isinstance(item, Mapping)
+            }
+            == set(repository_ids),
+            "aggregate dossier does not identify both exact-set members",
+        )
+        verification = dossier.get("verification")
+        coverage = (
+            verification.get("coverage")
+            if isinstance(verification, Mapping)
+            else None
+        )
+        repository_results = (
+            coverage.get("repositories") if isinstance(coverage, Mapping) else None
+        )
+        integration = (
+            coverage.get("integration") if isinstance(coverage, Mapping) else None
+        )
+        _require(
+            isinstance(repository_results, Mapping)
+            and set(repository_results) == set(repository_ids)
+            and isinstance(integration, Mapping)
+            and verification.get("command") == integration.get("command")
+            and verification.get("passed") is True,
+            "aggregate dossier does not retain complete structured verification",
+        )
+        resources = dossier.get("resources")
+        scoped_repository_ids = {
+            item.get("resource", {}).get("repository_id")
+            for item in resources
+            if isinstance(item, Mapping)
+            and isinstance(item.get("resource"), Mapping)
+        } if isinstance(resources, list) else set()
+        _require(
+            bool(scoped_repository_ids)
+            and scoped_repository_ids.issubset(set(repository_ids)),
+            "aggregate dossier does not retain repository-scoped resources",
+        )
+        aggregate_freshness = dossier.get("aggregate_freshness")
+        _require(
+            isinstance(aggregate_freshness, Mapping)
+            and aggregate_freshness.get("current") is True,
+            "aggregate dossier freshness is not current",
+        )
+        self.evidence["journeys"].append(
+            {
+                "name": "exact-set-secondary-resume-drift-resources-dossier",
+                "task_id": task_id,
+                "repository_ids": list(repository_ids),
+                "start_process": start_process,
+                "primary_next_process": primary_next_process,
+                "secondary_resume_process": secondary_resume_process,
+                "secondary_hook_process": secondary_hook_process,
+                "secondary_hook_schema": hook_projection.get("schema"),
+                "drift_rejection_process": drift_rejection_process,
+                "drift_error": error.get("code"),
+                "stale_aggregate_digest": stale_binding.get(
+                    "starting_snapshot_digest"
+                ),
+                "fresh_aggregate_digest": fresh_binding.get(
+                    "starting_snapshot_digest"
+                ),
+                "scoped_resource_repository_ids": sorted(scoped_repository_ids),
+                "dossier_schema": dossier.get("schema"),
+                "outcome": "success",
+            }
+        )
+
+    def exact_set_lite_journey(self) -> None:
+        task_id = "stage1-exact-set-lite"
+        primary = self._make_repository("exact-set-lite-primary")
+        secondary = self._make_repository("exact-set-lite-secondary")
+        controller = self._controller("exact-set-lite", primary)
+        started, start_process = controller.start_repositories(
+            task_id,
+            "lite",
+            (primary, secondary),
+            "Deliver one installed lite change across an exact repository set",
+        )
+        task = started.get("task")
+        members = task.get("repositories") if isinstance(task, Mapping) else None
+        workflow = task.get("workflow") if isinstance(task, Mapping) else None
+        repository_ids = tuple(
+            str(item.get("id"))
+            for item in members
+            if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+        ) if isinstance(members, list) else ()
+        _require(
+            isinstance(workflow, Mapping)
+            and workflow.get("id") == "lite"
+            and workflow.get("version") == PRODUCT_VERSION
+            and len(repository_ids) == 2
+            and len(set(repository_ids)) == 2,
+            "exact-set lite start did not persist the installed membership",
+        )
+        self._record_task(task_id)
+
+        projection, membership_process = self._next(
+            controller, task_id, "preflight"
+        )
+        repository_set = projection.get("repository_set")
+        projected_members = (
+            repository_set.get("repositories")
+            if isinstance(repository_set, Mapping)
+            else None
+        )
+        _require(
+            projection.get("schema") == AGENT_PROTOCOL_SCHEMA
+            and isinstance(projected_members, list)
+            and {
+                item.get("id")
+                for item in projected_members
+                if isinstance(item, Mapping)
+            }
+            == set(repository_ids),
+            "exact-set lite projection did not preserve the complete membership",
+        )
+
+        terminal = self._complete_success(
+            controller,
+            task_id,
+            primary,
+            "lite",
+        )
+        outcome = self._inspect_terminal(
+            controller,
+            task_id,
+            terminal,
+            expected_status="DONE",
+            expected_outcome="success",
+        )
+        dossier = outcome["dossier"]
+        dossier_repository_set = dossier.get("repository_set")
+        dossier_members = (
+            dossier_repository_set.get("members")
+            if isinstance(dossier_repository_set, Mapping)
+            else None
+        )
+        dossier_repository_ids = {
+            item.get("repository_id")
+            for item in dossier_members
+            if isinstance(item, Mapping)
+        } if isinstance(dossier_members, list) else set()
+        _require(
+            dossier.get("schema") == DELIVERY_DOSSIER_SCHEMA
+            and dossier_repository_ids == set(repository_ids),
+            "exact-set lite success dossier did not preserve both members",
+        )
+        aggregate_freshness = dossier.get("aggregate_freshness")
+        _require(
+            isinstance(aggregate_freshness, Mapping)
+            and aggregate_freshness.get("current") is True,
+            "exact-set lite success dossier is not aggregate-current",
+        )
+        self.evidence["journeys"].append(
+            {
+                "name": "exact-set-lite-success-dossier",
+                "task_id": task_id,
+                "workflow": "lite",
+                "repository_ids": list(repository_ids),
+                "dossier_repository_ids": sorted(dossier_repository_ids),
+                "start_process": start_process,
+                "membership_process": membership_process,
+                "projection_schema": projection.get("schema"),
+                "dossier_schema": dossier.get("schema"),
+                "outcome": "success",
+            }
+        )
+
     def restart_resume_journey(self) -> None:
         task_id = "stage1-restart-resume"
         repository = self._make_repository("restart-resume")
         controller = self._controller("restart-resume", repository)
-        _, start_process = controller.start(
-            task_id, "lite", repository, "Resume after every installed process exits"
+        _, start_process = controller.start_repositories(
+            task_id,
+            "lite",
+            (repository,),
+            "Resume after every installed process exits",
         )
         self._record_task(task_id)
         preflight, preflight_next = self._next(controller, task_id, "preflight")
@@ -1398,8 +1874,11 @@ class Stage1Acceptance:
         task_id = "stage1-cancel"
         repository = self._make_repository("cancel")
         controller = self._controller("cancel", repository)
-        _, start_process = controller.start(
-            task_id, "lite", repository, "Cancel this installed delivery"
+        _, start_process = controller.start_repositories(
+            task_id,
+            "lite",
+            (repository,),
+            "Cancel this installed delivery",
         )
         self._record_task(task_id)
         projection, next_process = self._next(controller, task_id, "preflight")
@@ -1438,8 +1917,11 @@ class Stage1Acceptance:
         task_id = "stage1-verification-exhausted"
         repository = self._make_repository("verification-exhausted")
         controller = self._controller("verification-exhausted", repository)
-        _, start_process = controller.start(
-            task_id, "lite", repository, "Retain bounded verification failure"
+        _, start_process = controller.start_repositories(
+            task_id,
+            "lite",
+            (repository,),
+            "Retain bounded verification failure",
         )
         self._record_task(task_id)
         projection, process_index = self._next(controller, task_id, "preflight")
@@ -1550,15 +2032,15 @@ class Stage1Acceptance:
                 {"id": "optional", "statement": "Optional environment is checked"},
             ],
             "scope": ["Current scratch repository"],
-            "constraints": ["Single operator"],
+            "constraints": ["One Codex"],
             "risks": [],
             "non_goals": [],
             "open_questions": [],
         }
-        _, start_process = controller.start(
+        _, start_process = controller.start_repositories(
             task_id,
             "lite",
-            repository,
+            (repository,),
             "Exercise criterion waiver",
             contract,
         )
@@ -1633,10 +2115,10 @@ class Stage1Acceptance:
         task_id = "stage1-contract-revision"
         repository = self._make_repository("contract-revision")
         controller = self._controller("contract-revision", repository)
-        _, start_process = controller.start(
+        _, start_process = controller.start_repositories(
             task_id,
             "feature",
-            repository,
+            (repository,),
             "Exercise installed contract and resource recovery",
         )
         self._record_task(task_id)
@@ -1678,7 +2160,7 @@ class Stage1Acceptance:
             / "tasks.md"
         )
         tasks_path.write_text(
-            "- [x] verify installed journey v1\n", encoding="utf-8"
+            "- [x] verify installed journey revision 1\n", encoding="utf-8"
         )
         self._apply(
             controller,
@@ -1703,9 +2185,41 @@ class Stage1Acceptance:
             "OpenSpec task checkbox-only edit invalidated the governing plan",
         )
         resources_before = plan_pair["artifact"].get("resources")
-        current_resources = semantic_task.get("current_snapshot", {}).get("resources")
+        current_snapshot = semantic_task.get("current_snapshot")
+        current_members = (
+            current_snapshot.get("repositories")
+            if isinstance(current_snapshot, Mapping)
+            else None
+        )
+        resource_repository_ids = {
+            item.get("repository_id")
+            for item in resources_before
+            if isinstance(item, Mapping)
+        } if isinstance(resources_before, list) else set()
+        resource_repository_id = next(iter(resource_repository_ids), None)
+        current_member = next(
+            (
+                item
+                for item in current_members
+                if isinstance(item, Mapping)
+                and item.get("repository_id") == resource_repository_id
+            ),
+            None,
+        ) if isinstance(current_members, list) else None
+        member_snapshot = (
+            current_member.get("snapshot")
+            if isinstance(current_member, Mapping)
+            else None
+        )
+        current_resources = (
+            member_snapshot.get("resources")
+            if isinstance(member_snapshot, Mapping)
+            else None
+        )
         _require(
-            isinstance(resources_before, list) and isinstance(current_resources, list),
+            isinstance(resources_before, list)
+            and len(resource_repository_ids) == 1
+            and isinstance(current_resources, list),
             "resource snapshots are unavailable",
         )
 
@@ -1722,8 +2236,8 @@ class Stage1Acceptance:
 
         reported_before = resource(resources_before, "none")
         reported_after = resource(current_resources, "none")
-        governed_before = resource(resources_before, "openspec-tasks-v1")
-        governed_after = resource(current_resources, "openspec-tasks-v1")
+        governed_before = resource(resources_before, OPENSPEC_TASKS_NORMALIZER)
+        governed_after = resource(current_resources, OPENSPEC_TASKS_NORMALIZER)
         _require(
             reported_before.get("raw_sha256") != reported_after.get("raw_sha256"),
             "reported task checkbox bytes did not change",
@@ -1821,7 +2335,7 @@ class Stage1Acceptance:
                 }
             ],
             "scope": ["Recovered scratch repository delivery"],
-            "constraints": ["Single repository", "Single operator"],
+            "constraints": ["Immutable exact repository set", "One Codex"],
             "risks": [],
             "non_goals": [],
             "open_questions": [],
@@ -1974,8 +2488,8 @@ class Stage1Acceptance:
         )
         version = manifest.get("version")
         _require(
-            isinstance(version, str) and VERSION_V6.fullmatch(version) is not None,
-            "installed manifest is not a V6 cache version",
+            version == PRODUCT_VERSION,
+            "installed manifest does not use the expected product version",
         )
         _require(
             manifest.get("name") == "dev-flow-orchestrator"
@@ -1988,12 +2502,18 @@ class Stage1Acceptance:
             _require(path.is_file(), "installed workflow is missing: {}".format(workflow))
             document = path.read_text(encoding="utf-8")
             _require(
-                "schema: dev-flow-workflow/v2" in document
+                "schema: {}".format(WORKFLOW_SCHEMA) in document
                 and re.search(r"(?m)^id:\s*{}\s*$".format(re.escape(workflow)), document)
                 is not None
-                and re.search(r"(?m)^version:\s*6\s*$", document) is not None
+                and re.search(
+                    r'(?m)^version:\s*"{}"\s*$'.format(
+                        re.escape(PRODUCT_VERSION)
+                    ),
+                    document,
+                )
+                is not None
                 and "delivery-dossier" in document,
-                "installed workflow asset is not the expected V6 contract: {}".format(
+                "installed workflow asset is not the expected product contract: {}".format(
                     workflow
                 ),
             )
@@ -2066,119 +2586,6 @@ class Stage1Acceptance:
             "result": _command_result_summary(result),
         }
 
-    def retained_v5_before(self) -> None:
-        if self.retained_v5_root is None:
-            self.evidence["retained_v5"] = {
-                "status": "not-provided",
-                "snapshot_inspection": "skipped",
-                "read_only_inspection": "skipped",
-            }
-            return
-        _require(self.retained_v5_root.is_dir(), "retained V5 root is not a directory")
-        launcher = self.retained_v5_root / "scripts" / "dev_flow_python_launcher"
-        handler = self.retained_v5_root / "scripts" / "dev_flow.py"
-        _require(launcher.is_file() and os.access(str(launcher), os.X_OK), "retained V5 launcher is unavailable")
-        _require(handler.is_file(), "retained V5 CLI handler is unavailable")
-        manifest_path = self.retained_v5_root / ".codex-plugin" / "plugin.json"
-        manifest = _read_json_object(manifest_path, "retained V5 plugin manifest")
-        version = manifest.get("version")
-        _require(
-            manifest.get("name") == "dev-flow-orchestrator"
-            and isinstance(version, str)
-            and VERSION_V5.fullmatch(version) is not None,
-            "retained plugin root is not an installed V5 snapshot",
-        )
-        root_digest = _tree_digest(self.retained_v5_root, ignore_volatile=True)
-        retained = {
-            "status": "snapshot-verified",
-            "root": str(self.retained_v5_root),
-            "version": version,
-            "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-            "snapshot_algorithm": "dev-flow-tree-snapshot/v1",
-            "snapshot_digest_before": root_digest,
-            "snapshot_digest_after": None,
-            "snapshot_immutable_during_run": None,
-            "launcher_executable": True,
-        }
-        self.evidence["retained_v5"] = retained
-        if self.retained_v5_data is None:
-            retained["status"] = "snapshot-verified-inspection-required"
-            retained["data_evidence"] = {
-                "status": "unverified",
-                "authority": "exact retained V5 controller locator",
-                "operations": ["list", "show"],
-                "phases": ["before-v6-journeys", "after-v6-journeys"],
-                "runner_access": "not-requested",
-                "reason": (
-                    "An active V5 Hook may correctly deny passing protected V5 "
-                    "data to an external runner; separately captured read-only "
-                    "list/show evidence is required before the release gate can pass."
-                ),
-            }
-            return
-        _require(self.retained_v5_data.is_dir(), "retained V5 data is not a directory")
-        digest = _tree_digest(self.retained_v5_data, ignore_volatile=False)
-        controller = InstalledController(
-            self.recorder,
-            launcher,
-            handler,
-            self.retained_v5_data,
-            self.retained_v5_root,
-            kind_prefix="retained-v5-read-only",
-        )
-        listed, list_process = controller._call("list")
-        tasks = listed.get("tasks")
-        _require(isinstance(tasks, list), "retained V5 list result has no tasks")
-        inspections = []
-        for item in tasks:
-            _require(isinstance(item, Mapping), "retained V5 list item is invalid")
-            task_id = item.get("task_id")
-            _require(isinstance(task_id, str) and task_id, "retained V5 task id is invalid")
-            shown, show_process = controller.show(task_id)
-            task = shown.get("task")
-            _require(isinstance(task, Mapping), "retained V5 show result is invalid")
-            inspections.append(
-                {
-                    "task_id": task_id,
-                    "show_process": show_process,
-                    "revision": task.get("revision"),
-                    "status": task.get("status"),
-                    "current_node": task.get("current_node"),
-                    "workflow": task.get("workflow"),
-                }
-            )
-        retained["status"] = "snapshot-and-data-inspected"
-        retained["data_evidence"] = {
-            "status": "inspected-read-only",
-            "data_digest_before": digest,
-            "list_process": list_process,
-            "task_ids": [item["task_id"] for item in inspections],
-            "inspections": inspections,
-            "operations": ["list", "show"],
-            "read_only": True,
-        }
-
-    def retained_v5_after(self) -> None:
-        if self.retained_v5_root is None:
-            return
-        retained = self.evidence["retained_v5"]
-        root_after = _tree_digest(self.retained_v5_root, ignore_volatile=True)
-        root_before = retained.get("snapshot_digest_before")
-        retained["snapshot_digest_after"] = root_after
-        retained["snapshot_immutable_during_run"] = root_before == root_after
-        _require(
-            root_before == root_after,
-            "retained V5 plugin snapshot changed during V6 acceptance journeys",
-        )
-        if self.retained_v5_data is None:
-            return
-        after = _tree_digest(self.retained_v5_data, ignore_volatile=False)
-        data_evidence = retained["data_evidence"]
-        before = data_evidence.get("data_digest_before")
-        data_evidence["data_digest_after"] = after
-        data_evidence["unchanged"] = before == after
-        _require(before == after, "retained V5 data changed during V6 acceptance journeys")
-
     def hook_bootstrap(self) -> None:
         task_id = "stage1-hook-bootstrap"
         repository = self._make_repository("hook-bootstrap")
@@ -2187,13 +2594,13 @@ class Stage1Acceptance:
             self.recorder,
             self.launcher,
             self.cli_handler,
-            plugin_data / "v6",
+            plugin_data / PRODUCT_VERSION,
             repository,
         )
-        _, start_process = controller.start(
+        _, start_process = controller.start_repositories(
             task_id,
             "lite",
-            repository,
+            (repository,),
             "Expose installed Hook controller context",
         )
         self._record_task(task_id)
@@ -2223,12 +2630,12 @@ class Stage1Acceptance:
         context = specific.get("additionalContext") if isinstance(specific, Mapping) else None
         _require(
             isinstance(context, str)
-            and "Current Dev Flow V6 task" in context
+            and "Current Dev Flow {} task".format(PRODUCT_VERSION) in context
             and task_id in context
             and "locator=" in context
             and "projection=" in context
-            and str((plugin_data / "v6").resolve()) in context,
-            "installed Hook bootstrap did not inject the V6 task and locator",
+            and str((plugin_data / PRODUCT_VERSION).resolve()) in context,
+            "installed Hook bootstrap did not inject the current task and locator",
         )
         locator_text = context.split(" locator=", 1)[1].split(" projection=", 1)[0]
         projected_text = context.split(" projection=", 1)[1]
@@ -2277,7 +2684,7 @@ class Stage1Acceptance:
             "preflight_next_process": preflight_next_process,
             "cancel_process": cancel_process,
             "show_process": show_process,
-            "plugin_data_namespace": "v6",
+            "plugin_data_namespace": PRODUCT_VERSION,
             "session_start_context": {
                 "locator": self.recorder._display(locator_text),
                 "projection": self.recorder._display_value(
@@ -2290,8 +2697,9 @@ class Stage1Acceptance:
 
     def run(self) -> None:
         self.inspect_assets()
-        self.retained_v5_before()
         self.official_success_journeys()
+        self.exact_set_journey()
+        self.exact_set_lite_journey()
         self.restart_resume_journey()
         self.cancellation_journey()
         self.verification_exhaustion_journey()
@@ -2312,11 +2720,10 @@ class Stage1Acceptance:
             "qualifies_as_driver_execution": False,
             "statuses": sorted(statuses),
             "purpose": (
-                "Exercise installed controller validation, fallback routing, "
+                "Exercise installed controller validation, driver outcome routing, "
                 "persistence, and dossier projection"
             ),
         }
-        self.retained_v5_after()
         self.run_package_validator()
         self.evidence["task_ids"] = sorted(set(self.evidence["task_ids"]))
         self.evidence["process_model"] = {
@@ -2339,21 +2746,10 @@ def _parser() -> argparse.ArgumentParser:
         help="installed immutable plugin cache snapshot (a source root is valid only for focused self-tests)",
     )
     parser.add_argument(
-        "--retained-v5-root",
-        help=(
-            "optional retained installed V5 plugin root; root-only mode verifies "
-            "the snapshot and marks data list/show as external-controller evidence"
-        ),
-    )
-    parser.add_argument(
-        "--retained-v5-data",
-        help="optional retained V5 data directory, paired with --retained-v5-root",
-    )
-    parser.add_argument(
         "--external-evidence",
         help=(
             "JSON evidence from actual OpenSpec, codebase-memory, independent-review, "
-            "and retained V5 controller executions; required for a verified release gate"
+            "executions; required for a verified release gate"
         ),
     )
     return parser
@@ -2362,16 +2758,6 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = _parser().parse_args(argv)
     plugin_root = Path(arguments.plugin_root).expanduser().resolve()
-    retained_root = (
-        Path(arguments.retained_v5_root).expanduser().resolve()
-        if arguments.retained_v5_root
-        else None
-    )
-    retained_data = (
-        Path(arguments.retained_v5_data).expanduser().resolve()
-        if arguments.retained_v5_data
-        else None
-    )
     external_evidence_path = (
         Path(arguments.external_evidence).expanduser().resolve()
         if arguments.external_evidence
@@ -2385,11 +2771,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "serialization": {
             "format": "canonical-json",
             "sort_keys": True,
-            "path_tokens": ["<PLUGIN_ROOT>", "<SCRATCH>", "<RETAINED_V5_ROOT>", "<RETAINED_V5_DATA>"],
+            "path_tokens": ["<PLUGIN_ROOT>", "<SCRATCH>"],
         },
         "installed": {
             "path": str(plugin_root),
-            "snapshot_algorithm": "dev-flow-tree-snapshot/v1",
+            "snapshot_algorithm": TREE_SNAPSHOT_SCHEMA,
             "snapshot_digest_before": None,
             "snapshot_digest_after": None,
             "immutable_during_run": None,
@@ -2406,13 +2792,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "outcomes": {},
         "hook": None,
         "package_validation": None,
-        "retained_v5": None,
         "process_model": None,
         "release_gate": {
             "status": "unverified",
             "blockers": [
                 "actual driver execution evidence has not been validated",
-                "retained V5 controller inspection evidence has not been validated",
             ],
         },
         "manual_unverified": [
@@ -2435,10 +2819,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         _require(sys.platform == "darwin", "installed Stage 1 acceptance is macOS-only")
         _require(plugin_root.is_dir(), "plugin root is not a directory")
-        _require(
-            retained_data is None or retained_root is not None,
-            "--retained-v5-data requires --retained-v5-root",
-        )
         before = _tree_digest(plugin_root, ignore_volatile=True)
         evidence["installed"]["snapshot_digest_before"] = before
         with tempfile.TemporaryDirectory(prefix="dev-flow-installed-stage1-") as temporary:
@@ -2446,8 +2826,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             runner = Stage1Acceptance(
                 plugin_root,
                 scratch,
-                retained_root,
-                retained_data,
                 evidence,
             )
             runner.run()
@@ -2461,7 +2839,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "status": "unverified",
                 "blockers": [
                     "actual OpenSpec, codebase-memory, and independent-review executions were not provided",
-                    "retained V5 list/show before-and-after evidence was not provided",
                 ],
             }
         else:
@@ -2471,17 +2848,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             validated = _validate_external_release_evidence(
                 external,
                 before,
-                evidence.get("retained_v5"),
             )
             evidence["external_evidence"] = validated
-            retained_external = validated["retained_v5"]
-            retained_view = evidence.get("retained_v5")
-            if isinstance(retained_view, dict):
-                retained_view["status"] = "snapshot-and-external-data-inspected"
-                retained_view["data_evidence"] = {
-                    "status": "external-controller-evidence-verified",
-                    "inspection": retained_external,
-                }
             evidence["release_gate"] = {
                 "status": "verified-with-manual-pickup-condition",
                 "blockers": [],

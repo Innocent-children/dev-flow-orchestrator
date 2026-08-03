@@ -48,6 +48,6 @@ class RepositoryTestCase(unittest.TestCase):
         state = self.controller.start(
             requirement=requirement,
             workflow="lite",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
         )
         return state.task_id

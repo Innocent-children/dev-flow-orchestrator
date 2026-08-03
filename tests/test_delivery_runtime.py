@@ -1,4 +1,4 @@
-"""Focused V6 ledger, binding, contract, assurance, and dossier journeys."""
+"""Focused current ledger, binding, contract, assurance, and dossier journeys."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.cli import main as cli_main
-import dev_flow_orchestrator.engine as engine_module
 import dev_flow_orchestrator.product as product_module
 from dev_flow_orchestrator.delivery import (
     CONTRACT_SCHEMA,
@@ -26,6 +25,12 @@ from dev_flow_orchestrator.delivery import (
     seal_record,
 )
 from dev_flow_orchestrator.model import DevFlowError, json_value
+from dev_flow_orchestrator.product import (
+    DRIVER_RESULT_SCHEMA,
+    VERIFICATION_COVERAGE_SCHEMA,
+)
+from dev_flow_orchestrator.snapshot import repository_snapshot
+from dev_flow_orchestrator.yaml_subset import load as load_yaml_subset
 from support import RepositoryTestCase
 
 
@@ -38,10 +43,18 @@ def revised_contract(revision: int, criterion: str = "revised") -> dict:
             {"id": criterion, "statement": "The revised scope is verified"}
         ],
         "scope": ["Revised scope"],
-        "constraints": ["One repository"],
+        "constraints": ["One prepared repository-set member"],
         "risks": [],
         "non_goals": [],
         "open_questions": [],
+    }
+
+
+def driver_result(status: str, **details: object) -> dict:
+    return {
+        "schema": DRIVER_RESULT_SCHEMA,
+        "status": status,
+        **details,
     }
 
 
@@ -57,6 +70,52 @@ class DeliveryRuntimeTests(RepositoryTestCase):
 
     def preflight(self, task_id: str) -> None:
         self.apply_current(task_id, {})
+
+    def repository_id(self, task_id: str) -> str:
+        state = self.controller.show(task_id)
+        self.assertEqual(len(state.repositories), 1)
+        return state.repositories[0].repository_id
+
+    def verification_payload(
+        self,
+        task_id: str,
+        *,
+        passed: bool,
+        criteria: dict,
+        command: str,
+        summary: str,
+    ) -> dict:
+        repository_id = self.repository_id(task_id)
+        return {
+            "passed": passed,
+            "command": command,
+            "coverage": {
+                "schema": VERIFICATION_COVERAGE_SCHEMA,
+                "criteria": criteria,
+                "repositories": {
+                    repository_id: {"passed": passed, "command": command}
+                },
+                "integration": {"passed": passed, "command": command},
+            },
+            "summary": summary,
+        }
+
+    def sole_member_snapshot(self, task_id: str, snapshot: object) -> dict:
+        state = self.controller.show(task_id)
+        return repository_snapshot(
+            snapshot,
+            state.repositories,
+            self.repository_id(task_id),
+        )
+
+    def resource_payload(self, task_id: str, items: list[dict]) -> dict:
+        repository_id = self.repository_id(task_id)
+        return {
+            "items": [
+                {"repository_id": repository_id, **item}
+                for item in items
+            ]
+        }
 
     def source_action(self, task_id: str, payload: dict, marker: str) -> None:
         projection = self.controller.next(task_id)
@@ -93,20 +152,20 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         return self.controller.start(
             requirement=requirement,
             workflow="feature",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
         ).task_id
 
     def advance_feature_to_review(self, task_id: str, marker: str) -> None:
         self.apply_current(
             task_id,
-            {"summary": "Impact checked", "driver_result": {"status": "available"}},
+            {"summary": "Impact checked", "driver_result": driver_result("available")},
         )
         self.apply_current(
             task_id,
             {
                 "summary": "Plan recorded",
                 "resources": {"items": []},
-                "driver_result": {"status": "available"},
+                "driver_result": driver_result("available"),
             },
         )
         self.source_action(
@@ -118,12 +177,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         criterion_ids = self.controller.next(task_id)["contract"]["criterion_ids"]
         self.apply_current(
             task_id,
-            {
-                "passed": True,
-                "command": "python3 focused_test.py",
-                "coverage": {criterion_id: "proven" for criterion_id in criterion_ids},
-                "summary": "Focused verification passed",
-            },
+            self.verification_payload(
+                task_id,
+                passed=True,
+                command="python3 focused_test.py",
+                criteria={criterion_id: "proven" for criterion_id in criterion_ids},
+                summary="Focused verification passed",
+            ),
         )
 
     def review_payload(
@@ -134,45 +194,143 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             "assurance": assurance,
             "findings": {},
             "summary": summary,
-            "driver_result": {
-                "status": "available" if assurance == "independent" else "unavailable"
-            },
+            "driver_result": driver_result(
+                "available" if assurance == "independent" else "unavailable"
+            ),
         }
 
     def write_linear_workflow(self, path: Path, *, description: str) -> None:
-        path.write_text(
-            json.dumps(
-                {
-                    "schema": "dev-flow-workflow/v1",
-                    "id": path.stem,
-                    "version": 5,
-                    "description": description,
-                    "entry": "preflight",
-                    "nodes": {
-                        "preflight": {
-                            "action_id": "task.preflight",
-                            "handler": "preflight",
-                            "target": {"node": "work", "status": "WORKING"},
-                            "effect": "git.inspect-repository",
-                        },
-                        "work": {
-                            "action_id": "work.record",
-                            "handler": "evidence.record",
-                            "target": {"node": "done", "status": "DONE"},
-                            "payload": {"summary": "string"},
-                        },
-                        "done": {"terminal": True},
-                    },
-                    "cancel": {
-                        "action_id": "task.cancel",
-                        "handler": "evidence.record",
-                        "target": {"node": "done", "status": "CANCELLED"},
-                        "payload": {"reason": "string"},
-                    },
-                }
-            ),
-            encoding="utf-8",
+        document = load_yaml_subset(
+            (SRC.parent / "workflows" / "lite.yaml").read_text(encoding="utf-8")
         )
+        self.assertIsInstance(document, dict)
+        document["id"] = path.stem
+        document["description"] = description
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    def test_current_driver_and_coverage_schemas_succeed_and_are_recorded(self) -> None:
+        driver_task_id = self.start_feature("Record the current driver schema")
+        self.preflight(driver_task_id)
+        driver_apply = self.apply_current(
+            driver_task_id,
+            {
+                "summary": "Impact checked",
+                "driver_result": driver_result("available"),
+            },
+        )
+        driver_record = self.controller.show(driver_task_id).records[-1]
+
+        self.assertEqual(driver_apply["projection"]["current_node"], "planning")
+        self.assertEqual(
+            driver_record["producer"]["driver"]["result"]["schema"],
+            DRIVER_RESULT_SCHEMA,
+        )
+        self.assertEqual(
+            driver_record["payload"]["driver_result"]["schema"],
+            DRIVER_RESULT_SCHEMA,
+        )
+
+        coverage_task_id = self.start_lite("Record the current coverage schema")
+        self.preflight(coverage_task_id)
+        self.source_action(
+            coverage_task_id,
+            {"summary": "Implementation complete"},
+            "coverage-schema",
+        )
+        verification_apply = self.apply_current(
+            coverage_task_id,
+            self.verification_payload(
+                coverage_task_id,
+                passed=True,
+                command="python3 focused_test.py",
+                criteria={"requirement": "proven"},
+                summary="Current coverage schema accepted",
+            ),
+        )
+        verification_record = self.controller.show(coverage_task_id).records[-1]
+
+        self.assertEqual(
+            verification_apply["projection"]["current_node"],
+            "finalize_success",
+        )
+        self.assertEqual(
+            verification_record["payload"]["coverage"]["schema"],
+            VERIFICATION_COVERAGE_SCHEMA,
+        )
+        self.assertEqual(
+            verification_record["artifact"]["body"]["coverage"]["schema"],
+            VERIFICATION_COVERAGE_SCHEMA,
+        )
+
+    def test_driver_result_missing_or_unsupported_schema_fails_atomically(self) -> None:
+        task_id = self.start_feature("Reject invalid driver schemas")
+        self.preflight(task_id)
+        projection = self.controller.next(task_id)
+        before = self.controller.show(task_id)
+        unsupported_schema = (
+            DRIVER_RESULT_SCHEMA.rsplit("/", 1)[0] + "/unsupported"
+        )
+        invalid_results = (
+            ("missing", {"status": "available"}),
+            (
+                "unsupported",
+                {"schema": unsupported_schema, "status": "available"},
+            ),
+        )
+
+        for case, invalid_result in invalid_results:
+            with self.subTest(case=case):
+                with self.assertRaises(DevFlowError) as context:
+                    self.controller.apply(
+                        task_id,
+                        projection["action"]["action_id"],
+                        {
+                            "summary": "Impact checked",
+                            "driver_result": invalid_result,
+                        },
+                        binding=projection["action"]["binding"],
+                    )
+                self.assertEqual(context.exception.code, "NODE_OUTPUT_INVALID")
+                self.assertEqual(self.controller.show(task_id), before)
+
+    def test_coverage_missing_or_unsupported_schema_fails_atomically(self) -> None:
+        task_id = self.start_lite("Reject invalid coverage schemas")
+        self.preflight(task_id)
+        self.source_action(
+            task_id,
+            {"summary": "Implementation complete"},
+            "invalid-coverage-schema",
+        )
+        projection = self.controller.next(task_id)
+        before = self.controller.show(task_id)
+        valid_payload = self.verification_payload(
+            task_id,
+            passed=True,
+            command="python3 focused_test.py",
+            criteria={"requirement": "proven"},
+            summary="Coverage schema validation",
+        )
+        missing_schema = json_value(valid_payload)
+        del missing_schema["coverage"]["schema"]
+        unsupported_schema = json_value(valid_payload)
+        unsupported_schema["coverage"]["schema"] = (
+            VERIFICATION_COVERAGE_SCHEMA.rsplit("/", 1)[0] + "/unsupported"
+        )
+
+        for case, invalid_payload in (
+            ("missing", missing_schema),
+            ("unsupported", unsupported_schema),
+        ):
+            with self.subTest(case=case):
+                with self.assertRaises(DevFlowError) as context:
+                    self.controller.apply(
+                        task_id,
+                        projection["action"]["action_id"],
+                        invalid_payload,
+                        binding=projection["action"]["binding"],
+                    )
+                self.assertEqual(context.exception.code, "NODE_OUTPUT_INVALID")
+                self.assertEqual(self.controller.show(task_id), before)
 
     def test_lite_golden_path_is_revision_zero_then_one_record_per_mutation(self) -> None:
         task_id = self.start_lite("Deliver the requested behavior")
@@ -194,12 +352,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.source_action(task_id, {"summary": "Implemented"}, "implementation")
         self.apply_current(
             task_id,
-            {
-                "passed": True,
-                "command": "python3 focused_test.py",
-                "coverage": {"requirement": "proven"},
-                "summary": "Focused verification passed",
-            },
+            self.verification_payload(
+                task_id,
+                passed=True,
+                command="python3 focused_test.py",
+                criteria={"requirement": "proven"},
+                summary="Focused verification passed",
+            ),
         )
         result = self.apply_current(
             task_id,
@@ -216,8 +375,10 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.assertEqual(
             set(result["projection"]["dossier"]),
             {
+                "schema",
                 "record_id",
                 "digest",
+                "repository_set_id",
                 "outcome",
                 "coverage",
                 "current",
@@ -291,7 +452,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                         task_id=task_id,
                         requirement="Invalid contract must not persist",
                         workflow="lite",
-                        repository=str(self.repository),
+                        repositories=(str(self.repository),),
                         contract=contract,
                     )
                 self.assertEqual(caught.exception.code, "CONTRACT_INVALID")
@@ -303,7 +464,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         state = self.controller.start(
             requirement="Explicit contract delivery",
             workflow="lite",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
             contract=supplied,
         )
         self.assertEqual(state.revision, 0)
@@ -372,12 +533,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         task_id = self.start_lite()
         self.preflight(task_id)
         self.source_action(task_id, {"summary": "Initial implementation"}, "initial")
-        failure = {
-            "passed": False,
-            "command": "python3 focused_test.py",
-            "coverage": {"requirement": "unverified"},
-            "summary": "Failure retained",
-        }
+        failure = self.verification_payload(
+            task_id,
+            passed=False,
+            command="python3 focused_test.py",
+            criteria={"requirement": "unverified"},
+            summary="Failure retained",
+        )
         failed = self.apply_current(
             task_id,
             failure,
@@ -438,26 +600,55 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             self.controller.show(task_id).records[-2]["artifact"]["type"],
             "revision-source",
         )
+        first_revised_failure = self.apply_current(
+            task_id,
+            self.verification_payload(
+                task_id,
+                passed=False,
+                command="python3 revised_focused_test.py",
+                criteria={"revised": "unverified"},
+                summary="First failure under the revised contract",
+            ),
+        )
+        self.assertEqual(
+            first_revised_failure["projection"]["current_node"],
+            "verification_rework",
+        )
+        self.assertEqual(
+            self.controller.show(task_id).records[-1]["producer"]["attempt"],
+            1,
+        )
+        self.source_action(task_id, {"summary": "Second bounded repair"}, "repair-2")
+        restarted_verification = Controller(self.data_dir).next(task_id)
+        self.assertEqual(
+            restarted_verification["action"]["retry_budget"]["attempts_used"],
+            1,
+        )
+        self.assertEqual(
+            restarted_verification["action"]["retry_budget"]["remaining"],
+            1,
+        )
 
     def test_feature_review_unavailable_succeeds_only_with_exact_waiver(self) -> None:
         state = self.controller.start(
             requirement="Deliver a reviewed feature",
             workflow="feature",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
         )
         task_id = state.task_id
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "Impact checked", "driver_result": {"status": "available"}},
+            {"summary": "Impact checked", "driver_result": driver_result("available")},
         )
         planning = self.controller.next(task_id)
         plan_dir = self.repository / "openspec" / "changes" / "feature"
         plan_dir.mkdir(parents=True)
         (plan_dir / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
         (plan_dir / "tasks.md").write_text("- [ ] focused test\n", encoding="utf-8")
-        resources = {
-            "items": [
+        resources = self.resource_payload(
+            task_id,
+            [
                 {
                     "path": "openspec/changes/feature/proposal.md",
                     "role": "governing",
@@ -471,17 +662,17 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 {
                     "path": "openspec/changes/feature/tasks.md",
                     "role": "governing",
-                    "normalizer": "openspec-tasks-v1",
+                    "normalizer": product_module.OPENSPEC_TASKS_NORMALIZER,
                 },
-            ]
-        }
+            ],
+        )
         self.controller.apply(
             task_id,
             planning["action"]["action_id"],
             {
                 "summary": "Plan recorded",
                 "resources": resources,
-                "driver_result": {"status": "available", "change": "feature"},
+                "driver_result": driver_result("available", change="feature"),
             },
             binding=planning["action"]["binding"],
         )
@@ -489,12 +680,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.source_action(task_id, {"summary": "Documented"}, "documentation")
         self.apply_current(
             task_id,
-            {
-                "passed": True,
-                "command": "python3 focused_test.py",
-                "coverage": {"requirement": "proven"},
-                "summary": "Verified",
-            },
+            self.verification_payload(
+                task_id,
+                passed=True,
+                command="python3 focused_test.py",
+                criteria={"requirement": "proven"},
+                summary="Verified",
+            ),
         )
         self.controller.decide(
             task_id,
@@ -514,7 +706,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 "assurance": "self",
                 "findings": {},
                 "summary": "Self-review complete; independence unavailable",
-                "driver_result": {"status": "unavailable"},
+                "driver_result": driver_result("unavailable"),
             },
         )
         self.assertEqual(review["projection"]["current_node"], "finalize_success")
@@ -583,12 +775,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         )
         self.apply_current(
             task_id,
-            {
-                "passed": True,
-                "command": "python3 focused_test.py",
-                "coverage": {"requirement": "proven"},
-                "summary": "Rework verified",
-            },
+            self.verification_payload(
+                task_id,
+                passed=True,
+                command="python3 focused_test.py",
+                criteria={"requirement": "proven"},
+                summary="Rework verified",
+            ),
         )
         replacement_verification = self.controller.show(task_id).records[-1]
         verification_inputs = {
@@ -621,6 +814,76 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.assertEqual(
             replayed["action"]["action_id"],
             "delivery.finalize.review-incomplete",
+        )
+
+    def test_verification_incomplete_dossier_does_not_promote_stale_review(self) -> None:
+        task_id = self.start_feature("Stale review is historical evidence")
+        self.preflight(task_id)
+        self.advance_feature_to_review(task_id, "stale-review")
+        review_payload = self.review_payload(
+            "changes-requested",
+            "independent",
+            "Review requires a source change",
+        )
+        review_payload["findings"] = {
+            "blocking": ["Update the repository-set implementation"]
+        }
+        self.apply_current(task_id, review_payload)
+        stale_review = self.controller.show(task_id).records[-1]
+
+        self.source_action(
+            task_id,
+            {"summary": "Addressed the review finding"},
+            "review-rework",
+        )
+        self.source_action(
+            task_id,
+            {"summary": "Updated documentation after review"},
+            "review-documentation",
+        )
+        failure = self.verification_payload(
+            task_id,
+            passed=False,
+            command="python3 focused_test.py",
+            criteria={"requirement": "unverified"},
+            summary="Verification still fails",
+        )
+        exhausted = self.apply_current(task_id, failure)
+        self.assertEqual(
+            exhausted["projection"]["current_node"],
+            "finalize_verification_incomplete",
+        )
+        self.apply_current(
+            task_id,
+            {
+                "summary": "Verification remained incomplete",
+                "remaining_risks": {"verification": "failing"},
+                "handoff": "Operator intervention required",
+            },
+        )
+
+        dossier = self.controller.show(task_id).records[-1]["artifact"]["body"]
+        self.assertIsNone(dossier["review"])
+        self.assertIsNone(dossier["review_assurance"])
+        review_history = next(
+            item
+            for item in dossier["artifacts"]
+            if item["record_id"] == stale_review["record_id"]
+        )
+        self.assertFalse(review_history["current"])
+        self.assertTrue(review_history["stale_reasons"])
+        review_attempt = next(
+            item
+            for item in dossier["review_attempts"]
+            if item["record_id"] == stale_review["record_id"]
+        )
+        self.assertFalse(review_attempt["current"])
+        self.assertTrue(review_attempt["stale_reasons"])
+        self.assertEqual(review_attempt["result"]["outcome"], "changes-requested")
+        self.assertEqual(review_attempt["result"]["assurance"], "independent")
+        self.assertEqual(
+            json_value(review_attempt["result"]["findings"]),
+            json_value(review_payload["findings"]),
         )
 
     def test_unavailable_review_without_exact_waiver_replays_as_rework(self) -> None:
@@ -766,13 +1029,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         state = self.controller.start(
             requirement="Feature with repository plan",
             workflow="feature",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
         )
         task_id = state.task_id
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "Impact", "driver_result": {"status": "degraded"}},
+            {"summary": "Impact", "driver_result": driver_result("degraded")},
         )
         projection = self.controller.next(task_id)
         plan = self.repository / "plan.md"
@@ -781,22 +1044,22 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         original_tasks = "- [ ] implement change\n- [ ] run focused runtime test\n"
         checked_tasks = "- [x] implement change\n- [X] run focused runtime test\n"
         tasks.write_text(original_tasks, encoding="utf-8")
-        items = [
+        resources = self.resource_payload(task_id, [
             {"path": "plan.md", "role": "governing", "normalizer": "none"},
             {"path": "tasks.md", "role": "reported", "normalizer": "none"},
             {
                 "path": "tasks.md",
                 "role": "governing",
-                "normalizer": "openspec-tasks-v1",
+                "normalizer": product_module.OPENSPEC_TASKS_NORMALIZER,
             },
-        ]
+        ])
         self.controller.apply(
             task_id,
             projection["action"]["action_id"],
             {
                 "summary": "Plan",
-                "resources": {"items": items},
-                "driver_result": {"status": "degraded"},
+                "resources": resources,
+                "driver_result": driver_result("degraded"),
             },
             binding=projection["action"]["binding"],
         )
@@ -817,7 +1080,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             item
             for item in recorded_resources
             if item["path"] == "tasks.md"
-            and item["normalizer"] == "openspec-tasks-v1"
+            and item["normalizer"] == product_module.OPENSPEC_TASKS_NORMALIZER
         )
         tasks.write_text(checked_tasks, encoding="utf-8")
         (self.repository / "a.txt").write_text("implemented\n", encoding="utf-8")
@@ -830,9 +1093,10 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.assertTrue(
             result["projection"]["freshness"][plan_record["record_id"]]["current"]
         )
-        current_resources = self.controller.show_view(task_id)["current_snapshot"][
-            "resources"
-        ]
+        current_resources = self.sole_member_snapshot(
+            task_id,
+            self.controller.show_view(task_id)["current_snapshot"],
+        )["resources"]
         checked_reported = next(
             item
             for item in current_resources
@@ -842,7 +1106,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             item
             for item in current_resources
             if item["path"] == "tasks.md"
-            and item["normalizer"] == "openspec-tasks-v1"
+            and item["normalizer"] == product_module.OPENSPEC_TASKS_NORMALIZER
         )
         self.assertNotEqual(
             initial_reported["raw_sha256"], checked_reported["raw_sha256"]
@@ -879,36 +1143,37 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         task_id = self.controller.start(
             requirement="Full delivery with revised scope",
             workflow="full",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
         ).task_id
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "C1 impact", "driver_result": {"status": "available"}},
+            {"summary": "C1 impact", "driver_result": driver_result("available")},
         )
         first_planning = self.controller.next(task_id)
         plan = self.repository / "plan.md"
         tasks = self.repository / "tasks.md"
         plan.write_text("C1 plan\n", encoding="utf-8")
         tasks.write_text("- [ ] verify C1\n", encoding="utf-8")
-        resources = {
-            "items": [
+        resources = self.resource_payload(
+            task_id,
+            [
                 {"path": "plan.md", "role": "governing", "normalizer": "none"},
                 {"path": "tasks.md", "role": "reported", "normalizer": "none"},
                 {
                     "path": "tasks.md",
                     "role": "governing",
-                    "normalizer": "openspec-tasks-v1",
+                    "normalizer": product_module.OPENSPEC_TASKS_NORMALIZER,
                 },
-            ]
-        }
+            ],
+        )
         self.controller.apply(
             task_id,
             first_planning["action"]["action_id"],
             {
                 "summary": "C1 plan",
                 "resources": resources,
-                "driver_result": {"status": "available", "change": "c1"},
+                "driver_result": driver_result("available", change="c1"),
             },
             binding=first_planning["action"]["binding"],
         )
@@ -930,13 +1195,17 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         revision_record = self.controller.show(task_id).records[-1]
         self.assertEqual(revision_record["artifact"]["type"], "revision-source")
         self.assertEqual(tuple(revision_record["artifact"]["inputs"]), ())
-        self.assertEqual(
-            revision_record["artifact"]["snapshot"]["status_sha256"],
-            plan_c1["artifact"]["snapshot"]["status_sha256"],
+        revision_snapshot = self.sole_member_snapshot(
+            task_id, revision_record["artifact"]["snapshot"]
+        )
+        plan_c1_snapshot = self.sole_member_snapshot(
+            task_id, plan_c1["artifact"]["snapshot"]
         )
         self.assertEqual(
-            tuple(revision_record["artifact"]["snapshot"]["resources"]), ()
+            revision_snapshot["status_sha256"],
+            plan_c1_snapshot["status_sha256"],
         )
+        self.assertEqual(tuple(revision_snapshot["resources"]), ())
         self.assertEqual(
             revision_record["payload"]["previous_contract_digest"],
             plan_c1["artifact"]["contract_digest"],
@@ -948,7 +1217,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
 
         self.apply_current(
             task_id,
-            {"summary": "C2 impact", "driver_result": {"status": "available"}},
+            {"summary": "C2 impact", "driver_result": driver_result("available")},
         )
         impact_c2 = self.controller.show(task_id).records[-1]
         self.assertEqual(
@@ -972,7 +1241,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             {
                 "summary": "C2 replacement plan",
                 "resources": resources,
-                "driver_result": {"status": "available", "change": "c2"},
+                "driver_result": driver_result("available", change="c2"),
             },
             binding=replacement_planning["action"]["binding"],
         )
@@ -1009,12 +1278,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.source_action(task_id, {"summary": "Initial implementation"}, "snapshot-failure")
         self.apply_current(
             task_id,
-            {
-                "passed": False,
-                "command": "python3 focused_test.py",
-                "coverage": {"requirement": "unverified"},
-                "summary": "Attempt retained before snapshot failure",
-            },
+            self.verification_payload(
+                task_id,
+                passed=False,
+                command="python3 focused_test.py",
+                criteria={"requirement": "unverified"},
+                summary="Attempt retained before snapshot failure",
+            ),
         )
         before = self.controller.show(task_id)
 
@@ -1137,12 +1407,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         task_id = self.start_lite()
         self.preflight(task_id)
         self.source_action(task_id, {"summary": "Implementation"}, "initial")
-        failure = {
-            "passed": False,
-            "command": "python3 focused_test.py",
-            "coverage": {"requirement": "unverified"},
-            "summary": "Still failing",
-        }
+        failure = self.verification_payload(
+            task_id,
+            passed=False,
+            command="python3 focused_test.py",
+            criteria={"requirement": "unverified"},
+            summary="Still failing",
+        )
         self.apply_current(task_id, failure)
         self.source_action(task_id, {"summary": "Bounded repair"}, "repair")
         second = self.apply_current(task_id, failure)
@@ -1179,7 +1450,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         state = self.controller.start(
             requirement="Two acceptance criteria",
             workflow="lite",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
             contract=contract,
         )
         task_id = state.task_id
@@ -1198,12 +1469,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.source_action(task_id, {"summary": "Implemented"}, "waiver")
         result = self.apply_current(
             task_id,
-            {
-                "passed": True,
-                "command": "python3 focused_test.py",
-                "coverage": {"required": "proven", "optional": "unverified"},
-                "summary": "Required criterion proven",
-            },
+            self.verification_payload(
+                task_id,
+                passed=True,
+                command="python3 focused_test.py",
+                criteria={"required": "proven", "optional": "unverified"},
+                summary="Required criterion proven",
+            ),
         )
         self.assertEqual(result["projection"]["current_node"], "finalize_success")
         final = self.apply_current(
@@ -1225,7 +1497,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 state = self.controller.start(
                     requirement="{} journey".format(workflow),
                     workflow=workflow,
-                    repository=str(self.repository),
+                    repositories=(str(self.repository),),
                 )
                 projection = self.controller.next(state.task_id)
                 self.assertEqual(projection["action"]["handler"], "preflight")
@@ -1240,13 +1512,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         state = self.controller.start(
             requirement="Investigate the observed behavior",
             workflow="investigation",
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
         )
         task_id = state.task_id
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "Impact located", "driver_result": {"status": "available"}},
+            {"summary": "Impact located", "driver_result": driver_result("available")},
         )
         self.apply_current(
             task_id,
@@ -1254,12 +1526,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         )
         self.apply_current(
             task_id,
-            {
-                "passed": True,
-                "command": "python3 reproduce.py",
-                "coverage": {"requirement": "proven"},
-                "summary": "Finding reproduced",
-            },
+            self.verification_payload(
+                task_id,
+                passed=True,
+                command="python3 reproduce.py",
+                criteria={"requirement": "proven"},
+                summary="Finding reproduced",
+            ),
         )
         self.apply_current(
             task_id,
@@ -1281,12 +1554,12 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         task_a = self.controller.start(
             requirement="Pinned workflow A",
             workflow=str(workflow_a),
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
         ).task_id
         task_b = self.controller.start(
             requirement="Pinned workflow B",
             workflow=str(workflow_b),
-            repository=str(self.repository),
+            repositories=(str(self.repository),),
         ).task_id
         task_c = self.start_lite("Unaffected built-in task")
         for task_id in (task_a, task_b, task_c):
@@ -1300,30 +1573,24 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.assertEqual(Controller(self.data_dir).show(task_c).revision, 1)
 
         value = json.loads(self.state_path(task_b).read_text(encoding="utf-8"))
-        value["records"][0]["schema"] = "dev-flow-record/v999"
+        value["records"][0]["schema"] = "dev-flow-record/unsupported"
         self.state_path(task_b).write_text(json.dumps(value), encoding="utf-8")
         with self.assertRaises(DevFlowError) as record_drift:
             Controller(self.data_dir).show(task_b)
         self.assertEqual(record_drift.exception.code, "STATE_INVALID")
         self.assertEqual(Controller(self.data_dir).show(task_c).revision, 1)
 
-    def test_catalog_and_projection_identity_drift_do_not_invalidate_replay(self) -> None:
+    def test_catalog_drift_is_local_but_product_identity_mismatch_fails_closed(self) -> None:
         task_id = self.start_lite("Identity isolation")
         self.preflight(task_id)
         self.source_action(task_id, {"summary": "Replayable work"}, "identity")
         persisted = self.controller.show(task_id)
         original_catalog = product_module.CATALOG_IDENTITY
-        original_product_protocol = product_module.AGENT_PROTOCOL_SCHEMA
-        original_engine_protocol = engine_module.AGENT_PROTOCOL_SCHEMA
         try:
             product_module.CATALOG_IDENTITY = "catalog-with-unrelated-workflow"
-            product_module.AGENT_PROTOCOL_SCHEMA = "dev-flow-agent/v-next"
-            engine_module.AGENT_PROTOCOL_SCHEMA = "dev-flow-agent/v-next"
-
             restarted = Controller(self.data_dir)
             self.assertEqual(restarted.show(task_id), persisted)
             projection = restarted.next(task_id)
-            self.assertEqual(projection["schema"], "dev-flow-agent/v-next")
             self.assertEqual(
                 projection["workflow"]["identity"], persisted.workflow_identity
             )
@@ -1333,62 +1600,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             )
         finally:
             product_module.CATALOG_IDENTITY = original_catalog
-            product_module.AGENT_PROTOCOL_SCHEMA = original_product_protocol
-            engine_module.AGENT_PROTOCOL_SCHEMA = original_engine_protocol
 
-    def test_workflow_v1_runs_as_a_new_v6_task(self) -> None:
-        workflow_path = self.root / "linear.json"
-        workflow_path.write_text(
-            json.dumps(
-                {
-                    "schema": "dev-flow-workflow/v1",
-                    "id": "linear",
-                    "version": 5,
-                    "entry": "preflight",
-                    "nodes": {
-                        "preflight": {
-                            "action_id": "task.preflight",
-                            "handler": "preflight",
-                            "target": {"node": "work", "status": "WORKING"},
-                            "effect": "git.inspect-repository",
-                        },
-                        "work": {
-                            "action_id": "work.record",
-                            "handler": "evidence.record",
-                            "target": {"node": "verify", "status": "VERIFYING"},
-                            "payload": {"summary": "string"},
-                        },
-                        "verify": {
-                            "action_id": "test.record",
-                            "handler": "test.record",
-                            "target": {"node": "done", "status": "DONE"},
-                            "payload": {"passed": "boolean", "command": "string"},
-                        },
-                        "done": {"terminal": True},
-                    },
-                    "cancel": {
-                        "action_id": "task.cancel",
-                        "handler": "evidence.record",
-                        "target": {"node": "done", "status": "CANCELLED"},
-                        "payload": {"reason": "string"},
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        state = self.controller.start(
-            requirement="Linear compatibility",
-            workflow=str(workflow_path),
-            repository=str(self.repository),
-        )
-        self.assertEqual(state.workflow_version, 5)
-        self.preflight(state.task_id)
-        self.source_action(state.task_id, {"summary": "Work done"}, "v1 work")
-        result = self.apply_current(
-            state.task_id,
-            {"passed": True, "command": "python3 focused_test.py"},
-        )
-        self.assertEqual(result["projection"]["status"], "DONE")
+        value = json.loads(self.state_path(task_id).read_text(encoding="utf-8"))
+        value["product_identity"] = "not-the-installed-product"
+        self.state_path(task_id).write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaises(DevFlowError) as mismatch:
+            Controller(self.data_dir).show(task_id)
+        self.assertEqual(mismatch.exception.code, "PRODUCT_IDENTITY_MISMATCH")
 
     def test_cli_requires_strict_binding_json(self) -> None:
         data_dir = str(self.root / "cli-data")

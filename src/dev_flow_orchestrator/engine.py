@@ -1,9 +1,8 @@
-"""Pure V6 ledger replay, action binding, assurance routing, and projections."""
+"""Pure ledger replay, action binding, assurance routing, and projections."""
 
 from __future__ import annotations
 
 from dataclasses import replace
-from types import MappingProxyType
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
 from .delivery import (
@@ -35,11 +34,14 @@ from .model import (
     freeze_json,
     json_value,
 )
-from .product import AGENT_PROTOCOL_SCHEMA
-from .snapshot import validate_snapshot
+from .product import (
+    AGENT_PROTOCOL_SCHEMA,
+    DRIVER_RESULT_SCHEMA,
+    VERIFICATION_COVERAGE_SCHEMA,
+)
+from .snapshot import repository_snapshot, validate_task_snapshot
 from .workflow import (
     ArtifactContract,
-    InputContract,
     NodeContract,
     WorkflowDefinition,
 )
@@ -129,7 +131,7 @@ def plan_current_action(
             status=state.status,
         )
     contract = current_node_contract(state, definition)
-    cancel = definition.cancel_contract
+    cancel = definition.cancel_for(state.current_node)
     is_cancel = cancel is not None and cancel.action_id == action_id
     if contract.action_id != action_id:
         if is_cancel:
@@ -142,7 +144,7 @@ def plan_current_action(
                 current_node=state.current_node,
                 expected_action_id=contract.action_id,
             )
-    if state.revision == 0 and contract.handler_id != "preflight":
+    if state.revision == 0 and contract.handler_id != "preflight" and not is_cancel:
         raise _error(
             "PREFLIGHT_REQUIRED",
             "repository preflight must be the first task mutation",
@@ -219,12 +221,24 @@ def validate_action_payload(
                 field=field,
                 expected_type=expected_type,
             )
+    driver_result = value.get("driver_result")
+    if driver_result is not None and (
+        not isinstance(driver_result, dict)
+        or driver_result.get("schema") != DRIVER_RESULT_SCHEMA
+    ):
+        raise _error(
+            NODE_OUTPUT_INVALID,
+            "driver result must use the current product schema",
+            expected_schema=DRIVER_RESULT_SCHEMA,
+        )
     return freeze_json(value)
 
 
-def _validated_snapshot(value: object) -> Mapping[str, object]:
+def _validated_snapshot(
+    value: object, repositories: Sequence[object]
+) -> Mapping[str, object]:
     try:
-        return freeze_json(validate_snapshot(value))
+        return freeze_json(validate_task_snapshot(value, repositories))
     except DevFlowError:
         raise
     except (TypeError, ValueError) as exc:
@@ -252,7 +266,7 @@ def assurance_attempts(
 
 
 def _action_attempt(
-    records: Sequence[object], node_id: str, contract_value: Mapping[str, object]
+    records: Sequence[object], contract: NodeContract, contract_value: Mapping[str, object]
 ) -> int:
     digest = contract_digest(contract_value)
     return 1 + sum(
@@ -260,58 +274,138 @@ def _action_attempt(
         for record in records
         if isinstance(record, Mapping)
         and isinstance(record.get("producer"), Mapping)
-        and record["producer"].get("node_id") == node_id
+        and record["producer"].get("kind") == "workflow-action"
+        and record["producer"].get("node_id") == contract.node_id
+        and record["producer"].get("action_id") == contract.action_id
         and isinstance(record.get("contract"), Mapping)
         and record["contract"].get("digest") == digest
     )
 
 
 def _coverage_payload(
-    output: Mapping[str, object], contract_value: Mapping[str, object]
-) -> Mapping[str, str]:
+    output: Mapping[str, object],
+    contract_value: Mapping[str, object],
+    repositories: Sequence[object],
+) -> Mapping[str, object]:
     coverage = output.get("coverage")
     criterion_ids = tuple(
         item["id"] for item in contract_value["acceptance_criteria"]
     )
-    if not isinstance(coverage, Mapping) or set(coverage) != set(criterion_ids):
+    if not isinstance(coverage, Mapping) or set(coverage) != {
+        "schema",
+        "criteria",
+        "repositories",
+        "integration",
+    }:
+        raise _error(
+            NODE_OUTPUT_INVALID,
+            "verification coverage must contain schema, criteria, repositories, and integration",
+        )
+    if coverage.get("schema") != VERIFICATION_COVERAGE_SCHEMA:
+        raise _error(
+            NODE_OUTPUT_INVALID,
+            "verification coverage must use the current product schema",
+            expected_schema=VERIFICATION_COVERAGE_SCHEMA,
+        )
+    criteria = coverage.get("criteria")
+    if not isinstance(criteria, Mapping) or set(criteria) != set(criterion_ids):
         raise _error(
             NODE_OUTPUT_INVALID,
             "verification coverage must report every acceptance criterion",
             expected_criterion_ids=list(criterion_ids),
         )
-    normalized = {}
+    normalized_criteria = {}
     for criterion_id in criterion_ids:
-        status = coverage.get(criterion_id)
+        status = criteria.get(criterion_id)
         if status not in ("proven", "unverified"):
             raise _error(
                 NODE_OUTPUT_INVALID,
                 "verification coverage values must be proven or unverified",
                 criterion_id=criterion_id,
             )
-        normalized[criterion_id] = status
-    return MappingProxyType(normalized)
+        normalized_criteria[criterion_id] = status
+
+    def result(value: object, field: str) -> dict:
+        if not isinstance(value, Mapping) or set(value) != {"command", "passed"}:
+            raise _error(
+                NODE_OUTPUT_INVALID,
+                "verification result fields are invalid",
+                field=field,
+            )
+        command = value.get("command")
+        passed = value.get("passed")
+        if (
+            not isinstance(command, str)
+            or not command.strip()
+            or len(command.encode("utf-8")) > 8192
+            or not isinstance(passed, bool)
+        ):
+            raise _error(
+                NODE_OUTPUT_INVALID,
+                "verification result value is invalid",
+                field=field,
+            )
+        return {"command": command, "passed": passed}
+
+    repository_ids = tuple(item.repository_id for item in repositories)
+    repository_results = coverage.get("repositories")
+    if not isinstance(repository_results, Mapping) or set(repository_results) != set(
+        repository_ids
+    ):
+        raise _error(
+            NODE_OUTPUT_INVALID,
+            "verification must report every repository exactly once",
+            expected_repository_ids=list(repository_ids),
+        )
+    normalized_repositories = {
+        repository_id: result(
+            repository_results.get(repository_id),
+            "repositories." + repository_id,
+        )
+        for repository_id in repository_ids
+    }
+    integration = result(coverage.get("integration"), "integration")
+    if output.get("command") != integration["command"]:
+        raise _error(
+            NODE_OUTPUT_INVALID,
+            "top-level verification command must equal the integration command",
+        )
+    aggregate_passed = integration["passed"] and all(
+        item["passed"] for item in normalized_repositories.values()
+    )
+    if output.get("passed") is not aggregate_passed:
+        raise _error(
+            NODE_OUTPUT_INVALID,
+            "top-level passed must equal the repository and integration command aggregate",
+        )
+    return freeze_json(
+        {
+            "schema": VERIFICATION_COVERAGE_SCHEMA,
+            "criteria": normalized_criteria,
+            "repositories": normalized_repositories,
+            "integration": integration,
+        }
+    )
 
 
 def _assurance_success(
+    state: TaskState,
     contract: NodeContract,
     output: Mapping[str, object],
     contract_value: Mapping[str, object],
     records: Sequence[object],
 ) -> bool:
-    if contract.handler_id == "test.record":
-        if output.get("passed") is not True:
-            raise _error("TEST_NOT_PASSING", "workflow-v1 test evidence is not passing")
-        return True
     if contract.handler_id == "verification.record":
-        coverage = _coverage_payload(output, contract_value)
+        coverage = _coverage_payload(output, contract_value, state.repositories)
         if output.get("passed") is not True:
             return False
         view = coverage_view(contract_value, records, {"coverage": coverage})
-        if any(item["status"] not in ("proven", "waived") for item in view.values()):
-            raise _error(
-                NODE_OUTPUT_INVALID,
-                "passing verification requires proven or waived current coverage",
-            )
+        incomplete = any(
+            item["status"] not in ("proven", "waived")
+            for item in view.values()
+        )
+        if incomplete:
+            return False
         return True
     if contract.handler_id == "review.record":
         outcome = output.get("outcome")
@@ -335,12 +429,14 @@ def _transition_for_action(
     output: Mapping[str, object],
     contract_value: Mapping[str, object],
 ) -> Tuple[dict, int]:
-    attempt = _action_attempt(state.records, contract.node_id, contract_value)
+    attempt = _action_attempt(state.records, contract, contract_value)
     route = "cancel" if contract is not None and contract.node_id == "cancel" else "success"
     target_node = contract.target_node
     target_status = contract.target_status
-    if contract.handler_id in ("verification.record", "review.record", "test.record"):
-        succeeded = _assurance_success(contract, output, contract_value, state.records)
+    if contract.handler_id in ("verification.record", "review.record"):
+        succeeded = _assurance_success(
+            state, contract, output, contract_value, state.records
+        )
         if not succeeded:
             if contract.rework is None:
                 raise _error(
@@ -366,7 +462,7 @@ def _transition_for_action(
 
 
 def _effective_artifact_contract(
-    contract: NodeContract, definition: WorkflowDefinition
+    contract: NodeContract,
 ) -> Optional[ArtifactContract]:
     if contract.artifact is not None:
         return contract.artifact
@@ -374,17 +470,6 @@ def _effective_artifact_contract(
         return None
     if contract.handler_id == "preflight":
         return ArtifactContract("repository-baseline", "produces-source", ())
-    if definition.schema == "dev-flow-workflow/v1":
-        if contract.handler_id == "test.record":
-            return ArtifactContract("legacy-verification", "verifies-source", ())
-        # Workflow-v1 had no workspace-role language and historically allowed
-        # evidence actions to accompany source edits.  The adapter therefore
-        # gives each such action a conservative source-successor boundary.
-        return ArtifactContract(
-            "legacy-evidence",
-            "produces-source",
-            (InputContract("*", "source-predecessor"),),
-        )
     return None
 
 
@@ -441,14 +526,23 @@ def _canonical_inputs(binding: Mapping[str, object]) -> list:
 
 
 def _bound_resources(
-    output: Mapping[str, object], snapshot: Mapping[str, object]
+    state: TaskState,
+    output: Mapping[str, object],
+    snapshot: Mapping[str, object],
 ) -> list:
-    requested = resource_requests(output)
-    snapshot_items = snapshot.get("resources")
-    if not isinstance(snapshot_items, (list, tuple)):
-        snapshot_items = ()
+    repository_ids = tuple(item.repository_id for item in state.repositories)
+    requested = resource_requests(output, repository_ids)
     result = []
     for request in requested:
+        repository_id = request.get("repository_id")
+        member_snapshot = repository_snapshot(
+            snapshot,
+            state.repositories,
+            str(repository_id),
+        )
+        snapshot_items = member_snapshot.get("resources")
+        if not isinstance(snapshot_items, (list, tuple)):
+            snapshot_items = ()
         match = next(
             (
                 item
@@ -465,8 +559,9 @@ def _bound_resources(
                 "RESOURCE_BINDING_MISSING",
                 "declared repository resource was not captured by the snapshot",
                 path=request["path"],
+                repository_id=repository_id,
             )
-        result.append(json_value(match))
+        result.append({"repository_id": repository_id, **json_value(match)})
     return result
 
 
@@ -539,12 +634,12 @@ def _dossier_body(
         current_snapshot=snapshot,
         outcome=contract.finalize_outcome or "incomplete",
         supplied=supplied,
+        repositories=state.repositories,
     )
 
 
 def _artifact_for_action(
     state: TaskState,
-    definition: WorkflowDefinition,
     contract: NodeContract,
     output: Mapping[str, object],
     binding: Mapping[str, object],
@@ -552,7 +647,7 @@ def _artifact_for_action(
     contract_value: Mapping[str, object],
     producer: Mapping[str, object],
 ) -> Optional[Mapping[str, object]]:
-    declared = _effective_artifact_contract(contract, definition)
+    declared = _effective_artifact_contract(contract)
     if declared is None:
         return None
     inputs = _canonical_inputs(binding)
@@ -579,7 +674,7 @@ def _artifact_for_action(
             "workspace_role": declared.workspace_role,
             "snapshot": json_value(snapshot),
             "inputs": inputs,
-            "resources": _bound_resources(output, snapshot),
+            "resources": _bound_resources(state, output, snapshot),
             "body": body,
         }
     )
@@ -611,7 +706,6 @@ def _binding_snapshot(
 
 def _validate_binding_for_action(
     state: TaskState,
-    definition: WorkflowDefinition,
     contract: NodeContract,
     binding_value: object,
     current_snapshot: Mapping[str, object],
@@ -636,7 +730,7 @@ def _validate_binding_for_action(
             fields=mismatched,
         )
     starting_snapshot = _binding_snapshot(state, binding, current_snapshot)
-    declared = _effective_artifact_contract(contract, definition)
+    declared = _effective_artifact_contract(contract)
     input_contracts: Iterable[object] = () if declared is None else declared.inputs
     resolved = resolve_inputs(
         state.records,
@@ -690,17 +784,14 @@ def _record_kind(contract: NodeContract) -> str:
 
 def _record_for_action(
     state: TaskState,
-    definition: WorkflowDefinition,
     contract: NodeContract,
     output: Mapping[str, object],
     binding_value: object,
     snapshot_value: object,
     timestamp: str,
 ) -> Tuple[Mapping[str, object], dict]:
-    snapshot = _validated_snapshot(snapshot_value)
-    binding = _validate_binding_for_action(
-        state, definition, contract, binding_value, snapshot
-    )
+    snapshot = _validated_snapshot(snapshot_value, state.repositories)
+    binding = _validate_binding_for_action(state, contract, binding_value, snapshot)
     contract_value = _current_contract(state)
     transition, attempt = _transition_for_action(
         state, contract, output, contract_value
@@ -708,7 +799,6 @@ def _record_for_action(
     producer = _producer(contract, attempt, output)
     artifact = _artifact_for_action(
         state,
-        definition,
         contract,
         output,
         binding,
@@ -756,7 +846,6 @@ def apply_current_action(
     output = validate_action_payload(contract, payload)
     record, transition = _record_for_action(
         state,
-        definition,
         contract,
         output,
         binding,
@@ -787,10 +876,7 @@ def _status_for_node(definition: WorkflowDefinition, node_id: str) -> str:
     if node_id == definition.entry_node:
         return "INTAKE"
     statuses = []
-    contracts = list(definition.nodes.values())
-    if definition.cancel_contract is not None:
-        contracts.append(definition.cancel_contract)
-    for contract in contracts:
+    for contract in definition.nodes.values():
         if contract.target_node == node_id and contract.target_status:
             statuses.append(contract.target_status)
         if contract.rework is not None:
@@ -834,7 +920,7 @@ def revise_contract(
     new_contract_digest = contract_digest(validated)
     clean_reason = _text(reason, "reason")
     clean_actor = _text(actor_label, "actor_label")
-    current_snapshot = _validated_snapshot(snapshot)
+    current_snapshot = _validated_snapshot(snapshot, state.repositories)
     target = definition.revision_target
     transition = {
         "from": state.current_node,
@@ -1035,7 +1121,16 @@ def validate_persisted_state(
         if not isinstance(record.get("timestamp"), str) or not record["timestamp"]:
             raise _state_invalid("record_timestamp_invalid", record_index=index)
         kind = record.get("kind")
-        if index == 1 and kind != "preflight":
+        producer = record.get("producer")
+        entry_cancel = definition.cancel_for(definition.entry_node)
+        is_entry_cancel = (
+            kind == "action"
+            and entry_cancel is not None
+            and isinstance(producer, Mapping)
+            and producer.get("action_id") == entry_cancel.action_id
+            and producer.get("node_id") == entry_cancel.node_id
+        )
+        if index == 1 and kind != "preflight" and not is_entry_cancel:
             raise _state_invalid("preflight_not_first")
         if kind == "decision":
             if index == 1:
@@ -1126,11 +1221,10 @@ def validate_state_transition(
         "workflow_id",
         "workflow_version",
         "workflow_schema",
-        "workflow_adapter_identity",
         "workflow_identity",
         "repositories",
         "original_contract",
-        "schema_version",
+        "version",
         "product_identity",
     )
     changed = [
@@ -1163,7 +1257,7 @@ def validate_state_transition(
 def _dossier_summary(
     state: TaskState,
     contract_value: Mapping[str, object],
-    freshness: Mapping[str, object],
+    freshness: Optional[Mapping[str, object]],
 ) -> Optional[dict]:
     current_digest = contract_digest(contract_value)
     for record in reversed(state.records):
@@ -1183,15 +1277,28 @@ def _dossier_summary(
             for item in coverage.values():
                 status = item.get("status") if isinstance(item, Mapping) else "unverified"
                 counts[status if status in counts else "unverified"] += 1
-        current = freshness.get(str(record.get("record_id")), {})
-        return {
+        current = (
+            None
+            if freshness is None
+            else freshness.get(str(record.get("record_id")), {})
+        )
+        summary = {
             "record_id": record.get("record_id"),
             "digest": artifact.get("digest"),
             "outcome": body.get("outcome") if isinstance(body, Mapping) else None,
             "coverage": counts,
-            "current": current.get("current", False),
-            "stale_reasons": current.get("reasons", []),
+            "current": None if current is None else current.get("current", False),
+            "stale_reasons": [] if current is None else current.get("reasons", []),
         }
+        if isinstance(body, Mapping):
+            repository_set = body.get("repository_set")
+            summary["schema"] = body.get("schema")
+            summary["repository_set_id"] = (
+                repository_set.get("id")
+                if isinstance(repository_set, Mapping)
+                else None
+            )
+        return summary
     return None
 
 
@@ -1201,14 +1308,14 @@ def agent_projection(
     current_snapshot: Mapping[str, object],
 ) -> dict:
     """Return one compact action plus its canonical provenance binding."""
-    snapshot = _validated_snapshot(current_snapshot)
+    snapshot = _validated_snapshot(current_snapshot, state.repositories)
     contract_value = _current_contract(state)
     freshness = artifact_freshness(state.records, contract_value, snapshot)
     terminal = is_terminal_state(state, definition)
     action = None
     if not terminal:
         node = current_node_contract(state, definition)
-        declared = _effective_artifact_contract(node, definition)
+        declared = _effective_artifact_contract(node)
         blocked = None
         try:
             inputs = resolve_inputs(
@@ -1238,12 +1345,26 @@ def agent_projection(
                 "details": dict(exc.details),
             }
         retry = None
-        if node.rework is not None:
-            used = assurance_attempts(state.records, node.node_id, contract_value)
+        retry_owner = node if node.rework is not None else None
+        if retry_owner is None:
+            rework_sources = [
+                candidate
+                for candidate in definition.nodes.values()
+                if candidate.rework is not None
+                and candidate.rework.failure_node == state.current_node
+            ]
+            if len(rework_sources) == 1:
+                retry_owner = rework_sources[0]
+        if retry_owner is not None and retry_owner.rework is not None:
+            used = assurance_attempts(
+                state.records,
+                retry_owner.node_id,
+                contract_value,
+            )
             retry = {
                 "attempts_used": used,
-                "max_attempts": node.rework.max_attempts,
-                "remaining": max(0, node.rework.max_attempts - used),
+                "max_attempts": retry_owner.rework.max_attempts,
+                "remaining": max(0, retry_owner.rework.max_attempts - used),
             }
         action = {
             **node.as_dict(),
@@ -1252,8 +1373,7 @@ def agent_projection(
             "blocked": blocked,
             "retry_budget": retry,
         }
-    repository = state.repositories[0]
-    return {
+    base = {
         "schema": AGENT_PROTOCOL_SCHEMA,
         "task_id": state.task_id,
         "revision": state.revision,
@@ -1261,48 +1381,88 @@ def agent_projection(
             "id": state.workflow_id,
             "version": state.workflow_version,
             "schema": state.workflow_schema,
-            "adapter_identity": state.workflow_adapter_identity,
             "identity": state.workflow_identity,
         },
         "status": state.status,
         "current_node": state.current_node,
         "contract": contract_summary(contract_value),
-        "repository": {
-            "id": repository.repository_id,
-            "path": repository.path,
-            "snapshot": {
-                key: json_value(snapshot.get(key))
-                for key in (
-                    "digest",
-                    "head",
-                    "branch",
-                    "clean",
-                    "status_sha256",
-                    "status_bytes",
-                )
-            },
+        "repository_set": {
+            "id": state.repository_set_id,
+            "digest": snapshot.get("digest"),
+            "repositories": [
+                {
+                    "id": repository.repository_id,
+                    "path": repository.path,
+                    "snapshot": {
+                        key: json_value(
+                            repository_snapshot(
+                                snapshot,
+                                state.repositories,
+                                repository.repository_id,
+                            ).get(key)
+                        )
+                        for key in (
+                            "digest",
+                            "head",
+                            "branch",
+                            "clean",
+                            "status_sha256",
+                            "status_bytes",
+                        )
+                    },
+                }
+                for repository in state.repositories
+            ],
         },
         "freshness": freshness,
         "action": action,
         "dossier": _dossier_summary(state, contract_value, freshness),
         "done": terminal,
     }
+    if action is not None and current_node_contract(
+        state, definition
+    ).handler_id == "verification.record":
+        action["verification_coverage"] = {
+            "schema": VERIFICATION_COVERAGE_SCHEMA,
+            "fields": ["schema", "criteria", "repositories", "integration"],
+            "criterion_ids": [
+                item["id"] for item in contract_value["acceptance_criteria"]
+            ],
+            "repository_ids": [
+                repository.repository_id for repository in state.repositories
+            ],
+            "result_fields": ["command", "passed"],
+            "command_rule": "top-level command equals integration command",
+            "passed_rule": "top-level passed equals all repository and integration results",
+        }
+    return base
 
 
 def task_view(
     state: TaskState,
     definition: WorkflowDefinition,
-    current_snapshot: Mapping[str, object],
+    current_snapshot: Optional[Mapping[str, object]],
+    *,
+    snapshot_error: Optional[Mapping[str, object]] = None,
 ) -> dict:
     """Full read-only state and derived delivery view for explicit inspection."""
-    snapshot = _validated_snapshot(current_snapshot)
+    snapshot = (
+        None
+        if current_snapshot is None
+        else _validated_snapshot(current_snapshot, state.repositories)
+    )
     contract_value = _current_contract(state)
-    freshness = artifact_freshness(state.records, contract_value, snapshot)
+    freshness = (
+        None
+        if snapshot is None
+        else artifact_freshness(state.records, contract_value, snapshot)
+    )
     return {
         **state.as_dict(),
         "effective_contract": json_value(contract_value),
         "effective_contract_digest": contract_digest(contract_value),
-        "current_snapshot": json_value(snapshot),
+        "current_snapshot": None if snapshot is None else json_value(snapshot),
+        "snapshot_error": json_value(snapshot_error),
         "artifact_freshness": freshness,
         "dossier": _dossier_summary(state, contract_value, freshness),
         "terminal": is_terminal_state(state, definition),

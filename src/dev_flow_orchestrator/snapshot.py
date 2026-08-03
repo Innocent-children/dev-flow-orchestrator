@@ -5,10 +5,23 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from typing import Mapping
+from typing import Mapping, Tuple
 
-from .model import DevFlowError, canonical_json_bytes, json_value
-from .product import WORKSPACE_SNAPSHOT_SCHEMA
+from .model import (
+    DevFlowError,
+    RepositoryRecord,
+    canonical_json_bytes,
+    json_value,
+    repository_by_id,
+    repository_set_id,
+    validate_repositories,
+)
+from .product import (
+    OPENSPEC_TASKS_NORMALIZER,
+    REPOSITORY_SET_SNAPSHOT_SCHEMA,
+    WORKSPACE_SNAPSHOT_SCHEMA,
+    product_domain,
+)
 
 
 MAX_GIT_OUTPUT_BYTES = 1024 * 1024
@@ -18,7 +31,8 @@ MAX_SNAPSHOT_RESOURCES = 64
 MAX_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
 MAX_SNAPSHOT_CONTENT_BYTES = 32 * 1024 * 1024
 
-_SNAPSHOT_DOMAIN = b"dev-flow-workspace-snapshot/v1\x00"
+_SNAPSHOT_DOMAIN = product_domain("workspace-snapshot")
+_REPOSITORY_SET_SNAPSHOT_DOMAIN = product_domain("repository-set-snapshot")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _MODE = re.compile(r"^[0-7]{6}$")
@@ -32,6 +46,10 @@ _SNAPSHOT_FIELDS = {
     "schema", "repository_root", "git_common_dir", "head", "branch", "clean",
     "status_sha256", "status_bytes", "entries", "resources", "digest",
 }
+_REPOSITORY_SET_SNAPSHOT_FIELDS = {
+    "schema", "repository_set_id", "repositories", "digest",
+}
+_REPOSITORY_SET_MEMBER_FIELDS = {"repository_id", "snapshot"}
 
 
 def _error(code: str, message: str, **details: object) -> DevFlowError:
@@ -64,6 +82,12 @@ def resource_key(resource: Mapping[str, object]) -> tuple:
 
 def snapshot_digest(value: Mapping[str, object]) -> str:
     return hashlib.sha256(_SNAPSHOT_DOMAIN + canonical_json_bytes(value)).hexdigest()
+
+
+def repository_set_snapshot_digest(value: Mapping[str, object]) -> str:
+    return hashlib.sha256(
+        _REPOSITORY_SET_SNAPSHOT_DOMAIN + canonical_json_bytes(value)
+    ).hexdigest()
 
 
 def validate_snapshot(value: object) -> dict:
@@ -195,7 +219,7 @@ def validate_snapshot(value: object) -> dict:
             or path not in entry_kinds
             or kind != entry_kinds[path]
             or role not in ("governing", "reported")
-            or normalizer not in ("none", "openspec-tasks-v1")
+            or normalizer not in ("none", OPENSPEC_TASKS_NORMALIZER)
             or identity in seen_resources
         ):
             raise _error("SNAPSHOT_INVALID", "workspace snapshot resource is invalid")
@@ -218,3 +242,151 @@ def validate_snapshot(value: object) -> dict:
     if snapshot_digest(plain) != digest:
         raise _error("SNAPSHOT_INVALID", "workspace snapshot seal does not match its content")
     return {**plain, "digest": digest}
+
+
+def validate_repository_set_snapshot(
+    value: object,
+    repositories: object,
+) -> dict:
+    """Validate one repository-set wrapper against immutable task membership."""
+    members = validate_repositories(repositories)
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _REPOSITORY_SET_SNAPSHOT_FIELDS
+    ):
+        raise _error("SNAPSHOT_INVALID", "repository-set snapshot fields are invalid")
+    plain = json_value(value)
+    digest = plain.pop("digest", None)
+    if plain.get("schema") != REPOSITORY_SET_SNAPSHOT_SCHEMA:
+        raise _error("SNAPSHOT_INVALID", "repository-set snapshot schema is invalid")
+    expected_set_id = repository_set_id(members)
+    if plain.get("repository_set_id") != expected_set_id:
+        raise _error(
+            "SNAPSHOT_INVALID",
+            "repository-set snapshot identity is invalid",
+        )
+    snapshots = plain.get("repositories")
+    if not isinstance(snapshots, list) or len(snapshots) != len(members):
+        raise _error(
+            "SNAPSHOT_INVALID",
+            "repository-set snapshot membership is invalid",
+        )
+    validated_members = []
+    git_common_dirs = set()
+    for repository, item in zip(members, snapshots):
+        if not isinstance(item, dict) or set(item) != _REPOSITORY_SET_MEMBER_FIELDS:
+            raise _error(
+                "SNAPSHOT_INVALID",
+                "repository-set snapshot member fields are invalid",
+            )
+        if item.get("repository_id") != repository.repository_id:
+            raise _error(
+                "SNAPSHOT_INVALID",
+                "repository-set snapshot membership is not canonical",
+                repository_id=repository.repository_id,
+            )
+        member_snapshot = validate_snapshot(item.get("snapshot"))
+        if member_snapshot["repository_root"] != repository.path:
+            raise _error(
+                "SNAPSHOT_INVALID",
+                "repository-set member root does not match task membership",
+                repository_id=repository.repository_id,
+                repository_root=member_snapshot["repository_root"],
+                expected_repository_root=repository.path,
+            )
+        git_common_dir = member_snapshot["git_common_dir"]
+        if git_common_dir in git_common_dirs:
+            raise _error(
+                "SNAPSHOT_INVALID",
+                "repository-set members share a Git common directory",
+                repository_id=repository.repository_id,
+                git_common_dir=git_common_dir,
+            )
+        git_common_dirs.add(git_common_dir)
+        validated_members.append(
+            {
+                "repository_id": repository.repository_id,
+                "snapshot": member_snapshot,
+            }
+        )
+    plain["repositories"] = validated_members
+    if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+        raise _error("SNAPSHOT_INVALID", "repository-set snapshot seal is invalid")
+    if repository_set_snapshot_digest(plain) != digest:
+        raise _error(
+            "SNAPSHOT_INVALID",
+            "repository-set snapshot seal does not match its content",
+        )
+    return {**plain, "digest": digest}
+
+
+def make_repository_set_snapshot(
+    repositories: object,
+    member_snapshots_by_id: object,
+) -> dict:
+    """Seal complete member snapshots in canonical task membership order."""
+    members = validate_repositories(repositories)
+    if not isinstance(member_snapshots_by_id, Mapping):
+        raise _error(
+            "SNAPSHOT_INVALID",
+            "repository-set member snapshots must be an identity map",
+        )
+    expected_ids = {member.repository_id for member in members}
+    if set(member_snapshots_by_id) != expected_ids:
+        raise _error(
+            "SNAPSHOT_INVALID",
+            "repository-set member snapshots do not match task membership",
+        )
+    base = {
+        "schema": REPOSITORY_SET_SNAPSHOT_SCHEMA,
+        "repository_set_id": repository_set_id(members),
+        "repositories": [
+            {
+                "repository_id": member.repository_id,
+                "snapshot": validate_snapshot(
+                    member_snapshots_by_id[member.repository_id]
+                ),
+            }
+            for member in members
+        ],
+    }
+    return validate_repository_set_snapshot(
+        {**base, "digest": repository_set_snapshot_digest(base)},
+        members,
+    )
+
+
+def validate_task_snapshot(value: object, repositories: object) -> dict:
+    """Validate the current task snapshot against immutable membership."""
+    return validate_repository_set_snapshot(value, repositories)
+
+
+def iter_repository_snapshots(
+    value: object,
+    repositories: object,
+) -> Tuple[Tuple[RepositoryRecord, dict], ...]:
+    """Return canonical `(RepositoryRecord, workspace snapshot)` members."""
+    members = validate_repositories(repositories)
+    snapshot = validate_task_snapshot(value, members)
+    return tuple(
+        (repository, item["snapshot"])
+        for repository, item in zip(members, snapshot["repositories"])
+    )
+
+
+def repository_snapshot(
+    value: object,
+    repositories: object,
+    repository_id: object,
+) -> dict:
+    """Return one member workspace snapshot by explicit repository identity."""
+    members = validate_repositories(repositories)
+    member = repository_by_id(members, repository_id)
+    for repository, snapshot in iter_repository_snapshots(value, members):
+        if repository == member:
+            return snapshot
+    raise _error(
+        "SNAPSHOT_INVALID",
+        "repository-set snapshot member is unavailable",
+        repository_id=member.repository_id,
+    )

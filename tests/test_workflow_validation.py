@@ -1,4 +1,4 @@
-"""Focused pure validation tests for workflow-v1 adaptation and workflow-v2."""
+"""Focused pure validation tests for the current workflow language."""
 
 from __future__ import annotations
 
@@ -12,59 +12,20 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from dev_flow_orchestrator.model import DevFlowError
-from dev_flow_orchestrator.product import (
-    WORKFLOW_IDS,
-    WORKFLOW_V1_ADAPTER_IDENTITY,
-    WORKFLOW_V2_ADAPTER_IDENTITY,
-)
+from dev_flow_orchestrator.product import PRODUCT_VERSION, WORKFLOW_IDS
 from dev_flow_orchestrator.workflow import (
-    SCHEMA_V1,
-    SCHEMA_V2,
+    SCHEMA,
     validate_definition_document,
     workflow_identity,
 )
 from dev_flow_orchestrator.workflows import load_definition
 
 
-def v1_document() -> dict:
+def workflow_document() -> dict:
     return {
-        "schema": SCHEMA_V1,
-        "id": "custom-linear",
-        "version": 5,
-        "entry": "preflight",
-        "nodes": {
-            "preflight": {
-                "action_id": "task.preflight",
-                "handler": "preflight",
-                "target": {"node": "work", "status": "WORKING"},
-                "effect": "git.inspect-repository",
-            },
-            "work": {
-                "action_id": "work.record",
-                "handler": "evidence.record",
-                "target": {"node": "verify", "status": "VERIFYING"},
-                "payload": {"summary": "string", "details": "object"},
-                "driver": {
-                    "tool": "project-specific-tool",
-                    "nested": {"mode": "opaque"},
-                },
-            },
-            "verify": {
-                "action_id": "test.record",
-                "handler": "test.record",
-                "target": {"node": "done", "status": "COMPLETE"},
-                "payload": {"passed": "boolean", "command": "string"},
-            },
-            "done": {"terminal": True},
-        },
-    }
-
-
-def v2_document() -> dict:
-    return {
-        "schema": SCHEMA_V2,
+        "schema": SCHEMA,
         "id": "bounded-delivery",
-        "version": 6,
+        "version": PRODUCT_VERSION,
         "entry": "preflight",
         "revision_target": "implement",
         "nodes": {
@@ -170,6 +131,7 @@ def v2_document() -> dict:
             "cancelled": {"terminal": True},
         },
         "cancel": {
+            "stages": ["preflight", "implement", "verify", "repair"],
             "action_id": "task.cancel",
             "handler": "artifact.record",
             "target": {"node": "cancelled", "status": "CANCELLED"},
@@ -189,65 +151,16 @@ def assert_invalid(
     testcase.assertIn(message_part, context.exception.message)
 
 
-class WorkflowV1AdapterTests(unittest.TestCase):
-    def test_version_five_document_is_adapted_without_rewriting_original(self) -> None:
-        document = v1_document()
-        definition = validate_definition_document(
-            document,
-            workflow_id="/tmp/custom-workflow.yaml",
-            source="test",
-        )
-
-        self.assertEqual(definition.schema, SCHEMA_V1)
-        self.assertEqual(definition.version, 5)
-        self.assertEqual(
-            definition.adapter_identity, WORKFLOW_V1_ADAPTER_IDENTITY
-        )
-        self.assertEqual(definition.revision_target, "preflight")
-        self.assertEqual(dict(definition.document), document)
-        self.assertEqual(
-            definition.nodes["work"].driver["nested"]["mode"], "opaque"
-        )
-        self.assertEqual(
-            definition.nodes["work"].allowed_state_writes[-1], "/records"
-        )
-        self.assertIsNone(definition.nodes["work"].artifact)
-
-    def test_selected_identity_binds_selector_schema_document_and_adapter(self) -> None:
-        document = v1_document()
-        first = workflow_identity("/tmp/a.yaml", document)
-        second = workflow_identity("/tmp/b.yaml", document)
-        changed = deepcopy(document)
-        changed["nodes"]["work"]["description"] = "changed"
-
-        self.assertNotEqual(first, second)
-        self.assertNotEqual(first, workflow_identity("/tmp/a.yaml", changed))
-        self.assertNotEqual(
-            first,
-            workflow_identity(
-                "/tmp/a.yaml", document, "dev-flow-workflow-v1-adapter/test"
-            ),
-        )
-
-    def test_v1_stays_version_five(self) -> None:
-        document = v1_document()
-        document["version"] = 6
-        assert_invalid(self, document, "workflow-v1 compatibility")
-
-
-class WorkflowV2ContractTests(unittest.TestCase):
+class WorkflowContractTests(unittest.TestCase):
     def test_typed_artifacts_and_finite_failure_cycle_load(self) -> None:
         definition = validate_definition_document(
-            v2_document(),
+            workflow_document(),
             workflow_id="bounded-delivery",
             source="test",
         )
 
-        self.assertEqual(definition.schema, SCHEMA_V2)
-        self.assertEqual(definition.version, 6)
-        self.assertEqual(
-            definition.adapter_identity, WORKFLOW_V2_ADAPTER_IDENTITY
-        )
+        self.assertEqual(definition.schema, SCHEMA)
+        self.assertEqual(definition.version, PRODUCT_VERSION)
         self.assertEqual(definition.revision_target, "implement")
         self.assertEqual(
             definition.nodes["implement"].artifact.inputs[0].edge_kind,
@@ -260,21 +173,55 @@ class WorkflowV2ContractTests(unittest.TestCase):
             "finalize_incomplete",
         )
         self.assertEqual(definition.terminals, definition.terminal_nodes)
-        self.assertIs(definition.cancel, definition.cancel_contract)
+        self.assertEqual(
+            definition.cancel_stages,
+            ("preflight", "implement", "verify", "repair"),
+        )
+        self.assertIsNotNone(definition.cancel_for("preflight"))
+        self.assertIsNone(definition.cancel_for("finalize_success"))
+
+    def test_selected_identity_binds_selector_schema_and_document(self) -> None:
+        document = workflow_document()
+        first = workflow_identity("/tmp/a.yaml", document)
+        second = workflow_identity("/tmp/b.yaml", document)
+        changed = deepcopy(document)
+        changed["nodes"]["implement"]["description"] = "changed"
+
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first, workflow_identity("/tmp/a.yaml", changed))
+
+    def test_non_current_workflow_schema_is_rejected(self) -> None:
+        document = workflow_document()
+        document["schema"] = "dev-flow-workflow/unsupported"
+        document["version"] = "unsupported"
+        assert_invalid(self, document, "schema must be exactly")
+
+    def test_cancel_stages_are_explicit_unique_and_nonterminal(self) -> None:
+        document = workflow_document()
+        document["cancel"].pop("stages")
+        assert_invalid(self, document, "cancel.stages")
+
+        document = workflow_document()
+        document["cancel"]["stages"] = ["verify", "verify"]
+        assert_invalid(self, document, "must not contain duplicates")
+
+        document = workflow_document()
+        document["cancel"]["stages"] = ["done"]
+        assert_invalid(self, document, "only nonterminal")
 
     def test_source_producer_requires_exactly_one_predecessor(self) -> None:
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["implement"]["artifact"]["inputs"] = []
         assert_invalid(self, document, "exactly one source-predecessor")
 
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["implement"]["artifact"]["inputs"].append(
             {"type": "older-baseline", "edge": "source-predecessor"}
         )
         assert_invalid(self, document, "exactly one source-predecessor")
 
     def test_preflight_and_revision_source_establish_source_without_predecessor(self) -> None:
-        document = v2_document()
+        document = workflow_document()
         definition = validate_definition_document(
             document, workflow_id="bounded-delivery", source="test"
         )
@@ -297,27 +244,42 @@ class WorkflowV2ContractTests(unittest.TestCase):
         )
 
     def test_revision_target_must_be_reachable_and_nonterminal(self) -> None:
-        document = v2_document()
+        document = workflow_document()
         document["revision_target"] = "done"
         assert_invalid(self, document, "reachable nonterminal")
 
-        document = v2_document()
+        document = workflow_document()
         document["revision_target"] = "missing"
         assert_invalid(self, document, "reachable nonterminal")
 
     def test_rework_is_assurance_only_and_budget_is_positive(self) -> None:
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["implement"]["rework"] = deepcopy(
             document["nodes"]["verify"]["rework"]
         )
         assert_invalid(self, document, "supported only")
 
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["verify"]["rework"]["max_attempts"] = 0
         assert_invalid(self, document, "positive integer")
 
+    def test_rework_failure_node_has_one_assurance_owner(self) -> None:
+        document = workflow_document()
+        second_verification = deepcopy(document["nodes"]["verify"])
+        second_verification["action_id"] = "verification.second.record"
+        second_verification["target"] = {
+            "node": "finalize_success",
+            "status": "FINALIZING",
+        }
+        document["nodes"]["verify"]["target"] = {
+            "node": "verify_again",
+            "status": "VERIFYING",
+        }
+        document["nodes"]["verify_again"] = second_verification
+        assert_invalid(self, document, "owned by exactly one assurance node")
+
     def test_exhaustion_must_enter_incomplete_finalization(self) -> None:
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["verify"]["rework"]["exhausted"] = {
             "node": "finalize_success",
             "status": "FINALIZING",
@@ -325,7 +287,7 @@ class WorkflowV2ContractTests(unittest.TestCase):
         assert_invalid(self, document, "incomplete delivery.finalize")
 
     def test_cycle_without_a_finite_failure_edge_is_rejected(self) -> None:
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["verify"]["target"] = {
             "node": "repair",
             "status": "IMPLEMENTING",
@@ -334,11 +296,11 @@ class WorkflowV2ContractTests(unittest.TestCase):
 
     def test_failure_only_node_is_reachable_but_unrelated_node_is_not(self) -> None:
         definition = validate_definition_document(
-            v2_document(), workflow_id="bounded-delivery", source="test"
+            workflow_document(), workflow_id="bounded-delivery", source="test"
         )
         self.assertIn("repair", definition.nodes)
 
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["orphan"] = {
             "action_id": "orphan.record",
             "handler": "artifact.record",
@@ -352,18 +314,18 @@ class WorkflowV2ContractTests(unittest.TestCase):
         assert_invalid(self, document, "not reachable")
 
     def test_verification_review_and_finalize_must_verify_source(self) -> None:
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["verify"]["artifact"]["workspace"] = "context"
         assert_invalid(self, document, "must use workspace: verifies-source")
 
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["finalize_success"]["artifact"]["workspace"] = (
             "context"
         )
         assert_invalid(self, document, "must use workspace: verifies-source")
 
     def test_non_cancelled_terminal_requires_delivery_finalizer(self) -> None:
-        document = v2_document()
+        document = workflow_document()
         document["nodes"]["verify"]["target"] = {
             "node": "done",
             "status": "DONE",
@@ -372,7 +334,7 @@ class WorkflowV2ContractTests(unittest.TestCase):
 
 
 class OfficialWorkflowPortfolioTests(unittest.TestCase):
-    def test_all_official_workflows_are_v2_and_finalize_both_outcomes(self) -> None:
+    def test_all_official_workflows_are_current_and_finalize_both_outcomes(self) -> None:
         self.assertEqual(
             set(WORKFLOW_IDS),
             {"lite", "feature", "bugfix", "investigation", "refactor", "full"},
@@ -380,8 +342,8 @@ class OfficialWorkflowPortfolioTests(unittest.TestCase):
         for workflow_id in WORKFLOW_IDS:
             with self.subTest(workflow=workflow_id):
                 definition = load_definition(workflow_id)
-                self.assertEqual(definition.schema, SCHEMA_V2)
-                self.assertEqual(definition.version, 6)
+                self.assertEqual(definition.schema, SCHEMA)
+                self.assertEqual(definition.version, PRODUCT_VERSION)
                 outcomes = {
                     node.finalize_outcome
                     for node in definition.nodes.values()
@@ -392,7 +354,14 @@ class OfficialWorkflowPortfolioTests(unittest.TestCase):
                     definition.nodes["preflight"].artifact.artifact_type,
                     "repository-baseline",
                 )
-                self.assertIsNotNone(definition.cancel_contract)
+                nonterminal = {
+                    node_id
+                    for node_id, node in definition.nodes.items()
+                    if node_id not in definition.terminal_nodes
+                    and node.finalize_outcome is None
+                }
+                self.assertGreater(len(definition.cancel_stages), len(nonterminal) // 2)
+                self.assertTrue(set(definition.cancel_stages).issubset(nonterminal))
 
     def test_official_revision_targets_match_product_reentry(self) -> None:
         self.assertEqual(load_definition("lite").revision_target, "implement")

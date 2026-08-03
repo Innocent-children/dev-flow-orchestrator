@@ -1,4 +1,4 @@
-"""The sole application boundary for V6 task inspection and mutation."""
+"""The sole application boundary for task inspection and mutation."""
 
 from __future__ import annotations
 
@@ -32,13 +32,18 @@ from .engine import (
 )
 from .git_client import GitClient
 from .model import (
+    canonical_repositories as canonical_repository_records,
     DevFlowError,
     MutationReceipt,
     RepositoryRecord,
     TaskState,
     initial_state,
     json_value,
+    repository_by_id,
+    validate_repositories,
 )
+from .product import MAX_REPOSITORY_COUNT, MIN_REPOSITORY_COUNT
+from .snapshot import make_repository_set_snapshot, validate_snapshot
 from .store import TaskStore
 
 
@@ -57,12 +62,21 @@ def _merge_resources(*groups: Sequence[Mapping[str, object]]) -> tuple:
     seen = set()
     for group in groups:
         for item in group:
-            key = (item.get("path"), item.get("role"), item.get("normalizer"))
+            key = (
+                item.get("repository_id"),
+                item.get("path"),
+                item.get("role"),
+                item.get("normalizer"),
+            )
             if key in seen:
                 continue
             seen.add(key)
             result.append(json_value(item))
     return tuple(result)
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left in right.parents or right in left.parents
 
 
 class Controller:
@@ -77,31 +91,300 @@ class Controller:
         self.store = TaskStore(data_dir)
         self.git = git_client or GitClient()
 
+    def _member_error(
+        self,
+        exc: DevFlowError,
+        repository: RepositoryRecord,
+        *,
+        phase: str,
+        capture_pass: Optional[int] = None,
+    ) -> DevFlowError:
+        details = dict(exc.details)
+        details.setdefault("repository_id", repository.repository_id)
+        details.setdefault("repository_path", repository.path)
+        details.setdefault("phase", phase)
+        if capture_pass is not None:
+            details.setdefault("capture_pass", capture_pass)
+        return DevFlowError(exc.code, exc.message, details=details)
+
+    def _validate_repository_paths(
+        self,
+        repositories: Sequence[RepositoryRecord],
+    ) -> tuple:
+        records = validate_repositories(repositories)
+        resolved = []
+        for repository in records:
+            try:
+                root = Path(repository.path).resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise DevFlowError(
+                    "REPOSITORY_INVALID",
+                    "repository path cannot be resolved",
+                    details={
+                        "repository_id": repository.repository_id,
+                        "repository_path": repository.path,
+                        "error": str(exc),
+                    },
+                ) from exc
+            if not root.is_dir():
+                raise DevFlowError(
+                    "REPOSITORY_INVALID",
+                    "repository path is not a directory",
+                    details={
+                        "repository_id": repository.repository_id,
+                        "repository_path": repository.path,
+                    },
+                )
+            if str(root) != repository.path:
+                raise DevFlowError(
+                    "REPOSITORY_IDENTITY_MISMATCH",
+                    "repository no longer resolves to its canonical task root",
+                    details={
+                        "repository_id": repository.repository_id,
+                        "repository_path": repository.path,
+                        "resolved_path": str(root),
+                    },
+                )
+            if _paths_overlap(self.store.root, root):
+                raise DevFlowError(
+                    "DATA_DIR_INSIDE_REPOSITORY",
+                    "controller data directory must remain outside target repositories",
+                    details={
+                        "data_dir": str(self.store.root),
+                        "repository": str(root),
+                        "repository_id": repository.repository_id,
+                    },
+                )
+            resolved.append((repository, root))
+        for index, (repository, root) in enumerate(resolved):
+            for other, other_root in resolved[index + 1 :]:
+                if _paths_overlap(root, other_root):
+                    raise DevFlowError(
+                        "REPOSITORY_OVERLAP",
+                        "task repository roots must not overlap",
+                        details={
+                            "repository_ids": [
+                                repository.repository_id,
+                                other.repository_id,
+                            ],
+                            "repository_paths": [str(root), str(other_root)],
+                        },
+                    )
+        return records
+
+    def _capture_members(
+        self,
+        repositories: Sequence[RepositoryRecord],
+        resources_by_id: Mapping[str, Sequence[Mapping[str, object]]],
+        *,
+        phase: str,
+        capture_pass: int,
+    ) -> dict:
+        records = self._validate_repository_paths(repositories)
+        snapshots = {}
+        common_directories = {}
+        for repository in records:
+            try:
+                snapshot = validate_snapshot(
+                    self.git.snapshot(
+                        repository.path,
+                        resources=resources_by_id.get(repository.repository_id, ()),
+                    )
+                )
+                if snapshot["repository_root"] != repository.path:
+                    raise DevFlowError(
+                        "REPOSITORY_IDENTITY_MISMATCH",
+                        "captured repository root does not match task membership",
+                        details={
+                            "captured_repository_root": snapshot["repository_root"],
+                        },
+                    )
+                common_path = Path(snapshot["git_common_dir"]).resolve(strict=True)
+                if not common_path.is_dir():
+                    raise DevFlowError(
+                        "REPOSITORY_INVALID",
+                        "Git common directory is not a directory",
+                        details={"git_common_dir": str(common_path)},
+                    )
+            except DevFlowError as exc:
+                raise self._member_error(
+                    exc,
+                    repository,
+                    phase=phase,
+                    capture_pass=capture_pass,
+                ) from exc
+            except (OSError, RuntimeError) as exc:
+                wrapped = DevFlowError(
+                    "REPOSITORY_INVALID",
+                    "Git common directory cannot be resolved",
+                    details={"error": str(exc)},
+                )
+                raise self._member_error(
+                    wrapped,
+                    repository,
+                    phase=phase,
+                    capture_pass=capture_pass,
+                ) from exc
+            common_identity = str(common_path)
+            other = common_directories.get(common_identity)
+            if other is not None:
+                raise DevFlowError(
+                    "REPOSITORY_GIT_IDENTITY_DUPLICATE",
+                    "task repositories must not share a Git common directory",
+                    details={
+                        "git_common_dir": common_identity,
+                        "repository_ids": [other, repository.repository_id],
+                        "phase": phase,
+                        "capture_pass": capture_pass,
+                    },
+                )
+            common_directories[common_identity] = repository.repository_id
+            snapshots[repository.repository_id] = snapshot
+        return snapshots
+
+    @staticmethod
+    def _changed_members(
+        repositories: Sequence[RepositoryRecord],
+        first: Mapping[str, object],
+        second: Mapping[str, object],
+    ) -> list:
+        return [
+            repository.repository_id
+            for repository in repositories
+            if first.get(repository.repository_id)
+            != second.get(repository.repository_id)
+        ]
+
     def _canonical_repositories(self, paths: Iterable[str]) -> tuple:
-        seen = set()
+        if isinstance(paths, (str, bytes, Mapping)):
+            raise DevFlowError(
+                "REPOSITORY_COUNT_INVALID",
+                "repositories must be a collection of repository roots",
+            )
+        try:
+            supplied_paths = tuple(paths)
+        except TypeError as exc:
+            raise DevFlowError(
+                "REPOSITORY_COUNT_INVALID",
+                "repositories must be a collection of repository roots",
+            ) from exc
+        count = len(supplied_paths)
+        if not MIN_REPOSITORY_COUNT <= count <= MAX_REPOSITORY_COUNT:
+            raise DevFlowError(
+                "REPOSITORY_COUNT_INVALID",
+                "task repository count is outside the supported bound",
+                details={
+                    "minimum": MIN_REPOSITORY_COUNT,
+                    "maximum": MAX_REPOSITORY_COUNT,
+                    "repository_count": count,
+                },
+            )
+        seen = {}
         repositories = []
-        for supplied in paths:
-            path = Path(supplied).expanduser().resolve()
+        for input_index, supplied in enumerate(supplied_paths):
+            if not isinstance(supplied, str) or not supplied:
+                raise DevFlowError(
+                    "REPOSITORY_INVALID",
+                    "repository path must be a non-empty string",
+                    details={"input_index": input_index},
+                )
+            try:
+                path = Path(supplied).expanduser().resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise DevFlowError(
+                    "REPOSITORY_INVALID",
+                    "repository path cannot be resolved",
+                    details={
+                        "input_index": input_index,
+                        "path": supplied,
+                        "error": str(exc),
+                    },
+                ) from exc
             if not path.is_dir():
                 raise DevFlowError(
                     "REPOSITORY_INVALID",
                     "repository path is not a directory",
-                    details={"path": str(path)},
+                    details={"input_index": input_index, "path": str(path)},
                 )
             identity = str(path)
             if identity in seen:
+                raise DevFlowError(
+                    "REPOSITORY_DUPLICATE",
+                    "repository inputs resolve to the same canonical root",
+                    details={
+                        "path": identity,
+                        "input_indices": [seen[identity], input_index],
+                    },
+                )
+            seen[identity] = input_index
+            repositories.append(RepositoryRecord(_repository_id(path), identity))
+        records = canonical_repository_records(repositories)
+        self._validate_repository_paths(records)
+        resources_by_id = {record.repository_id: () for record in records}
+        first = self._capture_members(
+            records,
+            resources_by_id,
+            phase="admission",
+            capture_pass=1,
+        )
+        second = self._capture_members(
+            records,
+            resources_by_id,
+            phase="admission",
+            capture_pass=2,
+        )
+        changed = self._changed_members(records, first, second)
+        if changed:
+            raise DevFlowError(
+                "SNAPSHOT_UNSTABLE",
+                "repository set changed during admission",
+                details={"repository_ids": changed, "phase": "admission"},
+            )
+        return records
+
+    def _partition_resources(
+        self,
+        state: TaskState,
+        resources: Sequence[Mapping[str, object]],
+    ) -> dict:
+        records = validate_repositories(state.repositories)
+        partitions = {record.repository_id: [] for record in records}
+        seen = set()
+        for item in resources:
+            if not isinstance(item, Mapping):
+                raise DevFlowError(
+                    "NODE_OUTPUT_INVALID",
+                    "resource request must be an object",
+                )
+            fields = set(item)
+            expected_fields = {"repository_id", "path", "role", "normalizer"}
+            if fields != expected_fields:
+                raise DevFlowError(
+                    "NODE_OUTPUT_INVALID",
+                    "resource request fields are invalid",
+                    details={"fields": sorted(str(field) for field in fields)},
+                )
+            repository_id = item.get("repository_id")
+            repository = repository_by_id(records, repository_id)
+            normalized = {
+                "path": item.get("path"),
+                "role": item.get("role"),
+                "normalizer": item.get("normalizer"),
+            }
+            identity = (
+                repository.repository_id,
+                normalized["path"],
+                normalized["role"],
+                normalized["normalizer"],
+            )
+            if identity in seen:
                 continue
             seen.add(identity)
-            repositories.append(RepositoryRecord(_repository_id(path), identity))
-        if not repositories:
-            raise DevFlowError("REPOSITORY_REQUIRED", "one repository is required")
-        if len(repositories) != 1:
-            raise DevFlowError(
-                "REPOSITORY_COUNT_UNSUPPORTED",
-                "this runtime supports exactly one repository per task",
-                details={"repository_count": len(repositories)},
-            )
-        return tuple(repositories)
+            partitions[repository.repository_id].append(normalized)
+        return {
+            repository_id: tuple(requests)
+            for repository_id, requests in partitions.items()
+        }
 
     def _snapshot(
         self,
@@ -112,7 +395,27 @@ class Controller:
     ) -> Mapping[str, object]:
         current = current_resource_requests(state) if include_current_resources else ()
         resources = _merge_resources(current, additional_resources)
-        return self.git.snapshot(state.repositories[0].path, resources=resources)
+        partitions = self._partition_resources(state, resources)
+        first = self._capture_members(
+            state.repositories,
+            partitions,
+            phase="snapshot",
+            capture_pass=1,
+        )
+        second = self._capture_members(
+            state.repositories,
+            partitions,
+            phase="snapshot",
+            capture_pass=2,
+        )
+        changed = self._changed_members(state.repositories, first, second)
+        if changed:
+            raise DevFlowError(
+                "SNAPSHOT_UNSTABLE",
+                "repository set changed between complete capture passes",
+                details={"repository_ids": changed, "phase": "snapshot"},
+            )
+        return make_repository_set_snapshot(state.repositories, second)
 
     def _projection(self, state: TaskState, definition) -> dict:
         return agent_projection(state, definition, self._snapshot(state))
@@ -130,7 +433,7 @@ class Controller:
         *,
         requirement: str,
         workflow: str,
-        repository: str,
+        repositories: Iterable[str],
         task_id: Optional[str] = None,
         contract: Optional[Mapping[str, object]] = None,
     ) -> TaskState:
@@ -140,18 +443,7 @@ class Controller:
             )
         clean_requirement = requirement.strip()
         definition = workflows.load_definition(workflow)
-        repository_record = self._canonical_repositories([repository])[0]
-        root = Path(repository_record.path).resolve()
-        if (
-            self.store.root == root
-            or root in self.store.root.parents
-            or self.store.root in root.parents
-        ):
-            raise DevFlowError(
-                "DATA_DIR_INSIDE_REPOSITORY",
-                "controller data directory must remain outside target repositories",
-                details={"data_dir": str(self.store.root), "repository": str(root)},
-            )
+        repository_records = self._canonical_repositories(repositories)
         delivery_contract = (
             minimal_contract(clean_requirement)
             if contract is None
@@ -162,7 +454,7 @@ class Controller:
             requirement=clean_requirement,
             contract=delivery_contract,
             definition=definition,
-            repository=repository_record,
+            repositories=repository_records,
             timestamp=_utc_now(),
         )
         return self.store.create(state)
@@ -172,7 +464,16 @@ class Controller:
 
     def show_view(self, task_id: str) -> dict:
         state, definition = self.store.load_with_definition(task_id)
-        return task_view(state, definition, self._snapshot(state))
+        try:
+            snapshot = self._snapshot(state)
+        except DevFlowError as exc:
+            return task_view(
+                state,
+                definition,
+                None,
+                snapshot_error=exc.as_dict()["error"],
+            )
+        return task_view(state, definition, snapshot)
 
     def next(self, task_id: str) -> dict:
         state, definition = self.store.load_with_definition(task_id)
@@ -198,7 +499,12 @@ class Controller:
                 state, definition, action_id, expected_revision
             )
             validated = validate_action_payload(contract, payload)
-            requested = resource_requests(validated)
+            requested = resource_requests(
+                validated,
+                repository_ids=tuple(
+                    repository.repository_id for repository in state.repositories
+                ),
+            )
             snapshot = self._snapshot(state, additional_resources=requested)
             committed = self.store.update(
                 task_id,
@@ -226,7 +532,7 @@ class Controller:
                 committed.status,
                 committed.current_node,
             ).as_dict(),
-            "projection": self._projection(committed, definition),
+            "projection": agent_projection(committed, definition, snapshot),
         }
 
     def revise_contract(
@@ -267,7 +573,7 @@ class Controller:
                 committed.status,
                 committed.current_node,
             ).as_dict(),
-            "projection": self._projection(committed, definition),
+            "projection": agent_projection(committed, definition, snapshot),
         }
 
     def decide(
@@ -277,6 +583,7 @@ class Controller:
         decision: Mapping[str, object],
     ) -> dict:
         state, definition = self.store.load_with_definition(task_id)
+        snapshot = self._snapshot(state)
         try:
             committed = self.store.update(
                 task_id,
@@ -300,17 +607,19 @@ class Controller:
                 committed.status,
                 committed.current_node,
             ).as_dict(),
-            "projection": self._projection(committed, definition),
+            "projection": agent_projection(committed, definition, snapshot),
         }
 
     def cancel(self, task_id: str, *, reason: str) -> dict:
         state, definition = self.store.load_with_definition(task_id)
         if is_terminal_state(state, definition):
             raise DevFlowError("ACTION_NOT_AVAILABLE", "task is already finished")
-        cancel = definition.cancel_contract
+        cancel = definition.cancel_for(state.current_node)
         if cancel is None:
             raise DevFlowError(
-                "ACTION_NOT_AVAILABLE", "workflow does not declare cancellation"
+                "ACTION_NOT_AVAILABLE",
+                "current workflow stage does not declare cancellation",
+                details={"current_node": state.current_node},
             )
         snapshot = self._snapshot(state)
         contract_value = effective_contract(state.original_contract, state.records)
@@ -336,7 +645,10 @@ class Controller:
         for state, definition in self.store.list_states_with_definitions():
             if is_terminal_state(state, definition):
                 continue
-            root = Path(state.repositories[0].path).resolve()
-            if candidate == root or root in candidate.parents:
+            if any(
+                candidate == Path(repository.path)
+                or Path(repository.path) in candidate.parents
+                for repository in state.repositories
+            ):
                 matches.append(state)
         return tuple(sorted(matches, key=lambda item: item.task_id.encode("utf-8")))

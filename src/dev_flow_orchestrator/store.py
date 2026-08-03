@@ -1,4 +1,4 @@
-"""Private schema-v6 filesystem state store and lock boundary."""
+"""Private current-product filesystem state store and lock boundary."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .model import (
     strict_json_loads,
     validate_task_id,
 )
-from .product import PRODUCT_IDENTITY, TASK_SCHEMA_VERSION
+from .product import PRODUCT_IDENTITY, PRODUCT_VERSION
 from .workflow import WorkflowDefinition
 from .workflows import load_definition, task_definition
 
@@ -99,10 +99,12 @@ class TaskStore:
             ) from exc
         if not isinstance(value, dict):
             raise DevFlowError("STATE_INVALID", "task state must be an object")
-        if value.get("schema_version") != TASK_SCHEMA_VERSION:
+        if value.get("version") != PRODUCT_VERSION:
             raise DevFlowError(
                 "STATE_INVALID",
-                "task state is not current schema v{}".format(TASK_SCHEMA_VERSION),
+                "task state is not current product version {}".format(
+                    PRODUCT_VERSION
+                ),
             )
         if value.get("product_identity") != PRODUCT_IDENTITY:
             raise DevFlowError(

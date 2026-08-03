@@ -1,11 +1,11 @@
 interface:
   display_name: "Analyze Change Impact"
-  short_description: "Map V6 impact with confirmed graph evidence"
-  default_prompt: "Use $analyze-change-impact to produce a bounded, phase-selected, source-confirmed V6 impact report."
+  short_description: "Map exact repository-set 0.2.0 impact with evidence"
+  default_prompt: "Use $analyze-change-impact to produce a source-confirmed 0.2.0 report for the exact set of one to eight repositories, binding every canonical member and the aggregate repository-set digest."
 dependencies:
   tools:
     - type: "mcp"
       value: "codebase-memory-mcp"
-      description: "Uses distinct baseline/current project IDs for phase-selected discovery"
+      description: "Uses distinct per-member baseline/current project IDs for phase-selected discovery"
 policy:
   allow_implicit_invocation: false

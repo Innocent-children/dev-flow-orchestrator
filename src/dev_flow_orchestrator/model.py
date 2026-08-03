@@ -1,20 +1,31 @@
-"""Immutable V6 domain values with no infrastructure dependency."""
+"""Immutable current-product domain values with no infrastructure dependency."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
+import os
 import re
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Tuple
 
-from .product import PRODUCT_IDENTITY, TASK_SCHEMA_VERSION
+from .product import (
+    MAX_REPOSITORY_COUNT,
+    MIN_REPOSITORY_COUNT,
+    PRODUCT_IDENTITY,
+    PRODUCT_VERSION,
+    RECEIPT_SCHEMA,
+    WORKFLOW_SCHEMA,
+    product_domain,
+)
 
 if TYPE_CHECKING:
     from .workflow import WorkflowDefinition
 
 
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_REPOSITORY_SET_ID_DOMAIN = product_domain("repository-set-identity")
 
 
 class DevFlowError(Exception):
@@ -109,6 +120,34 @@ class RepositoryRecord:
     repository_id: str
     path: str
 
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.repository_id, str)
+            or not self.repository_id
+            or "\x00" in self.repository_id
+        ):
+            raise DevFlowError("STATE_INVALID", "repository identity is invalid")
+        try:
+            self.repository_id.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise DevFlowError(
+                "STATE_INVALID", "repository identity is not UTF-8"
+            ) from exc
+        if (
+            not isinstance(self.path, str)
+            or not self.path
+            or not os.path.isabs(self.path)
+            or "\x00" in self.path
+            or os.path.normpath(self.path) != self.path
+        ):
+            raise DevFlowError("STATE_INVALID", "repository path is invalid")
+        try:
+            self.path.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise DevFlowError(
+                "STATE_INVALID", "repository path is not UTF-8"
+            ) from exc
+
     def as_dict(self) -> dict:
         return {"id": self.repository_id, "path": self.path}
 
@@ -118,11 +157,84 @@ class RepositoryRecord:
             raise DevFlowError("STATE_INVALID", "repository record is invalid")
         repository_id = value.get("id")
         path = value.get("path")
-        if not isinstance(repository_id, str) or not repository_id:
-            raise DevFlowError("STATE_INVALID", "repository identity is invalid")
-        if not isinstance(path, str) or not path:
-            raise DevFlowError("STATE_INVALID", "repository path is invalid")
         return cls(repository_id, path)
+
+
+def repository_order_key(repository: RepositoryRecord) -> tuple:
+    """Return the byte-stable persisted repository ordering key."""
+    if not isinstance(repository, RepositoryRecord):
+        raise DevFlowError("STATE_INVALID", "repository record is invalid")
+    return (repository.path.encode("utf-8"), repository.repository_id.encode("utf-8"))
+
+
+def validate_repositories(
+    repositories: object,
+    *,
+    require_canonical: bool = True,
+) -> Tuple[RepositoryRecord, ...]:
+    """Validate the exact persisted repository tuple without filesystem access."""
+    if isinstance(repositories, (str, bytes, Mapping)):
+        raise DevFlowError("STATE_INVALID", "task repositories are invalid")
+    try:
+        items = tuple(repositories)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise DevFlowError("STATE_INVALID", "task repositories are invalid") from exc
+    if not MIN_REPOSITORY_COUNT <= len(items) <= MAX_REPOSITORY_COUNT:
+        raise DevFlowError(
+            "STATE_INVALID",
+            "task repository count is invalid",
+            details={
+                "minimum": MIN_REPOSITORY_COUNT,
+                "maximum": MAX_REPOSITORY_COUNT,
+                "repository_count": len(items),
+            },
+        )
+    if any(not isinstance(item, RepositoryRecord) for item in items):
+        raise DevFlowError("STATE_INVALID", "repository record is invalid")
+    repository_ids = [item.repository_id for item in items]
+    paths = [item.path for item in items]
+    if len(set(repository_ids)) != len(repository_ids):
+        raise DevFlowError("STATE_INVALID", "repository identities are not unique")
+    if len(set(paths)) != len(paths):
+        raise DevFlowError("STATE_INVALID", "repository paths are not unique")
+    canonical = tuple(sorted(items, key=repository_order_key))
+    if require_canonical and items != canonical:
+        raise DevFlowError("STATE_INVALID", "task repositories are not canonical")
+    return items
+
+
+def canonical_repositories(
+    repositories: Iterable[RepositoryRecord],
+) -> Tuple[RepositoryRecord, ...]:
+    """Validate and canonically order a candidate exact repository set."""
+    items = validate_repositories(repositories, require_canonical=False)
+    return tuple(sorted(items, key=repository_order_key))
+
+
+def repository_set_id(repositories: object) -> str:
+    """Derive the domain-separated identity of an ordered repository tuple."""
+    items = validate_repositories(repositories)
+    return hashlib.sha256(
+        _REPOSITORY_SET_ID_DOMAIN
+        + canonical_json_bytes([item.as_dict() for item in items])
+    ).hexdigest()
+
+
+def repository_by_id(
+    repositories: object,
+    repository_id: object,
+) -> RepositoryRecord:
+    """Resolve a persisted member without inferring a default repository."""
+    items = validate_repositories(repositories)
+    if isinstance(repository_id, str):
+        for item in items:
+            if item.repository_id == repository_id:
+                return item
+    raise DevFlowError(
+        "REPOSITORY_UNKNOWN",
+        "repository identity is not a task member",
+        details={"repository_id": repository_id if isinstance(repository_id, str) else None},
+    )
 
 
 @dataclass(frozen=True)
@@ -133,19 +245,23 @@ class TaskState:
     created_at: str
     updated_at: str
     workflow_id: str
-    workflow_version: int
+    workflow_version: str
     workflow_schema: str
-    workflow_adapter_identity: str
     workflow_identity: str
     status: str
     current_node: str
     repositories: Tuple[RepositoryRecord, ...]
     original_contract: Mapping[str, object]
     records: Tuple[object, ...] = ()
-    schema_version: int = TASK_SCHEMA_VERSION
+    version: str = PRODUCT_VERSION
     product_identity: str = PRODUCT_IDENTITY
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "repositories",
+            validate_repositories(self.repositories),
+        )
         object.__setattr__(self, "original_contract", freeze_json(self.original_contract))
         object.__setattr__(
             self,
@@ -153,9 +269,13 @@ class TaskState:
             tuple(freeze_json(value) for value in self.records),
         )
 
+    @property
+    def repository_set_id(self) -> str:
+        return repository_set_id(self.repositories)
+
     def as_dict(self) -> dict:
         return {
-            "schema_version": self.schema_version,
+            "version": self.version,
             "product_identity": self.product_identity,
             "task_id": self.task_id,
             "requirement": self.requirement,
@@ -166,7 +286,6 @@ class TaskState:
                 "id": self.workflow_id,
                 "version": self.workflow_version,
                 "schema": self.workflow_schema,
-                "adapter_identity": self.workflow_adapter_identity,
                 "identity": self.workflow_identity,
             },
             "status": self.status,
@@ -186,7 +305,7 @@ class TaskState:
         if not isinstance(value, dict):
             raise DevFlowError("STATE_INVALID", "task state must be an object")
         expected_fields = {
-            "schema_version",
+            "version",
             "product_identity",
             "task_id",
             "requirement",
@@ -206,10 +325,12 @@ class TaskState:
                 "task state fields are invalid",
                 details={"fields": sorted(str(field) for field in value)},
             )
-        if value.get("schema_version") != TASK_SCHEMA_VERSION:
+        if value.get("version") != PRODUCT_VERSION:
             raise DevFlowError(
                 "STATE_INVALID",
-                "task state is not current schema v{}".format(TASK_SCHEMA_VERSION),
+                "task state is not current product version {}".format(
+                    PRODUCT_VERSION
+                ),
             )
         if value.get("product_identity") != PRODUCT_IDENTITY:
             raise DevFlowError(
@@ -219,11 +340,17 @@ class TaskState:
         workflow = value.get("workflow")
         repositories = value.get("repositories")
         if not isinstance(workflow, dict) or set(workflow) != {
-            "id", "version", "schema", "adapter_identity", "identity"
+            "id",
+            "version",
+            "schema",
+            "identity",
         }:
             raise DevFlowError("STATE_INVALID", "task workflow selection is invalid")
-        if not isinstance(repositories, list) or len(repositories) != 1:
-            raise DevFlowError("STATE_INVALID", "task must have exactly one repository")
+        if not isinstance(repositories, list):
+            raise DevFlowError("STATE_INVALID", "task repositories are invalid")
+        repository_records = validate_repositories(
+            tuple(RepositoryRecord.from_dict(item) for item in repositories)
+        )
         task_id = validate_task_id(value.get("task_id"))
         requirement = value.get("requirement")
         revision = value.get("revision")
@@ -245,7 +372,6 @@ class TaskState:
             "updated_at": value.get("updated_at"),
             "workflow_id": workflow.get("id"),
             "workflow_schema": workflow.get("schema"),
-            "workflow_adapter_identity": workflow.get("adapter_identity"),
             "workflow_identity": workflow.get("identity"),
             "status": value.get("status"),
             "current_node": value.get("current_node"),
@@ -253,16 +379,21 @@ class TaskState:
         if any(not isinstance(item, str) or not item for item in scalar_fields.values()):
             raise DevFlowError("STATE_INVALID", "task scalar field is invalid")
         workflow_version = workflow.get("version")
-        if isinstance(workflow_version, bool) or not isinstance(workflow_version, int):
+        if not isinstance(workflow_version, str):
             raise DevFlowError("STATE_INVALID", "task workflow version is invalid")
+        if (
+            workflow_version != PRODUCT_VERSION
+            or scalar_fields["workflow_schema"] != WORKFLOW_SCHEMA
+        ):
+            raise DevFlowError(
+                "WORKFLOW_IDENTITY_MISMATCH",
+                "task workflow language is not installed",
+            )
         if definition is not None:
             checks = (
+                (scalar_fields["workflow_id"], definition.workflow_id),
                 (workflow_version, definition.version),
                 (scalar_fields["workflow_schema"], definition.schema),
-                (
-                    scalar_fields["workflow_adapter_identity"],
-                    definition.adapter_identity,
-                ),
                 (scalar_fields["workflow_identity"], definition.identity),
             )
             if any(stored != loaded for stored, loaded in checks):
@@ -279,11 +410,10 @@ class TaskState:
             workflow_id=scalar_fields["workflow_id"],
             workflow_version=workflow_version,
             workflow_schema=scalar_fields["workflow_schema"],
-            workflow_adapter_identity=scalar_fields["workflow_adapter_identity"],
             workflow_identity=scalar_fields["workflow_identity"],
             status=scalar_fields["status"],
             current_node=scalar_fields["current_node"],
-            repositories=tuple(RepositoryRecord.from_dict(item) for item in repositories),
+            repositories=repository_records,
             original_contract=contract,
             records=tuple(records),
         )
@@ -310,7 +440,7 @@ class MutationReceipt:
 
     def as_dict(self) -> dict:
         return {
-            "schema": "dev-flow-v6-receipt/v1",
+            "schema": RECEIPT_SCHEMA,
             "task_id": self.task_id,
             "action_id": self.action_id,
             "committed_revision": self.committed_revision,
@@ -325,7 +455,7 @@ def initial_state(
     requirement: str,
     contract: Mapping[str, object],
     definition: "WorkflowDefinition",
-    repository: RepositoryRecord,
+    repositories: Iterable[RepositoryRecord],
     timestamp: str,
 ) -> TaskState:
     validate_task_id(task_id)
@@ -334,6 +464,7 @@ def initial_state(
     from .delivery import validate_contract
 
     validated_contract = validate_contract(contract, expected_revision=1)
+    repository_records = canonical_repositories(repositories)
     return TaskState(
         task_id=task_id,
         requirement=requirement.strip(),
@@ -343,10 +474,9 @@ def initial_state(
         workflow_id=definition.workflow_id,
         workflow_version=definition.version,
         workflow_schema=definition.schema,
-        workflow_adapter_identity=definition.adapter_identity,
         workflow_identity=definition.identity,
         status="INTAKE",
         current_node=definition.entry_node,
-        repositories=(repository,),
+        repositories=repository_records,
         original_contract=validated_contract,
     )

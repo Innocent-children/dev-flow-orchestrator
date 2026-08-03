@@ -30,6 +30,7 @@ from .snapshot import (
     valid_relative_path as _valid_relative_path,
     validate_snapshot,
 )
+from .product import OPENSPEC_TASKS_NORMALIZER
 
 
 GIT_COMMAND_TIMEOUT_SECONDS = 30
@@ -381,7 +382,7 @@ class GitClient:
             if (
                 not _valid_relative_path(path)
                 or role not in ("governing", "reported")
-                or normalizer not in ("none", "openspec-tasks-v1")
+                or normalizer not in ("none", OPENSPEC_TASKS_NORMALIZER)
             ):
                 raise _error(
                     "SNAPSHOT_RESOURCE_INVALID",
@@ -1093,18 +1094,3 @@ class GitClient:
             "resources": resource_entries,
         }
         return validate_snapshot({**base, "digest": _snapshot_digest(base)})
-
-    @classmethod
-    def inspect(cls, repository_path: str) -> dict:
-        """Compatibility projection for the V5 preflight effect contract."""
-        snapshot = cls.snapshot(repository_path)
-        return {
-            "schema": "dev-flow-v5-git-preflight/v1",
-            "repository_root": snapshot["repository_root"],
-            "git_common_dir": snapshot["git_common_dir"],
-            "head": snapshot["head"],
-            "branch": snapshot["branch"],
-            "clean": snapshot["clean"],
-            "status_sha256": snapshot["status_sha256"],
-            "status_bytes": snapshot["status_bytes"],
-        }

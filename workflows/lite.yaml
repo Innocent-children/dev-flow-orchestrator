@@ -1,6 +1,6 @@
-schema: dev-flow-workflow/v2
+schema: dev-flow-workflow/0.2.0
 id: lite
-version: 6
+version: "0.2.0"
 description: "Fast personal delivery with implementation, bounded verification, and a Delivery Dossier."
 entry: preflight
 revision_target: implement
@@ -79,6 +79,7 @@ nodes:
   cancelled: {terminal: true}
 
 cancel:
+  stages: [preflight, implement, verify, verification_rework]
   action_id: task.cancel
   handler: artifact.record
   target: {node: cancelled, status: CANCELLED}

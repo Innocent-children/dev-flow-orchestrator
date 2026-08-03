@@ -11,30 +11,31 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from dev_flow_orchestrator import yaml_subset
+from dev_flow_orchestrator.product import PRODUCT_VERSION, WORKFLOW_SCHEMA
 
 
 class YamlSubsetParserTest(unittest.TestCase):
     def test_nested_block_mapping(self) -> None:
         document = (
-            "schema: dev-flow-workflow/v1\n"
+            f"schema: {WORKFLOW_SCHEMA}\n"
             "id: lite\n"
-            "version: 5\n"
+            f"version: {PRODUCT_VERSION}\n"
             "entry: preflight\n"
             "nodes:\n"
             "  implement:\n"
-            "    action_id: task.implementation.complete\n"
-            "    handler: evidence.record\n"
+            "    action_id: implementation.record\n"
+            "    handler: artifact.record\n"
             "    target: {node: verify, status: VERIFYING}\n"
             "    payload:\n"
             "      summary: string\n"
         )
         value = yaml_subset.load(document)
-        self.assertEqual(value["schema"], "dev-flow-workflow/v1")
+        self.assertEqual(value["schema"], WORKFLOW_SCHEMA)
         self.assertEqual(value["id"], "lite")
-        self.assertEqual(value["version"], 5)
+        self.assertEqual(value["version"], PRODUCT_VERSION)
         self.assertEqual(value["entry"], "preflight")
         implement = value["nodes"]["implement"]
-        self.assertEqual(implement["action_id"], "task.implementation.complete")
+        self.assertEqual(implement["action_id"], "implementation.record")
         self.assertEqual(implement["target"], {"node": "verify", "status": "VERIFYING"})
         self.assertEqual(implement["payload"], {"summary": "string"})
 
@@ -82,11 +83,11 @@ class YamlSubsetParserTest(unittest.TestCase):
 
     def test_hash_without_preceding_space_is_plain_scalar_content(self) -> None:
         value = yaml_subset.load(
-            "action: task.preflight#v2\n"
+            "action: task.preflight#current\n"
             "description: fixes issue#123 # real comment\n"
             "url: https://example.test/run#phase\n"
         )
-        self.assertEqual(value["action"], "task.preflight#v2")
+        self.assertEqual(value["action"], "task.preflight#current")
         self.assertEqual(value["description"], "fixes issue#123")
         self.assertEqual(value["url"], "https://example.test/run#phase")
 
@@ -115,7 +116,7 @@ class YamlSubsetParserTest(unittest.TestCase):
 
     def test_json_documents_parse_via_fallback(self) -> None:
         document = (
-            '{"schema": "dev-flow-workflow/v1", "id": "lite", '
+            f'{{"schema": "{WORKFLOW_SCHEMA}", "id": "lite", '
             '"target": {"node": "done", "status": "DONE"}}'
         )
         value = yaml_subset.load_or_json(document)

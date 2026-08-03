@@ -1,4 +1,4 @@
-"""V6 package validation covers candidate-owned delivery semantics."""
+"""Current package validation covers candidate-owned delivery semantics."""
 
 from __future__ import annotations
 
@@ -11,8 +11,11 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(SRC))
 
+from dev_flow_orchestrator.product import IMPACT_REPORT_SCHEMA, PRODUCT_VERSION
 from scripts.validate_package import validate
 
 
@@ -21,7 +24,7 @@ def _ignore(_directory: str, names: list[str]) -> set[str]:
     return set(names) & ignored
 
 
-class V6PackageValidationTests(unittest.TestCase):
+class PackageValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.candidate = Path(self.temporary.name) / "candidate with spaces"
@@ -61,30 +64,20 @@ class V6PackageValidationTests(unittest.TestCase):
             result["errors"],
         )
 
-    def test_hook_bootstrap_must_identify_v6(self) -> None:
+    def test_hook_bootstrap_must_identify_current_version(self) -> None:
         hook = self.candidate / "hooks" / "dev_flow_hook.py"
         current = hook.read_text(encoding="utf-8")
-        self.assertIn("V6 Hook", current)
-        hook.write_text(current.replace("V6 Hook", "V5 Hook"), encoding="utf-8")
+        current_label = "Dev Flow {} Hook".format(PRODUCT_VERSION)
+        self.assertIn(current_label, current)
+        hook.write_text(
+            current.replace(current_label, "unversioned Hook"),
+            encoding="utf-8",
+        )
         result = validate(self.candidate)
         self.assert_error_contains(
             result,
-            "hooks/dev_flow_hook.py does not identify V6",
+            "hooks/dev_flow_hook.py does not identify the current product version",
         )
-
-    def test_stale_public_selector_is_reported(self) -> None:
-        for name in ("README.md", "README_CN.md"):
-            with self.subTest(name=name):
-                readme = self.candidate / name
-                original = readme.read_text(encoding="utf-8")
-                readme.write_text(original + "\nUse lite@5.\n", encoding="utf-8")
-                result = validate(self.candidate)
-                self.assertFalse(result["ok"])
-                self.assertIn(
-                    "stale public workflow selector remains: " + name,
-                    result["errors"],
-                )
-                readme.write_text(original, encoding="utf-8")
 
     def test_missing_canonical_chinese_readme_is_reported(self) -> None:
         (self.candidate / "README_CN.md").unlink()
@@ -156,7 +149,7 @@ class V6PackageValidationTests(unittest.TestCase):
         result = validate(self.candidate)
         self.assert_error_contains(
             result,
-            "workflow-v2 action nodes must declare artifact",
+            "current workflow action nodes must declare artifact",
         )
 
     def test_official_assurance_requires_exhausted_route(self) -> None:
@@ -201,6 +194,21 @@ class V6PackageValidationTests(unittest.TestCase):
             "delivery.finalize must produce artifact type delivery-dossier",
         )
 
+    def test_official_workflow_cancellation_is_stage_declared(self) -> None:
+        workflow = self.candidate / "workflows" / "lite.yaml"
+        original = workflow.read_text(encoding="utf-8")
+        changed = original.replace(
+            "  stages: [preflight, implement, verify, verification_rework]\n",
+            "  stages: [preflight, finalize_success]\n",
+            1,
+        )
+        self.assertNotEqual(changed, original)
+        workflow.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "does not expose stage-declared cancellation for most normal stages",
+        )
+
     def test_manifest_rejects_unsupported_hook_field(self) -> None:
         manifest_path = self.candidate / ".codex-plugin" / "plugin.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -215,11 +223,15 @@ class V6PackageValidationTests(unittest.TestCase):
             "plugin manifest contains unsupported field(s): hooks",
         )
 
-    def test_lock_version_must_match_manifest_cachebuster(self) -> None:
+    def test_lock_version_must_match_manifest_version(self) -> None:
         lock = self.candidate / "uv.lock"
         current = lock.read_text(encoding="utf-8")
         lock.write_text(
-            current.replace("6.0.0+codex.", "6.0.1+codex.", 1),
+            current.replace(
+                'version = "{}"'.format(PRODUCT_VERSION),
+                'version = "unsupported"',
+                1,
+            ),
             encoding="utf-8",
         )
         result = validate(self.candidate)
@@ -265,8 +277,8 @@ class V6PackageValidationTests(unittest.TestCase):
         skill = self.candidate / "skills" / "analyze-change-impact" / "SKILL.md"
         current = skill.read_text(encoding="utf-8")
         changed = current.replace(
-            '    "schema": "dev-flow-impact-report/v1",\n',
-            '    "schema": "impact-summary/v1",\n',
+            '    "schema": "{}",\n'.format(IMPACT_REPORT_SCHEMA),
+            '    "schema": "dev-flow-impact-report/unsupported",\n',
             1,
         )
         self.assertNotEqual(changed, current)
@@ -291,17 +303,6 @@ class V6PackageValidationTests(unittest.TestCase):
             "driver_result.details placement",
         )
 
-    def test_bilingual_docs_require_v5_rollback_language(self) -> None:
-        readme = self.candidate / "README_CN.md"
-        current = readme.read_text(encoding="utf-8")
-        self.assertIn("回滚", current)
-        readme.write_text(current.replace("回滚", "恢复旧版"), encoding="utf-8")
-        result = validate(self.candidate)
-        self.assert_error_contains(
-            result,
-            "README_CN.md 缺少阶段 1 或 V5 兼容性说明",
-        )
-
     def test_main_skill_requires_delivery_dossier_guidance(self) -> None:
         skill = self.candidate / "skills" / "follow-dev-flow" / "SKILL.md"
         current = skill.read_text(encoding="utf-8")
@@ -313,10 +314,10 @@ class V6PackageValidationTests(unittest.TestCase):
         result = validate(self.candidate)
         self.assert_error_contains(
             result,
-            "follow-dev-flow Skill is missing V6 delivery guidance",
+            "follow-dev-flow Skill is missing current-version delivery guidance",
         )
 
-    def test_stale_main_skill_agent_guidance_is_reported(self) -> None:
+    def test_one_repository_only_main_skill_agent_guidance_is_reported(self) -> None:
         metadata = (
             self.candidate
             / "skills"
@@ -325,20 +326,190 @@ class V6PackageValidationTests(unittest.TestCase):
             / "openai.yaml"
         )
         current = metadata.read_text(encoding="utf-8")
-        stale_variants = (
-            current.replace("V6", "V5"),
-            current.replace("单个 Git 仓库", "单仓库或多仓库"),
+        changed = current.replace(
+            "在一至八个精确仓库工作树中",
+            "在当前一个 Git 仓库中",
         )
-        for stale in stale_variants:
-            with self.subTest(stale=stale):
-                self.assertNotEqual(stale, current)
-                metadata.write_text(stale, encoding="utf-8")
-                result = validate(self.candidate)
+        self.assertNotEqual(changed, current)
+        metadata.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "follow-dev-flow agent metadata does not use the current exact-set version",
+        )
+
+    def test_repository_topology_authority_is_validated(self) -> None:
+        product = self.candidate / "src" / "dev_flow_orchestrator" / "product.py"
+        current = product.read_text(encoding="utf-8")
+        changed = current.replace("MAX_REPOSITORY_COUNT = 8", "MAX_REPOSITORY_COUNT = 7")
+        self.assertNotEqual(changed, current)
+        product.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "product repository-topology authority is invalid",
+        )
+
+    def test_cli_must_retain_repeatable_repository_selection(self) -> None:
+        cli = self.candidate / "src" / "dev_flow_orchestrator" / "cli.py"
+        current = cli.read_text(encoding="utf-8")
+        changed = current.replace('action="append"', 'action="store"', 1)
+        self.assertNotEqual(changed, current)
+        cli.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "src/dev_flow_orchestrator/cli.py is not wired to the "
+            "repository-topology authority",
+        )
+
+    def test_installed_validator_must_include_exact_set_journey(self) -> None:
+        runner = self.candidate / "scripts" / "validate_installed_stage1.py"
+        current = runner.read_text(encoding="utf-8")
+        changed = current.replace(
+            "exact-set-secondary-resume-drift-resources-dossier",
+            "one-repository-only",
+            1,
+        )
+        self.assertNotEqual(changed, current)
+        runner.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "installed validation does not prove the exact-set journeys",
+        )
+
+    def test_installed_validator_must_include_exact_set_lite_journey(self) -> None:
+        runner = self.candidate / "scripts" / "validate_installed_stage1.py"
+        current = runner.read_text(encoding="utf-8")
+        changed = current.replace(
+            "exact-set-lite-success-dossier",
+            "one-repository-lite-only",
+            1,
+        )
+        self.assertNotEqual(changed, current)
+        runner.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "installed validation does not prove the exact-set journeys",
+        )
+
+    def test_positive_later_stage_claim_is_not_hidden_by_existing_negation(self) -> None:
+        claims = {
+            "README.md": "The controller automatically creates branches.",
+            "README_CN.md": "控制器支持协调并行 Agent。",
+        }
+        for relative, claim in claims.items():
+            with self.subTest(relative=relative):
+                path = self.candidate / relative
+                original = path.read_text(encoding="utf-8")
+                path.write_text(original + "\n" + claim + "\n", encoding="utf-8")
+                self.assert_error_contains(
+                    validate(self.candidate),
+                    "unsupported later-stage product claim remains: " + relative,
+                )
+                path.write_text(original, encoding="utf-8")
+
+        manifest_path = self.candidate / ".codex-plugin" / "plugin.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertIn("never", manifest["interface"]["longDescription"].lower())
+        manifest["interface"]["defaultPrompt"].append(
+            "The controller runs repositories in parallel."
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "plugin manifest claims unsupported later-stage product behavior",
+        )
+
+    def test_all_current_product_surfaces_reject_version_coded_content(self) -> None:
+        generation_marker = "V" + "6"
+        component_marker = "v" + "2"
+        text_assets = (
+            ("src/dev_flow_orchestrator/git_client.py", generation_marker),
+            ("tests/test_yaml_subset.py", generation_marker),
+            (".github/workflows/focused.yml", generation_marker),
+            ("skills/review-dev-flow-change/SKILL.md", component_marker),
+            ("hooks/dev_flow_hook.py", component_marker),
+            ("scripts/validate_installed_stage1.py", generation_marker),
+            ("README.md", component_marker),
+            ("workflows/lite.yaml", component_marker),
+            ("pyproject.toml", component_marker),
+        )
+        for relative, marker in text_assets:
+            path = self.candidate / relative
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\n# injected product generation: "
+                + marker
+                + "\n",
+                encoding="utf-8",
+            )
+
+        manifest_path = self.candidate / ".codex-plugin" / "plugin.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["description"] += " " + generation_marker
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = validate(self.candidate)
+        checked_assets = tuple(relative for relative, _marker in text_assets) + (
+            ".codex-plugin/plugin.json",
+        )
+        for relative in checked_assets:
+            with self.subTest(relative=relative):
                 self.assert_error_contains(
                     result,
-                    "follow-dev-flow agent metadata contains a stale generation "
-                    "or multi-repository claim",
+                    "current product asset content contains version-coded "
+                    "identifier: " + relative,
                 )
+
+    def test_current_product_asset_paths_reject_component_coded_versions(self) -> None:
+        component_marker = "v" + "2"
+        relative = "tests/test_{}_probe.py".format(component_marker)
+        path = self.candidate / relative
+        path.write_text("# temporary path probe\n", encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "current product asset path contains version-coded identifier: "
+            + relative,
+        )
+
+    def test_current_product_assets_reject_non_current_numeric_schema(self) -> None:
+        numeric_version = ".".join(("0", "1", "0"))
+        schema = "dev-flow-agent/" + numeric_version
+        readme = self.candidate / "README.md"
+        readme.write_text(
+            readme.read_text(encoding="utf-8")
+            + "\nTemporary schema probe: `"
+            + schema
+            + "`.\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "current product asset contains non-current dev-flow numeric schema: "
+            "README.md",
+        )
+
+    def test_historical_openspec_assets_are_outside_version_scan(self) -> None:
+        generation_marker = "V" + "6"
+        numeric_version = ".".join(("0", "1", "0"))
+        archive = (
+            self.candidate
+            / "openspec"
+            / "changes"
+            / "archive"
+            / ("historical-" + generation_marker)
+            / "spec.md"
+        )
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_text(
+            generation_marker + " dev-flow-agent/" + numeric_version + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(validate(self.candidate)["errors"], [])
 
     def test_main_skill_default_prompt_invokes_skill(self) -> None:
         metadata = (

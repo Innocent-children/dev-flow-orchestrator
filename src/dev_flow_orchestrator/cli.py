@@ -1,4 +1,4 @@
-"""Strict JSON command-line adapter for the V6 controller."""
+"""Strict JSON command-line adapter for the current controller."""
 
 from __future__ import annotations
 
@@ -28,10 +28,19 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "official id (lite, feature, bugfix, investigation, refactor, full) "
-            "or an absolute workflow-v1/v2 path"
+            "or an absolute current-version workflow path"
         ),
     )
-    start.add_argument("--repo", required=True, help="absolute repository root")
+    start.add_argument(
+        "--repo",
+        action="append",
+        required=True,
+        metavar="ROOT",
+        help=(
+            "absolute root of a user-prepared Git worktree; repeat for an "
+            "exact repository set"
+        ),
+    )
     start.add_argument("--task-id")
     start.add_argument("--contract-json")
 
@@ -92,7 +101,7 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
         state = controller.start(
             requirement=arguments.requirement,
             workflow=arguments.workflow,
-            repository=arguments.repo,
+            repositories=arguments.repo,
             task_id=arguments.task_id,
             contract=contract,
         )

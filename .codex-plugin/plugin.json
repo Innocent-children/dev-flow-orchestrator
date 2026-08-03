@@ -1,15 +1,15 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "6.0.0+codex.20260802114926",
-  "description": "Complete, resumable personal delivery workflows for one Git repository in Codex on macOS.",
+  "version": "0.2.0",
+  "description": "Complete, resumable 0.2.0 personal delivery workflows for an exact set of one to eight user-prepared local Git worktrees in Codex on macOS.",
   "author": {
     "name": "Local developer"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Dev Flow Orchestrator",
-    "shortDescription": "Run complete single-repository delivery workflows",
-    "longDescription": "Runs one V6 controller on macOS with six declarative personal-delivery workflows, structured contracts, typed artifact lineage, bounded assurance rework, optional driver fallbacks, and terminal Delivery Dossiers. Each task pins its exact workflow while state remains outside the target repository.",
+    "shortDescription": "Run exact-set personal delivery workflows",
+    "longDescription": "Runs one 0.2.0 controller on macOS with six dev-flow-workflow/0.2.0 personal-delivery workflows over an immutable exact set of one to eight user-prepared Git worktrees. Every task exposes one dev-flow-agent/0.2.0 current action to one Codex, binds evidence to aggregate repository-set snapshots, uses repository-scoped resources and structured member/integration verification, and ends each non-cancelled path in one dev-flow-delivery-dossier/0.2.0. State stays outside all repositories, assurance is bounded, and optional drivers record explicit degraded or unavailable results. The controller never manages worktrees or branches, publishes Git changes, starts parallel agents, or dispatches external CI, PR, or release automation.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [
@@ -18,9 +18,9 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Start a V6 personal-delivery workflow for this repository.",
-      "Resume the active V6 workflow from its saved projection.",
-      "Continue this task through its final Delivery Dossier."
+      "Start one 0.2.0 personal-delivery task for an exact set of one to eight prepared worktrees.",
+      "Resume the active 0.2.0 task from any member repository and perform its one current action.",
+      "Continue this task through aggregate assurance and its final Delivery Dossier."
     ]
   }
 }

@@ -1,16 +1,17 @@
 ---
 name: follow-dev-flow
-description: Start or resume a Dev Flow V6 delivery task for code, configuration, tests, generated files, documentation, or OpenSpec work in one Git repository. Use the exact Hook-injected controller locator, select one of six official workflows or a pinned custom definition, follow the dev-flow-agent-v2 projection, and apply each action with its exact binding until a Delivery Dossier terminal.
+description: Start or resume a Dev Flow 0.2.0 delivery task for code, configuration, tests, generated files, documentation, or OpenSpec work in an exact set of one to eight user-prepared local Git worktrees. Use the exact Hook-injected controller locator, select one of six official workflows or a pinned dev-flow-workflow/0.2.0 custom definition, follow the dev-flow-agent/0.2.0 repository-set projection, and apply the one current action with its exact binding until a Delivery Dossier 0.2.0 terminal.
 ---
 
 # Follow Dev Flow
 
-Invoke this workflow as `$follow-dev-flow`. Treat the V6 controller as the
-only task-state writer and source of workflow truth. The current
-single-repository boundary is one task, one Git repository, its current
-worktree, and one Codex executor.
+Invoke this workflow as `$follow-dev-flow`. Treat the 0.2.0 controller as the
+only task-state writer and source of workflow truth. The supported boundary is
+one task, one immutable exact repository set, one current action, and one Codex
+executor. The set contains one to eight user-prepared local Git worktrees;
+workflow depth never determines repository count.
 
-The V6 evidence model uses `governing`, `source-predecessor`, and `causal`
+The 0.2.0 evidence model uses `governing`, `source-predecessor`, and `causal`
 lineage between typed artifacts. Source-changing stages are
 `produces-source`; verification and review stages are `verifies-source`.
 OpenSpec, codebase-memory, and `independent-review` are optional drivers with
@@ -25,13 +26,16 @@ Preserve the complete Hook-injected locator as:
 ```
 
 It already contains the installed Python launcher, CLI, and
-`--data-dir <PLUGIN_DATA>/v6`. Do not reconstruct, shorten, or append another
+`--data-dir <PLUGIN_DATA>/0.2.0`. Do not reconstruct, shorten, or append another
 data directory. Never read or edit controller state files directly.
 
-Require a V6 context: the Hook identifies Dev Flow V6 and `next` emits
-`schema: dev-flow-agent-v2`. A V5 locator or `dev-flow-agent-v1` projection
-belongs to the retained V5 installation and must be operated with its retained
-V5 Skill; do not point either controller at the other namespace.
+Require a 0.2.0 context: the Hook identifies Dev Flow 0.2.0 and `next` emits
+`schema: dev-flow-agent/0.2.0` with `repository_set`. A one-member set uses this
+same projection and aggregate binding.
+
+The Hook may reconnect the same active task from any member repository. When
+multiple active tasks cover the current path, select the intended task ID
+explicitly; never guess from member order.
 
 ## Select a workflow
 
@@ -50,8 +54,9 @@ that fits the requested outcome:
 - `full`: the complete personal-delivery path with three verification and
   review attempts.
 
-An absolute path to a valid linear workflow-v1 JSON/YAML document is accepted
-for a new V6 task. The controller pins its document and adapter identity.
+An absolute path to a valid `dev-flow-workflow/0.2.0` JSON/YAML document is accepted for a
+new 0.2.0 task. The controller pins its schema, selector, canonical source
+document, and identity.
 
 ## Start with a contract
 
@@ -59,7 +64,7 @@ Prefer an explicit initial contract for normal delivery:
 
 ```json
 {
-  "schema": "dev-flow-delivery-contract/v1",
+  "schema": "dev-flow-delivery-contract/0.2.0",
   "revision": 1,
   "summary": "<accepted outcome>",
   "acceptance_criteria": [
@@ -74,7 +79,9 @@ Prefer an explicit initial contract for normal delivery:
 ```
 
 Use exactly these fields, unique portable criterion IDs, and initial contract
-revision `1`. Serialize strict JSON and pass it as one argument:
+revision `1`. Do not place caller-supplied repository IDs or a
+`repository_set_id` in the contract; the controller derives both from admitted
+membership. Serialize strict JSON and pass it as one argument:
 
 ```text
 <ctl> start \
@@ -84,6 +91,24 @@ revision `1`. Serialize strict JSON and pass it as one argument:
   --contract-json <json-object>
 ```
 
+Repeat `--repo` for a larger exact repository set:
+
+```text
+<ctl> start \
+  --requirement <non-empty-text> \
+  --workflow <workflow-selector> \
+  --repo <absolute-api-worktree-root> \
+  --repo <absolute-client-worktree-root> \
+  --contract-json <json-object>
+```
+
+Supply one through eight exact roots. Caller order has no priority or
+dependency meaning. Before writing state, the controller canonicalizes the
+complete set and rejects missing, bare, duplicate, Git-identity-sharing,
+ancestor/descendant, unsafe, or data-directory-overlapping roots. Every
+worktree must already exist and remain user-owned. Membership cannot be added,
+removed, replaced, relocated, or reordered after creation.
+
 For a requirement-only minimal start, omit `--contract-json`:
 
 ```text
@@ -91,8 +116,9 @@ For a requirement-only minimal start, omit `--contract-json`:
 ```
 
 The controller derives contract revision `1` with criterion ID `requirement`.
-Save the returned task ID. Task creation writes revision-zero state; preflight
-is the first ledger mutation.
+The minimal contract covers the complete repository set. Save the returned
+task ID. Task creation writes revision-zero state; complete-set preflight is
+the first ledger mutation.
 
 Resume or obtain the first action with:
 
@@ -104,12 +130,14 @@ Resume or obtain the first action with:
 
 For every non-terminal projection:
 
-1. Read `projection.contract`, repository snapshot, freshness, current node,
+1. Read `projection.contract`, the complete `repository_set`, member/aggregate
+   snapshots, freshness, current node,
    `action.inputs`, `action.retry_budget`, `action.driver`, exact payload field
    types, and the complete `action.binding`.
 2. Perform only that action. A `context` or `verifies-source` stage must not
-   change the worktree. A `produces-source` stage may intentionally replace its
-   bound source predecessor.
+   change any member. A `produces-source` stage may intentionally change one or
+   more members and replace its one aggregate bound source predecessor; its
+   successor still observes every member.
 3. Build one strict JSON payload containing every declared field and no unknown
    field.
 4. Apply with the exact unmodified binding from the projection:
@@ -118,7 +146,7 @@ For every non-terminal projection:
    <ctl> apply <task-id> \
      --action <action-id> \
      --payload-json <json-object> \
-     --binding-json <projection.action.binding-json>
+     --binding-json '<projection.action.binding JSON>'
    ```
 
    `task.preflight` also requires `--payload-json '{}'` and its projected
@@ -130,10 +158,13 @@ On `REVISION_CONFLICT`, read `error.details.projection`, run `next`, and
 reassess the action. On `ACTION_BINDING_STALE`, `WORKSPACE_CHANGED`, or stale
 input/resource evidence, obtain a fresh projection and repeat the affected
 work only if the new action still requires it. Do not replay a stale intent.
+One unavailable, moved, or unsafe member blocks repository-dependent progress
+without a partial ledger append. Restore the exact persisted root and retry;
+never substitute another worktree or silently omit the member.
 
 ## Official action payloads
 
-Use the current projection as authority. The official workflow-v2 actions use
+Use the current projection as authority. The official 0.2.0 workflow actions use
 these exact payload shapes:
 
 | Action | Payload |
@@ -155,7 +186,7 @@ Use this common driver envelope inside `driver_result`:
 
 ```json
 {
-  "schema": "dev-flow-driver-result/v1",
+  "schema": "dev-flow-driver-result/0.2.0",
   "tool": "<declared tool>",
   "status": "available",
   "phase": "<current workflow phase>",
@@ -173,8 +204,11 @@ Never describe fallback evidence as the named tool's result.
 
 Invoke `$analyze-change-impact`. Keep `baseline_project_id` and
 `current_project_id` distinct, record their snapshot generations, and select
-the graph explicitly by workflow `phase`. Confirm every material graph
-conclusion in source.
+the graph explicitly by workflow `phase`. Do this separately for every
+`repository_id`; never share a graph project ID across members or generations.
+Record per-member evidence plus cross-repository
+effects, and confirm every material graph conclusion in the corresponding
+source root.
 
 Place the complete impact artifact in `driver_result.details`. Set driver
 status to `degraded` when a required index is unavailable/stale, a bounded
@@ -197,27 +231,32 @@ sequence. Record the change ID, parsed JSON status/instructions, returned paths,
 and any limitations in `driver_result.details`.
 
 Planning is `produces-source`. Its `resources` object has exactly `items`, and
-every item has exactly `path`, `role`, and `normalizer`:
+every item has exactly `repository_id`, `path`, `role`, and `normalizer`:
 
 ```json
 {
   "items": [
-    {"path": "openspec/changes/example/proposal.md", "role": "governing", "normalizer": "none"},
-    {"path": "openspec/changes/example/design.md", "role": "governing", "normalizer": "none"},
-    {"path": "openspec/changes/example/specs/capability/spec.md", "role": "governing", "normalizer": "none"},
-    {"path": "openspec/changes/example/tasks.md", "role": "governing", "normalizer": "openspec-tasks-v1"},
-    {"path": "openspec/changes/example/tasks.md", "role": "reported", "normalizer": "none"}
+    {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/proposal.md", "role": "governing", "normalizer": "none"},
+    {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/design.md", "role": "governing", "normalizer": "none"},
+    {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/specs/capability/spec.md", "role": "governing", "normalizer": "none"},
+    {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/tasks.md", "role": "governing", "normalizer": "openspec-tasks/0.2.0"},
+    {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/tasks.md", "role": "reported", "normalizer": "none"}
   ]
 }
 ```
 
 Bind every concrete proposal, design, and spec path returned for the plan as
 `governing` with `normalizer: none`. Bind `tasks.md` twice: governing with
-`openspec-tasks-v1` and reported with `none`. The semantic normalizer ignores
+`openspec-tasks/0.2.0` and reported with `none`. The semantic normalizer ignores
 only checkbox state; task text, ordering, and test obligations remain
 governing. Treat machine-generated status/instruction output as reported
 driver evidence; if it is persisted as a repository file, bind it as
 `reported`, never as governing plan content.
+
+Resolve each path only below its declared member root. Unknown or omitted
+repository IDs, absolute paths, parent traversal, and duplicate scoped
+keys are invalid. Equal relative paths in different repositories remain
+distinct because `repository_id` is part of the key.
 
 When OpenSpec is unavailable, create the equivalent repository-backed plan
 from source and the delivery contract, keep the same governing/reported
@@ -226,23 +265,47 @@ resource rules, and record `status: degraded` with the exact limitation.
 ## Record verification and bounded rework
 
 Run the smallest checks that directly prove the current contract. Record the
-actual command and result. `coverage` must contain every current acceptance ID
-with `proven` or `unverified`; the controller derives `waived` only from a
-current explicit decision. For a waived-but-unproven criterion, submit
-`unverified`.
+actual commands and results. The `dev-flow-verification-coverage/0.2.0` object always has
+exactly this nested shape:
 
-Set `passed: true` only after the recorded command succeeds and every
-non-waived criterion is proven. Persist a real failure with `passed: false`;
-the controller routes it to declared rework while the retry budget remains and
-to incomplete finalization when exhausted. Never hide a failed attempt or run
-an undeclared extra retry outside the projection.
+```json
+{
+  "schema": "dev-flow-verification-coverage/0.2.0",
+  "criteria": {"C1": "proven"},
+  "repositories": {
+    "<api-repository-id>": {"command": "<focused API check>", "passed": true},
+    "<client-repository-id>": {"command": "<focused client check>", "passed": true}
+  },
+  "integration": {"command": "<cross-repository check>", "passed": true}
+}
+```
+
+`schema` must be exactly `dev-flow-verification-coverage/0.2.0`. `criteria`
+exactly covers the effective acceptance IDs. `repositories`
+exactly covers every canonical member ID, and `integration` is always present.
+Each result contains only a non-empty bounded command and boolean `passed`.
+The top-level `command` must equal `integration.command`; top-level `passed`
+must equal the conjunction of all member and integration result flags.
+
+The controller derives `waived` only from a current explicit decision. For a
+waived-but-unproven criterion, submit `unverified`. Command aggregation and
+assurance success are distinct: if all commands pass
+but one unwaived criterion remains `unverified`, submit the truthful
+`passed: true` command aggregate. The controller records that well-shaped
+attempt as unsuccessful assurance and follows bounded rework or exhaustion;
+it is not malformed input. Persist real failures and never hide an attempt or
+run an undeclared extra retry outside the projection. Prior proof from an
+unchanged member is not reused after any aggregate snapshot drift.
 
 ## Record independent review
 
 Use a genuinely separate reviewer capability and `$review-dev-flow-change`
-against the exact review action binding. The review artifact must bind
-`base_revision`, `workspace_snapshot_digest`, `artifact_digest`, and
-`guidance_snapshot_digest` and remain unchanged through completion.
+against the exact review action binding. Bind the canonical per-member base
+and snapshot manifest plus the aggregate `workspace_snapshot_digest`. The
+review artifact must also bind `artifact_digest` and `guidance_snapshot_digest` and
+remain unchanged through completion. Review every member and cross-repository
+acceptance behavior as one task-wide assurance result; never issue per-member
+approval or reuse partial approval after aggregate drift.
 
 Map the review result to the workflow payload:
 
@@ -282,8 +345,10 @@ Supply the complete next contract revision:
 ```
 
 The revision must advance by exactly one. The controller captures a
-new-contract `revision-source` and reenters the workflow's declared impact or
-implementation node. Earlier-contract artifacts and waivers remain historical.
+new-contract aggregate `revision-source` and reenters the workflow's declared
+impact or implementation node. It cannot change immutable
+repository membership; start a new task for a different set. Earlier-contract
+artifacts and waivers remain historical.
 
 Record a criterion or review-assurance waiver:
 
@@ -312,17 +377,36 @@ the complete record and Delivery Dossier before handoff:
 ```
 
 Report the exact dossier outcome, coverage, assurance or waiver, remaining
-risks, freshness, and handoff. Do not describe an incomplete or waived result
-as independently approved.
+risks, freshness, and handoff. `dev-flow-delivery-dossier/0.2.0` always includes the
+repository-set identity, canonical inventory, member baseline/final summaries,
+changed-member diagnostics, scoped resources, every verification attempt, and
+current aggregate evidence.
+
+Do not describe an incomplete or waived result as independently approved.
 
 ## Cancel and preserve user authority
 
-Cancel only after explicit user instruction:
+Cancel only after explicit user instruction and only when the current node is
+listed in the selected workflow's `cancel.stages` declaration:
 
 ```text
 <ctl> cancel <task-id> --reason <text>
 ```
 
-Do not stash, reset, clean, checkout, force-push, rebase, merge, commit, push,
-delete, or cancel without explicit user authorization for that exact action.
-The controller performs no implicit Git mutation or cleanup.
+The six official workflows expose cancellation at a strict majority of their
+normal nonterminal stages. Delivery finalizers never expose cancellation; let
+their projected finalization action complete. Cancellation captures the
+complete current repository set before appending its one record. If any member
+is unavailable, it leaves task state unchanged; restore the exact canonical
+member root and retry if cancellation is still requested.
+
+Do not cancel without explicit user authorization for that exact action.
+The following are not controller actions or supported Dev Flow workflow
+effects: stash, reset, clean, checkout, force-push, rebase, merge, commit, push,
+delete, create/switch branches or worktrees, open pull requests, or dispatch
+external CI. The Delivery Dossier handoff marks any such follow-up as
+user-owned. If the user separately and explicitly requests one, Codex may
+perform it only as an independent operation outside Dev Flow and only with
+authorization for that exact operation. The controller performs no implicit
+Git mutation, publication, or cleanup and never delegates repository work to
+parallel agents.

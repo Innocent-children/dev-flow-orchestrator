@@ -1,10 +1,7 @@
-"""Workflow language validation and immutable node contracts.
+"""Current workflow-language validation and immutable node contracts.
 
-Workflow-v1 remains an accepted absolute-path compatibility language.  Its
-linear version-5 document is kept verbatim for identity purposes and adapted
-to the V6 record boundary.  Workflow-v2 is the official version-6 language:
-it declares typed artifact lineage, a contract-revision re-entry node, and
-finite verification/review rework edges.
+The sole accepted language shares the current product version. It declares typed artifact lineage,
+a contract-revision re-entry node, and finite verification/review rework edges.
 
 Validation is pure.  Drivers are descriptive metadata and are never imported
 or executed here.
@@ -26,32 +23,26 @@ from .model import (
     json_value,
 )
 from .product import (
-    WORKFLOW_V1_ADAPTER_IDENTITY,
-    WORKFLOW_V2_ADAPTER_IDENTITY,
-    WORKFLOW_VERSION,
+    PRODUCT_VERSION,
+    WORKFLOW_SCHEMA,
+    product_domain,
 )
 
 
-SCHEMA_V1 = "dev-flow-workflow/v1"
-SCHEMA_V2 = "dev-flow-workflow/v2"
-SCHEMA = SCHEMA_V2
-V1_VERSION = 5
-V2_VERSION = WORKFLOW_VERSION
+SCHEMA = WORKFLOW_SCHEMA
 
 PAYLOAD_TYPE_VOCABULARY = ("string", "boolean", "integer", "object", "sha256")
 INPUT_EDGE_KINDS = ("governing", "source-predecessor", "causal")
 WORKSPACE_ROLES = ("context", "produces-source", "verifies-source")
 FINALIZE_OUTCOMES = ("success", "incomplete")
 
-V1_HANDLER_IDS = ("preflight", "evidence.record", "test.record")
-V2_HANDLER_IDS = (
+HANDLER_IDS = (
     "preflight",
     "artifact.record",
     "verification.record",
     "review.record",
     "delivery.finalize",
 )
-HANDLER_IDS = tuple(dict.fromkeys((*V1_HANDLER_IDS, *V2_HANDLER_IDS)))
 ASSURANCE_HANDLER_IDS = ("verification.record", "review.record")
 EFFECT_PORTS = ("none", "git.inspect-repository")
 
@@ -62,13 +53,6 @@ _COMMON_WRITES = (
     "/updated_at",
 )
 _RECORD_WRITES = (*_COMMON_WRITES, "/records")
-_V1_DECLARED_WRITES = MappingProxyType(
-    {
-        "preflight": (*_COMMON_WRITES, "/repositories/*/preflight"),
-        "evidence.record": (*_COMMON_WRITES, "/evidence"),
-        "test.record": (*_COMMON_WRITES, "/evidence"),
-    }
-)
 _HANDLER_EFFECT_PORTS = MappingProxyType(
     {
         handler: (("git.inspect-repository",) if handler == "preflight" else ("none",))
@@ -138,7 +122,7 @@ class ReworkContract:
 
 @dataclass(frozen=True)
 class NodeContract:
-    """One declared action, its normal target, and optional V2 contracts."""
+    """One declared action, its normal target, and optional contracts."""
 
     node_id: str
     action_id: str
@@ -183,15 +167,14 @@ class WorkflowDefinition:
     """A validated workflow graph and the identity of its original document."""
 
     workflow_id: str
-    version: int
+    version: str
     schema: str
-    adapter_identity: str
     revision_target: str
     document: Mapping[str, object]
     entry_node: str
     nodes: Mapping[str, NodeContract]
     terminal_nodes: Tuple[str, ...]
-    cancel_contract: Optional[NodeContract]
+    cancellations: Mapping[str, NodeContract]
     identity: str
 
     @property
@@ -203,39 +186,33 @@ class WorkflowDefinition:
         return self.terminal_nodes
 
     @property
-    def cancel(self) -> Optional[NodeContract]:
-        return self.cancel_contract
+    def cancel_stages(self) -> Tuple[str, ...]:
+        return tuple(self.cancellations)
 
-
-def _adapter_for_schema(schema: object) -> str:
-    if schema == SCHEMA_V1:
-        return WORKFLOW_V1_ADAPTER_IDENTITY
-    if schema == SCHEMA_V2:
-        return WORKFLOW_V2_ADAPTER_IDENTITY
-    raise ValueError("unsupported workflow schema")
+    def cancel_for(self, node_id: str) -> Optional[NodeContract]:
+        """Return the shared cancellation contract only where explicitly enabled."""
+        return self.cancellations.get(node_id)
 
 
 def workflow_identity(
     workflow_id: str,
     document: Mapping[str, object],
-    adapter_identity: Optional[str] = None,
 ) -> str:
-    """Digest one selected original document and its language adapter.
+    """Digest one selector, current schema, and canonical source document.
 
     Product and built-in-catalog identities are deliberately absent.  A
     catalog-only release therefore cannot invalidate a task pinned to an
     unchanged selected definition.
     """
-    adapter = adapter_identity or _adapter_for_schema(document.get("schema"))
+    if document.get("schema") != SCHEMA:
+        raise ValueError("unsupported workflow schema")
     value = {
         "selector": workflow_id,
         "schema": document.get("schema"),
-        "adapter_identity": adapter,
         "document": document,
     }
     return hashlib.sha256(
-        b"dev-flow-v6-selected-workflow-identity/v1\x00"
-        + canonical_json_bytes(value)
+        product_domain("selected-workflow-identity") + canonical_json_bytes(value)
     ).hexdigest()
 
 
@@ -280,7 +257,7 @@ def _payload_types(
             node_id,
             "the preflight node records Git evidence and takes no payload",
         )
-    if handler in ("test.record", "verification.record"):
+    if handler == "verification.record":
         if types.get("passed") != "boolean":
             raise _node_spec_error(
                 source,
@@ -294,24 +271,16 @@ def _declared_writes(
     source: str,
     node_id: str,
     writes: object,
-    handler: str,
-    schema: str,
 ) -> Tuple[str, ...]:
     if writes is not None:
-        declared_expected = (
-            _V1_DECLARED_WRITES[handler]
-            if schema == SCHEMA_V1
-            else _RECORD_WRITES
-        )
-        if not isinstance(writes, list) or tuple(writes) != declared_expected:
+        if not isinstance(writes, list) or tuple(writes) != _RECORD_WRITES:
             raise _node_spec_error(
                 source,
                 node_id,
                 "declared writes must be exactly {}".format(
-                    ", ".join(declared_expected)
+                    ", ".join(_RECORD_WRITES)
                 ),
             )
-    # Both languages execute against V6's append-only record boundary.
     return _RECORD_WRITES
 
 
@@ -368,7 +337,7 @@ def _artifact_contract(
     if value is None:
         if required:
             raise _node_spec_error(
-                source, node_id, "workflow-v2 action nodes must declare artifact"
+                source, node_id, "current workflow action nodes must declare artifact"
             )
         return None
     if not isinstance(value, Mapping):
@@ -546,7 +515,6 @@ def _node_contract(
     node_id: str,
     spec: object,
     *,
-    schema: str,
     node_ids: Tuple[str, ...],
     shared_action: bool = False,
 ) -> NodeContract:
@@ -563,9 +531,10 @@ def _node_contract(
         "authority",
         "driver",
         "description",
+        "artifact",
+        "rework",
+        "finalize",
     }
-    if schema == SCHEMA_V2:
-        allowed.update({"artifact", "rework", "finalize"})
     unknown = sorted(str(key) for key in spec if key not in allowed)
     if unknown:
         raise _node_spec_error(
@@ -598,14 +567,13 @@ def _node_contract(
         raise _node_spec_error(source, node_id, "terminal must be a boolean")
     action_id = spec.get("action_id")
     handler = spec.get("handler")
-    allowed_handlers = V1_HANDLER_IDS if schema == SCHEMA_V1 else V2_HANDLER_IDS
     if not isinstance(action_id, str) or not action_id:
         raise _node_spec_error(source, node_id, "action_id is required")
-    if not isinstance(handler, str) or handler not in allowed_handlers:
+    if not isinstance(handler, str) or handler not in HANDLER_IDS:
         raise _node_spec_error(
             source,
             node_id,
-            "handler must be one of {}".format(", ".join(allowed_handlers)),
+            "handler must be one of {}".format(", ".join(HANDLER_IDS)),
         )
     target_node, target_status = _target_fields(
         source, node_id, "target", spec.get("target"), node_ids
@@ -621,7 +589,7 @@ def _node_contract(
         node_id,
         spec.get("artifact"),
         handler=handler,
-        required=schema == SCHEMA_V2 and not shared_action,
+        required=not shared_action,
     )
     rework = _rework_contract(
         source,
@@ -664,9 +632,7 @@ def _node_contract(
         target_status=target_status,
         handler_id=handler,
         effect_port=_declared_effect(source, node_id, spec.get("effect"), handler),
-        allowed_state_writes=_declared_writes(
-            source, node_id, spec.get("writes"), handler, schema
-        ),
+        allowed_state_writes=_declared_writes(source, node_id, spec.get("writes")),
         payload_types=_payload_types(
             source, node_id, spec.get("payload"), handler=handler
         ),
@@ -678,19 +644,64 @@ def _node_contract(
     )
 
 
+def _cancel_declaration(
+    source: str,
+    value: object,
+    *,
+    node_ids: Tuple[str, ...],
+    terminal_nodes: Tuple[str, ...],
+) -> Tuple[NodeContract, Tuple[str, ...]]:
+    if not isinstance(value, Mapping):
+        raise _workflow_error(source, "cancel must be a mapping")
+    stages_value = value.get("stages")
+    if not isinstance(stages_value, list) or not stages_value:
+        raise _workflow_error(
+            source,
+            "cancel.stages must be a non-empty list of nonterminal node ids",
+        )
+    if any(not isinstance(node_id, str) for node_id in stages_value):
+        raise _workflow_error(source, "cancel.stages entries must be node ids")
+    cancel_stages = tuple(stages_value)
+    if len(cancel_stages) != len(set(cancel_stages)):
+        raise _workflow_error(source, "cancel.stages must not contain duplicates")
+    unknown = tuple(node_id for node_id in cancel_stages if node_id not in node_ids)
+    if unknown:
+        raise _workflow_error(
+            source,
+            "cancel.stages contains unknown node(s): {}".format(", ".join(unknown)),
+        )
+    terminal = tuple(node_id for node_id in cancel_stages if node_id in terminal_nodes)
+    if terminal:
+        raise _workflow_error(
+            source,
+            "cancel.stages must contain only nonterminal nodes",
+            terminal_nodes=list(terminal),
+        )
+    action_spec = dict(value)
+    action_spec.pop("stages")
+    return (
+        _node_contract(
+            source,
+            "cancel",
+            action_spec,
+            node_ids=node_ids,
+            shared_action=True,
+        ),
+        cancel_stages,
+    )
+
+
 def _validate_cancel_contract(
     source: str,
     contract: NodeContract,
     *,
-    schema: str,
     action_ids: Tuple[str, ...],
     terminal_nodes: Tuple[str, ...],
 ) -> None:
-    expected_handler = "evidence.record" if schema == SCHEMA_V1 else "artifact.record"
-    if contract.handler_id != expected_handler:
+    if contract.handler_id != "artifact.record":
         raise _workflow_error(
             source,
-            "the cancel action must use the {} handler".format(expected_handler),
+            "the cancel action must use the artifact.record handler",
             node_id="cancel",
         )
     if contract.action_id in action_ids:
@@ -800,9 +811,18 @@ def _validate_rework_targets(
     terminal_nodes: Tuple[str, ...],
 ) -> None:
     terminal = set(terminal_nodes)
+    failure_owners = {}
     for node_id, contract in contracts.items():
         if contract.rework is None:
             continue
+        previous_owner = failure_owners.get(contract.rework.failure_node)
+        if previous_owner is not None:
+            raise _node_spec_error(
+                source,
+                node_id,
+                "rework.failure must be owned by exactly one assurance node",
+            )
+        failure_owners[contract.rework.failure_node] = node_id
         if contract.rework.failure_node in terminal:
             raise _node_spec_error(
                 source, node_id, "rework.failure must target a nonterminal node"
@@ -825,7 +845,7 @@ def _validate_rework_targets(
             )
 
 
-def _validate_v2_terminal_paths(
+def _validate_terminal_paths(
     source: str,
     contracts: Mapping[str, NodeContract],
     terminal_nodes: Tuple[str, ...],
@@ -875,10 +895,10 @@ def validate_definition_document(
     if not isinstance(document, Mapping):
         raise _workflow_error(source, "workflow document must be a mapping")
     schema = document.get("schema")
-    if schema not in (SCHEMA_V1, SCHEMA_V2):
+    if schema != SCHEMA:
         raise _workflow_error(
             source,
-            "schema must be exactly {!r} or {!r}".format(SCHEMA_V1, SCHEMA_V2),
+            "schema must be exactly {!r}".format(SCHEMA),
         )
     allowed_top = {
         "schema",
@@ -888,9 +908,8 @@ def validate_definition_document(
         "entry",
         "nodes",
         "cancel",
+        "revision_target",
     }
-    if schema == SCHEMA_V2:
-        allowed_top.add("revision_target")
     unknown = sorted(str(key) for key in document if key not in allowed_top)
     if unknown:
         raise _workflow_error(
@@ -904,13 +923,11 @@ def validate_definition_document(
             "id must be 1-64 characters using letters, digits, '.', '_' or '-'",
         )
     version = document.get("version")
-    expected_version = V1_VERSION if schema == SCHEMA_V1 else V2_VERSION
-    if version != expected_version:
-        if schema == SCHEMA_V1:
-            message = "version must be current schema v5 for workflow-v1 compatibility"
-        else:
-            message = "workflow-v2 version must be exactly {}".format(V2_VERSION)
-        raise _workflow_error(source, message)
+    if version != PRODUCT_VERSION:
+        raise _workflow_error(
+            source,
+            "workflow version must be exactly {}".format(PRODUCT_VERSION),
+        )
     description = document.get("description")
     if description is not None and not isinstance(description, str):
         raise _workflow_error(source, "description must be a string")
@@ -930,7 +947,6 @@ def validate_definition_document(
             source,
             node_id,
             nodes_value[node_id],
-            schema=schema,
             node_ids=node_ids,
         )
         for node_id in node_ids
@@ -963,32 +979,27 @@ def validate_definition_document(
     if len(action_ids) != len(set(action_ids)):
         raise _workflow_error(source, "action_id values must be unique")
     cancel_contract = None
+    cancel_stages = ()
     cancel_spec = document.get("cancel")
     if cancel_spec is not None:
-        cancel_contract = _node_contract(
+        cancel_contract, cancel_stages = _cancel_declaration(
             source,
-            "cancel",
             cancel_spec,
-            schema=schema,
             node_ids=node_ids,
-            shared_action=True,
+            terminal_nodes=terminal_nodes,
         )
         _validate_cancel_contract(
             source,
             cancel_contract,
-            schema=schema,
             action_ids=tuple(action_ids),
             terminal_nodes=terminal_nodes,
         )
-    if schema == SCHEMA_V2:
-        if cancel_contract is None:
-            raise _workflow_error(
-                source, "workflow-v2 definitions must declare a shared cancel action"
-            )
-        _validate_rework_targets(source, contracts, terminal_nodes)
-        _validate_v2_terminal_paths(
-            source, contracts, terminal_nodes, cancel_contract
+    if cancel_contract is None:
+        raise _workflow_error(
+            source, "workflow definitions must declare a shared cancel action"
         )
+    _validate_rework_targets(source, contracts, terminal_nodes)
+    _validate_terminal_paths(source, contracts, terminal_nodes, cancel_contract)
     _validate_acyclic(
         source,
         _graph_edges(contracts, include_failure=False),
@@ -1009,7 +1020,7 @@ def validate_definition_document(
             source,
             "node(s) not reachable from the entry: {}".format(", ".join(unreachable)),
         )
-    revision_target = entry if schema == SCHEMA_V1 else document.get("revision_target")
+    revision_target = document.get("revision_target")
     if (
         not isinstance(revision_target, str)
         or revision_target not in reached
@@ -1020,20 +1031,20 @@ def validate_definition_document(
             "revision_target must identify a reachable nonterminal node",
             revision_target=revision_target,
         )
-    adapter_identity = _adapter_for_schema(schema)
     original_document = freeze_json(dict(document))
     return WorkflowDefinition(
         workflow_id=workflow_id,
         version=version,
         schema=schema,
-        adapter_identity=adapter_identity,
         revision_target=revision_target,
         document=original_document,
         entry_node=entry,
         nodes=MappingProxyType(contracts),
         terminal_nodes=terminal_nodes,
-        cancel_contract=cancel_contract,
-        identity=workflow_identity(workflow_id, document, adapter_identity),
+        cancellations=MappingProxyType(
+            {node_id: cancel_contract for node_id in cancel_stages}
+        ),
+        identity=workflow_identity(workflow_id, document),
     )
 
 
@@ -1065,11 +1076,11 @@ def agent_projection(
     definition: WorkflowDefinition,
     current_snapshot: Optional[Mapping[str, object]] = None,
 ) -> dict:
-    """Delegate projection construction to the V6 evidence-aware engine."""
+    """Delegate projection construction to the current evidence-aware engine."""
     if current_snapshot is None:
         raise DevFlowError(
             "WORKSPACE_SNAPSHOT_REQUIRED",
-            "V6 projections require a current bounded workspace snapshot",
+            "projections require a current bounded workspace snapshot",
         )
     from .engine import agent_projection as project
 

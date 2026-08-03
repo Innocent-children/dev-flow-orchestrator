@@ -1,6 +1,6 @@
-schema: dev-flow-workflow/v2
+schema: dev-flow-workflow/0.2.0
 id: feature
-version: 6
+version: "0.2.0"
 description: "Feature delivery with impact analysis, repository-backed planning, documentation, verification, and review."
 entry: preflight
 revision_target: impact
@@ -178,6 +178,7 @@ nodes:
   cancelled: {terminal: true}
 
 cancel:
+  stages: [preflight, impact, planning, implement, documentation, verify, verification_rework, review, review_rework]
   action_id: task.cancel
   handler: artifact.record
   target: {node: cancelled, status: CANCELLED}

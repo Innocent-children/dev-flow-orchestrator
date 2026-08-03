@@ -4,7 +4,7 @@
 [Roadmap](ROADMAP.md) · [Architecture](ARCHITECTURE.md) ·
 [Contributing](CONTRIBUTING.md)
 
-Dev Flow Orchestrator V6 is a local-first delivery controller for Codex. It
+Dev Flow Orchestrator 0.2.0 is a local-first delivery controller for Codex. It
 turns one software requirement into a resumable, evidence-backed task and
 projects one authoritative next action at a time. Codex performs the work;
 the controller preserves the delivery contract, workflow state, decisions,
@@ -12,7 +12,8 @@ typed artifacts, assurance evidence, and final Delivery Dossier.
 
 ## Current product
 
-V6 provides complete personal delivery in one Git repository:
+Dev Flow 0.2.0 provides complete personal delivery over one exact canonical set of one to
+eight local Git worktrees:
 
 - a structured, versioned delivery contract with stable acceptance-criterion
   IDs, scope, constraints, risks, non-goals, and open questions;
@@ -20,26 +21,32 @@ V6 provides complete personal delivery in one Git repository:
   `refactor`, and `full`;
 - append-only contract revisions and attributable criterion or review-
   assurance waivers;
-- typed artifacts with producer metadata, contract binding, repository
-  snapshots, input lineage, digests, and derived freshness;
+- typed artifacts with producer metadata, contract binding, per-repository
+  snapshots, aggregate repository-set bindings, input lineage, digests, and
+  derived freshness;
 - bounded verification and review rework with explicit `DONE` and
   `INCOMPLETE` dossier outcomes;
 - optional OpenSpec, codebase-memory, and independent-review driver paths
   with explicit degraded or unavailable results;
-- resumability across Codex sessions through the same controller and task ID.
+- resumability across Codex sessions from any member repository through the
+  same controller and task ID.
 
-The supported execution boundary is one task, one repository, the repository's
-current worktree, and one Codex executor. The controller does not create or
-switch branches or worktrees, coordinate parallel agents, or span
-repositories. A dirty worktree and detached `HEAD` are supported when the
-supplied repository path is the exact root of an initialized non-bare Git
-worktree.
+The supported execution boundary is one task, one immutable repository set,
+one current action, and one Codex executor. Repository topology is independent
+of workflow depth: every official workflow accepts either one member or an
+exact set of up to eight members. All worktrees are prepared and owned by the
+user. The controller does not create or switch branches/worktrees, coordinate
+parallel agents, commit or publish Git changes, dispatch external CI, or open
+pull requests. There is no partial assurance reuse after aggregate drift and
+no external release effects; any CI, PR, or release follow-up is user-owned
+outside Dev Flow. A dirty worktree and detached `HEAD` are supported when
+every supplied path is the exact root of an initialized non-bare Git worktree.
 
 ## Requirements
 
 - macOS;
 - Python 3.9–3.14;
-- Git and a target worktree with an existing `HEAD` commit;
+- Git and one to eight target worktrees with existing `HEAD` commits;
 - Codex with plugin and Hook support.
 
 Runtime code uses only the Python standard library. OpenSpec,
@@ -70,8 +77,8 @@ Run the `cp` command only when
 `~/.agents/plugins/marketplace.json` does not exist. Otherwise merge
 `templates/marketplace-entry.json` into its `plugins` array. Start a new Codex
 task after installation, open `/hooks`, and review and trust the installed
-Hook definition. See [INSTALL.md](INSTALL.md) for upgrades, V5 retention and
-rollback inspection, installed verification, troubleshooting, and removal.
+Hook definition. See [INSTALL.md](INSTALL.md) for replacement installs,
+installed verification, troubleshooting, and removal.
 
 ## Choose a workflow
 
@@ -86,30 +93,49 @@ Daily use goes through `$follow-dev-flow`.
 | `refactor` | structural impact → invariant-backed plan → implementation → documentation → verification → independent review → dossier | 2 verification and 2 review attempts |
 | `full` | complete impact and planning → implementation → documentation → verification → independent review → dossier | 3 verification and 3 review attempts |
 
-Every official workflow begins with bounded, read-only Git preflight, supports
-explicit cancellation from each unfinished stage, and finalizes every
-non-cancelled result through a Delivery Dossier. A valid absolute path to a
-linear workflow-v1 JSON or YAML document is also accepted for a new V6 task;
-the selected definition and adapter identity are pinned for that task.
+Every official workflow begins with bounded, read-only Git preflight over the
+complete repository set and finalizes every non-cancelled result through one
+aggregate Delivery Dossier 0.2.0. `dev-flow-workflow/0.2.0` definitions declare cancellation
+availability through `cancel.stages`; official workflows enable it for the
+normal majority of non-terminal stages and exclude every `delivery.finalize`
+stage. A custom workflow must be a valid `dev-flow-workflow/0.2.0` JSON or YAML document
+selected by absolute path. Its identity binds the selector, schema, and
+canonical document. Repository count never selects or changes a workflow.
 
 ## Start and resume
 
-Ask Codex to start a task with an explicit repository, workflow, and delivery
-contract:
+Ask Codex to start a task with an explicit workflow, delivery contract, and
+one or more user-prepared repository roots:
 
 ```text
-Use $follow-dev-flow to start a feature task in:
-/absolute/path/to/repository
+Use $follow-dev-flow to start one feature task across these prepared worktrees:
+/absolute/path/to/api-repository
+/absolute/path/to/client-repository
 
 Create a structured delivery contract for:
 <what must be delivered>
 ```
 
-The contract schema is `dev-flow-delivery-contract/v1`. It contains exactly
+The CLI repeats `--repo` once per member. One occurrence creates a one-member
+repository set through the same admission and evidence path:
+
+```text
+<ctl> start --requirement <text> --workflow feature \
+  --repo /absolute/path/to/api-repository \
+  --repo /absolute/path/to/client-repository \
+  --contract-json <json-object>
+```
+
+Caller order has no priority meaning. Before task creation the controller
+canonicalizes the complete set and rejects missing, bare, duplicate,
+Git-identity-sharing, overlapping, unsafe, or data-directory-overlapping roots.
+Membership is immutable; use a new task when the repository set must change.
+
+The contract schema is `dev-flow-delivery-contract/0.2.0`. It contains exactly
 `schema`, `revision`, `summary`, `acceptance_criteria`, `scope`, `constraints`,
 `risks`, `non_goals`, and `open_questions`; initial contract revision is `1`.
 For a fast `lite` task, omitting `--contract-json` creates a bounded minimal
-contract from the non-empty requirement.
+contract from the non-empty requirement and complete repository set.
 
 Keep the returned task ID. Resume with:
 
@@ -117,17 +143,20 @@ Keep the returned task ID. Resume with:
 Use $follow-dev-flow to resume task <task-id>.
 ```
 
-The installed Hook reconnects Codex when the current directory is inside the
-task repository. Its locator already contains the installed launcher, CLI,
-and exact V6 data directory. The Skill obtains a fresh `dev-flow-agent-v2`
-projection with `next`, performs its single action, and passes the exact
+The installed Hook reconnects Codex when the current directory is inside any
+member repository. It returns the same task once even when inspecting a nested
+path; multiple active tasks remain an explicit ambiguity. Its locator already
+contains the installed launcher, CLI, and exact 0.2.0 data directory. The Skill
+obtains one `dev-flow-agent/0.2.0` projection with a `repository_set` summary,
+performs its one current action, and passes the exact
 `projection.action.binding` back with `apply --binding-json`. Bindings pin the
-task revision, contract, inputs, source predecessor, and starting workspace
-snapshot; stale work is rejected with a fresh projection.
+task revision, contract, inputs, source predecessor, and aggregate starting
+snapshot; stale work is rejected with a fresh projection. A one-member set has
+one entry in `repository_set.repositories` and otherwise uses this same shape.
 
 ## Evidence, decisions, and completion
 
-Workflow-v2 artifacts declare one workspace role:
+`dev-flow-workflow/0.2.0` artifacts declare one workspace role:
 
 - `context` records read-only analysis;
 - `produces-source` consumes a pinned source predecessor and records the
@@ -136,12 +165,20 @@ Workflow-v2 artifacts declare one workspace role:
 
 Inputs use `governing`, `source-predecessor`, or `causal` lineage. Governing
 repository resources participate in freshness; reported resources preserve
-provenance only. OpenSpec proposal, design, and spec files are governing.
+provenance only. Every repository resource includes an explicit
+`repository_id`, so equal relative paths in different members remain distinct.
+OpenSpec proposal, design, and spec files are governing.
 `tasks.md` is recorded once as raw reported progress and once with the
-`openspec-tasks-v1` semantic normalizer, which ignores only checkbox state.
+`openspec-tasks/0.2.0` semantic normalizer, which ignores only checkbox state.
 
-Verification reports every acceptance criterion as `proven` or `unverified`.
-Only a current explicit `criterion-waiver` decision can derive `waived`.
+Verification uses the `dev-flow-verification-coverage/0.2.0` contract with an
+exact current `schema` plus `criteria`, `repositories`, and `integration`
+objects for every set size:
+every member and the integration command must be present, the top-level command
+equals the integration command, and top-level `passed` is their conjunction.
+Verification reports every acceptance criterion as
+`proven` or `unverified`. Only a current explicit `criterion-waiver` decision
+can derive `waived`.
 Review approval requires independent assurance. When independent review is
 unavailable, a self-review can record findings but cannot claim approval; an
 exact current `assurance-waiver` for the review node is required for the
@@ -149,38 +186,48 @@ unavailable result to follow the successful route. Otherwise bounded rework
 ends with an `INCOMPLETE` dossier.
 
 A later contract revision records the complete replacement contract, reason,
-and actor label. The same record captures the current worktree as the new
-contract's `revision-source` and returns the workflow to its declared impact
-or implementation entry. Earlier artifacts remain immutable historical
-evidence and cannot satisfy the revised scope.
+and actor label. The same record captures the complete current repository set
+as the new contract's aggregate `revision-source` and returns the workflow to
+its declared impact or implementation entry. It cannot add, remove, reorder,
+or relocate members. Earlier artifacts remain immutable historical evidence
+and cannot satisfy the revised scope.
 
 `show <task-id>` exposes the complete read-only ledger and dossier. The
-terminal dossier contains the effective contract, acceptance coverage,
-current verification, review assurance, documentation evidence, decisions,
-artifact provenance and freshness, repository snapshots, remaining risks,
-outcome, and handoff recommendation.
+terminal `dev-flow-delivery-dossier/0.2.0` body contains the effective contract,
+repository-set identity and canonical inventory, acceptance coverage, current
+structured verification, review assurance, documentation evidence, decisions,
+artifact provenance and freshness, per-member baseline/final summaries,
+changed-member diagnostics, scoped resources, remaining risks, outcome,
+handoff recommendation, and current or stale verification and review attempts.
+If a member cannot currently be captured, `show` still returns the stored
+ledger and Dossier. `current_snapshot` and `artifact_freshness` are then
+unavailable, and `snapshot_error` identifies the blocked member.
 
-## State, safety, and compatibility
+## State and safety
 
 - The controller is the only task-state writer. State uses locks, revision
   compare-and-swap, deterministic replay, and atomic replacement.
-- Task state lives outside target repositories. The installed V6 Hook uses
-  `<PLUGIN_DATA>/v6`; it protects the plugin data root from common direct
+- Task state lives outside every target repository. The installed Dev Flow 0.2.0 Hook uses
+  `<PLUGIN_DATA>/0.2.0`; it protects the plugin data root from common direct
   shell and edit operations.
-- Repository snapshots are bounded, content-sensitive, and read-only. The
+- Repository snapshots are bounded, content-sensitive, read-only, and captured
+  all-or-none for a repository set. If a canonical member is missing or moved,
+  repository-backed progress stops without ledger mutation; restore that exact
+  root and retry. The controller never substitutes another worktree. The
   controller never automatically stashes, resets, cleans, commits, checks
   out, rebases, merges, pushes, force-pushes, or deletes user work.
 - The Hook is a fail-open operational guardrail. Workflow validation and
   state-transition authority remain in the controller.
-- V5 task data remains unchanged in `<PLUGIN_DATA>/v5`. V6 neither loads nor
-  migrates it. Inspecting or resuming a V5 task requires the retained V5
-  package snapshot and its V5 controller locator.
+- Every cardinality uses `dev-flow-repository-set-snapshot/0.2.0`,
+  `dev-flow-agent/0.2.0`, repository-scoped resources, structured member and
+  integration verification, and Delivery Dossier 0.2.0. Each aggregate snapshot
+  nests one `dev-flow-workspace-snapshot/0.2.0` member value per canonical member.
 
 ## Further documentation
 
-- [INSTALL.md](INSTALL.md): installation, V5-to-V6 upgrade and rollback
-  inspection, installed acceptance, and troubleshooting.
-- [ARCHITECTURE.md](ARCHITECTURE.md): contracts, workflow-v2, bindings,
+- [INSTALL.md](INSTALL.md): installation, replacement, installed acceptance,
+  and troubleshooting.
+- [ARCHITECTURE.md](ARCHITECTURE.md): contracts, `dev-flow-workflow/0.2.0`, bindings,
   lineage, replay, projections, and module ownership.
 - [ROADMAP.md](ROADMAP.md): delivered Stage 1 capability and later product
   horizons.

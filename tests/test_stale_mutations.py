@@ -1,4 +1,4 @@
-"""Generation-current compare-and-swap mutation contracts."""
+"""Current compare-and-swap mutation contracts."""
 
 from __future__ import annotations
 

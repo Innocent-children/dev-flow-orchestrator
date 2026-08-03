@@ -1,6 +1,6 @@
-schema: dev-flow-workflow/v2
+schema: dev-flow-workflow/0.2.0
 id: investigation
-version: 6
+version: "0.2.0"
 description: "Evidence-led investigation that produces a verified report without fabricating an implementation."
 entry: preflight
 revision_target: impact
@@ -100,6 +100,7 @@ nodes:
   cancelled: {terminal: true}
 
 cancel:
+  stages: [preflight, impact, investigate, verify, investigation_rework]
   action_id: task.cancel
   handler: artifact.record
   target: {node: cancelled, status: CANCELLED}

@@ -1,4 +1,4 @@
-"""Small fail-open Codex Hook adapter for current V6 task context."""
+"""Small fail-open Codex Hook adapter for current task context."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sys
 from typing import Mapping, Optional, Sequence
 
 from .controller import Controller
-from .product import PLUGIN_DATA_NAMESPACE
+from .product import PLUGIN_DATA_NAMESPACE, PRODUCT_VERSION
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -66,25 +66,34 @@ def _context(
 ) -> str:
     tasks = controller.tasks_for_path(cwd)
     locator = _controller_command(config)
+    product_name = "Dev Flow {}".format(PRODUCT_VERSION)
     if not tasks:
         return (
-            "Dev Flow V6 is available. Invoke $follow-dev-flow, then use the "
-            "injected controller locator with an official --workflow and --repo: "
+            product_name
+            + " is available. Invoke $follow-dev-flow, then use the "
+            "injected controller locator with an official --workflow and one "
+            "or more repeatable --repo values for user-prepared Git worktrees. "
+            "The task keeps one current action for one Codex executor: "
             + locator
         )
     if len(tasks) > 1:
         task_ids = ", ".join(task.task_id for task in tasks)
         return (
-            "Multiple current Dev Flow V6 tasks cover this directory: "
+            "Multiple current "
+            + product_name
+            + " tasks cover this directory: "
             + task_ids
             + ". Select one task explicitly with: "
             + locator
         )
     projection = controller.next(tasks[0].task_id)
     return (
-        "Current Dev Flow V6 task. Invoke $follow-dev-flow and use only this "
-        "controller locator; do not "
-        "edit task state directly. locator="
+        "Current "
+        + product_name
+        + " task. Invoke $follow-dev-flow and use only this "
+        "controller locator. Execute its one current action across the exact "
+        "repository set with one Codex; Git-changing operations remain "
+        "user-owned. Do not edit task state directly. locator="
         + locator
         + " projection="
         + json.dumps(
@@ -256,24 +265,28 @@ def handle(
         )
         if guarded is not None:
             return guarded
-    controller = Controller(config.state_data_dir)
-    context = _context(controller, effective_cwd, config)
-    if event in {"SessionStart", "UserPromptSubmit"}:
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": event,
-                "additionalContext": context,
+    try:
+        controller = Controller(config.state_data_dir)
+        context = _context(controller, effective_cwd, config)
+        if event in {"SessionStart", "UserPromptSubmit"}:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": event,
+                    "additionalContext": context,
+                }
             }
-        }
-    if event != "PreToolUse":
+        if event != "PreToolUse":
+            return None
+        if controller.tasks_for_path(effective_cwd):
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": event,
+                    "additionalContext": context,
+                }
+            }
+    except Exception:
+        # Hook failures never take authority away from the user or controller.
         return None
-    if controller.tasks_for_path(effective_cwd):
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": event,
-                "additionalContext": context,
-            }
-        }
     return None
 
 

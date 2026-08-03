@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the complete macOS V6 plugin candidate from its own root."""
+"""Validate the complete macOS plugin candidate from its own root."""
 
 from __future__ import annotations
 
@@ -22,14 +22,27 @@ sys.path.insert(0, str(ROOT / "src"))
 from dev_flow_orchestrator import workflows as workflows_loader  # noqa: E402
 from dev_flow_orchestrator.product import (  # noqa: E402
     AGENT_PROTOCOL_SCHEMA,
+    ARTIFACT_SCHEMA,
+    DELIVERY_CONTRACT_SCHEMA,
+    DELIVERY_DOSSIER_SCHEMA,
+    DRIVER_RESULT_SCHEMA,
+    IMPACT_REPORT_SCHEMA,
+    MAX_REPOSITORY_COUNT,
+    MIN_REPOSITORY_COUNT,
+    OPENSPEC_TASKS_NORMALIZER,
     PLUGIN_DATA_NAMESPACE,
+    PRODUCT_VERSION,
+    RECORD_SCHEMA,
+    REPOSITORY_SET_SNAPSHOT_SCHEMA,
+    REPOSITORY_TOPOLOGY_CAPABILITIES,
+    REPOSITORY_TOPOLOGY_SCHEMA,
+    VERIFICATION_COVERAGE_SCHEMA,
     WORKFLOW_IDS,
-    WORKFLOW_V2_ADAPTER_IDENTITY,
-    WORKFLOW_VERSION,
+    WORKFLOW_SCHEMA,
+    product_schema,
 )
 from dev_flow_orchestrator.workflow import (  # noqa: E402
     ASSURANCE_HANDLER_IDS,
-    SCHEMA_V2,
     canonical_json_bytes,
     workflow_identity,
 )
@@ -123,33 +136,91 @@ FORBIDDEN_IMPORTS = (
     "yaml_subset",
 )
 PURE_IMPORT_ALLOWLIST = {
+    # Model validates canonical absolute paths lexically; it performs no I/O.
+    "model.py": {"os"},
     # Snapshot validation performs lexical path checks only; it does no I/O.
     "snapshot.py": {"os"},
 }
 PURE_ATTRIBUTE_ALLOWLIST = {
+    "model.py": {
+        ("os", "path"),
+        ("os", "path", "isabs"),
+        ("os", "path", "normpath"),
+    },
     "snapshot.py": {
         ("os", "path"),
         ("os", "path", "isabs"),
         ("os", "path", "normpath"),
     },
 }
-PUBLIC_TEXT = (
+CURRENT_PRODUCT_CLAIM_TEXT = frozenset(
+    {
+        "README.md",
+        "README_CN.md",
+        "INSTALL.md",
+        "ARCHITECTURE.md",
+        "skills/analyze-change-impact/SKILL.md",
+        "skills/follow-dev-flow/SKILL.md",
+        "skills/review-dev-flow-change/SKILL.md",
+    }
+)
+EXPECTED_PRODUCT_VERSION = "0.2.0"
+CURRENT_PRODUCT_ASSET_DIRECTORIES = (
+    ".codex-plugin",
+    ".github/workflows",
+    "hooks",
+    "scripts",
+    "skills",
+    "src/dev_flow_orchestrator",
+    "templates",
+    "tests",
+    "workflows",
+)
+CURRENT_PRODUCT_ASSET_FILES = (
+    "ARCHITECTURE.md",
+    "CONTRIBUTING.md",
+    "INSTALL.md",
+    "LICENSE",
     "README.md",
     "README_CN.md",
     "ROADMAP.md",
     "ROADMAP_CN.md",
-    "INSTALL.md",
-    "ARCHITECTURE.md",
-    "skills/analyze-change-impact/SKILL.md",
-    "skills/follow-dev-flow/SKILL.md",
-    "skills/review-dev-flow-change/SKILL.md",
+    "pyproject.toml",
+    "uv.lock",
 )
-MAIN_SKILL_AGENT = "skills/follow-dev-flow/agents/openai.yaml"
-STALE_MAIN_AGENT_GUIDANCE = re.compile(
-    r"\bV[2345]\b|\bmulti[- ]repository\b|单仓库或多仓库|多仓库",
+CURRENT_PRODUCT_ASSET_IGNORED_PARTS = frozenset(
+    {"__pycache__", ".pytest_cache"}
+)
+VERSION_CODED_IDENTIFIER = re.compile(
+    r"(?<![A-Za-z0-9])(?:V|v)[0-9]+"
+)
+DEV_FLOW_NUMERIC_SCHEMA = re.compile(
+    r"\bdev-flow-[a-z0-9]+(?:-[a-z0-9]+)*/"
+    r"(?P<version>(?:V|v)?[0-9]+(?:\.[0-9]+)*)(?![A-Za-z0-9.])",
     re.IGNORECASE,
 )
-SEMVER_V6 = re.compile(r"6\.0\.0\+codex\.[a-z0-9]+(?:-[a-z0-9]+)*")
+EXTERNAL_VERSION_LITERALS = {
+    "src/dev_flow_orchestrator/git_client.py": (
+        "--porcelain=" + "v" + "1",
+    ),
+    ".github/workflows/focused.yml": (
+        "actions/checkout@" + "v" + "4",
+        "actions/setup-python@" + "v" + "5",
+    ),
+}
+MAIN_SKILL_AGENT = "skills/follow-dev-flow/agents/openai.yaml"
+UNSUPPORTED_LATER_STAGE_CLAIM = re.compile(
+    r"automatically (?:creates?|manages?) (?:branches?|worktrees?)|"
+    r"runs? (?:each )?repositor(?:y|ies) in parallel|"
+    r"parallel repository executors?|"
+    r"reuses? (?:per-repository )?partial assurance|"
+    r"dispatches external CI|opens? pull requests? automatically|"
+    r"自动(?:创建|管理)(?:分支|工作树)|"
+    r"并行(?:执行|处理)[^。！？；;]*(?:仓库|工作树)|"
+    r"并行仓库执行器|协调并行 Agent|"
+    r"复用[^。！？；;]*部分保障|调度外部 CI|自动创建 PR",
+    re.IGNORECASE,
+)
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 OFFICIAL_DRIVER_TOOLS = {
@@ -170,6 +241,14 @@ IMPACT_REPORT_FIELDS = {
     "status",
     "phase",
     "contract_digest",
+    "workspace_snapshot_digest",
+    "repository_set_id",
+    "repositories",
+    "cross_repository",
+    "limitations",
+}
+IMPACT_MEMBER_FIELDS = {
+    "root",
     "workspace_snapshot_digest",
     "baseline",
     "current",
@@ -227,6 +306,102 @@ def _require_any(
         )
 
 
+def _contains_unsupported_later_stage_claim(document: str) -> bool:
+    normalized = re.sub(r"\s+", " ", document)
+    for sentence in re.split(r"(?<=[.!?。！？;；])\s*", normalized):
+        for match in UNSUPPORTED_LATER_STAGE_CLAIM.finditer(sentence):
+            prefix = sentence[: match.start()]
+            if re.search(
+                r"\b(?:no|not|never|unsupported|outside|exclude[ds]?)\b|"
+                r"不会|不得|不支持|范围外",
+                prefix,
+                re.IGNORECASE,
+            ) is None:
+                return True
+    return False
+
+
+def _string_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        return tuple(
+            item
+            for nested in value.values()
+            for item in _string_values(nested)
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            item
+            for nested in value
+            for item in _string_values(nested)
+        )
+    return ()
+
+
+def _current_product_asset_paths(root: Path) -> tuple[Path, ...]:
+    relative_paths: set[Path] = set()
+    for relative in CURRENT_PRODUCT_ASSET_FILES:
+        path = root / relative
+        if path.is_file():
+            relative_paths.add(Path(relative))
+    for relative in CURRENT_PRODUCT_ASSET_DIRECTORIES:
+        directory = root / relative
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*"):
+            if not path.is_file():
+                continue
+            candidate_relative = path.relative_to(root)
+            if any(
+                part in CURRENT_PRODUCT_ASSET_IGNORED_PARTS
+                for part in candidate_relative.parts
+            ):
+                continue
+            relative_paths.add(candidate_relative)
+    return tuple(sorted(relative_paths, key=lambda path: path.as_posix()))
+
+
+def _without_external_version_literals(relative: str, document: str) -> str:
+    for literal in EXTERNAL_VERSION_LITERALS.get(relative, ()):
+        document = document.replace(literal, "<external-version>")
+    return document
+
+
+def _validate_current_product_versions(root: Path, errors: list[str]) -> None:
+    _check(
+        PRODUCT_VERSION == EXPECTED_PRODUCT_VERSION,
+        errors,
+        "product.PRODUCT_VERSION is not the supported package version",
+    )
+    for relative_path in _current_product_asset_paths(root):
+        relative = relative_path.as_posix()
+        if VERSION_CODED_IDENTIFIER.search(relative) is not None:
+            errors.append(
+                "current product asset path contains version-coded identifier: "
+                + relative
+            )
+        try:
+            document = (root / relative_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append("current product asset is not readable UTF-8 text: " + relative)
+            continue
+        inspected = _without_external_version_literals(relative, document)
+        if VERSION_CODED_IDENTIFIER.search(inspected) is not None:
+            errors.append(
+                "current product asset content contains version-coded identifier: "
+                + relative
+            )
+        if any(
+            match.group("version") != EXPECTED_PRODUCT_VERSION
+            for match in DEV_FLOW_NUMERIC_SCHEMA.finditer(inspected)
+        ):
+            errors.append(
+                "current product asset contains non-current dev-flow numeric schema: "
+                + relative
+            )
+
+
 def _json_examples(document: str) -> tuple[object, ...]:
     examples = []
     for match in re.finditer(
@@ -244,28 +419,66 @@ def _json_examples(document: str) -> tuple[object, ...]:
 def _valid_impact_report_details(details: object, envelope: dict) -> bool:
     if not isinstance(details, dict) or set(details) != IMPACT_REPORT_FIELDS:
         return False
-    baseline = details.get("baseline")
-    current = details.get("current")
-    affected = details.get("affected")
-    list_fields = ("confirmed", "inferred", "unknowns", "risks", "limitations")
+    repositories = details.get("repositories")
+    cross_repository = details.get("cross_repository")
+    if (
+        not isinstance(repositories, dict)
+        or not 1 <= len(repositories) <= 8
+        or not isinstance(cross_repository, dict)
+        or set(cross_repository) != {"contracts", "effects", "unknowns", "risks"}
+        or not all(isinstance(value, list) for value in cross_repository.values())
+    ):
+        return False
+
+    def valid_member(repository_id: object, member: object) -> bool:
+        if (
+            not isinstance(repository_id, str)
+            or not repository_id
+            or not isinstance(member, dict)
+            or set(member) != IMPACT_MEMBER_FIELDS
+        ):
+            return False
+        baseline = member.get("baseline")
+        current = member.get("current")
+        affected = member.get("affected")
+        return (
+            isinstance(member.get("root"), str)
+            and bool(member["root"])
+            and isinstance(member.get("workspace_snapshot_digest"), str)
+            and bool(member["workspace_snapshot_digest"])
+            and isinstance(baseline, dict)
+            and set(baseline) == {"project_id", "snapshot_digest", "status"}
+            and isinstance(current, dict)
+            and set(current) == {"project_id", "snapshot_digest", "status"}
+            and isinstance(member.get("selected_project_id"), str)
+            and bool(member["selected_project_id"])
+            and isinstance(affected, dict)
+            and set(affected) == {"components", "symbols", "contracts", "tests"}
+            and all(isinstance(value, list) for value in affected.values())
+            and all(
+                isinstance(member.get(field), list)
+                for field in (
+                    "confirmed",
+                    "inferred",
+                    "unknowns",
+                    "risks",
+                    "limitations",
+                )
+            )
+        )
+
     return (
-        details.get("schema") == "dev-flow-impact-report/v1"
+        details.get("schema") == IMPACT_REPORT_SCHEMA
         and details.get("status") == envelope.get("status")
         and details.get("phase") == envelope.get("phase")
         and isinstance(details.get("contract_digest"), str)
         and bool(details["contract_digest"])
         and isinstance(details.get("workspace_snapshot_digest"), str)
         and bool(details["workspace_snapshot_digest"])
-        and isinstance(baseline, dict)
-        and set(baseline) == {"project_id", "snapshot_digest", "status"}
-        and isinstance(current, dict)
-        and set(current) == {"project_id", "snapshot_digest", "status"}
-        and isinstance(details.get("selected_project_id"), str)
-        and bool(details["selected_project_id"])
-        and isinstance(affected, dict)
-        and set(affected) == {"components", "symbols", "contracts", "tests"}
-        and all(isinstance(value, list) for value in affected.values())
-        and all(isinstance(details.get(field), list) for field in list_fields)
+        and isinstance(details.get("repository_set_id"), str)
+        and bool(details["repository_set_id"])
+        and all(valid_member(key, value) for key, value in repositories.items())
+        and isinstance(details.get("limitations"), list)
         and details["limitations"] == envelope.get("limitations")
     )
 
@@ -278,7 +491,7 @@ def _validate_impact_skill_driver_envelope(
         example
         for example in _json_examples(document)
         if isinstance(example, dict)
-        and example.get("schema") == "dev-flow-driver-result/v1"
+        and example.get("schema") == DRIVER_RESULT_SCHEMA
     ]
     valid_envelopes = [
         envelope
@@ -382,13 +595,38 @@ def _quoted_yaml_string(document: str, key: str) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
-def _is_single_repository_guidance(value: str) -> bool:
-    return (
-        "单仓库" in value
-        or "单个 Git 仓库" in value
-        or re.search(r"\bsingle[- ]repository\b", value, re.IGNORECASE)
-        is not None
+def _is_exact_repository_set_guidance(value: str) -> bool:
+    folded = value.casefold()
+    bounded = any(
+        token in folded
+        for token in (
+            "one to eight",
+            "one through eight",
+            "up to eight",
+            "1-8",
+            "1–8",
+            "一至八",
+            "最多八",
+        )
     )
+    exact = "exact" in folded or "精确" in value
+    return bounded and exact
+
+
+def _is_user_prepared_guidance(value: str) -> bool:
+    folded = value.casefold()
+    return (
+        "user-prepared" in folded
+        or "用户预备" in value
+        or "用户提前准备" in value
+    )
+
+
+def _is_single_executor_guidance(value: str) -> bool:
+    folded = value.casefold()
+    has_codex = "one codex" in folded or "一个 Codex" in value
+    has_action = "one current action" in folded or "当前动作" in value
+    return has_codex and has_action
 
 
 def _validate_main_skill_agent(root: Path, errors: list[str]) -> None:
@@ -406,22 +644,110 @@ def _validate_main_skill_agent(root: Path, errors: list[str]) -> None:
     _check(
         short_description is not None
         and 25 <= len(short_description) <= 64
-        and "V6" in guidance
-        and _is_single_repository_guidance(guidance),
+        and PRODUCT_VERSION in guidance
+        and _is_exact_repository_set_guidance(guidance)
+        and _is_user_prepared_guidance(guidance)
+        and _is_single_executor_guidance(guidance),
         errors,
-        "follow-dev-flow agent metadata is not V6 single-repository guidance",
+        "follow-dev-flow agent metadata does not use the current exact-set version",
     )
     _check(
         default_prompt is not None and "$follow-dev-flow" in default_prompt,
         errors,
         "follow-dev-flow default_prompt does not invoke $follow-dev-flow",
     )
+def _validate_repository_topology(root: Path, errors: list[str]) -> None:
+    expected = {
+        "schema": REPOSITORY_TOPOLOGY_SCHEMA,
+        "minimum_repositories": 1,
+        "maximum_repositories": 8,
+        "membership": "exact-canonical-set",
+        "caller_order": "non-semantic",
+        "worktrees": "user-prepared",
+        "execution": "single-codex-single-current-action",
+        "managed_git_effects": False,
+        "partial_assurance_reuse": False,
+        "external_delivery_effects": False,
+    }
     _check(
-        STALE_MAIN_AGENT_GUIDANCE.search(guidance) is None,
+        MIN_REPOSITORY_COUNT == 1
+        and MAX_REPOSITORY_COUNT == 8
+        and dict(REPOSITORY_TOPOLOGY_CAPABILITIES) == expected,
         errors,
-        "follow-dev-flow agent metadata contains a stale generation or "
-        "multi-repository claim",
+        "product repository-topology authority is invalid",
     )
+    _check(
+        AGENT_PROTOCOL_SCHEMA == product_schema("agent")
+        and VERIFICATION_COVERAGE_SCHEMA == product_schema("verification-coverage")
+        and DELIVERY_DOSSIER_SCHEMA == product_schema("delivery-dossier")
+        and REPOSITORY_SET_SNAPSHOT_SCHEMA == product_schema("repository-set-snapshot"),
+        errors,
+        "current repository-set protocol identity is invalid",
+    )
+
+    runtime_contracts = {
+        "src/dev_flow_orchestrator/cli.py": (
+            'action="append"',
+            "repositories=arguments.repo",
+            "user-prepared Git worktree",
+        ),
+        "src/dev_flow_orchestrator/model.py": (
+            "MAX_REPOSITORY_COUNT",
+            "canonical_repositories",
+            "repository_set_id",
+        ),
+        "src/dev_flow_orchestrator/controller.py": (
+            "make_repository_set_snapshot",
+            "tasks_for_path",
+            "state.repositories",
+        ),
+        "src/dev_flow_orchestrator/engine.py": (
+            "AGENT_PROTOCOL_SCHEMA",
+            "criteria, repositories, and integration",
+            '"repository_set"',
+        ),
+        "src/dev_flow_orchestrator/snapshot.py": (
+            "REPOSITORY_SET_SNAPSHOT_SCHEMA",
+            "validate_repository_set_snapshot",
+            "validate_task_snapshot",
+        ),
+        "src/dev_flow_orchestrator/delivery.py": (
+            "generate_dossier",
+            "DELIVERY_DOSSIER_SCHEMA",
+            "repository_id",
+        ),
+        "src/dev_flow_orchestrator/hook.py": (
+            "tasks_for_path",
+            "one current action for one Codex executor",
+            "repository set with one Codex",
+            "user-owned",
+        ),
+    }
+    for relative, tokens in runtime_contracts.items():
+        path = root / relative
+        if not path.is_file():
+            continue
+        _require_tokens(
+            path.read_text(encoding="utf-8"),
+            tokens,
+            errors,
+            "{} is not wired to the repository-topology authority".format(relative),
+        )
+
+    installed_runner = root / "scripts" / "validate_installed_stage1.py"
+    if installed_runner.is_file():
+        _require_tokens(
+            installed_runner.read_text(encoding="utf-8"),
+            (
+                "exact-set-secondary-resume-drift-resources-dossier",
+                "exact-set-lite-success-dossier",
+                "AGENT_PROTOCOL_SCHEMA",
+                "DELIVERY_DOSSIER_SCHEMA",
+                "ACTION_BINDING_STALE",
+            ),
+            errors,
+            "installed validation does not prove the exact-set journeys",
+        )
 
 
 def _validate_manifest(
@@ -553,9 +879,9 @@ def _validate_manifest(
             "plugin interface default prompts are invalid",
         )
         _check(
-            "V6" in str(interface.get("longDescription", "")),
+            PRODUCT_VERSION in str(interface.get("longDescription", "")),
             errors,
-            "plugin interface does not describe V6",
+            "plugin interface does not describe the current product version",
         )
     _check(
         "[TODO:" not in json.dumps(manifest, ensure_ascii=False),
@@ -571,10 +897,9 @@ def _validate_package_versions(
 ) -> None:
     manifest_version = manifest.get("version") if isinstance(manifest, dict) else None
     _check(
-        isinstance(manifest_version, str)
-        and SEMVER_V6.fullmatch(manifest_version) is not None,
+        manifest_version == PRODUCT_VERSION,
         errors,
-        "plugin version is not V6 with one Codex cachebuster",
+        "plugin version does not match PRODUCT_VERSION",
     )
     pyproject_path = root / "pyproject.toml"
     if pyproject_path.is_file():
@@ -652,16 +977,14 @@ def _validate_official_workflow(
 ) -> None:
     prefix = "workflow {!r}".format(selector)
     _check(
-        definition.schema == SCHEMA_V2
-        and definition.version == WORKFLOW_VERSION
-        and definition.adapter_identity == WORKFLOW_V2_ADAPTER_IDENTITY,
+        definition.schema == WORKFLOW_SCHEMA
+        and definition.version == PRODUCT_VERSION,
         errors,
-        prefix + " is not an official workflow-v2 definition",
+        prefix + " does not use the current workflow version",
     )
     expected_identity = workflow_identity(
         selector,
         definition.document,
-        WORKFLOW_V2_ADAPTER_IDENTITY,
     )
     _check(
         definition.identity == expected_identity
@@ -669,13 +992,44 @@ def _validate_official_workflow(
         errors,
         prefix + " identity is invalid",
     )
-    cancel = definition.cancel_contract
+    topology_keys = {
+        "repository_count",
+        "repository_topology",
+        "workspace_strategy",
+        "execution_topology",
+    }
     _check(
-        cancel is not None
-        and cancel.target_node in definition.terminal_nodes
-        and cancel.target_status == "CANCELLED",
+        not (set(definition.document) & topology_keys),
         errors,
-        prefix + " does not expose shared cancellation",
+        prefix + " improperly binds workflow depth to repository topology",
+    )
+    cancellable_nodes = {
+        node_id
+        for node_id, contract in definition.nodes.items()
+        if contract.action_id and contract.handler_id != "delivery.finalize"
+    }
+    cancel_stages = set(definition.cancel_stages)
+    cancel_contracts = tuple(definition.cancellations.values())
+    cancel_targets = {
+        (contract.target_node, contract.target_status)
+        for contract in cancel_contracts
+    }
+    _check(
+        bool(cancel_stages)
+        and cancel_stages.issubset(cancellable_nodes)
+        and len(cancel_stages) * 2 > len(cancellable_nodes)
+        and all(
+            contract.action_id == "task.cancel"
+            and contract.handler_id == "artifact.record"
+            and dict(contract.payload_types) == {"reason": "string"}
+            for contract in cancel_contracts
+        )
+        and len(cancel_targets) == 1
+        and next(iter(cancel_targets), (None, None))[0]
+        in definition.terminal_nodes
+        and next(iter(cancel_targets), (None, None))[1] == "CANCELLED",
+        errors,
+        prefix + " does not expose stage-declared cancellation for most normal stages",
     )
     finalizers = []
     for node_id, contract in definition.nodes.items():
@@ -741,7 +1095,7 @@ def _validate_official_workflow(
         errors,
         prefix + " must expose successful and incomplete dossier outcomes",
     )
-    cancel_target = None if cancel is None else cancel.target_node
+    cancel_target = next(iter(cancel_targets), (None, None))[0]
     for terminal in definition.terminal_nodes:
         if terminal == cancel_target:
             continue
@@ -769,8 +1123,8 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
         _require_tokens(
             document,
             (
-                "V6",
-                "dev-flow-delivery-contract/v1",
+                PRODUCT_VERSION,
+                DELIVERY_CONTRACT_SCHEMA,
                 "$follow-dev-flow",
                 "--binding-json",
                 "revise-contract",
@@ -789,18 +1143,52 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
                 "causal",
                 "produces-source",
                 "verifies-source",
-                "openspec-tasks-v1",
+                OPENSPEC_TASKS_NORMALIZER,
                 "reported",
+                WORKFLOW_SCHEMA,
+                AGENT_PROTOCOL_SCHEMA,
+                "repository_set",
+                VERIFICATION_COVERAGE_SCHEMA,
+                DELIVERY_DOSSIER_SCHEMA,
+                "--repo",
+                "repository_id",
+                '"criteria"',
+                '"repositories"',
+                '"integration"',
+                "one current action",
+                "one Codex",
+                "user-prepared",
+                "aggregate",
+                "external CI",
+                "cancel.stages",
+                "Delivery finalizers",
             )
             + tuple(WORKFLOW_IDS),
             errors,
-            "follow-dev-flow Skill is missing V6 delivery guidance",
+            "follow-dev-flow Skill is missing current-version delivery guidance",
         )
         _require_any(
             document,
-            ("single-repository", "single repository", "单个 Git 仓库", "单仓库"),
+            ("one to eight", "1-8", "1–8", "一至八"),
             errors,
-            "follow-dev-flow Skill does not state the repository boundary",
+            "follow-dev-flow Skill does not state the bounded repository boundary",
+        )
+        _check(
+            document.count("--repo") >= 3,
+            errors,
+            "follow-dev-flow Skill does not document repeatable --repo selection",
+        )
+        _require_tokens(
+            document,
+            (
+                "Do not",
+                "create/switch branches or worktrees",
+                "open pull requests",
+                "external CI",
+                "partial approval after aggregate drift",
+            ),
+            errors,
+            "follow-dev-flow Skill does not preserve user-owned delivery boundaries",
         )
         _require_any(
             document,
@@ -820,9 +1208,19 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
         impact = impact_path.read_text(encoding="utf-8")
         _require_tokens(
             impact,
-            ("baseline", "current", "project ID", "phase", "source", "degraded"),
+            (
+                "baseline",
+                "current",
+                "project ID",
+                "phase",
+                "source",
+                "degraded",
+                "repository_id",
+                "every canonical",
+                "cross-repository",
+            ),
             errors,
-            "analyze-change-impact Skill is missing V6 graph evidence guidance",
+            "analyze-change-impact Skill is missing current-version graph evidence guidance",
         )
         _validate_impact_skill_driver_envelope(impact, errors)
     review_path = root / "skills" / "review-dev-flow-change" / "SKILL.md"
@@ -830,9 +1228,19 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
         review = review_path.read_text(encoding="utf-8")
         _require_tokens(
             review,
-            ("V6", "independent", "exact", "snapshot", "digest"),
+            (
+                PRODUCT_VERSION,
+                "independent",
+                "exact",
+                "snapshot",
+                "digest",
+                "canonical member",
+                "aggregate",
+                "every member",
+                "partial approval after aggregate drift",
+            ),
             errors,
-            "review-dev-flow-change Skill is missing V6 review guidance",
+            "review-dev-flow-change Skill is missing current-version review guidance",
         )
         for alternatives, label in (
             (("base revision", "base_revision"), "base revision"),
@@ -858,7 +1266,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         _require_tokens(
             english,
             (
-                "V6",
+                PRODUCT_VERSION,
                 "delivery contract",
                 "bounded",
                 "rework",
@@ -866,13 +1274,25 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
                 "codebase-memory",
                 "independent-review",
                 "Delivery Dossier",
-                "V5",
-                "upgrade",
-                "rollback",
+                "one to eight",
+                "exact",
+                "user-prepared",
+                "one current action",
+                "one Codex",
+                "--repo",
+                AGENT_PROTOCOL_SCHEMA,
+                "repository_id",
+                "criteria",
+                "repositories",
+                "integration",
+                AGENT_PROTOCOL_SCHEMA,
+                REPOSITORY_SET_SNAPSHOT_SCHEMA,
+                VERIFICATION_COVERAGE_SCHEMA,
+                DELIVERY_DOSSIER_SCHEMA,
             )
             + catalog_tokens,
             errors,
-            "README.md is missing Stage 1 or V5 compatibility guidance",
+            "README.md is missing current-version repository-set guidance",
         )
     chinese_path = root / "README_CN.md"
     if chinese_path.is_file():
@@ -880,20 +1300,32 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         _require_tokens(
             chinese,
             (
-                "V6",
+                PRODUCT_VERSION,
                 "交付契约",
                 "有界",
                 "返工",
                 "OpenSpec",
                 "codebase-memory",
                 "independent-review",
-                "V5",
-                "升级",
-                "回滚",
+                "一至八",
+                "精确",
+                "用户提前准备",
+                "一个当前动作",
+                "一个 Codex",
+                "--repo",
+                AGENT_PROTOCOL_SCHEMA,
+                "repository_id",
+                "criteria",
+                "repositories",
+                "integration",
+                AGENT_PROTOCOL_SCHEMA,
+                REPOSITORY_SET_SNAPSHOT_SCHEMA,
+                VERIFICATION_COVERAGE_SCHEMA,
+                DELIVERY_DOSSIER_SCHEMA,
             )
             + catalog_tokens,
             errors,
-            "README_CN.md 缺少阶段 1 或 V5 兼容性说明",
+            "README_CN.md 缺少当前版本仓库集合说明",
         )
         _require_any(
             chinese,
@@ -906,9 +1338,17 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         install = install_path.read_text(encoding="utf-8")
         _require_tokens(
             install,
-            ("<PLUGIN_DATA>/v6", "<PLUGIN_DATA>/v5", "V5", "upgrade", "rollback"),
+            (
+                "<PLUGIN_DATA>/{}".format(PLUGIN_DATA_NAMESPACE),
+                "--repo",
+                "user-prepared",
+                "secondary member",
+                "exact canonical",
+                "missing or moved",
+                "aggregate repository-set snapshot",
+            ),
             errors,
-            "INSTALL.md is missing the V6/V5 upgrade and rollback boundary",
+            "INSTALL.md is missing the current-version exact-set install boundary",
         )
     architecture_path = root / "ARCHITECTURE.md"
     if architecture_path.is_file():
@@ -916,14 +1356,68 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         _require_tokens(
             architecture,
             (
-                "V6",
+                PRODUCT_VERSION,
+                WORKFLOW_SCHEMA,
                 AGENT_PROTOCOL_SCHEMA,
-                "dev-flow-record/v1",
-                "dev-flow-artifact/v1",
+                REPOSITORY_SET_SNAPSHOT_SCHEMA,
+                VERIFICATION_COVERAGE_SCHEMA,
+                DELIVERY_DOSSIER_SCHEMA,
+                RECORD_SCHEMA,
+                ARTIFACT_SCHEMA,
+                "repository_id",
+                "criteria",
+                "repositories",
+                "integration",
+                "aggregate",
+                "one current action",
+                "one Codex",
                 "Delivery Dossier",
             ),
             errors,
-            "ARCHITECTURE.md is missing V6 identity or dossier guidance",
+            "ARCHITECTURE.md is missing current-version exact-set identity or dossier guidance",
+        )
+    contributing_path = root / "CONTRIBUTING.md"
+    if contributing_path.is_file():
+        _require_tokens(
+            contributing_path.read_text(encoding="utf-8"),
+            (
+                "repository topology",
+                "cardinality",
+                "repository-set",
+                WORKFLOW_SCHEMA,
+                "validate_package.py",
+            ),
+            errors,
+            "CONTRIBUTING.md is missing repository-topology validation guidance",
+        )
+    roadmap_path = root / "ROADMAP.md"
+    if roadmap_path.is_file():
+        _require_tokens(
+            roadmap_path.read_text(encoding="utf-8"),
+            (
+                PRODUCT_VERSION,
+                "multi-repository",
+                "user-prepared",
+                "one Codex",
+                "partial assurance",
+                "external CI",
+            ),
+            errors,
+            "ROADMAP.md is missing the delivered exact-set boundary",
+        )
+    roadmap_cn_path = root / "ROADMAP_CN.md"
+    if roadmap_cn_path.is_file():
+        _require_tokens(
+            roadmap_cn_path.read_text(encoding="utf-8"),
+            (
+                PRODUCT_VERSION,
+                "user-prepared",
+                "one Codex",
+                "部分复用",
+                "外部 CI",
+            ),
+            errors,
+            "ROADMAP_CN.md is missing the delivered exact-set boundary",
         )
 
 
@@ -1007,10 +1501,6 @@ def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
         return
     with tempfile.TemporaryDirectory(prefix="dev flow package ") as temporary:
         plugin_data = Path(temporary) / "plugin data"
-        retained_v5 = plugin_data / "v5" / "tasks" / "retained" / "state.json"
-        retained_v5.parent.mkdir(parents=True)
-        retained_payload = '{"schema_version":5}\n'
-        retained_v5.write_text(retained_payload, encoding="utf-8")
         payload = json.dumps(
             {"hook_event_name": "SessionStart", "cwd": str(root)}
         )
@@ -1046,14 +1536,18 @@ def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
         expected_prefix = [str(launcher), str(root / "scripts" / "dev_flow.py")]
         _check(tokens[:2] == expected_prefix, errors, "Hook locator bypasses launcher")
         _check(
-            tokens[2:] == ["--data-dir", str((plugin_data / "v6").resolve())],
+            tokens[2:] == [
+                "--data-dir",
+                str((plugin_data / PLUGIN_DATA_NAMESPACE).resolve()),
+            ],
             errors,
-            "Hook locator does not isolate V6 plugin data",
+            "Hook locator does not isolate current-version plugin data",
         )
         _check(
-            "Dev Flow V6" in context and "$follow-dev-flow" in context,
+            "Dev Flow {}".format(PRODUCT_VERSION) in context
+            and "$follow-dev-flow" in context,
             errors,
-            "Hook does not inject V6 Skill guidance",
+            "Hook does not inject current-version Skill guidance",
         )
         shell = subprocess.run(
             ["/bin/sh", "-c", locator + " --help"],
@@ -1064,15 +1558,11 @@ def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
             env=environment,
         )
         _check(shell.returncode == 0, errors, "Hook locator is not shell executable")
-        _check(
-            retained_v5.read_text(encoding="utf-8") == retained_payload,
-            errors,
-            "V6 Hook modified or loaded the retained V5 data fixture",
-        )
 
 
 def _validate_current_candidate(root: Path) -> dict:
     errors: list[str] = []
+    _validate_current_product_versions(root, errors)
     catalog_valid = (
         isinstance(WORKFLOW_IDS, tuple)
         and len(WORKFLOW_IDS) == 6
@@ -1123,12 +1613,13 @@ def _validate_current_candidate(root: Path) -> dict:
     )
     _validate_manifest(root, manifest, errors)
     _validate_package_versions(root, manifest, errors)
+    _validate_repository_topology(root, errors)
     _check(
-        WORKFLOW_VERSION == 6
-        and PLUGIN_DATA_NAMESPACE == "v6"
-        and AGENT_PROTOCOL_SCHEMA == "dev-flow-agent-v2",
+        PLUGIN_DATA_NAMESPACE == PRODUCT_VERSION
+        and WORKFLOW_SCHEMA == product_schema("workflow")
+        and AGENT_PROTOCOL_SCHEMA == product_schema("agent"),
         errors,
-        "product generation, data namespace, or agent protocol is not V6",
+        "product version, data namespace, or agent protocol is inconsistent",
     )
     launcher = root / "scripts" / "dev_flow_python_launcher"
     _check(
@@ -1143,7 +1634,11 @@ def _validate_current_candidate(root: Path) -> dict:
             continue
         source = path.read_text(encoding="utf-8")
         _check("src" in source, errors, relative + " does not bootstrap src")
-        _check("V6" in source, errors, relative + " does not identify V6")
+        _check(
+            PRODUCT_VERSION in source,
+            errors,
+            relative + " does not identify the current product version",
+        )
         _check("exec(" not in source, errors, relative + " executes source")
         _check(
             FORBIDDEN_SOURCE.search(source) is None,
@@ -1211,7 +1706,7 @@ def _validate_current_candidate(root: Path) -> dict:
         "$PLUGIN_ROOT/scripts/dev_flow_python_launcher" in serialized
         and "$PLUGIN_ROOT/hooks/dev_flow_hook.py" in serialized,
         errors,
-        "Hook does not launch the packaged adapter",
+        "Hook does not launch the packaged bootstrap",
     )
     hook_groups = hooks.get("hooks") if isinstance(hooks, dict) else None
     _check(
@@ -1263,10 +1758,10 @@ def _validate_current_candidate(root: Path) -> dict:
         _check(
             'os.environ.get("PLUGIN_DATA")' in hook_source
             and "PLUGIN_DATA_NAMESPACE" in hook_source
-            and "Dev Flow V6" in hook_source
+            and "PRODUCT_VERSION" in hook_source
             and "$follow-dev-flow" in hook_source,
             errors,
-            "Hook does not honor the V6 PLUGIN_DATA and Skill guidance contract",
+            "Hook does not honor the current PLUGIN_DATA and Skill guidance contract",
         )
     marketplace_entry = _json_object(
         root / "templates" / "marketplace-entry.json",
@@ -1296,18 +1791,24 @@ def _validate_current_candidate(root: Path) -> dict:
         errors,
         "personal marketplace template must contain the canonical entry once",
     )
-    selector_pattern = "|".join(re.escape(item) for item in safe_catalog)
-    stale_selector = re.compile(
-        r"\b(?:{})@[45]\b".format(selector_pattern or r"(?!)")
-    )
-    for relative in PUBLIC_TEXT:
+    for relative in CURRENT_PRODUCT_CLAIM_TEXT:
         path = root / relative
         if path.is_file():
+            public_document = path.read_text(encoding="utf-8")
             _check(
-                stale_selector.search(path.read_text(encoding="utf-8")) is None,
+                not _contains_unsupported_later_stage_claim(public_document),
                 errors,
-                "stale public workflow selector remains: " + relative,
+                "unsupported later-stage product claim remains: " + relative,
             )
+    if isinstance(manifest, dict):
+        _check(
+            not any(
+                _contains_unsupported_later_stage_claim(value)
+                for value in _string_values(manifest)
+            ),
+            errors,
+            "plugin manifest claims unsupported later-stage product behavior",
+        )
     _validate_skill_guidance(root, errors)
     _validate_main_skill_agent(root, errors)
     _validate_public_docs(root, errors)

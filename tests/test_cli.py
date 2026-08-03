@@ -1,4 +1,4 @@
-"""V6 CLI subprocess journeys and machine-readable error contract."""
+"""Current CLI subprocess journeys and machine-readable error contract."""
 
 from __future__ import annotations
 
@@ -16,6 +16,14 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
 from support import make_repository
+from dev_flow_orchestrator.product import (
+    AGENT_PROTOCOL_SCHEMA,
+    DELIVERY_DOSSIER_SCHEMA,
+    PRODUCT_VERSION,
+    REPOSITORY_SET_SNAPSHOT_SCHEMA,
+    VERIFICATION_COVERAGE_SCHEMA,
+    WORKFLOW_SCHEMA,
+)
 
 
 def run_cli(data_dir: str, *arguments: str) -> subprocess.CompletedProcess:
@@ -104,13 +112,25 @@ class CliTests(unittest.TestCase):
         started = self.start_lite("cli feature")
         self.assertEqual(started["command"], "start")
         task_id = started["task"]["task_id"]
-        self.assertEqual(started["task"]["workflow"]["version"], 6)
+        repository_id = started["task"]["repositories"][0]["id"]
+        self.assertEqual(started["task"]["workflow"]["version"], PRODUCT_VERSION)
 
         shown = self.invoke_success("show", task_id)
         self.assertEqual(shown["task"]["task_id"], task_id)
         self.assertEqual(shown["task"]["current_node"], "preflight")
+        self.assertEqual(
+            shown["task"]["current_snapshot"]["schema"],
+            REPOSITORY_SET_SNAPSHOT_SCHEMA,
+        )
+        self.assertEqual(len(shown["task"]["current_snapshot"]["repositories"]), 1)
 
         projection = self.next_projection(task_id)
+        self.assertEqual(projection["schema"], AGENT_PROTOCOL_SCHEMA)
+        self.assertEqual(len(projection["repository_set"]["repositories"]), 1)
+        self.assertEqual(
+            projection["repository_set"]["repositories"][0]["id"],
+            repository_id,
+        )
         self.assertEqual(projection["action"]["action_id"], "task.preflight")
         applied = self.apply_projection(task_id, projection, {})
         self.assertEqual(applied["receipt"]["status"], "IMPLEMENTING")
@@ -128,13 +148,32 @@ class CliTests(unittest.TestCase):
 
         projection = self.next_projection(task_id)
         self.assertEqual(projection["action"]["action_id"], "verification.record")
+        self.assertEqual(
+            projection["action"]["verification_coverage"]["repository_ids"],
+            [repository_id],
+        )
+        verification_command = "python3 -m unittest tests.test_cli"
+        verification_coverage = {
+            "schema": VERIFICATION_COVERAGE_SCHEMA,
+            "criteria": {"requirement": "proven"},
+            "repositories": {
+                repository_id: {
+                    "command": verification_command,
+                    "passed": True,
+                }
+            },
+            "integration": {
+                "command": verification_command,
+                "passed": True,
+            },
+        }
         applied = self.apply_projection(
             task_id,
             projection,
             {
                 "passed": True,
-                "command": "python3 -m unittest tests.test_v6_cli",
-                "coverage": {"requirement": "proven"},
+                "command": verification_command,
+                "coverage": verification_coverage,
                 "summary": "CLI lifecycle verified",
             },
         )
@@ -157,13 +196,30 @@ class CliTests(unittest.TestCase):
         self.assertEqual(applied["receipt"]["status"], "DONE")
         self.assertTrue(applied["projection"]["done"])
         self.assertEqual(applied["projection"]["dossier"]["outcome"], "success")
+        self.assertEqual(
+            applied["projection"]["dossier"]["schema"],
+            DELIVERY_DOSSIER_SCHEMA,
+        )
+        self.assertTrue(applied["projection"]["dossier"]["current"])
+        self.assertEqual(
+            applied["projection"]["dossier"]["repository_set_id"],
+            applied["projection"]["repository_set"]["id"],
+        )
 
         shown = self.invoke_success("show", task_id)
         dossier = shown["task"]["records"][-1]["artifact"]["body"]
-        self.assertEqual(dossier["schema"], "dev-flow-delivery-dossier/v1")
+        self.assertEqual(dossier["schema"], DELIVERY_DOSSIER_SCHEMA)
         self.assertEqual(dossier["change_summary"], "Delivered through CLI")
         self.assertEqual(dossier["handoff_recommendation"], "Ready to use")
         self.assertEqual(dossier["coverage"]["requirement"]["status"], "proven")
+        self.assertEqual(dossier["repository_set"]["members"][0]["repository_id"], repository_id)
+        self.assertEqual(dossier["verification"]["coverage"], verification_coverage)
+        self.assertTrue(dossier["aggregate_freshness"]["current"])
+        self.assertEqual(
+            dossier["repository_snapshot"]["schema"],
+            REPOSITORY_SET_SNAPSHOT_SCHEMA,
+        )
+        self.assertTrue(shown["task"]["dossier"]["current"])
 
     def test_cancel_after_preflight_and_list(self) -> None:
         started = self.start_lite("cancel me")
@@ -182,8 +238,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(listing["tasks"]), 1)
         self.assertEqual(listing["tasks"][0]["task_id"], task_id)
         self.assertEqual(listing["tasks"][0]["status"], "CANCELLED")
+        shown = self.invoke_success("show", task_id)
+        self.assertEqual(
+            shown["task"]["records"][-1]["snapshot"]["schema"],
+            REPOSITORY_SET_SNAPSHOT_SCHEMA,
+        )
 
-    def test_workflow_accepts_custom_v6_path(self) -> None:
+    def test_workflow_accepts_custom_current_path(self) -> None:
         flow_path = self.root / "custom-lite.yaml"
         flow_path.write_text(
             (ROOT / "workflows" / "lite.yaml")
@@ -203,9 +264,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(started["task"]["workflow"]["id"], str(flow_path))
         self.assertEqual(
             started["task"]["workflow"]["schema"],
-            "dev-flow-workflow/v2",
+            WORKFLOW_SCHEMA,
         )
-        self.assertEqual(started["task"]["workflow"]["version"], 6)
+        self.assertEqual(started["task"]["workflow"]["version"], PRODUCT_VERSION)
 
     def test_missing_task_error_is_machine_readable(self) -> None:
         completed, value = self.invoke_json("show", "missing-task-id")

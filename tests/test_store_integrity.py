@@ -1,4 +1,4 @@
-"""Generation-current TaskStore path, inventory, and ledger integrity."""
+"""Current TaskStore path, inventory, and ledger integrity."""
 
 from __future__ import annotations
 
@@ -100,11 +100,11 @@ class StoreIntegrityTests(RepositoryTestCase):
             self.controller.show(corrupt)
         self.assertEqual(context.exception.code, "STATE_INVALID")
 
-    def test_unsupported_task_schema_is_rejected(self) -> None:
+    def test_unsupported_product_version_is_rejected(self) -> None:
         task_id = self.start_lite()
         state_path = self.state_path(task_id)
         value = json.loads(state_path.read_text(encoding="utf-8"))
-        value["schema_version"] = 5
+        value["version"] = "unsupported"
         state_path.write_text(json.dumps(value), encoding="utf-8")
 
         with self.assertRaises(DevFlowError) as context:
