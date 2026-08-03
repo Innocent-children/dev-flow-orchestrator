@@ -1,16 +1,27 @@
 {
   "name": "dev-flow-orchestrator",
   "version": "0.2.0",
-  "description": "Complete, resumable 0.2.0 personal delivery workflows for an exact set of one to eight user-prepared local Git worktrees in Codex on macOS.",
+  "description": "Keep Codex development tasks resumable, verifiable, and aligned across one to eight local Git repositories.",
   "author": {
-    "name": "Local developer"
+    "name": "Innocent-children",
+    "url": "https://github.com/Innocent-children"
   },
+  "homepage": "https://github.com/Innocent-children/dev-flow-orchestrator",
+  "repository": "https://github.com/Innocent-children/dev-flow-orchestrator",
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "codex-plugin",
+    "agentic-coding",
+    "developer-workflow",
+    "multi-repository"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Dev Flow Orchestrator",
-    "shortDescription": "Run exact-set personal delivery workflows",
-    "longDescription": "Runs one 0.2.0 controller on macOS with six dev-flow-workflow/0.2.0 personal-delivery workflows over an immutable exact set of one to eight user-prepared Git worktrees. Every task exposes one dev-flow-agent/0.2.0 current action to one Codex, binds evidence to aggregate repository-set snapshots, uses repository-scoped resources and structured member/integration verification, and ends each non-cancelled path in one dev-flow-delivery-dossier/0.2.0. State stays outside all repositories, assurance is bounded, and optional drivers record explicit degraded or unavailable results. The controller never manages worktrees or branches, publishes Git changes, starts parallel agents, or dispatches external CI, PR, or release automation.",
-    "developerName": "Local developer",
+    "shortDescription": "Keep Codex tasks resumable and verifiable",
+    "longDescription": "Dev Flow Orchestrator 0.2.0 keeps long-running Codex development resumable and aligned with explicit acceptance criteria across an exact set of one to eight user-prepared Git worktrees. Resume the same task in a new session and finish with evidence that shows what passed, what remains, and why. The dev-flow-workflow/0.2.0 controller exposes one current action to one Codex, binds dev-flow-agent/0.2.0 evidence to aggregate repository-set snapshots and repository-scoped resources, requires structured member/integration verification, and finishes every non-cancelled path with a dev-flow-delivery-dossier/0.2.0. State stays local and outside target repositories. Dev Flow never manages worktrees or branches, publishes Git changes, starts parallel agents, or dispatches external CI, PR, or release automation.",
+    "developerName": "Innocent-children",
     "category": "Productivity",
     "capabilities": [
       "Interactive",
@@ -18,9 +29,9 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Start one 0.2.0 personal-delivery task for an exact set of one to eight prepared worktrees.",
-      "Resume the active 0.2.0 task from any member repository and perform its one current action.",
-      "Continue this task through aggregate assurance and its final Delivery Dossier."
+      "Start a resumable Dev Flow task for this requirement and its prepared repositories.",
+      "Resume my active Dev Flow task and continue from its authoritative next action.",
+      "Verify this task against its acceptance criteria and generate the Delivery Dossier."
     ]
   }
 }

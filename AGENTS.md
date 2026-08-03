@@ -1,57 +1,68 @@
-# Contributor guidance
+# 禁止事项
 
-This directory is the source of the `dev-flow-orchestrator` Codex plugin.
+本文件只规定在此仓库中工作的 Agent 不能做什么。除非用户针对当前事项给出明确授权，
+不得绕过、弱化或自行解释这些限制。
 
-- Keep workflow state outside target repositories. Runtime state belongs in the plugin data directory or the explicit `--data-dir` used by tests.
-- Keep Git-changing operations deterministic and gated. Never add automatic stash, reset, clean, force-push, or implicit commit behavior.
-- Treat `codebase-memory` as discovery evidence, not as proof of complete coverage. Keep baseline and current-generation workspace project IDs separate, require explicit phase-based selection, and confirm material conclusions in source.
-- Ask OpenSpec for current JSON status and instructions. Do not copy a fixed OpenSpec phase sequence into Python.
-- Keep hooks small and fail open on internal errors. Hooks are guardrails; the state-machine CLI owns transitions.
-- Use only the Python standard library in runtime code.
+## 审查与修复不得混合
 
-## Python tooling environment
+- 审查代码、文档、配置、测试或变更集时，发现缺陷后不得立即修改任何文件。
+- 不得在审查尚未完成时，把“发现问题”自行解释为“获准修复问题”。
+- 不得只报告已经顺手修复的缺陷；所有发现必须先保留原状并完成统一审查。
+- 审查结束前不得要求用户逐项决定，以免用零散确认代替完整缺陷清单。
+- 审查结束后，不得遗漏、合并或淡化已发现的缺陷。必须按正确性、安全性、回归风险、
+  测试缺口、文档问题、范围偏差或其他适用类别归类。
+- 不得只给结论而不提供证据。每项缺陷必须包含位置或证据、影响、优先级和可选修复方案。
+- 不得把推荐方案描述成唯一选择；存在合理替代方案时不得隐瞒其成本与取舍。
+- 未经用户明确决定，不得修复、暂缓、忽略、关闭任何缺陷，也不得扩大修复范围。
+- 用户只批准“修复”但尚未选择会显著影响结果的方案时，不得擅自替用户选择。
+- 用户批准的修复完成后可以重新审查，但不得自动修复复审中新发现的缺陷；新缺陷必须
+  重新归类、报告并交由用户决定。
 
-- For development, test, and validation commands that need third-party Python
-  packages, prefer the project `uv` environment (`uv run ...`) over the system
-  Python interpreter.
-- Required development or validation packages may be installed with `uv` (for
-  example, `uv add --dev <package>`). Keep them out of runtime dependencies so
-  shipped runtime code continues to use only the Python standard library.
-- When a validator fails because a Python package is missing, install the
-  package in the project `uv` environment and rerun the validator. Report an
-  environment blocker only if the `uv` installation or rerun actually fails.
-- The root `pyproject.toml`, `uv.lock`, and project `.venv` are host-local
-  tooling inputs and must not be included in the shipped plugin candidate.
+## 不得虚构或夸大结果
 
-- On this macOS host, skip all native Windows and Linux cross-platform
-  validation and never extrapolate macOS results to those platforms.
-- Validate every skill with the bundled `skill-creator` validator and validate the plugin manifest before handoff.
+- 不得声称未实际运行的测试、校验、审查、安装、演示或平台检查已经通过。
+- 不得用 OpenSpec 工件、任务勾选、测试通过或文档一致性代替产品正确性。
+- 不得隐藏失败、跳过、降级、环境限制、陈旧证据或未验证假设。
+- 不得把局部验证外推为完整验证，也不得把一个平台的结果外推到其他平台。
+- 不得宣称当前产品具有尚未实现或不在当前版本边界内的能力。
 
-## Product-minded implementation
+## 不得绕过控制器与证据边界
 
-在真正开发前，先把自己当作需要长期安装、使用、排错和维护本项目的开发者。不要把完成
-OpenSpec、task checkbox、test 或 validation 当作产品正确性的替代品；它们只能证明
-已经声明的设计被一致实现，不能证明设计本身符合真实用户目标。
+- 不得直接编辑、伪造、删除或迁移控制器状态、ledger、binding、工件、验证证据、审查
+  证据或 Delivery Dossier，以改变任务结果或绕过状态转换。
+- 不得复用过期 binding、过期快照或已失效证据，也不得通过修改摘要、时间戳或版本字段
+  使其看起来仍然有效。
+- 不得绕过验收标准、验证覆盖、独立审查、返工预算、取消权限或最终交付条件。
+- 不得在控制器之外宣称任务已经 `DONE`、`INCOMPLETE` 或 `CANCELLED`。
 
-- 先明确用户最终要完成的工作、实际操作路径和产品边界，再编写或执行 planning
-  artifact。OpenSpec 必须表达产品意图，而不能反过来代替产品思考。
-- 在设计前拆分彼此独立的产品维度，并检查完整组合矩阵。尤其不要把 `full`/`lite`
-  workflow 深度、single/multi-repository 拓扑和 `in-place`/`branch`/`worktree`
-  workspace strategy 错误绑定；任何有意限制都必须来自明确的产品规则。
-- 实施前预演正常路径、边界输入、并发、权限冲突、中断、部分 effect、重试、恢复和
-  operator intervention。只覆盖真实可能发生且属于当前产品范围的情况。
-- 同时检查安装、启用范围、升级、启动、观测、诊断、恢复、卸载和 documentation，
-  使用户从安装到完成真实 workflow 形成闭环。
-- 持续检查职责、authority、lock boundary、state mutation、effect lifecycle 和
-  dependency direction 是否清楚。拆成多个文件不等于形成了清晰 module；避免依赖
-  ordered global execution、隐式 namespace、字符串式 late binding、巨型 function
-  或职责重叠的 service/handler/adapter layer。
-- 把可变的产品矩阵和 policy 收敛到一个权威 source of truth，再由 runtime、
-  registry、activation、test 和 documentation 派生或验证，避免多个彼此复制的
-  hard-coded definition 共同验证一个错误假设。
-- Validation 必须回答“正确的产品设计是否被正确实现”，不仅是“当前 artifact 是否
-  相互一致”。当现实用户场景与冻结 artifact 冲突时，先查明并修正规范，不要为了
-  保持 digest 或 milestone 状态而实现错误模型。
-- 预料各种情况不等于为不存在的问题增加复杂度。当前产品明确没有 historical
-  data 时，不得凭空增加 detection、migration、legacy recovery、fallback 或
-  compatibility layer；主动覆盖真实风险，也主动排除无价值复杂性。
+## 不得擅自改变 Git、工作区或外部状态
+
+- 不得自动执行 stash、reset、clean、checkout、switch、rebase、merge、commit、push、
+  force-push、删除分支、删除工作树或其他可能丢失、隐藏或发布用户改动的操作。
+- 不得覆盖、回滚、格式化或删除不属于当前授权范围的用户修改。
+- 不得删除非缓存文件；删除可再生缓存前也必须确认目标和内容不会包含用户成果。
+- 不得创建、替换或切换 branch/worktree，除非用户明确要求该具体操作。
+- 不得擅自提交代码、创建或更新 Pull Request、发布 Release、修改仓库设置、发送消息、
+  调用外部 CI，或执行其他对外操作。
+- 不得把用户对本地修改的授权扩张为对提交、推送、发布或外部通信的授权。
+
+## 不得扩大实现范围或削弱安全边界
+
+- 不得实现用户未要求的相邻功能、兼容层、迁移、恢复机制、自动化或重构。
+- 不得为了让测试通过而修改需求含义、降低验收标准、删除失败用例或掩盖真实缺陷。
+- 不得削弱路径规范化、仓库身份、状态目录隔离、锁、原子写入、修订冲突、Hook 或其他
+  安全检查。
+- 不得引入自动管理用户仓库、分支、工作树、并行 Agent、外部 CI、PR 或 Release 的
+  行为，并把它伪装成现有产品能力。
+- 开发、测试、校验或文档生成确需第三方 Python 库时，不得安装到系统或用户级 Python
+  环境，也不得绕过项目级 `uv` 环境管理这些依赖。
+- 不得把项目级 `uv` 开发依赖引入插件运行时、发布候选包的运行时依赖或用户安装步骤；
+  插件运行时代码不得导入或依赖 Python 标准库之外的包。
+- 不得把 Hook 当作状态转换权威，也不得让 Hook 内部错误阻断正常的宿主操作。
+
+## 不得污染交付
+
+- 不得夹带与当前请求无关的文件、格式化、重命名、依赖升级或生成物。
+- 不得修改测试、校验器或文档，使其只验证当前实现而不再验证真实产品约束。
+- 不得保留包含秘密、凭据、个人路径、临时状态、缓存或本机工具元数据的交付文件。
+- 不得在未说明剩余风险、验证缺口和环境限制的情况下报告工作已完成。

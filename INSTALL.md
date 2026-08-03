@@ -9,6 +9,26 @@ Codex executor. It does not create or switch branches/worktrees,
 publish Git changes, coordinate parallel agents, call external CI/PR/release
 systems, or reuse partial assurance from unchanged repository members.
 
+## Quick install
+
+On a supported macOS host, install from the public repository with one command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/install.sh | sh
+```
+
+The script checks macOS, Git, Python 3.9–3.14, and the Codex CLI; clones or
+fast-forwards `$HOME/plugins/dev-flow-orchestrator`; validates the complete
+candidate; preserves other personal marketplace entries while replacing any
+Dev Flow entry; installs the plugin; and prints the first prompt. Review
+[`scripts/install.sh`](scripts/install.sh) before running it if you do not want
+to pipe a remote script directly to `sh`.
+
+The installer refuses to overwrite local source changes or a non-Git path. If
+the plugin is already installed, finish or explicitly cancel active tasks,
+then follow the replacement steps below. The remaining sections document the
+same process manually and provide the full installed acceptance checks.
+
 ## 1. Requirements
 
 Supported for this release:

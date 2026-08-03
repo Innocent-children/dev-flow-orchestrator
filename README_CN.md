@@ -3,12 +3,95 @@
 [English](README.md) · [安装说明](INSTALL.md) · [路线图](ROADMAP_CN.md) ·
 [架构](ARCHITECTURE.md) · [贡献指南](CONTRIBUTING.md)
 
-Dev Flow Orchestrator 0.2.0 是面向 Codex 的本地优先交付控制器。它把一项软件需求
-转化为可恢复、以证据为支撑的任务，并且每次只投影一个权威的下一动作。Codex
-执行实际工作；控制器保存交付契约、工作流状态、决策、类型化工件、保障证据和最终的
-Delivery Dossier。
+**让 Codex 在跨会话、跨仓库开发中不丢状态、不偏离验收标准，并留下可验证的交付
+证据。**
 
-## 当前产品
+Codex 很擅长实现代码，但长时间任务可能在切换会话后丢失进度、逐渐偏离验收标准，
+或者在验证不完整时结束。Dev Flow 在 Codex 外增加一个本地工作流控制器，从启动到
+交接始终把需求、当前动作、仓库状态和交付证据保存在一起。
+
+![Dev Flow 演示：涉及两个仓库的任务在 Codex 会话中断后恢复，并带着完整验证证据交付](docs/assets/demo.gif)
+
+使用 Dev Flow，你可以：
+
+- 在新 Codex 会话中恢复同一任务，不必重新拼凑上下文；
+- 用一个需求协调由 1–8 个 Git 仓库组成的精确集合；
+- 让实现始终绑定到明确、稳定的验收标准；
+- 要求结构化验证与独立审查证据；
+- 为每个未取消任务生成清晰的 `DONE` 或 `INCOMPLETE` Delivery Dossier。
+
+## 60 秒示例
+
+向 Codex 提供一个需求和必须协同的工作树：
+
+```text
+使用 $follow-dev-flow 跨下面两个仓库实现用户资料编辑：
+- /后端仓库/路径
+- /前端仓库/路径
+
+验收标准：
+1. 用户可以更新显示名称。
+2. 无效名称会被拒绝。
+3. 后端、前端和集成测试全部通过。
+```
+
+Dev Flow 会把它转化成一条可恢复路径：
+
+```text
+需求 -> 影响分析 -> 计划 -> 实施 -> 验证 -> 独立审查 -> Delivery Dossier
+```
+
+你可以随时关闭 Codex，再在新会话中通过任务 ID 精确恢复：
+
+```text
+使用 $follow-dev-flow 恢复任务 <任务-id>。
+```
+
+## 一条命令安装
+
+Dev Flow 0.2.0 当前支持 macOS，并要求 Git、Python 3.9–3.14 以及支持插件和 Hook
+的 Codex：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/install.sh | sh
+```
+
+安装器会检查环境、克隆或更新源码、校验软件包、安全合并 personal marketplace 条目、
+安装插件并输出第一条 Prompt。如果你希望执行前检查所有步骤，请先阅读
+[scripts/install.sh](scripts/install.sh)，或者使用[手动安装指南](INSTALL.md)。
+
+安装后新建 Codex 任务，在 `/hooks` 中检查并信任已安装 Hook，然后尝试：
+
+```text
+使用 $follow-dev-flow 在当前仓库启动一个 lite 任务：
+<你的需求>
+```
+
+## 为什么不只用 Prompt、AGENTS.md 或 OpenSpec？
+
+这些工具解决交付中的不同问题，并且可以组合使用。下表描述的是各自的主要职责，
+不是性能评测：
+
+| 交付问题 | 直接使用 Codex | `AGENTS.md` | OpenSpec | Dev Flow |
+|---|---|---|---|---|
+| 跨会话状态 | 对话/任务上下文 | 仓库级指导 | 带版本的变更工件 | 持久化控制器任务 |
+| 多仓库协调 | 由 Prompt 定义 | 不是主要职责 | 规格范围 | 不可变的 1–8 仓库集合 |
+| 验收标准 | 由 Prompt 定义 | 仅提供指导 | 规格工件 | 稳定 ID 与运行时证据绑定 |
+| 验证 | 由 Agent 执行 | 可以规定命令 | 规格/变更校验 | 逐仓库与集成覆盖 |
+| 最终交付记录 | 对话总结 | 无 | 变更归档 | 带新鲜度和缺口的 Delivery Dossier |
+
+Dev Flow 不会替代指导文件或规格。它提供运行时状态、转换规则和证据链，把它们连接到
+明确的交付结果。
+
+## 它防止的三类常见交付失败
+
+| 场景 | 需求 | 常见失败方式 | Dev Flow 执行路径 | 交付结果 |
+|---|---|---|---|---|
+| 跨会话恢复 | 关闭 Codex 后继续实现功能 | 新会话基于过期或残缺上下文重新推断进度 | 保存契约、工件、决策和权威下一动作；通过任务 ID 恢复 | 从已记录状态继续，并拒绝过期 binding |
+| 多仓库变更 | 用一个需求同时修改 API 和前端 | 只验证一个仓库，遗漏另一个仓库或二者集成 | 启动时绑定精确仓库集合，要求成员结果与集成结果 | Dossier 展示每个成员和组合行为的证据 |
+| 验证失败返工 | 测试或审查失败后修复 | 非正式重试后直接宣称完成 | 进入有界返工，并要求新的验证/审查证据 | 只有当前证据完整时才为 `DONE`，否则明确为 `INCOMPLETE` |
+
+## Dev Flow 控制什么
 
 Dev Flow 0.2.0 在由一至八个本地 Git 工作树组成的精确规范集合中提供完整的个人交付能力：
 
@@ -42,9 +125,9 @@ release 后续操作都由用户拥有并在 Dev Flow 之外完成。只要每�
 运行时代码只使用 Python 标准库。OpenSpec、codebase-memory 和独立审查者是可选的
 工作流能力；缺失时必须显式记录，不能静默提高保障等级。
 
-## 安装
+## 手动安装
 
-首次创建个人 marketplace 时：
+不使用一键安装器时，首次创建个人 marketplace：
 
 ```sh
 mkdir -p "$HOME/plugins"
@@ -197,4 +280,6 @@ normalizer 再记录一次；后者只忽略复选框状态。
   投影和模块职责。
 - [ROADMAP_CN.md](ROADMAP_CN.md)：已交付的阶段 1 能力与后续产品阶段。
 - [CONTRIBUTING.md](CONTRIBUTING.md)：聚焦校验与贡献规则。
+- [docs/PROMOTION.md](docs/PROMOTION.md)：可直接使用的 About、Release、社区发布
+  文案和推广检查清单。
 - [LICENSE](LICENSE)：许可证条款。

@@ -4,13 +4,103 @@
 [Roadmap](ROADMAP.md) · [Architecture](ARCHITECTURE.md) ·
 [Contributing](CONTRIBUTING.md)
 
-Dev Flow Orchestrator 0.2.0 is a local-first delivery controller for Codex. It
-turns one software requirement into a resumable, evidence-backed task and
-projects one authoritative next action at a time. Codex performs the work;
-the controller preserves the delivery contract, workflow state, decisions,
-typed artifacts, assurance evidence, and final Delivery Dossier.
+**Keep Codex development tasks resumable, verifiable, and aligned across
+repositories.**
 
-## Current product
+Codex is excellent at implementing code, but a long-running task can lose its
+place between sessions, drift from its acceptance criteria, or finish without
+complete verification. Dev Flow adds a local workflow controller that keeps
+the requirement, current action, repository state, and delivery evidence
+together from start to handoff.
+
+![Dev Flow demonstration: a two-repository task survives a Codex session interruption and finishes with verified evidence](docs/assets/demo.gif)
+
+With Dev Flow, you can:
+
+- resume the same task in a new Codex session instead of reconstructing context;
+- coordinate one requirement across an exact set of 1–8 Git repositories;
+- keep implementation tied to explicit, stable acceptance criteria;
+- require structured verification and independent review evidence; and
+- end every non-cancelled task with a readable `DONE` or `INCOMPLETE` Delivery
+  Dossier.
+
+## 60-second example
+
+Give Codex one requirement and the worktrees it must coordinate:
+
+```text
+Use $follow-dev-flow to implement user profile editing across:
+- /path/to/backend
+- /path/to/frontend
+
+Acceptance criteria:
+1. Users can update their display name.
+2. Invalid names are rejected.
+3. Backend, frontend, and integration tests pass.
+```
+
+Dev Flow turns it into one resumable path:
+
+```text
+Requirement -> Impact analysis -> Plan -> Implementation -> Verification
+            -> Independent review -> Delivery Dossier
+```
+
+Close Codex at any point. In a new session, resume the exact task by ID:
+
+```text
+Use $follow-dev-flow to resume task <task-id>.
+```
+
+## Install in one command
+
+Dev Flow 0.2.0 currently supports macOS with Git, Python 3.9–3.14, and Codex
+plugin/Hook support:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/install.sh | sh
+```
+
+The installer checks the host, clones or updates the source, validates the
+package, safely merges the personal marketplace entry, installs the plugin,
+and prints a first prompt. If you prefer to inspect every step before running
+it, review [scripts/install.sh](scripts/install.sh) or follow the
+[manual installation guide](INSTALL.md).
+
+After installation, start a new Codex task, review and trust the installed Hook
+in `/hooks`, then try:
+
+```text
+Use $follow-dev-flow to start a lite task in this repository for:
+<your requirement>
+```
+
+## Why not just use a prompt, AGENTS.md, or OpenSpec?
+
+These tools solve different parts of the problem and can be used together.
+This comparison describes their primary role, not a benchmark:
+
+| Delivery concern | Direct Codex | `AGENTS.md` | OpenSpec | Dev Flow |
+|---|---|---|---|---|
+| Cross-session state | Conversation/task context | Repository guidance | Versioned change artifacts | Persisted controller task |
+| Multi-repository coordination | Prompt-defined | Not its primary role | Specification scope | Immutable 1–8 repository set |
+| Acceptance criteria | Prompt-defined | Guidance only | Specification artifacts | Stable IDs bound to runtime evidence |
+| Verification | Agent-driven | Can prescribe commands | Spec/change validation | Per-repository and integration coverage |
+| Final delivery record | Conversation summary | None | Change archive | Delivery Dossier with freshness and gaps |
+
+Dev Flow does not replace instructions or specifications. It provides the
+runtime state, transition rules, and evidence trail that connect them to a
+delivery outcome.
+
+## Three common delivery failures it prevents
+
+| Scenario | Requirement | Common failure mode | Dev Flow path | Delivery result |
+|---|---|---|---|---|
+| Cross-session recovery | Continue a feature after Codex is closed | The next session reconstructs stale or incomplete context | Persist the contract, artifacts, decisions, and authoritative next action; resume by task ID | Work continues from the recorded state with stale bindings rejected |
+| Multi-repository change | Update an API and its frontend in one requirement | One repository is verified while the other or their integration is missed | Bind the exact repository set at start and require member plus integration results | The Dossier shows evidence for every member and the combined behavior |
+| Verification rework | Fix a change after tests or review fail | The task is declared complete after an informal retry | Route failure through bounded rework and require fresh verification/review evidence | The outcome is `DONE` only with current proof, otherwise explicitly `INCOMPLETE` |
+
+## What Dev Flow controls
 
 Dev Flow 0.2.0 provides complete personal delivery over one exact canonical set of one to
 eight local Git worktrees:
@@ -54,9 +144,9 @@ codebase-memory, and an independent reviewer are optional workflow
 capabilities; their absence is recorded explicitly and never silently raises
 the assurance level.
 
-## Install
+## Manual installation
 
-For a new personal marketplace:
+For a new personal marketplace, if you do not use the one-command installer:
 
 ```sh
 mkdir -p "$HOME/plugins"
@@ -241,4 +331,6 @@ unavailable, and `snapshot_error` identifies the blocked member.
   horizons.
 - [CONTRIBUTING.md](CONTRIBUTING.md): focused validation and contribution
   rules.
+- [docs/PROMOTION.md](docs/PROMOTION.md): copy-ready About, Release, community
+  post, and launch checklist.
 - [LICENSE](LICENSE): license terms.
