@@ -1,5 +1,7 @@
 # Contributing
 
+[简体中文](CONTRIBUTING_CN.md)
+
 Contributions preserve the 0.2.0 product contract: one task over an exact
 canonical set of one to eight user-prepared local Git worktrees, one Codex
 executor, one projected action, and one controller-owned append-only ledger.

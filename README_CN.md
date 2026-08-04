@@ -1,7 +1,7 @@
 # Dev Flow Orchestrator
 
-[English](README.md) · [安装说明](INSTALL.md) · [路线图](ROADMAP_CN.md) ·
-[架构](ARCHITECTURE.md) · [贡献指南](CONTRIBUTING.md)
+[English](README.md) · [安装说明](INSTALL_CN.md) · [路线图](ROADMAP_CN.md) ·
+[架构](ARCHITECTURE_CN.md) · [贡献指南](CONTRIBUTING_CN.md)
 
 **让 Codex 在跨会话、跨仓库开发中不丢状态、不偏离验收标准，并留下可验证的交付
 证据。**

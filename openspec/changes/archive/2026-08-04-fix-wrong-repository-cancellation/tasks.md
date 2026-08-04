@@ -11,5 +11,5 @@
 ## 3. Verification
 
 - [x] 3.1 Run strict OpenSpec validation for `fix-wrong-repository-cancellation` and inspect apply instructions against the completed plan.
-- [ ] 3.2 Run the focused package, controller-cancellation, Hook, Git-read-only, and installed-journey tests that prove the modified guidance and unchanged runtime boundaries.
-- [ ] 3.3 Validate every Skill with the bundled skill validator and validate the complete plugin candidate before handoff.
+- [x] 3.2 Run the focused package, controller-cancellation, Hook, Git-read-only, and installed-journey tests that prove the modified guidance and unchanged runtime boundaries.
+- [x] 3.3 Validate every Skill with the bundled skill validator and validate the complete plugin candidate before handoff.

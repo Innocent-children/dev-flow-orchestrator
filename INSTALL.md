@@ -1,5 +1,7 @@
 # Install Dev Flow Orchestrator
 
+[简体中文](INSTALL_CN.md)
+
 This guide installs Dev Flow Orchestrator 0.2.0 from a local Codex marketplace and
 verifies the installed launcher, Hook, Skill, and controller path.
 

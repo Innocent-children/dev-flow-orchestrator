@@ -1,5 +1,7 @@
 # Architecture
 
+[简体中文](ARCHITECTURE_CN.md)
+
 Dev Flow Orchestrator 0.2.0 is one Python-standard-library package with one
 controller mutation boundary, an append-only delivery ledger, and declarative
 workflow definitions. It supports one task over an exact canonical set of one
