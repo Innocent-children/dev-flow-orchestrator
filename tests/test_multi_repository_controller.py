@@ -24,6 +24,7 @@ from dev_flow_orchestrator.model import DevFlowError, json_value
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     DELIVERY_DOSSIER_SCHEMA,
+    PLUGIN_DATA_NAMESPACE,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     VERIFICATION_COVERAGE_SCHEMA,
 )
@@ -201,7 +202,9 @@ class MultiRepositoryControllerTests(unittest.TestCase):
                 repositories=(str(subdirectory),),
             )
         self.assertEqual(non_root.exception.code, "REPOSITORY_ROOT_REQUIRED")
-        self.assertFalse((Path(self.data_dir) / "tasks").exists())
+        self.assertFalse(
+            (Path(self.data_dir) / PLUGIN_DATA_NAMESPACE / "tasks").exists()
+        )
 
     def test_admission_rejects_shared_git_common_directory_and_count_bounds(self) -> None:
         linked = self.root / "api-linked-worktree"

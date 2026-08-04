@@ -14,7 +14,11 @@ from typing import Iterable, Mapping, Optional, Sequence
 
 from .delivery import normalize_resource_bytes
 from .model import DevFlowError
-from .product import WORKSPACE_SNAPSHOT_SCHEMA
+from .product import (
+    MAX_INDEX_COMMAND_OUTPUT_BYTES,
+    MAX_INDEX_STAGE_ENTRIES,
+    WORKSPACE_SNAPSHOT_SCHEMA,
+)
 from .snapshot import (
     MAX_GIT_OUTPUT_BYTES,
     MAX_SNAPSHOT_CONTENT_BYTES,
@@ -81,7 +85,13 @@ class GitClient:
         repository: Path,
         *arguments: str,
         timeout_seconds: Optional[float] = None,
+        output_limit_bytes: Optional[int] = None,
     ) -> bytes:
+        effective_output_limit = (
+            MAX_GIT_OUTPUT_BYTES
+            if output_limit_bytes is None
+            else output_limit_bytes
+        )
         environment = {
             "PATH": os.environ.get("PATH", ""),
             "HOME": os.environ.get("HOME", ""),
@@ -164,14 +174,14 @@ class GitClient:
                         key.fileobj.close()
                         continue
                     key.data.extend(chunk)
-                    if len(stdout) + len(stderr) > MAX_GIT_OUTPUT_BYTES:
+                    if len(stdout) + len(stderr) > effective_output_limit:
                         GitClient._terminate(process)
                         raise DevFlowError(
                             "GIT_OUTPUT_TOO_LARGE",
                             "Git output exceeds the preflight budget",
                             details={
                                 "arguments": list(arguments),
-                                "limit_bytes": MAX_GIT_OUTPUT_BYTES,
+                                "limit_bytes": effective_output_limit,
                                 "stdout_bytes": len(stdout),
                                 "stderr_bytes": len(stderr),
                             },
@@ -243,6 +253,7 @@ class GitClient:
         repository: Path,
         deadline: float,
         *arguments: str,
+        output_limit_bytes: Optional[int] = None,
     ) -> bytes:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -255,6 +266,7 @@ class GitClient:
             repository,
             *arguments,
             timeout_seconds=min(float(GIT_COMMAND_TIMEOUT_SECONDS), remaining),
+            output_limit_bytes=output_limit_bytes,
         )
 
     @staticmethod
@@ -291,6 +303,12 @@ class GitClient:
             "git_common": cls._run_snapshot(
                 repository, deadline, "rev-parse", "--git-common-dir"
             ),
+            "git_worktree": cls._run_snapshot(
+                repository, deadline, "rev-parse", "--git-dir"
+            ),
+            "object_format": cls._run_snapshot(
+                repository, deadline, "rev-parse", "--show-object-format"
+            ),
             "head": cls._run_snapshot(repository, deadline, "rev-parse", "HEAD"),
             "branch": cls._branch_bytes(repository, deadline),
             "status": cls._run_snapshot(
@@ -323,7 +341,9 @@ class GitClient:
                 "--",
             ),
         }
-        for field in ("top_level", "git_common", "head", "status"):
+        for field in (
+            "top_level", "git_common", "git_worktree", "object_format", "head", "status"
+        ):
             cls._decode_text(evidence[field], (field,))
         if evidence["branch"] is not None:
             cls._decode_text(evidence["branch"], ("branch",))
@@ -525,11 +545,17 @@ class GitClient:
             return b"", {}
         arguments = ["ls-files", "--stage", "-z", "--"]
         arguments.extend(":(literal){}".format(path) for path in paths)
-        raw = cls._run_snapshot(repository, deadline, *arguments)
+        raw = cls._run_snapshot(
+            repository,
+            deadline,
+            *arguments,
+            output_limit_bytes=MAX_INDEX_COMMAND_OUTPUT_BYTES,
+        )
         if raw and not raw.endswith(b"\x00"):
             raise _error("GIT_OUTPUT_INVALID", "Git index enumeration is not NUL terminated")
         requested = set(paths)
         result = {}
+        entry_count = 0
         for encoded in raw.split(b"\x00")[:-1]:
             try:
                 header, encoded_path = encoded.split(b"\t", 1)
@@ -548,8 +574,36 @@ class GitClient:
             ):
                 raise _error("GIT_OUTPUT_INVALID", "Git index entry is invalid", path=path)
             if path in requested:
+                entry_count += 1
+                if entry_count > MAX_INDEX_STAGE_ENTRIES:
+                    raise _error(
+                        "SNAPSHOT_BUDGET_EXCEEDED",
+                        "Git index entry enumeration exceeds its budget",
+                        entry_count=entry_count,
+                        entry_limit=MAX_INDEX_STAGE_ENTRIES,
+                    )
+                if any(item[2] == stage for item in result.get(path, ())):
+                    raise _error(
+                        "GIT_OUTPUT_INVALID",
+                        "Git index contains a duplicate path stage",
+                        path=path,
+                        stage=stage,
+                    )
                 result.setdefault(path, []).append((mode, oid, stage))
-        return raw, {path: tuple(items) for path, items in result.items()}
+        return raw, {
+            path: tuple(sorted(items, key=lambda item: (int(item[2]), item[0], item[1])))
+            for path, items in result.items()
+        }
+
+    @staticmethod
+    def _serialized_index_entries(
+        path: str,
+        index_entries: Mapping[str, Sequence[tuple]],
+    ) -> list:
+        return [
+            {"mode": mode, "oid": oid, "stage": int(stage)}
+            for mode, oid, stage in index_entries.get(path, ())
+        ]
 
     @staticmethod
     def _gitlink_entry(path: str, index_entries: Mapping[str, Sequence[tuple]]) -> Optional[tuple]:
@@ -557,13 +611,7 @@ class GitClient:
         gitlinks = [item for item in items if item[0] == "160000"]
         if not gitlinks:
             return None
-        if len(items) != 1 or len(gitlinks) != 1 or gitlinks[0][2] != "0":
-            raise _error(
-                "SNAPSHOT_GITLINK_INVALID",
-                "gitlink index state is unresolved",
-                path=path,
-            )
-        return gitlinks[0]
+        return next((item for item in gitlinks if item[2] == "0"), gitlinks[0])
 
     @staticmethod
     def _special_kind(mode: int) -> str:
@@ -734,6 +782,7 @@ class GitClient:
         cls._check_deadline(deadline)
         lookup = cls._lookup_parent(root_fd, path)
         gitlink = cls._gitlink_entry(path, index_entries)
+        serialized_index = cls._serialized_index_entries(path, index_entries)
         parent_fd = lookup.get("parent_fd")
         if parent_fd is None:
             if gitlink is not None:
@@ -748,7 +797,7 @@ class GitClient:
                 "mode": None,
                 "size": 0,
                 "content_sha256": None,
-                "index_oid": None,
+                "index_entries": serialized_index,
                 "submodule_head": None,
             }
             observation = {
@@ -774,7 +823,7 @@ class GitClient:
                     "mode": None,
                     "size": 0,
                     "content_sha256": None,
-                    "index_oid": None,
+                    "index_entries": serialized_index,
                     "submodule_head": None,
                 }
                 observation = {
@@ -799,8 +848,18 @@ class GitClient:
                         path=path,
                     )
                 state = cls._gitlink_state(root / path, path, deadline)
-                index_oid = gitlink[1]
-                raw = b"gitlink\x00" + index_oid.encode("ascii") + b"\x00" + state[3].encode("ascii")
+                serialized_index_bytes = b"\x00".join(
+                    "{} {} {}".format(
+                        item["mode"], item["oid"], item["stage"]
+                    ).encode("ascii")
+                    for item in serialized_index
+                )
+                raw = (
+                    b"gitlink\x00"
+                    + serialized_index_bytes
+                    + b"\x00"
+                    + state[3].encode("ascii")
+                )
                 cls._consume_content(total, len(raw), path)
                 entry = {
                     "path": path,
@@ -808,7 +867,7 @@ class GitClient:
                     "mode": "160000",
                     "size": 0,
                     "content_sha256": None,
-                    "index_oid": index_oid,
+                    "index_entries": serialized_index,
                     "submodule_head": state[3],
                 }
                 observation = {
@@ -865,7 +924,7 @@ class GitClient:
                 "mode": "{:06o}".format(before.st_mode),
                 "size": len(raw),
                 "content_sha256": hashlib.sha256(raw).hexdigest(),
-                "index_oid": None,
+                "index_entries": serialized_index,
                 "submodule_head": None,
             }
             observation = {
@@ -1068,8 +1127,22 @@ class GitClient:
                 }
             )
 
+        object_format = cls._decode_text(
+            initial["object_format"], ("rev-parse", "--show-object-format")
+        )
+        if object_format not in ("sha1", "sha256"):
+            raise _error("GIT_OUTPUT_INVALID", "Git object format is unsupported")
+        oid_length = 40 if object_format == "sha1" else 64
+        for path, items in index_entries.items():
+            if any(len(item[1]) != oid_length for item in items):
+                raise _error(
+                    "GIT_OUTPUT_INVALID",
+                    "Git index object ID does not match the repository object format",
+                    path=path,
+                    object_format=object_format,
+                )
         head = cls._decode_text(initial["head"], ("rev-parse", "HEAD"))
-        if not _OBJECT_ID.fullmatch(head):
+        if len(head) != oid_length or not _OBJECT_ID.fullmatch(head):
             raise _error("GIT_OUTPUT_INVALID", "Git HEAD object ID is invalid")
         branch = (
             cls._decode_text(initial["branch"], ("symbolic-ref", "HEAD"))
@@ -1080,16 +1153,30 @@ class GitClient:
         git_common_path = Path(git_common)
         if not git_common_path.is_absolute():
             git_common_path = root / git_common_path
+        git_worktree = cls._decode_text(initial["git_worktree"], ("git-dir",))
+        git_worktree_path = Path(git_worktree)
+        if not git_worktree_path.is_absolute():
+            git_worktree_path = root / git_worktree_path
+        index_entry_count = sum(len(items) for items in index_entries.values())
         status = initial["status"]
         base = {
             "schema": WORKSPACE_SNAPSHOT_SCHEMA,
             "repository_root": str(root),
+            "git_worktree_dir": str(git_worktree_path.resolve()),
             "git_common_dir": str(git_common_path.resolve()),
+            "object_format": object_format,
             "head": head,
             "branch": branch,
             "clean": not status,
             "status_sha256": hashlib.sha256(status).hexdigest(),
             "status_bytes": len(status),
+            "index_entry_count": index_entry_count,
+            "index_output_bytes": len(initial_index),
+            "has_unmerged_entries": any(
+                item[2] != "0"
+                for items in index_entries.values()
+                for item in items
+            ),
             "entries": entries,
             "resources": resource_entries,
         }

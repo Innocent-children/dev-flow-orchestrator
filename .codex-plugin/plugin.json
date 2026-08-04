@@ -1,6 +1,6 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keep Codex development tasks resumable, verifiable, and aligned across one to eight local Git repositories.",
   "author": {
     "name": "Innocent-children",
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Dev Flow Orchestrator",
     "shortDescription": "Keep Codex tasks resumable and verifiable",
-    "longDescription": "Dev Flow Orchestrator 0.2.0 keeps long-running Codex development resumable and aligned with explicit acceptance criteria across an exact set of one to eight user-prepared Git worktrees. Resume the same task in a new session and finish with evidence that shows what passed, what remains, and why. The dev-flow-workflow/0.2.0 controller exposes one current action to one Codex, binds dev-flow-agent/0.2.0 evidence to aggregate repository-set snapshots and repository-scoped resources, requires structured member/integration verification, and finishes every non-cancelled path with a dev-flow-delivery-dossier/0.2.0. State stays local and outside target repositories. Dev Flow never manages worktrees or branches, publishes Git changes, starts parallel agents, or dispatches external CI, PR, or release automation.",
+    "longDescription": "Dev Flow Orchestrator 0.3.0 keeps long-running Codex development resumable with task-owned change capsules, adaptive assurance obligations, and causal review across an exact set of one to eight user-prepared Git worktrees. The dev-flow-workflow/0.3.0 controller exposes one current action to one Codex, binds dev-flow-agent/0.3.0 evidence to index-exact repository-set snapshots, dispatches only the obligations derived by the closed assurance policy, and finishes every non-cancelled path with a dev-flow-delivery-dossier/0.3.0. State stays local in a separate 0.3.0 namespace and never reads or mutates retained 0.2 data. Dev Flow never manages worktrees or branches, publishes Git changes, starts parallel agents, or dispatches external CI, PR, or release automation.",
     "developerName": "Innocent-children",
     "category": "Productivity",
     "capabilities": [

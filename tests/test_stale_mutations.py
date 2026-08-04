@@ -15,7 +15,8 @@ sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.model import DevFlowError
-from support import RepositoryTestCase
+from dev_flow_orchestrator.product import DRIVER_RESULT_SCHEMA
+from support import RepositoryTestCase, make_repository
 
 
 class StaleMutationTests(RepositoryTestCase):
@@ -72,7 +73,7 @@ class StaleMutationTests(RepositoryTestCase):
         self.assertEqual(context.exception.details["projection"]["revision"], 2)
         self.assertEqual(
             context.exception.details["projection"]["action"]["action_id"],
-            "implementation.record",
+            "impact.record",
         )
         state = self.controller.show(task_id)
         self.assertEqual([record["kind"] for record in state.records], ["preflight", "decision"])
@@ -111,14 +112,20 @@ class StaleMutationTests(RepositoryTestCase):
                 self.controller.apply(
                     task_id,
                     projected["action"]["action_id"],
-                    {"summary": "losing implementation"},
+                    {
+                        "summary": "losing impact",
+                        "driver_result": {
+                            "schema": DRIVER_RESULT_SCHEMA,
+                            "status": "degraded",
+                        },
+                    },
                     binding=projected["action"]["binding"],
                 )
 
         self.assertEqual(context.exception.code, "REVISION_CONFLICT")
         fresh = context.exception.details["projection"]
         self.assertEqual(fresh["revision"], 2)
-        self.assertEqual(fresh["action"]["action_id"], "implementation.record")
+        self.assertEqual(fresh["action"]["action_id"], "impact.record")
         self.assertEqual(fresh["action"]["binding"]["task_revision"], 2)
         state = self.controller.show(task_id)
         self.assertEqual(
@@ -128,7 +135,12 @@ class StaleMutationTests(RepositoryTestCase):
 
     def test_same_revision_foreign_binding_remains_stale(self) -> None:
         task_id = self.start_lite("first")
-        foreign_task = self.start_lite("second")
+        foreign_repository = make_repository(self.root, "foreign")
+        foreign_task = self.controller.start(
+            requirement="second",
+            workflow="lite",
+            repositories=(str(foreign_repository),),
+        ).task_id
         projected = self.controller.next(task_id)
         foreign = self.controller.next(foreign_task)
 

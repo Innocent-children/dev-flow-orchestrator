@@ -31,21 +31,21 @@ from dev_flow_orchestrator.product import (
 
 
 WORKFLOW_FILE_SHA256 = {
-    "bugfix": "8b91655a28a5ce84e3dccffac6571fcb9174212b6f32645038df0050c075d9ed",
-    "feature": "04b8c2771f9a329569dfcd338d3b98d8fd08b101b83572c584eade7bdd251c4f",
-    "full": "6c349f02fe3f213236368757dac26e46d7900014ccd83d835eec5e4a77ba7ae9",
-    "investigation": "8ba7776a918975fdcc1f9c03d7b3419df9e12274b42af5994e70e78b54cc1a5a",
-    "lite": "218d8611fe1dde6cdbd8410a0ba141cb3ff288f678de473bb52233d8607aaa8b",
-    "refactor": "b4cfa81935e784dae9fbc7f8f73409fc802d876204ae840d0084664dddd1f8d5",
+    "bugfix": "8a72489036ade9e882bb1326aa23117a36428883bff17a4343faded137616284",
+    "feature": "f5f4cf3c9919a7f3beb4d1cf0f17a255688e1a4fd6790107c22017f740531662",
+    "full": "f242c546fd4cb95c0b07beb415f7671982366368975c9dc4f1bd9acf8ce1b445",
+    "investigation": "41167f2ad5cadf5c8642f8395a9edff7ab50a1fb3bd1d75d384e7bc72d809ab2",
+    "lite": "fbd2301db9657401d82477183f86205c728717b1e926948d5ee99d69a7a1340e",
+    "refactor": "ffb5aa60f186a8935c0ae9229f2ca39feb3ae21352cbc72854c29dbe020723eb",
 }
 
 WORKFLOW_IDENTITIES = {
-    "bugfix": "f40f66f61b203c172fde1b45a924f70a901d6830d734211a7938f28a620b1f3f",
-    "feature": "2db0382c892bf4508d8aaa6d4bb85cc69fc8892372e7535d34bfb96fd3bfdacd",
-    "full": "e56e49c7fad8b3dcc0777626e36c1f12d91ddc4c93ec80049a348bcf64be118c",
-    "investigation": "5e57d2396d80da3cd1766b39921a40f723eed1bd65d901d51d0f11e8ab99b3cd",
-    "lite": "d75750fea4e0dd09feb300df4e6ae7ae53ad06ef35cf0886fde953d3ba607550",
-    "refactor": "7412c0551d1c5fb867aaf83f7ac7ddc8ca54ed24ba16ef78a82ea9d22af2ce4f",
+    "bugfix": "7c3f5f0677919e81280543b1e12d80a68ff0e2cb96230aca76db12301a42535f",
+    "feature": "7ebc14d6dfb9263b507314d08cc06e2601c291e1bda1b01bdcff4b0d1fd83415",
+    "full": "04e19996478bf19bc4a968b534093a26919cc35bd07d67faccc19bd5b51ecbf8",
+    "investigation": "ecbddeac51c0e22644341a4604f931a40f8931db9c58992211ec4d9e7f58458a",
+    "lite": "69650330281720d4d09caa69e73a7547e83bb812334c0d33e0b4d4677f31faa3",
+    "refactor": "3aea4bb83754883253f2f0d3e6b9c22d5a7bc080926d894215fcde1145a3aa05",
 }
 
 CURRENT_MODEL_ASSETS = (
@@ -79,7 +79,7 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
 
     def test_topology_authority_and_manifest_describe_the_same_product(self) -> None:
         self.assertEqual((MIN_REPOSITORY_COUNT, MAX_REPOSITORY_COUNT), (1, 8))
-        self.assertEqual(PRODUCT_VERSION, "0.2.0")
+        self.assertEqual(PRODUCT_VERSION, "0.3.0")
         self.assertEqual(WORKFLOW_SCHEMA, product_schema("workflow"))
         self.assertEqual(AGENT_PROTOCOL_SCHEMA, product_schema("agent"))
         self.assertEqual(
@@ -111,7 +111,7 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
             "single-codex-single-current-action",
         )
         self.assertFalse(REPOSITORY_TOPOLOGY_CAPABILITIES["managed_git_effects"])
-        self.assertFalse(
+        self.assertTrue(
             REPOSITORY_TOPOLOGY_CAPABILITIES["partial_assurance_reuse"]
         )
         self.assertFalse(
@@ -136,9 +136,9 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
                 "one Codex",
                 WORKFLOW_SCHEMA,
                 AGENT_PROTOCOL_SCHEMA,
-                "aggregate repository-set snapshots",
-                "repository-scoped resources",
-                "structured member/integration verification",
+                "index-exact repository-set snapshots",
+                "adaptive assurance obligations",
+                "causal review",
                 DELIVERY_DOSSIER_SCHEMA,
                 "never manages worktrees or branches",
                 "parallel agents",
@@ -237,7 +237,7 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
                 '"criteria"',
                 '"repositories"',
                 '"integration"',
-                "Prior proof from an unchanged member is not reused",
+                "slice-aware",
                 DELIVERY_DOSSIER_SCHEMA,
                 "cancel.stages",
                 "Delivery finalizers never expose cancellation",
@@ -261,10 +261,10 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
                 "complete canonical member inventory",
                 "aggregate `workspace_snapshot_digest`",
                 "Never share a graph project across members",
-                "one verdict and one fingerprint",
+                "structured causal findings",
                 "unchanged when the exact set has one member",
-                "never approve members independently",
-                "partial approval after aggregate drift",
+                "pre-existing",
+                "out-of-scope",
             ),
         )
 
@@ -293,9 +293,6 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
         forbidden_fragments = (
             "adapter_identity",
             "adapter",
-            "compatibility",
-            "legacy",
-            "migration",
             "rollback",
             "singleton",
         )

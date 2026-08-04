@@ -19,9 +19,10 @@ from support import make_repository
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     DELIVERY_DOSSIER_SCHEMA,
+    DRIVER_RESULT_SCHEMA,
     PRODUCT_VERSION,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
-    VERIFICATION_COVERAGE_SCHEMA,
+    TASK_CHANGE_CLAIMS_SCHEMA,
     WORKFLOW_SCHEMA,
 )
 
@@ -133,6 +134,34 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(projection["action"]["action_id"], "task.preflight")
         applied = self.apply_projection(task_id, projection, {})
+        self.assertEqual(applied["receipt"]["status"], "ANALYZING")
+
+        projection = self.next_projection(task_id)
+        self.assertEqual(projection["action"]["action_id"], "impact.record")
+        applied = self.apply_projection(task_id, projection, {
+            "summary": "CLI impact confirmed",
+            "driver_result": {
+                "schema": DRIVER_RESULT_SCHEMA,
+                "status": "available",
+            },
+            "impact_manifest": {
+                "confidence": "source-confirmed",
+                "entries": [{
+                    "repository_id": repository_id,
+                    "path": "a.txt",
+                    "symbol": None,
+                    "criterion_ids": ["requirement"],
+                }],
+                "edges": [],
+                "risk_triggers": [],
+                "public_behavior": False,
+                "documentation_required": False,
+                "manual_evidence_required": False,
+                "executable_reproduction_required": True,
+                "overflow": False,
+                "limitations": [],
+            },
+        })
         self.assertEqual(applied["receipt"]["status"], "IMPLEMENTING")
 
         projection = self.next_projection(task_id)
@@ -142,39 +171,42 @@ class CliTests(unittest.TestCase):
         applied = self.apply_projection(
             task_id,
             projection,
-            {"summary": "Implemented through CLI"},
+            {
+                "summary": "Implemented through CLI",
+                "ownership_claims": {
+                    "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                    "claims": [{
+                        "repository_id": repository_id,
+                        "path": "a.txt",
+                        "classification": "implementation",
+                        "criterion_ids": ["requirement"],
+                        "purpose": "Exercise CLI task-owned changes",
+                    }],
+                },
+            },
         )
         self.assertEqual(applied["receipt"]["status"], "VERIFYING")
 
         projection = self.next_projection(task_id)
-        self.assertEqual(projection["action"]["action_id"], "verification.record")
-        self.assertEqual(
-            projection["action"]["verification_coverage"]["repository_ids"],
-            [repository_id],
-        )
+        self.assertEqual(projection["action"]["action_id"], "assurance.execute")
+        obligation = projection["action"]["current_obligation"]
+        self.assertEqual(obligation["repository_ids"], [repository_id])
         verification_command = "python3 -m unittest tests.test_cli"
-        verification_coverage = {
-            "schema": VERIFICATION_COVERAGE_SCHEMA,
-            "criteria": {"requirement": "proven"},
-            "repositories": {
-                repository_id: {
-                    "command": verification_command,
-                    "passed": True,
-                }
-            },
-            "integration": {
-                "command": verification_command,
-                "passed": True,
-            },
-        }
         applied = self.apply_projection(
             task_id,
             projection,
             {
-                "passed": True,
-                "command": verification_command,
-                "coverage": verification_coverage,
                 "summary": "CLI lifecycle verified",
+                "assurance_result": {
+                    "obligation_id": obligation["obligation_id"],
+                    "passed": True,
+                    "evidence": [{
+                        "kind": "command",
+                        "reference": verification_command,
+                        "summary": "CLI lifecycle verified",
+                    }],
+                    "limitations": [],
+                },
             },
         )
         self.assertEqual(applied["receipt"]["status"], "FINALIZING")
@@ -213,7 +245,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(dossier["handoff_recommendation"], "Ready to use")
         self.assertEqual(dossier["coverage"]["requirement"]["status"], "proven")
         self.assertEqual(dossier["repository_set"]["members"][0]["repository_id"], repository_id)
-        self.assertEqual(dossier["verification"]["coverage"], verification_coverage)
+        self.assertTrue(dossier["verification"]["assurance_execution"]["passed"])
+        self.assertEqual(dossier["assurance_plan"]["profile"], "lite")
         self.assertTrue(dossier["aggregate_freshness"]["current"])
         self.assertEqual(
             dossier["repository_snapshot"]["schema"],

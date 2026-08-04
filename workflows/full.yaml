@@ -1,6 +1,7 @@
-schema: dev-flow-workflow/0.2.0
+schema: dev-flow-workflow/0.3.0
 id: full
-version: "0.2.0"
+version: "0.3.0"
+assurance: {policy: dev-flow-assurance-policy/0.3.0, profile: full}
 description: "High-assurance personal delivery with repository-backed planning, documentation, bounded verification, and independent review."
 entry: preflight
 revision_target: impact
@@ -70,10 +71,10 @@ nodes:
         - {type: delivery-plan, edge: governing}
 
   verify:
-    action_id: verification.record
-    handler: verification.record
-    target: {node: review, status: REVIEWING}
-    payload: {passed: boolean, command: string, coverage: object, summary: string}
+    action_id: assurance.execute
+    handler: assurance.dispatch
+    target: {node: finalize_success, status: FINALIZING}
+    payload: {summary: string, assurance_result: object}
     artifact:
       type: verification-result
       workspace: verifies-source
@@ -88,7 +89,7 @@ nodes:
   verification_rework:
     action_id: verification.rework.record
     handler: artifact.record
-    target: {node: documentation, status: DOCUMENTING}
+    target: {node: verify, status: VERIFYING}
     payload: {summary: string}
     artifact:
       type: implementation
@@ -96,40 +97,6 @@ nodes:
       inputs:
         - {type: documentation, edge: source-predecessor}
         - {type: verification-result, edge: causal}
-        - {type: delivery-plan, edge: governing}
-
-  review:
-    action_id: review.record
-    handler: review.record
-    target: {node: finalize_success, status: FINALIZING}
-    payload: {outcome: string, assurance: string, findings: object, summary: string, driver_result: object}
-    artifact:
-      type: review-result
-      workspace: verifies-source
-      inputs:
-        - {type: verification-result, edge: governing}
-        - {type: documentation, edge: governing}
-    rework:
-      failure: {node: review_rework, status: IMPLEMENTING}
-      max_attempts: 3
-      exhausted: {node: finalize_review_incomplete, status: FINALIZING}
-    driver:
-      tool: independent-review
-      optional: true
-      fallback: "Perform a complete self-review, record self assurance, and report independent assurance as unavailable."
-      produces: review-result
-
-  review_rework:
-    action_id: review.rework.record
-    handler: artifact.record
-    target: {node: documentation, status: DOCUMENTING}
-    payload: {summary: string}
-    artifact:
-      type: implementation
-      workspace: produces-source
-      inputs:
-        - {type: documentation, edge: source-predecessor}
-        - {type: review-result, edge: causal}
         - {type: delivery-plan, edge: governing}
 
   finalize_success:
@@ -142,7 +109,6 @@ nodes:
       workspace: verifies-source
       inputs:
         - {type: verification-result, edge: governing}
-        - {type: review-result, edge: governing}
         - {type: documentation, edge: governing}
     finalize: success
 
@@ -159,26 +125,12 @@ nodes:
         - {type: documentation, edge: governing}
     finalize: incomplete
 
-  finalize_review_incomplete:
-    action_id: delivery.finalize.review-incomplete
-    handler: delivery.finalize
-    target: {node: incomplete, status: INCOMPLETE}
-    payload: {summary: string, remaining_risks: object, handoff: string}
-    artifact:
-      type: delivery-dossier
-      workspace: verifies-source
-      inputs:
-        - {type: verification-result, edge: governing}
-        - {type: review-result, edge: governing}
-        - {type: documentation, edge: governing}
-    finalize: incomplete
-
   done: {terminal: true}
   incomplete: {terminal: true}
   cancelled: {terminal: true}
 
 cancel:
-  stages: [preflight, impact, planning, implement, documentation, verify, verification_rework, review, review_rework]
+  stages: [preflight, impact, planning, implement, documentation, verify, verification_rework]
   action_id: task.cancel
   handler: artifact.record
   target: {node: cancelled, status: CANCELLED}

@@ -1,8 +1,32 @@
 # Architecture
 
+## 0.3 task capsule and adaptive assurance
+
+The immutable membership tuple stores each canonical worktree root, its
+worktree-specific Git administrative directory, and its common Git directory.
+A data-directory-wide admission lock derives active leases from valid
+non-terminal 0.3 state. Corrupt current inventory blocks admission; retained
+0.2 namespaces are outside discovery and are never read, repaired, migrated,
+or deleted.
+
+`capsule.py` separates the immutable preflight baseline, cumulative task-owned
+manifest, exact ownership claims, and ambient drift. `assurance.py` is the pure
+closed-policy planner and budget authority. It groups obligations canonically,
+derives finite per-obligation and aggregate ceilings, and selects one eligible
+outstanding obligation. `review.py` validates stable causal findings and derives
+review outcomes without treating an agent verdict as authority. The engine
+persists plans and executions in sealed `dev-flow-record/0.3.0` and
+`dev-flow-artifact/0.3.0` lineage, replays their bindings, and projects the
+current obligation through `dev-flow-agent/0.3.0`.
+
+The terminal `dev-flow-delivery-dossier/0.3.0` includes the preflight origin,
+roll-forward manifest, impact closure, plan rationale, obligation states,
+budgets, structured review state, aggregate snapshot freshness, and an
+explainable `DONE` or `INCOMPLETE` decision.
+
 [简体中文](ARCHITECTURE_CN.md)
 
-Dev Flow Orchestrator 0.2.0 is one Python-standard-library package with one
+Dev Flow Orchestrator 0.3.0 is one Python-standard-library package with one
 controller mutation boundary, an append-only delivery ledger, and declarative
 workflow definitions. It supports one task over an exact canonical set of one
 to eight user-prepared local Git worktrees, with one current action and one
@@ -33,10 +57,10 @@ results.
 
 | Module | Owns |
 |---|---|
-| `product.py` | 0.2.0 task/workflow/catalog/record/artifact/projection identities, the six official workflow IDs, and the authoritative 1–8 repository-topology capability |
+| `product.py` | 0.3.0 task/workflow/catalog/record/artifact/projection identities, the six official workflow IDs, and the authoritative 1–8 repository-topology capability |
 | `model.py` | Immutable task values and canonical repository membership, canonical JSON, stable errors, revision-zero initialization, receipts |
 | `snapshot.py` | Aggregate repository-set snapshot and nested member workspace-snapshot validation, lookup, and digesting |
-| `workflow.py` | `dev-flow-workflow/0.2.0` validation, node/artifact/input/rework/cancellation contracts, graph safety, selected-definition identity |
+| `workflow.py` | `dev-flow-workflow/0.3.0` validation, node/artifact/input/rework/cancellation contracts, graph safety, selected-definition identity |
 | `delivery.py` | Delivery-contract validation, digests and seals, decisions, action bindings, input resolution, freshness, coverage, dossier generation |
 | `engine.py` | Payload validation, action planning, ledger records, assurance routing, revision replay, transition validation, projections and task views |
 | `workflows.py` | Official catalog resolution and absolute custom-definition loading |
@@ -57,17 +81,17 @@ product identity differs fails closed.
 
 | Surface | Current identity boundary |
 |---|---|
-| product version | `0.2.0`, task identity, data namespace `0.2.0`, and the exact topology authority |
-| workflow language | `dev-flow-workflow/0.2.0`, version `0.2.0` |
+| product version | `0.3.0`, task identity, data namespace `0.3.0`, and the exact topology authority |
+| workflow language | `dev-flow-workflow/0.3.0`, version `0.3.0` |
 | selected workflow | digest of selector, schema, and canonical selected document |
 | official catalog | digest of the sorted official IDs; catalog identity is separate from a task's selected workflow |
 | records, artifacts, and bindings | current canonical schema and digest seals for each value |
-| agent projection | `dev-flow-agent/0.2.0` with one `repository_set` and one current action |
-| verification coverage | exact `schema: dev-flow-verification-coverage/0.2.0` with `criteria`, `repositories`, and `integration` |
-| repository snapshot | `dev-flow-repository-set-snapshot/0.2.0` containing one `dev-flow-workspace-snapshot/0.2.0` per member |
-| Delivery Dossier | `dev-flow-delivery-dossier/0.2.0` |
+| agent projection | `dev-flow-agent/0.3.0` with one `repository_set` and one current action |
+| verification coverage | exact `schema: dev-flow-verification-coverage/0.3.0` with `criteria`, `repositories`, and `integration` |
+| repository snapshot | `dev-flow-repository-set-snapshot/0.3.0` containing one `dev-flow-workspace-snapshot/0.3.0` per member |
+| Delivery Dossier | `dev-flow-delivery-dossier/0.3.0` |
 
-The 0.2.0 Hook and controller use `<PLUGIN_DATA>/0.2.0` for current task state.
+The 0.3.0 Hook and controller use `<PLUGIN_DATA>/0.3.0` for current task state.
 
 ## Repository-set boundary
 
@@ -91,12 +115,12 @@ ledger inspection remains available until the exact persisted root is restored.
 ## Delivery contract and ledger
 
 Task creation atomically writes revision-zero state with an immutable original
-`dev-flow-delivery-contract/0.2.0` and an empty record tuple. An explicit contract
+`dev-flow-delivery-contract/0.3.0` and an empty record tuple. An explicit contract
 contains exactly:
 
 ```json
 {
-  "schema": "dev-flow-delivery-contract/0.2.0",
+  "schema": "dev-flow-delivery-contract/0.3.0",
   "revision": 1,
   "summary": "Deliver the requested behavior",
   "acceptance_criteria": [
@@ -112,7 +136,7 @@ contains exactly:
 
 A requirement-only start derives a bounded minimal revision-one contract.
 Every subsequent successful mutation appends exactly one sealed
-`dev-flow-record/0.2.0`; typed outputs use sealed `dev-flow-artifact/0.2.0`
+`dev-flow-record/0.3.0`; typed outputs use sealed `dev-flow-artifact/0.3.0`
 descriptors. Each mutation increments task revision exactly once, preserving:
 
 ```text
@@ -142,12 +166,12 @@ handler is `review.record` (the official node ID is `review`). One
 
 ## Workflow definitions
 
-Official definitions use `dev-flow-workflow/0.2.0`, version `0.2.0`. The catalog is
+Official definitions use `dev-flow-workflow/0.3.0`, version `0.3.0`. The catalog is
 `bugfix`, `feature`, `full`, `investigation`, `lite`, and `refactor`. A custom
-workflow is selected by absolute JSON/YAML path and passes the same 0.2.0 workflow
+workflow is selected by absolute JSON/YAML path and passes the same 0.3.0 workflow
 validation and selected-identity calculation as an official definition.
 
-A `dev-flow-workflow/0.2.0` document declares `entry`, `revision_target`, `nodes`, and a
+A `dev-flow-workflow/0.3.0` document declares `entry`, `revision_target`, `nodes`, and a
 shared `cancel` action with a non-empty, unique `stages` list. Cancellation is
 available only when the current node appears in that list. Official workflows
 list the normal majority of non-terminal stages and omit every
@@ -163,12 +187,12 @@ an exhausted route.
 | `handler` | `preflight`, `artifact.record`, `verification.record`, `review.record`, or `delivery.finalize` |
 | `target` | Normal `{node, status}` transition |
 | `payload` | Exact required field-to-type map; unknown or missing fields fail |
-| `artifact` | Required `{type, workspace, inputs}` declaration for 0.2.0 workflow action nodes |
+| `artifact` | Required `{type, workspace, inputs}` declaration for 0.3.0 workflow action nodes |
 | `rework` | Assurance-only `{failure, max_attempts, exhausted}` contract |
 | `finalize` | `success` or `incomplete` on a `delivery.finalize` node |
 | `driver` | Opaque capability metadata, including optional fallback and produced artifact |
 | `effect` | `git.inspect-repository` for preflight; `none` elsewhere |
-| `writes` | If present, must equal the handler-derived 0.2.0 record write set |
+| `writes` | If present, must equal the handler-derived 0.3.0 record write set |
 | `terminal` | `true` defines an action-free sink |
 
 The top-level `cancel.stages` list may contain only declared non-terminal node
@@ -183,7 +207,7 @@ possible rework cycle consumes a declared attempt budget.
 
 ### Artifact lineage
 
-Each `dev-flow-workflow/0.2.0` artifact declares a workspace role:
+Each `dev-flow-workflow/0.3.0` artifact declares a workspace role:
 
 - `context`: read-only analysis that cannot authorize a worktree change;
 - `produces-source`: exactly one `source-predecessor` is pinned, then the
@@ -209,8 +233,8 @@ payload does not supply them.
 ### Repository resources and freshness
 
 Every repository-backed observation uses
-`dev-flow-repository-set-snapshot/0.2.0`. It wraps one complete validated
-`dev-flow-workspace-snapshot/0.2.0` per canonical repository; its aggregate digest
+`dev-flow-repository-set-snapshot/0.3.0`. It wraps one complete validated
+`dev-flow-workspace-snapshot/0.3.0` per canonical repository; its aggregate digest
 covers the set ID, ordered IDs, and complete nested snapshots. A one-member set
 contains one nested member and uses the same wrapper. The two-pass capture must
 stabilize as a whole or the mutation records nothing.
@@ -222,7 +246,7 @@ Every item requires `repository_id`:
 {
   "items": [
     {"repository_id": "repo-api", "path": "openspec/changes/example/proposal.md", "role": "governing", "normalizer": "none"},
-    {"repository_id": "repo-api", "path": "openspec/changes/example/tasks.md", "role": "governing", "normalizer": "openspec-tasks/0.2.0"},
+    {"repository_id": "repo-api", "path": "openspec/changes/example/tasks.md", "role": "governing", "normalizer": "openspec-tasks/0.3.0"},
     {"repository_id": "repo-docs", "path": "openspec/changes/example/tasks.md", "role": "reported", "normalizer": "none"}
   ]
 }
@@ -232,7 +256,7 @@ Resource identity is `(repository_id, path, role, normalizer)`. Unknown member
 IDs, absolute or escaping paths, cross-root resolution, and duplicate scoped
 keys fail; equal relative paths in different members remain distinct.
 `governing` digests participate in artifact freshness even for Git-clean
-files. `reported` digests preserve provenance. `openspec-tasks/0.2.0` canonicalizes
+files. `reported` digests preserve provenance. `openspec-tasks/0.3.0` canonicalizes
 only Markdown task checkbox markers; text, ordering, and test obligations
 remain governing bytes.
 
@@ -248,7 +272,7 @@ current coverage and successful finalization.
 ## Action binding and mutation boundary
 
 `next` resolves inputs before work begins and emits a sealed
-`dev-flow-action-binding/0.2.0` containing:
+`dev-flow-action-binding/0.3.0` containing:
 
 - task ID and task revision;
 - action and node IDs;
@@ -284,7 +308,7 @@ for every current criterion as `proven` or `unverified`. A current criterion
 waiver derives `waived`. Successful coverage contains only proven or waived
 criteria.
 
-Coverage always uses the `dev-flow-verification-coverage/0.2.0` contract with
+Coverage always uses the `dev-flow-verification-coverage/0.3.0` contract with
 exact `schema`, `criteria`, `repositories`, and `integration` fields.
 The repository map exactly covers the canonical member IDs; every member and
 the integration result contains only a non-empty `command` and boolean
@@ -301,7 +325,7 @@ Attempts are counted by node ID and effective contract digest, so a contract
 revision starts the full declared budget for its new scope.
 
 `delivery.finalize` generates the authoritative
-`dev-flow-delivery-dossier/0.2.0` body inside the pure domain layer. It contains
+`dev-flow-delivery-dossier/0.3.0` body inside the pure domain layer. It contains
 set identity, canonical member baseline/final summaries, changed-member
 diagnostics, scoped resources, all verification and review attempts, current structured
 verification, and aggregate freshness. Successful finalization requires fresh
@@ -312,15 +336,15 @@ member/integration details, coverage, and retained failed assurance.
 
 ## Agent projection and task view
 
-`next` returns compact `dev-flow-agent/0.2.0` JSON with one `repository_set` and
+`next` returns compact `dev-flow-agent/0.3.0` JSON with one `repository_set` and
 one current action for every set size (abridged here):
 
 ```json
 {
-  "schema": "dev-flow-agent/0.2.0",
+  "schema": "dev-flow-agent/0.3.0",
   "task_id": "task-example",
   "revision": 3,
-  "workflow": {"id": "lite", "version": "0.2.0", "schema": "dev-flow-workflow/0.2.0"},
+  "workflow": {"id": "lite", "version": "0.3.0", "schema": "dev-flow-workflow/0.3.0"},
   "status": "VERIFYING",
   "current_node": "verify",
   "contract": {"revision": 1, "digest": "<sha256>", "summary": "...", "criterion_ids": ["C1"]},
@@ -337,7 +361,7 @@ one current action for every set size (abridged here):
     "action_id": "verification.record",
     "payload": {"passed": "boolean", "command": "string", "coverage": "object", "summary": "string"},
     "inputs": [],
-    "binding": {"schema": "dev-flow-action-binding/0.2.0", "digest": "<sha256>"},
+    "binding": {"schema": "dev-flow-action-binding/0.3.0", "digest": "<sha256>"},
     "retry_budget": {"attempts_used": 0, "max_attempts": 2, "remaining": 2},
     "verification_coverage": {"fields": ["criteria", "repositories", "integration"]}
   },
@@ -361,7 +385,7 @@ the blocked member.
 
 ```text
 <PLUGIN_DATA>/
-  0.2.0/
+  0.3.0/
     tasks/<task-id>/state.json
     locks/<task-id>.lock
 ```
@@ -372,6 +396,6 @@ closed; writes use a task lock and atomic replacement.
 
 `scripts/dev_flow_python_launcher` selects a supported interpreter and runs
 the fixed CLI or Hook bootstrap. The Hook registers `SessionStart`,
-`UserPromptSubmit`, and `PreToolUse`, injects the exact installed 0.2.0 locator
+`UserPromptSubmit`, and `PreToolUse`, injects the exact installed 0.3.0 locator
 and fresh projection, and guards direct writes to the plugin data root. Hook
 internal errors fail open and never mutate task state.

@@ -12,7 +12,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from dev_flow_orchestrator.model import DevFlowError
-from dev_flow_orchestrator.product import PRODUCT_VERSION, WORKFLOW_IDS
+from dev_flow_orchestrator.product import ASSURANCE_POLICY_SCHEMA, PRODUCT_VERSION, WORKFLOW_IDS
 from dev_flow_orchestrator.workflow import (
     SCHEMA,
     validate_definition_document,
@@ -26,6 +26,7 @@ def workflow_document() -> dict:
         "schema": SCHEMA,
         "id": "bounded-delivery",
         "version": PRODUCT_VERSION,
+        "assurance": {"policy": ASSURANCE_POLICY_SCHEMA, "profile": "lite"},
         "entry": "preflight",
         "revision_target": "implement",
         "nodes": {
@@ -364,8 +365,7 @@ class OfficialWorkflowPortfolioTests(unittest.TestCase):
                 self.assertTrue(set(definition.cancel_stages).issubset(nonterminal))
 
     def test_official_revision_targets_match_product_reentry(self) -> None:
-        self.assertEqual(load_definition("lite").revision_target, "implement")
-        for workflow_id in ("feature", "bugfix", "refactor", "full", "investigation"):
+        for workflow_id in WORKFLOW_IDS:
             with self.subTest(workflow=workflow_id):
                 self.assertEqual(load_definition(workflow_id).revision_target, "impact")
 
@@ -400,21 +400,23 @@ class OfficialWorkflowPortfolioTests(unittest.TestCase):
                     predecessors[0].artifact_type, "repository-baseline"
                 )
 
-    def test_review_rework_returns_through_docs_verification_and_review(self) -> None:
+    def test_adaptive_dispatch_replaces_fixed_review_loops(self) -> None:
         for workflow_id in ("feature", "bugfix", "refactor", "full"):
             definition = load_definition(workflow_id)
             with self.subTest(workflow=workflow_id):
-                review = definition.nodes["review"]
-                review_rework = definition.nodes[review.rework.failure_node]
-                documentation = definition.nodes[review_rework.target_node]
-                verification = definition.nodes[documentation.target_node]
-                self.assertEqual(review_rework.artifact.workspace_role, "produces-source")
+                verification = definition.nodes["verify"]
+                rework = definition.nodes[verification.rework.failure_node]
+                self.assertEqual(verification.handler_id, "assurance.dispatch")
+                self.assertEqual(rework.artifact.workspace_role, "produces-source")
                 self.assertIn(
-                    "causal", {item.edge_kind for item in review_rework.artifact.inputs}
+                    "causal", {item.edge_kind for item in rework.artifact.inputs}
                 )
-                self.assertEqual(documentation.node_id, "documentation")
-                self.assertEqual(verification.node_id, "verify")
-                self.assertEqual(verification.target_node, "review")
+                self.assertEqual(rework.target_node, "verify")
+                self.assertEqual(verification.target_node, "finalize_success")
+                self.assertFalse(any(
+                    node.handler_id == "review.record"
+                    for node in definition.nodes.values()
+                ))
 
     def test_investigation_does_not_declare_implementation(self) -> None:
         definition = load_definition("investigation")

@@ -1,8 +1,18 @@
 # 贡献指南
 
+针对 0.3 变更，应先验证最小因果影响层：索引精确快照、胶囊与租约、保障策略与预算、
+因果审查、工作流调度、控制器复放，最后再验证候选包和安装后旅程。不得增加开放式策略
+旋钮或固定的无条件全量验证/审查循环。每个官方或自定义 `dev-flow-workflow/0.3.0`
+必须引用封闭的 `dev-flow-assurance-policy/0.3.0`，保留未知影响的保守处理、有限重试权限、
+完整的验收标准/变更覆盖和确定性的未完成收尾。
+
+运行时代码仍只能使用 Python 标准库。新增产品上限必须在 `product.py` 声明，由运行时
+原子执行、由包校验器断言，并覆盖精确上限与超一测试。审查测试必须保留既有和范围外
+观察，但不得因此安排与当前任务无关的返工。
+
 [English](CONTRIBUTING.md)
 
-贡献保留 0.2.0 产品契约：一个任务跨越精确的、由一到八个用户准备的本地 Git 工作树，一个 Codex 执行器，一个投影操作，以及一个控制器拥有的只追加账本。
+贡献保留 0.3.0 产品契约：一个任务跨越精确的、由一到八个用户准备的本地 Git 工作树，一个 Codex 执行器，一个投影操作，以及一个控制器拥有的只追加账本。
 
 ## 产品和权限边界
 
@@ -20,10 +30,10 @@
 
 ## 模块所有权
 
-- `product.py`：0.2.0 身份词汇表、官方工作流目录和权威的仓库拓扑能力。
+- `product.py`：0.3.0 身份词汇表、官方工作流目录和权威的仓库拓扑能力。
 - `model.py`：不可变任务值和规范仓库成员资格、严格 JSON、错误和收据。
 - `snapshot.py`：聚合仓库集快照和嵌套成员工作区快照、验证、查找和摘要。
-- `workflow.py`：`dev-flow-workflow/0.2.0` 契约、阶段范围取消、图验证和选定定义身份。
+- `workflow.py`：`dev-flow-workflow/0.3.0` 契约、阶段范围取消、图验证和选定定义身份。
 - `delivery.py`：契约、决策、密封、绑定、资源、新鲜度、覆盖和档案。
 - `engine.py`：重放、突变计划、保障路由、记录、投影和任务视图。
 - `store.py`：路径安全、锁、修订 CAS 和原子持久性。
@@ -35,11 +45,11 @@
 
 ## 当前工作流和身份变更
 
-官方工作流是 `lite`、`feature`、`bugfix`、`investigation`、`refactor` 和 `full`。`dev-flow-workflow/0.2.0` 节点声明类型化工件、工作区角色、输入、有限保障重做、耗尽的档案路径和可选驱动程序降级/不可用元数据。每个工作流声明一个共享取消操作，带有显式的 `cancel.stages`；官方定义涵盖正常多数非终止阶段并排除所有 `delivery.finalize` 节点。
+官方工作流是 `lite`、`feature`、`bugfix`、`investigation`、`refactor` 和 `full`。`dev-flow-workflow/0.3.0` 节点声明类型化工件、工作区角色、输入、有限保障重做、耗尽的档案路径和可选驱动程序降级/不可用元数据。每个工作流声明一个共享取消操作，带有显式的 `cancel.stages`；官方定义涵盖正常多数非终止阶段并排除所有 `delivery.finalize` 节点。
 
 `PRODUCT_IDENTITY` 是当前任务、记录、工件、动作绑定、仓库集快照、嵌套工作区快照、工作流、代理、验证覆盖、交付档案、数据命名空间和一到八个拓扑的权威。选定工作流身份仅绑定选择器、模式和规范文档。对这些当前权威的任何更改都必须更新相应的契约和集中证明。
 
-仓库拓扑独立于官方工作流选择。每个基数使用 `dev-flow-agent/0.2.0`，精确的 `dev-flow-repository-set-snapshot/0.2.0`，必需的 `repository_id` 资源、结构化的 `criteria`/`repositories`/`integration` 验证、聚合新鲜度/审查和交付档案 0.2.0。
+仓库拓扑独立于官方工作流选择。每个基数使用 `dev-flow-agent/0.3.0`，精确的 `dev-flow-repository-set-snapshot/0.3.0`，必需的 `repository_id` 资源、结构化的 `criteria`/`repositories`/`integration` 验证、聚合新鲜度/审查和交付档案 0.3.0。
 
 ## 验证
 
@@ -68,7 +78,7 @@ python3 -I -S scripts/validate_package.py
 python3 -m json.tool .codex-plugin/plugin.json
 ```
 
-仅从 0.2.0 聚焦 CI 矩阵中选择适用命令。使用当前 CLI 指令验证活动的 OpenSpec 变更。
+仅从 0.3.0 聚焦 CI 矩阵中选择适用命令。使用当前 CLI 指令验证活动的 OpenSpec 变更。
 
 编辑后验证每个捆绑技能：
 

@@ -15,6 +15,7 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.controller import Controller
+from dev_flow_orchestrator.capsule import derive_path_changes
 from dev_flow_orchestrator.delivery import CONTRACT_SCHEMA
 from dev_flow_orchestrator.model import DevFlowError
 from dev_flow_orchestrator.product import (
@@ -23,6 +24,7 @@ from dev_flow_orchestrator.product import (
     DRIVER_RESULT_SCHEMA,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     VERIFICATION_COVERAGE_SCHEMA,
+    TASK_CHANGE_CLAIMS_SCHEMA,
 )
 from support import make_repository
 
@@ -65,7 +67,27 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
 
     def apply_after_mutation(self, task_id: str, payload: dict, mutation) -> dict:
         projection = self.controller.next(task_id)
+        state = self.controller.show(task_id)
+        before = self.controller._snapshot(state)
         mutation()
+        action = projection["action"]
+        artifact = action.get("artifact")
+        if isinstance(artifact, dict) and artifact.get("workspace") == "produces-source":
+            after = self.controller._snapshot(state)
+            changes = derive_path_changes(before, after, state.repositories)
+            payload = {
+                **payload,
+                "ownership_claims": {
+                    "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                    "claims": [{
+                        "repository_id": item["repository_id"],
+                        "path": item["path"],
+                        "classification": "implementation",
+                        "criterion_ids": projection["contract"]["criterion_ids"],
+                        "purpose": "Exercise the source-producing action",
+                    } for item in changes],
+                },
+            }
         return self.controller.apply(
             task_id,
             projection["action"]["action_id"],

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-04
+goal: Make delivery effort proportional to task-owned risk while preserving
+  exact, replayable, multi-repository assurance.

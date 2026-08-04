@@ -119,6 +119,8 @@ def validate_task_id(task_id: str) -> str:
 class RepositoryRecord:
     repository_id: str
     path: str
+    git_worktree_dir: str
+    git_common_dir: str
 
     def __post_init__(self) -> None:
         if (
@@ -133,31 +135,48 @@ class RepositoryRecord:
             raise DevFlowError(
                 "STATE_INVALID", "repository identity is not UTF-8"
             ) from exc
-        if (
-            not isinstance(self.path, str)
-            or not self.path
-            or not os.path.isabs(self.path)
-            or "\x00" in self.path
-            or os.path.normpath(self.path) != self.path
+        for field, value in (
+            ("path", self.path),
+            ("git_worktree_dir", self.git_worktree_dir),
+            ("git_common_dir", self.git_common_dir),
         ):
-            raise DevFlowError("STATE_INVALID", "repository path is invalid")
-        try:
-            self.path.encode("utf-8")
-        except UnicodeEncodeError as exc:
-            raise DevFlowError(
-                "STATE_INVALID", "repository path is not UTF-8"
-            ) from exc
+            if (
+                not isinstance(value, str)
+                or not value
+                or not os.path.isabs(value)
+                or "\x00" in value
+                or os.path.normpath(value) != value
+            ):
+                raise DevFlowError(
+                    "STATE_INVALID", "repository {} is invalid".format(field)
+                )
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise DevFlowError(
+                    "STATE_INVALID", "repository {} is not UTF-8".format(field)
+                ) from exc
 
     def as_dict(self) -> dict:
-        return {"id": self.repository_id, "path": self.path}
+        return {
+            "id": self.repository_id,
+            "path": self.path,
+            "git_worktree_dir": self.git_worktree_dir,
+            "git_common_dir": self.git_common_dir,
+        }
 
     @classmethod
     def from_dict(cls, value: object) -> "RepositoryRecord":
-        if not isinstance(value, dict) or set(value) != {"id", "path"}:
+        if not isinstance(value, dict) or set(value) != {
+            "id", "path", "git_worktree_dir", "git_common_dir"
+        }:
             raise DevFlowError("STATE_INVALID", "repository record is invalid")
-        repository_id = value.get("id")
-        path = value.get("path")
-        return cls(repository_id, path)
+        return cls(
+            value.get("id"),
+            value.get("path"),
+            value.get("git_worktree_dir"),
+            value.get("git_common_dir"),
+        )
 
 
 def repository_order_key(repository: RepositoryRecord) -> tuple:
@@ -193,10 +212,15 @@ def validate_repositories(
         raise DevFlowError("STATE_INVALID", "repository record is invalid")
     repository_ids = [item.repository_id for item in items]
     paths = [item.path for item in items]
+    git_worktree_dirs = [item.git_worktree_dir for item in items]
     if len(set(repository_ids)) != len(repository_ids):
         raise DevFlowError("STATE_INVALID", "repository identities are not unique")
     if len(set(paths)) != len(paths):
         raise DevFlowError("STATE_INVALID", "repository paths are not unique")
+    if len(set(git_worktree_dirs)) != len(git_worktree_dirs):
+        raise DevFlowError(
+            "STATE_INVALID", "repository worktree Git directories are not unique"
+        )
     canonical = tuple(sorted(items, key=repository_order_key))
     if require_canonical and items != canonical:
         raise DevFlowError("STATE_INVALID", "task repositories are not canonical")

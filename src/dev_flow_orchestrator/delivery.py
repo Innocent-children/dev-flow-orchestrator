@@ -158,7 +158,9 @@ def contract_summary(contract: Mapping[str, object]) -> dict:
         "revision": contract["revision"],
         "digest": contract_digest(contract),
         "summary": contract["summary"],
-        "criterion_ids": [item["id"] for item in contract["acceptance_criteria"]],
+        "criterion_ids": sorted(
+            item["id"] for item in contract["acceptance_criteria"]
+        ),
     }
 
 

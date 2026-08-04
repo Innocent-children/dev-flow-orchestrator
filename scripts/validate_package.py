@@ -26,8 +26,22 @@ from dev_flow_orchestrator.product import (  # noqa: E402
     DELIVERY_CONTRACT_SCHEMA,
     DELIVERY_DOSSIER_SCHEMA,
     DRIVER_RESULT_SCHEMA,
+    ASSURANCE_POLICY_SCHEMA,
+    ASSURANCE_PROFILES,
+    MAX_ACTION_PAYLOAD_BYTES,
+    MAX_ASSURANCE_OBLIGATIONS,
+    MAX_EVIDENCE_ITEMS,
+    MAX_IMPACT_ENTRIES,
+    MAX_INDEX_COMMAND_OUTPUT_BYTES,
+    MAX_INDEX_STAGE_ENTRIES,
+    MAX_OWNERSHIP_CLAIMS,
     IMPACT_REPORT_SCHEMA,
     MAX_REPOSITORY_COUNT,
+    MAX_REVIEW_FINDINGS,
+    MAX_SNAPSHOT_PATHS,
+    MAX_TASK_CHANGE_MANIFEST_ENTRIES,
+    MAX_TEXT_FIELD_BYTES,
+    MAX_WORKFLOW_ACTIONS,
     MIN_REPOSITORY_COUNT,
     OPENSPEC_TASKS_NORMALIZER,
     PLUGIN_DATA_NAMESPACE,
@@ -80,6 +94,7 @@ REQUIRED_STATIC = (
     "skills/review-dev-flow-change/agents/openai.yaml",
     "src/dev_flow_orchestrator/__init__.py",
     "src/dev_flow_orchestrator/cli.py",
+    "src/dev_flow_orchestrator/capsule.py",
     "src/dev_flow_orchestrator/controller.py",
     "src/dev_flow_orchestrator/delivery.py",
     "src/dev_flow_orchestrator/engine.py",
@@ -88,6 +103,8 @@ REQUIRED_STATIC = (
     "src/dev_flow_orchestrator/hook.py",
     "src/dev_flow_orchestrator/model.py",
     "src/dev_flow_orchestrator/product.py",
+    "src/dev_flow_orchestrator/assurance.py",
+    "src/dev_flow_orchestrator/review.py",
     "src/dev_flow_orchestrator/snapshot.py",
     "src/dev_flow_orchestrator/store.py",
     "src/dev_flow_orchestrator/workflow.py",
@@ -118,10 +135,13 @@ FORBIDDEN_SOURCE = re.compile(
     re.IGNORECASE,
 )
 PURE_MODULES = (
+    "assurance",
+    "capsule",
     "delivery",
     "model",
     "product",
     "snapshot",
+    "review",
     "workflow",
     "engine",
 )
@@ -169,7 +189,7 @@ CURRENT_PRODUCT_CLAIM_TEXT = frozenset(
         "skills/review-dev-flow-change/SKILL.md",
     }
 )
-EXPECTED_PRODUCT_VERSION = "0.2.0"
+EXPECTED_PRODUCT_VERSION = "0.3.0"
 CURRENT_PRODUCT_ASSET_DIRECTORIES = (
     ".codex-plugin",
     ".github/workflows",
@@ -218,12 +238,11 @@ UNSUPPORTED_LATER_STAGE_CLAIM = re.compile(
     r"automatically (?:creates?|manages?) (?:branches?|worktrees?)|"
     r"runs? (?:each )?repositor(?:y|ies) in parallel|"
     r"parallel repository executors?|"
-    r"reuses? (?:per-repository )?partial assurance|"
     r"dispatches external CI|opens? pull requests? automatically|"
     r"自动(?:创建|管理)(?:分支|工作树)|"
     r"并行(?:执行|处理)[^。！？；;]*(?:仓库|工作树)|"
     r"并行仓库执行器|协调并行 Agent|"
-    r"复用[^。！？；;]*部分保障|调度外部 CI|自动创建 PR",
+    r"调度外部 CI|自动创建 PR",
     re.IGNORECASE,
 )
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -671,7 +690,7 @@ def _validate_repository_topology(root: Path, errors: list[str]) -> None:
         "worktrees": "user-prepared",
         "execution": "single-codex-single-current-action",
         "managed_git_effects": False,
-        "partial_assurance_reuse": False,
+        "partial_assurance_reuse": True,
         "external_delivery_effects": False,
     }
     _check(
@@ -680,6 +699,45 @@ def _validate_repository_topology(root: Path, errors: list[str]) -> None:
         and dict(REPOSITORY_TOPOLOGY_CAPABILITIES) == expected,
         errors,
         "product repository-topology authority is invalid",
+    )
+
+
+def _validate_adaptive_assurance_authority(root: Path, errors: list[str]) -> None:
+    expected_bounds = {
+        "snapshot_paths_per_repository": 4096,
+        "index_stage_entries_per_repository": 12288,
+        "index_command_output_bytes": 2 * 1024 * 1024,
+        "ownership_claims_per_source_action": 128,
+        "task_change_manifest_entries": 4096,
+        "impact_entries": 128,
+        "assurance_obligations": 64,
+        "review_findings": 64,
+        "evidence_items_per_execution": 64,
+        "workflow_actions_per_contract": 256,
+        "action_payload_bytes": 64 * 1024,
+        "text_field_bytes": 8 * 1024,
+    }
+    actual_bounds = {
+        "snapshot_paths_per_repository": MAX_SNAPSHOT_PATHS,
+        "index_stage_entries_per_repository": MAX_INDEX_STAGE_ENTRIES,
+        "index_command_output_bytes": MAX_INDEX_COMMAND_OUTPUT_BYTES,
+        "ownership_claims_per_source_action": MAX_OWNERSHIP_CLAIMS,
+        "task_change_manifest_entries": MAX_TASK_CHANGE_MANIFEST_ENTRIES,
+        "impact_entries": MAX_IMPACT_ENTRIES,
+        "assurance_obligations": MAX_ASSURANCE_OBLIGATIONS,
+        "review_findings": MAX_REVIEW_FINDINGS,
+        "evidence_items_per_execution": MAX_EVIDENCE_ITEMS,
+        "workflow_actions_per_contract": MAX_WORKFLOW_ACTIONS,
+        "action_payload_bytes": MAX_ACTION_PAYLOAD_BYTES,
+        "text_field_bytes": MAX_TEXT_FIELD_BYTES,
+    }
+    _check(actual_bounds == expected_bounds, errors, "0.3 product bounds are invalid")
+    _check(
+        ASSURANCE_POLICY_SCHEMA == product_schema("assurance-policy")
+        and set(ASSURANCE_PROFILES)
+        == {"lite", "feature", "bugfix", "investigation", "refactor", "full"},
+        errors,
+        "closed adaptive-assurance policy identity is invalid",
     )
     _check(
         AGENT_PROTOCOL_SCHEMA == product_schema("agent")
@@ -1650,6 +1708,7 @@ def _validate_current_candidate(root: Path) -> dict:
     _validate_manifest(root, manifest, errors)
     _validate_package_versions(root, manifest, errors)
     _validate_repository_topology(root, errors)
+    _validate_adaptive_assurance_authority(root, errors)
     _check(
         PLUGIN_DATA_NAMESPACE == PRODUCT_VERSION
         and WORKFLOW_SCHEMA == product_schema("workflow")
@@ -1730,6 +1789,18 @@ def _validate_current_candidate(root: Path) -> dict:
                 selector, definition.workflow_id
             ))
         _validate_official_workflow(selector, definition, errors)
+        _check(
+            definition.assurance_policy == ASSURANCE_POLICY_SCHEMA
+            and definition.assurance_profile == selector
+            and sum(
+                node.handler_id == "assurance.dispatch"
+                for node in definition.nodes.values()
+            ) == 1,
+            errors,
+            "built-in workflow {!r} does not use one closed adaptive dispatch".format(
+                selector
+            ),
+        )
     _check(
         len({definition.identity for definition in definitions})
         == len(definitions),

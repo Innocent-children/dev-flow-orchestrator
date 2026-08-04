@@ -53,12 +53,17 @@ def _workspace_snapshot(root: str, common_dir: str, head_char: str) -> dict:
     base = {
         "schema": WORKSPACE_SNAPSHOT_SCHEMA,
         "repository_root": root,
+        "git_worktree_dir": common_dir,
         "git_common_dir": common_dir,
+        "object_format": "sha1",
         "head": head_char * 40,
         "branch": "main",
         "clean": True,
         "status_sha256": hashlib.sha256(b"").hexdigest(),
         "status_bytes": 0,
+        "index_entry_count": 0,
+        "index_output_bytes": 0,
+        "has_unmerged_entries": False,
         "entries": [],
         "resources": [],
     }
@@ -69,9 +74,9 @@ class RepositoryTopologyProductTests(unittest.TestCase):
     def test_topology_and_current_schemas_define_product_identity(self) -> None:
         self.assertEqual(MIN_REPOSITORY_COUNT, 1)
         self.assertEqual(MAX_REPOSITORY_COUNT, 8)
-        self.assertEqual(PRODUCT_VERSION, "0.2.0")
-        self.assertEqual(AGENT_PROTOCOL_SCHEMA, "dev-flow-agent/0.2.0")
-        self.assertEqual(REPOSITORY_SET_SNAPSHOT_SCHEMA, "dev-flow-repository-set-snapshot/0.2.0")
+        self.assertEqual(PRODUCT_VERSION, "0.3.0")
+        self.assertEqual(AGENT_PROTOCOL_SCHEMA, "dev-flow-agent/0.3.0")
+        self.assertEqual(REPOSITORY_SET_SNAPSHOT_SCHEMA, "dev-flow-repository-set-snapshot/0.3.0")
         self.assertIsInstance(REPOSITORY_TOPOLOGY_CAPABILITIES, MappingProxyType)
         with self.assertRaises(TypeError):
             REPOSITORY_TOPOLOGY_CAPABILITIES["maximum_repositories"] = 9
@@ -96,8 +101,8 @@ class RepositoryTopologyProductTests(unittest.TestCase):
 
 class RepositoryMembershipTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.first = RepositoryRecord("alpha", "/tmp/dev-flow-core-alpha")
-        self.second = RepositoryRecord("beta", "/tmp/dev-flow-core-beta")
+        self.first = RepositoryRecord("alpha", "/tmp/dev-flow-core-alpha", "/tmp/dev-flow-core-alpha/.git", "/tmp/dev-flow-core-alpha/.git")
+        self.second = RepositoryRecord("beta", "/tmp/dev-flow-core-beta", "/tmp/dev-flow-core-beta/.git", "/tmp/dev-flow-core-beta/.git")
 
     def test_members_are_unique_bounded_and_canonically_ordered(self) -> None:
         canonical = canonical_repositories((self.second, self.first))
@@ -106,10 +111,10 @@ class RepositoryMembershipTests(unittest.TestCase):
 
         for invalid in (
             (),
-            (self.first, RepositoryRecord("alpha", "/tmp/dev-flow-core-other")),
-            (self.first, RepositoryRecord("other", self.first.path)),
+            (self.first, RepositoryRecord("alpha", "/tmp/dev-flow-core-other", "/tmp/dev-flow-core-other/.git", "/tmp/dev-flow-core-other/.git")),
+            (self.first, RepositoryRecord("other", self.first.path, "/tmp/dev-flow-other/.git", "/tmp/dev-flow-other/.git")),
             tuple(
-                RepositoryRecord("repo-{}".format(index), "/tmp/repo-{}".format(index))
+                RepositoryRecord("repo-{}".format(index), "/tmp/repo-{}".format(index), "/tmp/repo-{}/.git".format(index), "/tmp/repo-{}/.git".format(index))
                 for index in range(MAX_REPOSITORY_COUNT + 1)
             ),
         ):
@@ -123,7 +128,7 @@ class RepositoryMembershipTests(unittest.TestCase):
 
     def test_repository_records_require_safe_ids_and_canonical_paths(self) -> None:
         self.assertEqual(
-            RepositoryRecord(".hidden-repository", "/tmp/repository").repository_id,
+            RepositoryRecord(".hidden-repository", "/tmp/repository", "/tmp/repository/.git", "/tmp/repository/.git").repository_id,
             ".hidden-repository",
         )
         for repository_id, path in (
@@ -135,7 +140,7 @@ class RepositoryMembershipTests(unittest.TestCase):
         ):
             with self.subTest(repository_id=repository_id, path=path):
                 with self.assertRaises(DevFlowError) as context:
-                    RepositoryRecord(repository_id, path)
+                    RepositoryRecord(repository_id, path, "/tmp/repository/.git", "/tmp/repository/.git")
                 self.assertEqual(context.exception.code, "STATE_INVALID")
 
     def test_set_identity_uses_the_ordered_id_path_records(self) -> None:
@@ -184,8 +189,8 @@ class RepositorySetSnapshotTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repositories = canonical_repositories(
             (
-                RepositoryRecord("beta", "/tmp/dev-flow-core-beta"),
-                RepositoryRecord("alpha", "/tmp/dev-flow-core-alpha"),
+                RepositoryRecord("beta", "/tmp/dev-flow-core-beta", "/tmp/dev-flow-core-beta/.git", "/tmp/dev-flow-core-beta/.git"),
+                RepositoryRecord("alpha", "/tmp/dev-flow-core-alpha", "/tmp/dev-flow-core-alpha/.git", "/tmp/dev-flow-core-alpha/.git"),
             )
         )
         self.snapshots = {

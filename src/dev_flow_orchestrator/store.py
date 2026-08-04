@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Tuple
 
-from .engine import validate_persisted_state, validate_state_transition
+from .engine import (
+    is_terminal_state,
+    validate_persisted_state,
+    validate_state_transition,
+)
 from .filesystem import (
     atomic_write_bytes,
     ensure_private_directory,
@@ -19,7 +23,7 @@ from .model import (
     strict_json_loads,
     validate_task_id,
 )
-from .product import PRODUCT_IDENTITY, PRODUCT_VERSION
+from .product import PLUGIN_DATA_NAMESPACE, PRODUCT_IDENTITY, PRODUCT_VERSION
 from .workflow import WorkflowDefinition
 from .workflows import load_definition, task_definition
 
@@ -47,8 +51,9 @@ class TaskStore:
                 "controller data directory could not be resolved",
                 details={"path": str(supplied_root), "error": str(exc)},
             ) from exc
-        self.tasks_root = self.root / "tasks"
-        self.locks_root = self.root / "locks"
+        self.namespace_root = self.root / PLUGIN_DATA_NAMESPACE
+        self.tasks_root = self.namespace_root / "tasks"
+        self.locks_root = self.namespace_root / "locks"
 
     def _task_directory(self, task_id: str) -> Path:
         return self.tasks_root / validate_task_id(task_id)
@@ -59,10 +64,19 @@ class TaskStore:
     def _lock(self, task_id: str):
         validate_task_id(task_id)
         ensure_private_directory(self.root)
+        ensure_private_directory(self.namespace_root)
         ensure_private_directory(self.tasks_root)
         ensure_private_directory(self.locks_root)
         lock_path = self.locks_root / "{}.lock".format(task_id)
         return exclusive_file_lock(lock_path)
+
+    def membership_lock(self):
+        """Serialize complete current-namespace membership admission."""
+        ensure_private_directory(self.root)
+        ensure_private_directory(self.namespace_root)
+        ensure_private_directory(self.tasks_root)
+        ensure_private_directory(self.locks_root)
+        return exclusive_file_lock(self.locks_root / "membership.lock")
 
     def _read_state_with_definition(
         self,
@@ -72,7 +86,7 @@ class TaskStore:
         path = self._state_path(expected_task_id)
         try:
             raw = read_regular_file_at(
-                self.root,
+                self.namespace_root,
                 ("tasks", expected_task_id, "state.json"),
             )
         except FileNotFoundError as exc:
@@ -165,6 +179,30 @@ class TaskStore:
             self._atomic_write(state_path, state)
         return state
 
+    def create_admitted(self, state: TaskState) -> TaskState:
+        """Persist revision zero after a caller-held membership lock check."""
+        for existing, definition in self.list_states_with_definitions(strict=True):
+            if is_terminal_state(existing, definition):
+                continue
+            for requested in state.repositories:
+                for owned in existing.repositories:
+                    if (
+                        requested.path == owned.path
+                        or requested.git_worktree_dir == owned.git_worktree_dir
+                    ):
+                        raise DevFlowError(
+                            "TASK_MEMBERSHIP_LEASED",
+                            "requested worktree belongs to another active task",
+                            details={
+                                "owning_task_id": existing.task_id,
+                                "owning_repository_id": owned.repository_id,
+                                "requested_repository_id": requested.repository_id,
+                                "repository_root": requested.path,
+                                "git_worktree_dir": requested.git_worktree_dir,
+                            },
+                        )
+        return self.create(state)
+
     def load(self, task_id: str) -> TaskState:
         with self._lock(task_id):
             return self._read_state(task_id)
@@ -179,8 +217,46 @@ class TaskStore:
     def list_states(self) -> Tuple[TaskState, ...]:
         return tuple(state for state, _ in self.list_states_with_definitions())
 
+    def inventory_diagnostics(self) -> Tuple[dict, ...]:
+        """Describe unreadable current-namespace entries without mutating them."""
+        if not self.tasks_root.exists():
+            return ()
+        if self.tasks_root.is_symlink() or not self.tasks_root.is_dir():
+            return ({
+                "code": "DATA_PATH_UNSAFE",
+                "path": str(self.tasks_root),
+                "cause": "current tasks root is not a real directory",
+            },)
+        diagnostics = []
+        try:
+            paths = tuple(self.tasks_root.iterdir())
+        except OSError as exc:
+            return ({
+                "code": "STATE_READ_FAILED",
+                "path": str(self.tasks_root),
+                "cause": str(exc),
+            },)
+        for path in sorted(paths, key=lambda item: item.name.encode("utf-8")):
+            try:
+                task_id = validate_task_id(path.name)
+                if not path.is_dir() or path.is_symlink():
+                    raise DevFlowError(
+                        "DATA_PATH_UNSAFE",
+                        "current task entry is not a real directory",
+                    )
+                self._read_state_with_definition(task_id)
+            except (DevFlowError, OSError) as exc:
+                diagnostics.append({
+                    "code": getattr(exc, "code", "STATE_READ_FAILED"),
+                    "path": str(path),
+                    "cause": str(exc),
+                })
+        return tuple(diagnostics)
+
     def list_states_with_definitions(
         self,
+        *,
+        strict: bool = False,
     ) -> Tuple[Tuple[TaskState, WorkflowDefinition], ...]:
         try:
             if not self.tasks_root.exists():
@@ -201,6 +277,7 @@ class TaskStore:
                 details={"path": str(self.tasks_root), "error": str(exc)},
             ) from exc
         ensure_private_directory(self.root)
+        ensure_private_directory(self.namespace_root)
         ensure_private_directory(self.tasks_root)
         ensure_private_directory(self.locks_root)
         task_ids = []
@@ -216,13 +293,35 @@ class TaskStore:
             if candidate:
                 try:
                     task_ids.append(validate_task_id(path.name))
-                except DevFlowError:
+                except DevFlowError as exc:
+                    if strict:
+                        raise DevFlowError(
+                            "LEASE_INVENTORY_INVALID",
+                            "current task inventory contains an invalid entry",
+                            details={"path": str(path), "cause": exc.code},
+                        ) from exc
                     continue
+            elif strict:
+                raise DevFlowError(
+                    "LEASE_INVENTORY_INVALID",
+                    "current task inventory contains a non-directory entry",
+                    details={"path": str(path)},
+                )
         states = []
         for task_id in sorted(task_ids, key=lambda item: item.encode("utf-8")):
             try:
                 states.append(self.load_with_definition(task_id))
-            except DevFlowError:
+            except DevFlowError as exc:
+                if strict:
+                    raise DevFlowError(
+                        "LEASE_INVENTORY_INVALID",
+                        "current task inventory cannot prove membership and terminal state",
+                        details={
+                            "task_id": task_id,
+                            "path": str(self._state_path(task_id)),
+                            "cause": exc.code,
+                        },
+                    ) from exc
                 continue
         return tuple(states)
 

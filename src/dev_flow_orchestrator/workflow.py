@@ -23,6 +23,8 @@ from .model import (
     json_value,
 )
 from .product import (
+    ASSURANCE_POLICY_SCHEMA,
+    ASSURANCE_PROFILES,
     PRODUCT_VERSION,
     WORKFLOW_SCHEMA,
     product_domain,
@@ -41,9 +43,10 @@ HANDLER_IDS = (
     "artifact.record",
     "verification.record",
     "review.record",
+    "assurance.dispatch",
     "delivery.finalize",
 )
-ASSURANCE_HANDLER_IDS = ("verification.record", "review.record")
+ASSURANCE_HANDLER_IDS = ("verification.record", "review.record", "assurance.dispatch")
 EFFECT_PORTS = ("none", "git.inspect-repository")
 
 _COMMON_WRITES = (
@@ -176,6 +179,8 @@ class WorkflowDefinition:
     terminal_nodes: Tuple[str, ...]
     cancellations: Mapping[str, NodeContract]
     identity: str
+    assurance_policy: str
+    assurance_profile: str
 
     @property
     def canonical_document(self) -> Mapping[str, object]:
@@ -264,6 +269,12 @@ def _payload_types(
                 node_id,
                 "the {} node must declare payload 'passed: boolean'".format(handler),
             )
+    if handler == "assurance.dispatch" and types.get("assurance_result") != "object":
+        raise _node_spec_error(
+            source,
+            node_id,
+            "the assurance.dispatch node must declare payload 'assurance_result: object'",
+        )
     return MappingProxyType(types)
 
 
@@ -578,7 +589,7 @@ def _node_contract(
     target_node, target_status = _target_fields(
         source, node_id, "target", spec.get("target"), node_ids
     )
-    if target_node == node_id and not shared_action:
+    if target_node == node_id and not shared_action and handler != "assurance.dispatch":
         raise _node_spec_error(source, node_id, "node must not target itself")
     _declared_authority(source, node_id, spec.get("authority"))
     description = spec.get("description")
@@ -909,6 +920,7 @@ def validate_definition_document(
         "nodes",
         "cancel",
         "revision_target",
+        "assurance",
     }
     unknown = sorted(str(key) for key in document if key not in allowed_top)
     if unknown:
@@ -927,6 +939,17 @@ def validate_definition_document(
         raise _workflow_error(
             source,
             "workflow version must be exactly {}".format(PRODUCT_VERSION),
+        )
+    assurance = document.get("assurance")
+    if (
+        not isinstance(assurance, Mapping)
+        or set(assurance) != {"policy", "profile"}
+        or assurance.get("policy") != ASSURANCE_POLICY_SCHEMA
+        or assurance.get("profile") not in ASSURANCE_PROFILES
+    ):
+        raise _workflow_error(
+            source,
+            "assurance must select the closed current policy and the workflow profile",
         )
     description = document.get("description")
     if description is not None and not isinstance(description, str):
@@ -1045,6 +1068,8 @@ def validate_definition_document(
             {node_id: cancel_contract for node_id in cancel_stages}
         ),
         identity=workflow_identity(workflow_id, document),
+        assurance_policy=assurance["policy"],
+        assurance_profile=assurance["profile"],
     )
 
 

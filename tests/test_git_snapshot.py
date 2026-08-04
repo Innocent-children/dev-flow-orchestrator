@@ -306,7 +306,11 @@ class GitSnapshotTests(RepositoryTestCase):
         clean = GitClient.snapshot(str(self.repository), request)
         entry = self._entry(clean, "vendor/module")
         self.assertEqual(entry["kind"], "gitlink")
-        self.assertEqual(entry["index_oid"], entry["submodule_head"])
+        self.assertEqual(entry["index_entries"], [{
+            "mode": "160000",
+            "oid": entry["submodule_head"],
+            "stage": 0,
+        }])
 
         checkout = self.repository / "vendor" / "module"
         (checkout / "a.txt").write_text("dirty\n", encoding="utf-8")

@@ -17,9 +17,10 @@ from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.model import DevFlowError
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
+    DRIVER_RESULT_SCHEMA,
+    PLUGIN_DATA_NAMESPACE,
     RECEIPT_SCHEMA,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
-    VERIFICATION_COVERAGE_SCHEMA,
 )
 from support import RepositoryTestCase, make_repository
 
@@ -35,39 +36,58 @@ class ControllerContractTests(RepositoryTestCase):
         )
 
     def passing_verification(self, task_id: str, command: str) -> dict:
-        state = self.controller.show(task_id)
-        return {
+        projection = self.controller.next(task_id)
+        obligation = projection["action"]["current_obligation"]
+        result = {
+            "obligation_id": obligation["obligation_id"],
             "passed": True,
-            "command": command,
-            "coverage": {
-                "schema": VERIFICATION_COVERAGE_SCHEMA,
-                "criteria": {"requirement": "proven"},
-                "repositories": {
-                    repository.repository_id: {
-                        "command": command,
-                        "passed": True,
-                    }
-                    for repository in state.repositories
-                },
-                "integration": {"command": command, "passed": True},
-            },
-            "summary": "Verification passed",
+            "evidence": [{
+                "kind": "command",
+                "reference": command,
+                "summary": "Verification passed",
+            }],
+            "limitations": [],
         }
+        if obligation["kind"] == "independent-review":
+            review = projection["action"]["review_contract"]
+            result["review"] = {
+                "reviewer_available": True,
+                "independent": True,
+                "reviewer_digest": "a" * 64,
+                "review_scope_digest": review["review_scope_digest"],
+                "guidance_digest": review["guidance_digest"],
+                "workspace_digest": review["workspace_digest"],
+                "findings": [],
+                "claimed_outcome": "approved",
+            }
+        return {"summary": "Verification passed", "assurance_result": result}
 
     def test_data_directory_must_be_disjoint_from_repository(self) -> None:
         cases = []
 
         inside = self.repository / "data"
-        cases.append((Controller(str(inside)), self.repository, inside / "tasks"))
+        cases.append((
+            Controller(str(inside)),
+            self.repository,
+            inside / PLUGIN_DATA_NAMESPACE / "tasks",
+        ))
 
         cases.append(
-            (Controller(str(self.repository)), self.repository, self.repository / "tasks")
+            (
+                Controller(str(self.repository)),
+                self.repository,
+                self.repository / PLUGIN_DATA_NAMESPACE / "tasks",
+            )
         )
 
         data_root = self.root / "containing-data"
         data_root.mkdir()
         nested_repository = make_repository(data_root, "nested-repository")
-        cases.append((Controller(str(data_root)), nested_repository, data_root / "tasks"))
+        cases.append((
+            Controller(str(data_root)),
+            nested_repository,
+            data_root / PLUGIN_DATA_NAMESPACE / "tasks",
+        ))
 
         for controller, repository, state_root in cases:
             with self.subTest(data_dir=str(controller.store.root), repository=str(repository)):
@@ -84,7 +104,13 @@ class ControllerContractTests(RepositoryTestCase):
 
     def test_state_paths_are_private(self) -> None:
         task_id = self.start_lite()
-        state_path = Path(self.data_dir) / "tasks" / task_id / "state.json"
+        state_path = (
+            Path(self.data_dir)
+            / PLUGIN_DATA_NAMESPACE
+            / "tasks"
+            / task_id
+            / "state.json"
+        )
 
         self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(state_path.parent.stat().st_mode), 0o700)
@@ -122,9 +148,16 @@ class ControllerContractTests(RepositoryTestCase):
         projection = self.controller.next(task_id)
         before = self.controller.show(task_id)
         cases = (
-            ({"summary": "x", "extra": 1}, "extra"),
+            ({
+                "summary": "x",
+                "driver_result": {"schema": DRIVER_RESULT_SCHEMA, "status": "degraded"},
+                "extra": 1,
+            }, "extra"),
             ({}, "summary"),
-            ({"summary": 42}, None),
+            ({
+                "summary": 42,
+                "driver_result": {"schema": DRIVER_RESULT_SCHEMA, "status": "degraded"},
+            }, None),
         )
 
         for payload, detail in cases:
@@ -199,11 +232,16 @@ class ControllerContractTests(RepositoryTestCase):
     def test_cancel_is_rejected_outside_declared_stages(self) -> None:
         task_id = self.start_lite()
         self.apply_current(task_id, {})
+        self.apply_current(task_id, {
+            "summary": "Impact bounded",
+            "driver_result": {"schema": DRIVER_RESULT_SCHEMA, "status": "degraded"},
+        })
         self.apply_current(task_id, {"summary": "Implemented"})
-        self.apply_current(
-            task_id,
-            self.passing_verification(task_id, "python3 -m unittest focused"),
-        )
+        while self.controller.next(task_id)["action"]["action_id"] == "assurance.execute":
+            self.apply_current(
+                task_id,
+                self.passing_verification(task_id, "python3 -m unittest focused"),
+            )
         before = self.controller.show(task_id)
         self.assertEqual(before.current_node, "finalize_success")
 
@@ -253,8 +291,8 @@ class ControllerContractTests(RepositoryTestCase):
                 "task_id": task_id,
                 "action_id": "task.preflight",
                 "committed_revision": 1,
-                "status": "IMPLEMENTING",
-                "current_node": "implement",
+                "status": "ANALYZING",
+                "current_node": "impact",
             },
         )
         self.assertEqual(result["projection"]["revision"], 1)
@@ -274,7 +312,7 @@ class ControllerContractTests(RepositoryTestCase):
             REPOSITORY_SET_SNAPSHOT_SCHEMA,
         )
         self.assertEqual(
-            result["projection"]["action"]["action_id"], "implementation.record"
+            result["projection"]["action"]["action_id"], "impact.record"
         )
 
 

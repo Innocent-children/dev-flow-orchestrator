@@ -16,12 +16,19 @@ sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.model import DevFlowError, json_value
-from support import RepositoryTestCase
+from dev_flow_orchestrator.product import PLUGIN_DATA_NAMESPACE
+from support import RepositoryTestCase, make_repository
 
 
 class StoreIntegrityTests(RepositoryTestCase):
     def state_path(self, task_id: str) -> Path:
-        return Path(self.data_dir) / "tasks" / task_id / "state.json"
+        return (
+            Path(self.data_dir)
+            / PLUGIN_DATA_NAMESPACE
+            / "tasks"
+            / task_id
+            / "state.json"
+        )
 
     def apply_current(self, task_id: str, payload: dict) -> dict:
         projection = self.controller.next(task_id)
@@ -34,7 +41,12 @@ class StoreIntegrityTests(RepositoryTestCase):
 
     def test_state_symlink_is_rejected(self) -> None:
         first = self.start_lite("first")
-        second = self.start_lite("second")
+        second_repository = make_repository(self.root, "second-repository")
+        second = self.controller.start(
+            requirement="second",
+            workflow="lite",
+            repositories=(str(second_repository),),
+        ).task_id
         first_path = self.state_path(first)
         second_path = self.state_path(second)
         first_path.unlink()
@@ -56,7 +68,7 @@ class StoreIntegrityTests(RepositoryTestCase):
 
     def test_task_directory_symlink_is_rejected(self) -> None:
         existing = self.start_lite()
-        tasks = Path(self.data_dir) / "tasks"
+        tasks = Path(self.data_dir) / PLUGIN_DATA_NAMESPACE / "tasks"
         alias = tasks / "task-alias"
         alias.symlink_to(tasks / existing, target_is_directory=True)
 
@@ -66,7 +78,12 @@ class StoreIntegrityTests(RepositoryTestCase):
 
     def test_lock_symlink_is_rejected(self) -> None:
         task_id = self.start_lite()
-        lock = Path(self.data_dir) / "locks" / (task_id + ".lock")
+        lock = (
+            Path(self.data_dir)
+            / PLUGIN_DATA_NAMESPACE
+            / "locks"
+            / (task_id + ".lock")
+        )
         lock.unlink()
         lock.symlink_to(self.root / "lock-target")
 
@@ -77,7 +94,7 @@ class StoreIntegrityTests(RepositoryTestCase):
     def test_inventory_omits_orphan_but_direct_load_is_strict(self) -> None:
         healthy = self.start_lite("healthy")
         orphan = "task-orphan"
-        (Path(self.data_dir) / "tasks" / orphan).mkdir()
+        (Path(self.data_dir) / PLUGIN_DATA_NAMESPACE / "tasks" / orphan).mkdir()
 
         self.assertEqual(
             tuple(state.task_id for state in self.controller.list_tasks()),
@@ -89,7 +106,12 @@ class StoreIntegrityTests(RepositoryTestCase):
 
     def test_inventory_omits_corrupt_state_but_direct_load_is_strict(self) -> None:
         healthy = self.start_lite("healthy")
-        corrupt = self.start_lite("corrupt")
+        corrupt_repository = make_repository(self.root, "corrupt-repository")
+        corrupt = self.controller.start(
+            requirement="corrupt",
+            workflow="lite",
+            repositories=(str(corrupt_repository),),
+        ).task_id
         self.state_path(corrupt).write_text("{not json", encoding="utf-8")
 
         self.assertEqual(
@@ -116,7 +138,9 @@ class StoreIntegrityTests(RepositoryTestCase):
         target = self.root / "inventory-target"
         data_root.mkdir()
         target.mkdir()
-        (data_root / "tasks").symlink_to(target, target_is_directory=True)
+        namespace = data_root / PLUGIN_DATA_NAMESPACE
+        namespace.mkdir()
+        (namespace / "tasks").symlink_to(target, target_is_directory=True)
         controller = Controller(str(data_root))
 
         with self.assertRaises(DevFlowError) as context:
@@ -125,7 +149,7 @@ class StoreIntegrityTests(RepositoryTestCase):
 
     def test_inventory_locks_root_symlink_is_strict(self) -> None:
         self.start_lite("healthy")
-        locks_root = Path(self.data_dir) / "locks"
+        locks_root = Path(self.data_dir) / PLUGIN_DATA_NAMESPACE / "locks"
         target = self.root / "locks-target"
         locks_root.rename(target)
         locks_root.symlink_to(target, target_is_directory=True)
@@ -136,14 +160,34 @@ class StoreIntegrityTests(RepositoryTestCase):
 
     def test_state_path_and_embedded_task_id_must_match(self) -> None:
         first = self.start_lite("first")
-        second = self.start_lite("second")
+        second_repository = make_repository(self.root, "identity-repository")
+        second = self.controller.start(
+            requirement="second",
+            workflow="lite",
+            repositories=(str(second_repository),),
+        ).task_id
         self.state_path(first).write_bytes(self.state_path(second).read_bytes())
 
         with self.assertRaises(DevFlowError) as context:
             self.controller.show(first)
         self.assertEqual(context.exception.code, "STATE_INVALID")
         self.assertEqual(context.exception.details["expected_task_id"], first)
-        self.assertEqual(context.exception.details["stored_task_id"], second)
+
+    def test_prior_namespace_bytes_are_inert_and_unchanged(self) -> None:
+        prior = Path(self.data_dir) / "0.2.0" / "tasks" / "task-retained"
+        prior.mkdir(parents=True)
+        state_path = prior / "state.json"
+        retained = b'{"version":"0.2.0","opaque":true}\n'
+        state_path.write_bytes(retained)
+
+        task_id = self.start_lite("current namespace only")
+
+        self.assertEqual(state_path.read_bytes(), retained)
+        self.assertEqual(
+            tuple(state.task_id for state in self.controller.list_tasks()),
+            (task_id,),
+        )
+        self.assertTrue(self.state_path(task_id).is_file())
 
     def test_initial_contract_and_requirement_are_immutable(self) -> None:
         task_id = self.start_lite()

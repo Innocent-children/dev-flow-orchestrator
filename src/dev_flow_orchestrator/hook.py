@@ -64,9 +64,24 @@ def _context(
     cwd: str,
     config: HookConfig,
 ) -> str:
+    diagnostics = controller.inventory_diagnostics()
     tasks = controller.tasks_for_path(cwd)
     locator = _controller_command(config)
     product_name = "Dev Flow {}".format(PRODUCT_VERSION)
+    if diagnostics:
+        return (
+            product_name
+            + " current task inventory is unavailable; automatic discovery is "
+            "disabled and new task admission remains blocked. diagnostics="
+            + json.dumps(
+                diagnostics,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + " locator="
+            + locator
+        )
     if not tasks:
         return (
             product_name

@@ -26,6 +26,7 @@ from .engine import (
     is_terminal_state,
     plan_current_action,
     record_decision,
+    record_finding_disposition,
     revise_contract,
     task_view,
     validate_action_payload,
@@ -179,6 +180,7 @@ class Controller:
         *,
         phase: str,
         capture_pass: int,
+        verify_persisted_identity: bool = True,
     ) -> dict:
         records = self._validate_repository_paths(repositories)
         snapshots = {}
@@ -197,6 +199,20 @@ class Controller:
                         "captured repository root does not match task membership",
                         details={
                             "captured_repository_root": snapshot["repository_root"],
+                        },
+                    )
+                if verify_persisted_identity and (
+                    snapshot["git_worktree_dir"] != repository.git_worktree_dir
+                    or snapshot["git_common_dir"] != repository.git_common_dir
+                ):
+                    raise DevFlowError(
+                        "REPOSITORY_IDENTITY_MISMATCH",
+                        "captured Git identity does not match immutable task membership",
+                        details={
+                            "captured_git_worktree_dir": snapshot["git_worktree_dir"],
+                            "expected_git_worktree_dir": repository.git_worktree_dir,
+                            "captured_git_common_dir": snapshot["git_common_dir"],
+                            "expected_git_common_dir": repository.git_common_dir,
                         },
                     )
                 common_path = Path(snapshot["git_common_dir"]).resolve(strict=True)
@@ -317,7 +333,11 @@ class Controller:
                     },
                 )
             seen[identity] = input_index
-            repositories.append(RepositoryRecord(_repository_id(path), identity))
+            # Admission captures the authoritative Git identities below.  The
+            # provisional values are never persisted.
+            repositories.append(
+                RepositoryRecord(_repository_id(path), identity, identity, identity)
+            )
         records = canonical_repository_records(repositories)
         self._validate_repository_paths(records)
         resources_by_id = {record.repository_id: () for record in records}
@@ -326,12 +346,14 @@ class Controller:
             resources_by_id,
             phase="admission",
             capture_pass=1,
+            verify_persisted_identity=False,
         )
         second = self._capture_members(
             records,
             resources_by_id,
             phase="admission",
             capture_pass=2,
+            verify_persisted_identity=False,
         )
         changed = self._changed_members(records, first, second)
         if changed:
@@ -340,7 +362,17 @@ class Controller:
                 "repository set changed during admission",
                 details={"repository_ids": changed, "phase": "admission"},
             )
-        return records
+        persisted = canonical_repository_records(
+            RepositoryRecord(
+                repository.repository_id,
+                repository.path,
+                second[repository.repository_id]["git_worktree_dir"],
+                second[repository.repository_id]["git_common_dir"],
+            )
+            for repository in records
+        )
+        self._validate_repository_paths(persisted)
+        return persisted
 
     def _partition_resources(
         self,
@@ -440,24 +472,32 @@ class Controller:
         if not isinstance(requirement, str) or not requirement.strip():
             raise DevFlowError(
                 "REQUIREMENT_INVALID", "requirement must not be empty"
-            )
+        )
         clean_requirement = requirement.strip()
         definition = workflows.load_definition(workflow)
-        repository_records = self._canonical_repositories(repositories)
         delivery_contract = (
             minimal_contract(clean_requirement)
             if contract is None
             else validate_contract(contract, expected_revision=1)
         )
-        state = initial_state(
-            task_id=task_id or "task-{}".format(uuid.uuid4().hex[:16]),
-            requirement=clean_requirement,
-            contract=delivery_contract,
-            definition=definition,
-            repositories=repository_records,
-            timestamp=_utc_now(),
-        )
-        return self.store.create(state)
+        requested_repositories = tuple(repositories)
+        repository_records = self._canonical_repositories(requested_repositories)
+        with self.store.membership_lock():
+            locked_records = self._canonical_repositories(requested_repositories)
+            if locked_records != repository_records:
+                raise DevFlowError(
+                    "SNAPSHOT_UNSTABLE",
+                    "repository identities changed during task admission",
+                )
+            state = initial_state(
+                task_id=task_id or "task-{}".format(uuid.uuid4().hex[:16]),
+                requirement=clean_requirement,
+                contract=delivery_contract,
+                definition=definition,
+                repositories=repository_records,
+                timestamp=_utc_now(),
+            )
+            return self.store.create_admitted(state)
 
     def show(self, task_id: str) -> TaskState:
         return self.store.load(task_id)
@@ -481,6 +521,10 @@ class Controller:
 
     def list_tasks(self) -> tuple:
         return self.store.list_states()
+
+    def inventory_diagnostics(self) -> tuple:
+        """Return read-only corruption diagnostics for the current namespace."""
+        return self.store.inventory_diagnostics()
 
     def apply(
         self,
@@ -610,6 +654,47 @@ class Controller:
             "projection": agent_projection(committed, definition, snapshot),
         }
 
+    def dispose_finding(
+        self,
+        task_id: str,
+        *,
+        disposition: Mapping[str, object],
+        actor_authorized: bool,
+    ) -> dict:
+        state, definition = self.store.load_with_definition(task_id)
+        expands_contract = isinstance(disposition.get("next_contract"), Mapping)
+        snapshot = self._snapshot(
+            state,
+            include_current_resources=not expands_contract,
+        )
+        try:
+            committed = self.store.update(
+                task_id,
+                state.revision,
+                lambda current: record_finding_disposition(
+                    current,
+                    definition,
+                    disposition=disposition,
+                    actor_authorized=actor_authorized,
+                    snapshot=snapshot if expands_contract else None,
+                    timestamp=_utc_now(),
+                ),
+            )
+        except DevFlowError as exc:
+            if exc.code == "REVISION_CONFLICT":
+                raise self._conflict(task_id, exc) from exc
+            raise
+        return {
+            "receipt": MutationReceipt(
+                committed.task_id,
+                "finding.dispose",
+                committed.revision,
+                committed.status,
+                committed.current_node,
+            ).as_dict(),
+            "projection": agent_projection(committed, definition, snapshot),
+        }
+
     def cancel(self, task_id: str, *, reason: str) -> dict:
         state, definition = self.store.load_with_definition(task_id)
         if is_terminal_state(state, definition):
@@ -651,4 +736,16 @@ class Controller:
                 for repository in state.repositories
             ):
                 matches.append(state)
-        return tuple(sorted(matches, key=lambda item: item.task_id.encode("utf-8")))
+        ordered = tuple(
+            sorted(matches, key=lambda item: item.task_id.encode("utf-8"))
+        )
+        if len(ordered) > 1:
+            raise DevFlowError(
+                "LEASE_INTEGRITY_CONFLICT",
+                "multiple active tasks claim the inspected repository path",
+                details={
+                    "path": str(candidate),
+                    "task_ids": [state.task_id for state in ordered],
+                },
+            )
+        return ordered

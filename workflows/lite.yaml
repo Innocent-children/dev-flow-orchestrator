@@ -1,20 +1,36 @@
-schema: dev-flow-workflow/0.2.0
+schema: dev-flow-workflow/0.3.0
 id: lite
-version: "0.2.0"
-description: "Fast personal delivery with implementation, bounded verification, and a Delivery Dossier."
+version: "0.3.0"
+assurance: {policy: dev-flow-assurance-policy/0.3.0, profile: lite}
+description: "Fast personal delivery with bounded impact, implementation, adaptive assurance, and a Delivery Dossier."
 entry: preflight
-revision_target: implement
+revision_target: impact
 
 nodes:
   preflight:
     action_id: task.preflight
     handler: preflight
-    target: {node: implement, status: IMPLEMENTING}
+    target: {node: impact, status: ANALYZING}
     effect: git.inspect-repository
     artifact:
       type: repository-baseline
       workspace: produces-source
       inputs: []
+
+  impact:
+    action_id: impact.record
+    handler: artifact.record
+    target: {node: implement, status: IMPLEMENTING}
+    payload: {summary: string, driver_result: object}
+    artifact:
+      type: impact-report
+      workspace: context
+      inputs: [{type: repository-baseline, edge: governing}]
+    driver:
+      tool: codebase-memory
+      optional: true
+      fallback: "Inspect the bounded source slice directly and record degraded confidence when source closure cannot be confirmed."
+      produces: impact-report
 
   implement:
     action_id: implementation.record
@@ -24,13 +40,15 @@ nodes:
     artifact:
       type: implementation
       workspace: produces-source
-      inputs: [{type: repository-baseline, edge: source-predecessor}]
+      inputs:
+        - {type: repository-baseline, edge: source-predecessor}
+        - {type: impact-report, edge: governing}
 
   verify:
-    action_id: verification.record
-    handler: verification.record
+    action_id: assurance.execute
+    handler: assurance.dispatch
     target: {node: finalize_success, status: FINALIZING}
-    payload: {passed: boolean, command: string, coverage: object, summary: string}
+    payload: {summary: string, assurance_result: object}
     artifact:
       type: verification-result
       workspace: verifies-source
@@ -79,7 +97,7 @@ nodes:
   cancelled: {terminal: true}
 
 cancel:
-  stages: [preflight, implement, verify, verification_rework]
+  stages: [preflight, impact, implement, verify, verification_rework]
   action_id: task.cancel
   handler: artifact.record
   target: {node: cancelled, status: CANCELLED}

@@ -66,6 +66,11 @@ def _parser() -> argparse.ArgumentParser:
     decision.add_argument("task_id")
     decision.add_argument("--decision-json", required=True)
 
+    disposition = commands.add_parser("dispose-finding")
+    disposition.add_argument("task_id")
+    disposition.add_argument("--disposition-json", required=True)
+    disposition.add_argument("--actor-authorized", action="store_true")
+
     cancel = commands.add_parser("cancel")
     cancel.add_argument("task_id")
     cancel.add_argument("--reason", required=True)
@@ -149,6 +154,19 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
             **controller.decide(
                 arguments.task_id,
                 decision=_json_object(arguments.decision_json, "--decision-json"),
+            ),
+        }
+    if arguments.command == "dispose-finding":
+        return {
+            "ok": True,
+            "command": "dispose-finding",
+            **controller.dispose_finding(
+                arguments.task_id,
+                disposition=_json_object(
+                    arguments.disposition_json,
+                    "--disposition-json",
+                ),
+                actor_authorized=arguments.actor_authorized,
             ),
         }
     if arguments.command == "cancel":

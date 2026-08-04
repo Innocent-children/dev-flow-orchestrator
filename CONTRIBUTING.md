@@ -1,8 +1,23 @@
 # Contributing
 
+For 0.3 changes, test the smallest causally affected layer first: index-exact
+snapshot behavior, capsule/lease rules, assurance policy and budgets, causal
+review, workflow dispatch, controller replay, then package and installed
+journeys. Do not add open-ended policy knobs or fixed unconditional verification
+and review loops. Every official or custom `dev-flow-workflow/0.3.0` must name
+the closed `dev-flow-assurance-policy/0.3.0`, preserve conservative unknown
+impact behavior, finite retry authority, complete criterion/change coverage,
+and deterministic incomplete finalization.
+
+Runtime code remains Python-standard-library-only. New product bounds must be
+declared in `product.py`, enforced atomically by the runtime, asserted by package
+validation, and tested at the exact limit and plus one. Review tests must keep
+pre-existing and out-of-scope observations visible without scheduling unrelated
+task rework.
+
 [简体中文](CONTRIBUTING_CN.md)
 
-Contributions preserve the 0.2.0 product contract: one task over an exact
+Contributions preserve the 0.3.0 product contract: one task over an exact
 canonical set of one to eight user-prepared local Git worktrees, one Codex
 executor, one projected action, and one controller-owned append-only ledger.
 
@@ -42,13 +57,13 @@ executor, one projected action, and one controller-owned append-only ledger.
 
 ## Module ownership
 
-- `product.py`: 0.2.0 identity vocabulary, official workflow catalog, and the
+- `product.py`: 0.3.0 identity vocabulary, official workflow catalog, and the
   authoritative repository-topology capability.
 - `model.py`: immutable task values and canonical repository membership,
   strict JSON, errors, and receipts.
 - `snapshot.py`: aggregate repository-set snapshots and nested member
   workspace snapshots, validation, lookup, and digests.
-- `workflow.py`: `dev-flow-workflow/0.2.0` contracts, stage-scoped cancellation, graph
+- `workflow.py`: `dev-flow-workflow/0.3.0` contracts, stage-scoped cancellation, graph
   validation, and selected-definition identity.
 - `delivery.py`: contracts, decisions, seals, bindings, resources, freshness,
   coverage, and dossiers.
@@ -66,7 +81,7 @@ pure domain modules.
 ## Current workflow and identity changes
 
 Official workflows are `lite`, `feature`, `bugfix`, `investigation`,
-`refactor`, and `full`. `dev-flow-workflow/0.2.0` nodes declare typed artifacts, workspace
+`refactor`, and `full`. `dev-flow-workflow/0.3.0` nodes declare typed artifacts, workspace
 roles, inputs, finite assurance rework, exhausted dossier paths, and optional-
 driver degraded/unavailable metadata. Every workflow declares a shared cancel
 action with explicit `cancel.stages`; official definitions cover the normal
@@ -80,10 +95,10 @@ selector, schema, and canonical document. Any change to these current
 authorities must update the corresponding product contract and focused proof.
 
 Repository topology is selected independently of the official workflow. Every
-cardinality uses `dev-flow-agent/0.2.0`, an exact
-`dev-flow-repository-set-snapshot/0.2.0`, required `repository_id` resources,
+cardinality uses `dev-flow-agent/0.3.0`, an exact
+`dev-flow-repository-set-snapshot/0.3.0`, required `repository_id` resources,
 structured `criteria`/`repositories`/`integration` verification, aggregate
-freshness/review, and Delivery Dossier 0.2.0.
+freshness/review, and Delivery Dossier 0.3.0.
 
 ## Validation
 
@@ -115,7 +130,7 @@ python3 -I -S scripts/validate_package.py
 python3 -m json.tool .codex-plugin/plugin.json
 ```
 
-Choose only the applicable commands from the 0.2.0 focused CI matrix. Validate
+Choose only the applicable commands from the 0.3.0 focused CI matrix. Validate
 the active OpenSpec change with its current CLI instructions.
 
 Validate every bundled Skill after editing it:

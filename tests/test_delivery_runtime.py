@@ -26,12 +26,15 @@ from dev_flow_orchestrator.delivery import (
 )
 from dev_flow_orchestrator.model import DevFlowError, json_value
 from dev_flow_orchestrator.product import (
+    ASSURANCE_EXECUTION_SCHEMA,
     DRIVER_RESULT_SCHEMA,
+    TASK_CHANGE_CLAIMS_SCHEMA,
     VERIFICATION_COVERAGE_SCHEMA,
 )
 from dev_flow_orchestrator.snapshot import repository_snapshot
+from dev_flow_orchestrator.review import finding_template
 from dev_flow_orchestrator.yaml_subset import load as load_yaml_subset
-from support import RepositoryTestCase
+from support import RepositoryTestCase, make_repository
 
 
 def revised_contract(revision: int, criterion: str = "revised") -> dict:
@@ -61,15 +64,119 @@ def driver_result(status: str, **details: object) -> dict:
 class DeliveryRuntimeTests(RepositoryTestCase):
     def apply_current(self, task_id: str, payload: dict) -> dict:
         projection = self.controller.next(task_id)
+        action = projection["action"]
+        obligation = action.get("current_obligation")
+        if isinstance(obligation, Mapping):
+            passed = payload.get("passed")
+            if obligation["kind"] == "independent-review":
+                outcome = payload.get("outcome", "approved")
+                assurance = payload.get("assurance", "independent")
+                review_contract = action["review_contract"]
+                findings = []
+                if outcome == "changes-requested":
+                    slice_item = obligation["task_change_slice"][0]
+                    body = {
+                        "schema": "dev-flow-review-finding/0.3.0",
+                        "severity": "high",
+                        "blocking": True,
+                        "causal_relation": "introduced",
+                        "criterion_ids": obligation["criterion_ids"],
+                        "repository_id": slice_item["repository_id"],
+                        "path": slice_item["path"],
+                        "symbol": None,
+                        "location_label": None,
+                        "evidence": [{"kind": "source", "reference": slice_item["path"], "summary": "test finding", "source_confirmed": True}],
+                        "causal_manifest_entries": [],
+                        "causal_path": [],
+                        "smallest_sufficient_resolution": "Repair the introduced behavior",
+                        "reviewer_assurance": "independent",
+                        "limitations": [],
+                        "task_id": task_id,
+                        "contract_digest": review_contract["contract_digest"],
+                        "plan_digest": action["assurance"]["plan_digest"],
+                        "manifest_digest": review_contract["manifest_digest"],
+                        "review_scope_digest": review_contract["review_scope_digest"],
+                        "guidance_digest": review_contract["guidance_digest"],
+                        "reviewer_digest": "a" * 64,
+                        "workspace_digest": review_contract["workspace_digest"],
+                    }
+                    findings = [finding_template(body)]
+                passed = outcome == "approved" and assurance == "independent"
+                review = {
+                    "reviewer_available": outcome != "unavailable",
+                    "independent": assurance == "independent",
+                    "reviewer_digest": "a" * 64,
+                    "review_scope_digest": review_contract["review_scope_digest"],
+                    "guidance_digest": review_contract["guidance_digest"],
+                    "workspace_digest": review_contract["workspace_digest"],
+                    "findings": findings,
+                    "claimed_outcome": (
+                        "approved" if passed else
+                        "changes-requested" if outcome == "changes-requested" else
+                        "unavailable"
+                    ),
+                }
+            else:
+                review = None
+            assurance_result = {
+                "obligation_id": obligation["obligation_id"],
+                "passed": bool(passed),
+                "evidence": [{
+                    "kind": "command",
+                    "reference": str(payload.get("command", "test-evidence")),
+                    "summary": str(payload.get("summary", "assurance recorded")),
+                }],
+                "limitations": [],
+            }
+            if review is not None:
+                assurance_result["review"] = review
+                payload = {
+                    "passed": passed,
+                    "command": "independent-review",
+                    "coverage": {},
+                    "summary": str(payload.get("summary", "Review recorded")),
+                    "assurance_result": assurance_result,
+                }
+            else:
+                payload = {
+                    "summary": str(payload.get("summary", "Assurance recorded")),
+                    "assurance_result": assurance_result,
+                }
         return self.controller.apply(
             task_id,
-            projection["action"]["action_id"],
+            action["action_id"],
             payload,
-            binding=projection["action"]["binding"],
+            binding=action["binding"],
         )
 
     def preflight(self, task_id: str) -> None:
         self.apply_current(task_id, {})
+        if self.controller.show(task_id).workflow_id == "lite":
+            projection = self.controller.next(task_id)
+            self.apply_current(
+                task_id,
+                {
+                    "summary": "Bounded source impact confirmed",
+                    "driver_result": driver_result("available"),
+                    "impact_manifest": {
+                        "confidence": "source-confirmed",
+                        "entries": [{
+                            "repository_id": self.repository_id(task_id),
+                            "path": "a.txt",
+                            "symbol": None,
+                            "criterion_ids": projection["contract"]["criterion_ids"],
+                        }],
+                        "edges": [],
+                        "risk_triggers": [],
+                        "public_behavior": False,
+                        "documentation_required": False,
+                        "manual_evidence_required": False,
+                        "executable_reproduction_required": True,
+                        "overflow": False,
+                        "limitations": [],
+                    },
+                },
+            )
 
     def repository_id(self, task_id: str) -> str:
         state = self.controller.show(task_id)
@@ -117,10 +224,36 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             ]
         }
 
+    def ownership_claims(self, task_id: str, paths: list[str]) -> dict:
+        projection = self.controller.next(task_id)
+        return {
+            "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+            "claims": [{
+                "repository_id": self.repository_id(task_id),
+                "path": path,
+                "classification": "documentation",
+                "criterion_ids": projection["contract"]["criterion_ids"],
+                "purpose": "Record the governing repository-backed plan",
+            } for path in sorted(paths)],
+        }
+
     def source_action(self, task_id: str, payload: dict, marker: str) -> None:
         projection = self.controller.next(task_id)
         with (self.repository / "a.txt").open("a", encoding="utf-8") as stream:
             stream.write(marker + "\n")
+        payload = {
+            **payload,
+            "ownership_claims": {
+                "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                "claims": [{
+                    "repository_id": self.repository_id(task_id),
+                    "path": "a.txt",
+                    "classification": "implementation",
+                    "criterion_ids": projection["contract"]["criterion_ids"],
+                    "purpose": "Exercise the source-producing action",
+                }],
+            },
+        }
         self.controller.apply(
             task_id,
             projection["action"]["action_id"],
@@ -129,7 +262,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         )
 
     def state_path(self, task_id: str) -> Path:
-        return Path(self.data_dir) / "tasks" / task_id / "state.json"
+        return (
+            Path(self.data_dir)
+            / product_module.PLUGIN_DATA_NAMESPACE
+            / "tasks"
+            / task_id
+            / "state.json"
+        )
 
     def decision(
         self,
@@ -208,7 +347,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         document["description"] = description
         path.write_text(json.dumps(document), encoding="utf-8")
 
-    def test_current_driver_and_coverage_schemas_succeed_and_are_recorded(self) -> None:
+    def test_current_driver_and_assurance_schemas_succeed_and_are_recorded(self) -> None:
         driver_task_id = self.start_feature("Record the current driver schema")
         self.preflight(driver_task_id)
         driver_apply = self.apply_current(
@@ -228,6 +367,9 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.assertEqual(
             driver_record["payload"]["driver_result"]["schema"],
             DRIVER_RESULT_SCHEMA,
+        )
+        self.controller.cancel(
+            driver_task_id, reason="Driver schema assertion complete"
         )
 
         coverage_task_id = self.start_lite("Record the current coverage schema")
@@ -254,12 +396,8 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             "finalize_success",
         )
         self.assertEqual(
-            verification_record["payload"]["coverage"]["schema"],
-            VERIFICATION_COVERAGE_SCHEMA,
-        )
-        self.assertEqual(
-            verification_record["artifact"]["body"]["coverage"]["schema"],
-            VERIFICATION_COVERAGE_SCHEMA,
+            verification_record["artifact"]["body"]["assurance_execution"]["schema"],
+            ASSURANCE_EXECUTION_SCHEMA,
         )
 
     def test_driver_result_missing_or_unsupported_schema_fails_atomically(self) -> None:
@@ -673,6 +811,13 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 "summary": "Plan recorded",
                 "resources": resources,
                 "driver_result": driver_result("available", change="feature"),
+                "ownership_claims": self.ownership_claims(
+                    task_id,
+                    [
+                        "openspec/changes/feature/proposal.md",
+                        "openspec/changes/feature/tasks.md",
+                    ],
+                ),
             },
             binding=planning["action"]["binding"],
         )
@@ -1060,6 +1205,9 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 "summary": "Plan",
                 "resources": resources,
                 "driver_result": driver_result("degraded"),
+                "ownership_claims": self.ownership_claims(
+                    task_id, ["plan.md", "tasks.md"]
+                ),
             },
             binding=projection["action"]["binding"],
         )
@@ -1174,6 +1322,9 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 "summary": "C1 plan",
                 "resources": resources,
                 "driver_result": driver_result("available", change="c1"),
+                "ownership_claims": self.ownership_claims(
+                    task_id, ["plan.md", "tasks.md"]
+                ),
             },
             binding=first_planning["action"]["binding"],
         )
@@ -1364,7 +1515,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
     def test_record_tamper_fails_closed_on_restart(self) -> None:
         task_id = self.start_lite()
         self.preflight(task_id)
-        state_path = Path(self.data_dir) / "tasks" / task_id / "state.json"
+        state_path = self.state_path(task_id)
         value = json.loads(state_path.read_text(encoding="utf-8"))
         value["records"][0]["transition"]["to"] = "done"
         state_path.write_text(json.dumps(value), encoding="utf-8")
@@ -1556,12 +1707,18 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             workflow=str(workflow_a),
             repositories=(str(self.repository),),
         ).task_id
+        repository_b = make_repository(self.root, "workflow-b-repository")
         task_b = self.controller.start(
             requirement="Pinned workflow B",
             workflow=str(workflow_b),
-            repositories=(str(self.repository),),
+            repositories=(str(repository_b),),
         ).task_id
-        task_c = self.start_lite("Unaffected built-in task")
+        repository_c = make_repository(self.root, "workflow-c-repository")
+        task_c = self.controller.start(
+            requirement="Unaffected built-in task",
+            workflow="lite",
+            repositories=(str(repository_c),),
+        ).task_id
         for task_id in (task_a, task_b, task_c):
             self.preflight(task_id)
 

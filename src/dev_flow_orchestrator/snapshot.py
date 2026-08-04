@@ -17,6 +17,9 @@ from .model import (
     validate_repositories,
 )
 from .product import (
+    MAX_INDEX_COMMAND_OUTPUT_BYTES,
+    MAX_INDEX_STAGE_ENTRIES,
+    MAX_SNAPSHOT_PATHS,
     OPENSPEC_TASKS_NORMALIZER,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     WORKSPACE_SNAPSHOT_SCHEMA,
@@ -25,7 +28,6 @@ from .product import (
 
 
 MAX_GIT_OUTPUT_BYTES = 1024 * 1024
-MAX_SNAPSHOT_PATHS = 4096
 MAX_SNAPSHOT_PATH_BYTES = 64 * 1024
 MAX_SNAPSHOT_RESOURCES = 64
 MAX_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
@@ -36,15 +38,18 @@ _REPOSITORY_SET_SNAPSHOT_DOMAIN = product_domain("repository-set-snapshot")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _MODE = re.compile(r"^[0-7]{6}$")
+_INDEX_ENTRY_FIELDS = {"mode", "oid", "stage"}
 _ENTRY_FIELDS = {
-    "path", "kind", "mode", "size", "content_sha256", "index_oid", "submodule_head",
+    "path", "kind", "mode", "size", "content_sha256", "index_entries", "submodule_head",
 }
 _RESOURCE_FIELDS = {
     "path", "role", "normalizer", "kind", "raw_sha256", "semantic_sha256",
 }
 _SNAPSHOT_FIELDS = {
-    "schema", "repository_root", "git_common_dir", "head", "branch", "clean",
-    "status_sha256", "status_bytes", "entries", "resources", "digest",
+    "schema", "repository_root", "git_worktree_dir", "git_common_dir",
+    "object_format", "head", "branch", "clean", "status_sha256", "status_bytes",
+    "index_entry_count", "index_output_bytes", "has_unmerged_entries",
+    "entries", "resources", "digest",
 }
 _REPOSITORY_SET_SNAPSHOT_FIELDS = {
     "schema", "repository_set_id", "repositories", "digest",
@@ -98,7 +103,7 @@ def validate_snapshot(value: object) -> dict:
     digest = plain.pop("digest", None)
     if plain.get("schema") != WORKSPACE_SNAPSHOT_SCHEMA:
         raise _error("SNAPSHOT_INVALID", "workspace snapshot schema is invalid")
-    for field in ("repository_root", "git_common_dir"):
+    for field in ("repository_root", "git_worktree_dir", "git_common_dir"):
         item = plain.get(field)
         if (
             not isinstance(item, str)
@@ -113,11 +118,19 @@ def validate_snapshot(value: object) -> dict:
             raise _error(
                 "SNAPSHOT_INVALID", "workspace snapshot path is not UTF-8", field=field,
             ) from exc
+    object_format = plain.get("object_format")
+    if object_format not in ("sha1", "sha256"):
+        raise _error("SNAPSHOT_INVALID", "workspace snapshot object format is invalid")
+    oid_length = 40 if object_format == "sha1" else 64
     head = plain.get("head")
     branch = plain.get("branch")
     status_sha256 = plain.get("status_sha256")
     status_bytes = plain.get("status_bytes")
-    if not isinstance(head, str) or not _OBJECT_ID.fullmatch(head):
+    if (
+        not isinstance(head, str)
+        or len(head) != oid_length
+        or not _OBJECT_ID.fullmatch(head)
+    ):
         raise _error("SNAPSHOT_INVALID", "workspace snapshot HEAD is invalid")
     if branch is not None and (not isinstance(branch, str) or not branch):
         raise _error("SNAPSHOT_INVALID", "workspace snapshot branch is invalid")
@@ -140,12 +153,30 @@ def validate_snapshot(value: object) -> dict:
     ):
         raise _error("SNAPSHOT_INVALID", "workspace snapshot status metadata is invalid")
 
+    index_entry_count = plain.get("index_entry_count")
+    index_output_bytes = plain.get("index_output_bytes")
+    has_unmerged_entries = plain.get("has_unmerged_entries")
+    if (
+        isinstance(index_entry_count, bool)
+        or not isinstance(index_entry_count, int)
+        or index_entry_count < 0
+        or index_entry_count > MAX_INDEX_STAGE_ENTRIES
+        or isinstance(index_output_bytes, bool)
+        or not isinstance(index_output_bytes, int)
+        or index_output_bytes < 0
+        or index_output_bytes > MAX_INDEX_COMMAND_OUTPUT_BYTES
+        or not isinstance(has_unmerged_entries, bool)
+    ):
+        raise _error("SNAPSHOT_INVALID", "workspace snapshot index metadata is invalid")
+
     entries = plain.get("entries")
     if not isinstance(entries, list) or len(entries) > MAX_SNAPSHOT_PATHS:
         raise _error("SNAPSHOT_INVALID", "workspace snapshot entries are invalid")
     seen_paths = set()
     path_bytes = 0
     content_bytes = 0
+    observed_index_count = 0
+    observed_unmerged = False
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != _ENTRY_FIELDS:
             raise _error("SNAPSHOT_INVALID", "workspace snapshot entry fields are invalid")
@@ -154,7 +185,7 @@ def validate_snapshot(value: object) -> dict:
         mode = entry.get("mode")
         size = entry.get("size")
         content = entry.get("content_sha256")
-        index_oid = entry.get("index_oid")
+        index_entries = entry.get("index_entries")
         submodule_head = entry.get("submodule_head")
         if not valid_relative_path(path) or path in seen_paths:
             raise _error("SNAPSHOT_INVALID", "workspace snapshot entry path is invalid")
@@ -169,13 +200,43 @@ def validate_snapshot(value: object) -> dict:
             or size > MAX_SNAPSHOT_FILE_BYTES
         ):
             raise _error("SNAPSHOT_INVALID", "workspace snapshot entry size is invalid")
+        if not isinstance(index_entries, list):
+            raise _error("SNAPSHOT_INVALID", "workspace snapshot index entries are invalid")
+        canonical_index_entries = []
+        seen_stages = set()
+        for index_entry in index_entries:
+            if not isinstance(index_entry, dict) or set(index_entry) != _INDEX_ENTRY_FIELDS:
+                raise _error("SNAPSHOT_INVALID", "workspace snapshot index entry fields are invalid")
+            index_mode = index_entry.get("mode")
+            index_oid = index_entry.get("oid")
+            index_stage = index_entry.get("stage")
+            if (
+                not isinstance(index_mode, str)
+                or not _MODE.fullmatch(index_mode)
+                or not isinstance(index_oid, str)
+                or len(index_oid) != oid_length
+                or not _OBJECT_ID.fullmatch(index_oid)
+                or isinstance(index_stage, bool)
+                or not isinstance(index_stage, int)
+                or index_stage not in (0, 1, 2, 3)
+                or index_stage in seen_stages
+            ):
+                raise _error("SNAPSHOT_INVALID", "workspace snapshot index entry is invalid")
+            seen_stages.add(index_stage)
+            observed_unmerged = observed_unmerged or index_stage != 0
+            canonical_index_entries.append(index_entry)
+        if index_entries != sorted(
+            canonical_index_entries,
+            key=lambda item: (item["stage"], item["mode"], item["oid"]),
+        ):
+            raise _error("SNAPSHOT_INVALID", "workspace snapshot index entries are not canonical")
+        observed_index_count += len(index_entries)
         if kind in ("regular", "symlink"):
             if (
                 not isinstance(mode, str)
                 or not _MODE.fullmatch(mode)
                 or not isinstance(content, str)
                 or not _SHA256.fullmatch(content)
-                or index_oid is not None
                 or submodule_head is not None
             ):
                 raise _error("SNAPSHOT_INVALID", "workspace snapshot file entry is invalid")
@@ -185,19 +246,26 @@ def validate_snapshot(value: object) -> dict:
                 mode != "160000"
                 or size != 0
                 or content is not None
-                or not isinstance(index_oid, str)
-                or not _OBJECT_ID.fullmatch(index_oid)
+                or not any(item["mode"] == "160000" for item in index_entries)
                 or not isinstance(submodule_head, str)
+                or len(submodule_head) != oid_length
                 or not _OBJECT_ID.fullmatch(submodule_head)
             ):
                 raise _error("SNAPSHOT_INVALID", "workspace snapshot gitlink entry is invalid")
-            content_bytes += len(b"gitlink\x00") + len(index_oid) + 1 + len(submodule_head)
-        elif any(item is not None for item in (mode, content, index_oid, submodule_head)) or size != 0:
+            content_bytes += len(b"gitlink\x00") + sum(
+                len(item["mode"]) + len(item["oid"]) + 2 for item in index_entries
+            ) + len(submodule_head)
+        elif any(item is not None for item in (mode, content, submodule_head)) or size != 0:
             raise _error("SNAPSHOT_INVALID", "workspace snapshot missing entry is invalid")
     if path_bytes > MAX_SNAPSHOT_PATH_BYTES or content_bytes > MAX_SNAPSHOT_CONTENT_BYTES:
         raise _error("SNAPSHOT_INVALID", "workspace snapshot exceeds canonical budgets")
     if entries != sorted(entries, key=lambda item: path_key(item["path"])):
         raise _error("SNAPSHOT_INVALID", "workspace snapshot entries are not canonical")
+    if (
+        observed_index_count != index_entry_count
+        or observed_unmerged != has_unmerged_entries
+    ):
+        raise _error("SNAPSHOT_INVALID", "workspace snapshot index summary is inconsistent")
 
     resources = plain.get("resources")
     if not isinstance(resources, list) or len(resources) > MAX_SNAPSHOT_RESOURCES:
@@ -293,6 +361,18 @@ def validate_repository_set_snapshot(
                 repository_id=repository.repository_id,
                 repository_root=member_snapshot["repository_root"],
                 expected_repository_root=repository.path,
+            )
+        if member_snapshot["git_worktree_dir"] != repository.git_worktree_dir:
+            raise _error(
+                "SNAPSHOT_INVALID",
+                "repository-set member worktree Git directory does not match task membership",
+                repository_id=repository.repository_id,
+            )
+        if member_snapshot["git_common_dir"] != repository.git_common_dir:
+            raise _error(
+                "SNAPSHOT_INVALID",
+                "repository-set member Git common directory does not match task membership",
+                repository_id=repository.repository_id,
             )
         git_common_dir = member_snapshot["git_common_dir"]
         if git_common_dir in git_common_dirs:

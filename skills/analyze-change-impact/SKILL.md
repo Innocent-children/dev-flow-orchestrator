@@ -1,16 +1,24 @@
 ---
 name: analyze-change-impact
-description: Produce a bounded, read-only 0.2.0 change-impact artifact for an exact set of one to eight repositories, with per-member phase-selected codebase-memory evidence, distinct baseline and current-workspace project IDs, cross-repository impact, and direct source confirmation. Use for impact, diagnosis, or structural-analysis workflow stages before implementation.
+description: Produce a bounded, read-only 0.3.0 change-impact artifact for an exact set of one to eight repositories, with per-member phase-selected codebase-memory evidence, a bounded impact closure, closed risk triggers, and direct source confirmation. Use for impact, diagnosis, or structural-analysis workflow stages before implementation or assurance replanning.
 ---
 
 # Analyze Change Impact
+
+Return a bounded closure with at most 128 entries, deterministic repository/path/
+symbol identity, affected cross-repository edges, the closed risk-trigger IDs,
+public/documentation/manual/regression flags, limitations, and one confidence.
+Use `source-confirmed` only when every material conclusion is confirmed in the
+bound source. Normalize degraded, partial, stale, overflowed, or otherwise
+uncertain analysis to `unknown` and explicitly request conservative assurance;
+never truncate a closure and label it focused.
 
 Produce one source-confirmed impact report. Do not modify source, OpenSpec,
 Git state, controller state, or task evidence.
 
 ## Bind the analysis input
 
-Read the current 0.2.0 projection or supplied review packet and retain:
+Read the current 0.3.0 projection or supplied review packet and retain:
 
 - task ID, workflow ID, node ID, and analysis `phase`;
 - effective contract revision/digest and acceptance IDs;
@@ -74,12 +82,12 @@ inside `driver_result.details`:
 
 ```json
 {
-  "schema": "dev-flow-driver-result/0.2.0",
+  "schema": "dev-flow-driver-result/0.3.0",
   "tool": "codebase-memory",
   "status": "available",
   "phase": "impact",
   "details": {
-    "schema": "dev-flow-impact-report/0.2.0",
+    "schema": "dev-flow-impact-report/0.3.0",
     "status": "available",
     "phase": "impact",
     "contract_digest": "<sha256>",

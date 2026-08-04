@@ -21,7 +21,7 @@ import tempfile
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-PRODUCT_VERSION = "0.2.0"
+PRODUCT_VERSION = "0.3.0"
 
 
 def _product_schema(kind: str) -> str:
@@ -37,6 +37,7 @@ VERIFICATION_COVERAGE_SCHEMA = _product_schema("verification-coverage")
 DELIVERY_DOSSIER_SCHEMA = _product_schema("delivery-dossier")
 WORKFLOW_SCHEMA = _product_schema("workflow")
 TREE_SNAPSHOT_SCHEMA = _product_schema("tree-snapshot")
+TASK_CHANGE_CLAIMS_SCHEMA = _product_schema("task-change-claims")
 OPENSPEC_TASKS_NORMALIZER = "openspec-tasks/{}".format(PRODUCT_VERSION)
 OFFICIAL_WORKFLOWS = (
     "bugfix",
@@ -1024,6 +1025,45 @@ class Stage1Acceptance:
                     resource_version,
                     repository_id=repository_id,
                 )
+            elif field == "assurance_result":
+                obligation = action.get("current_obligation")
+                _require(
+                    isinstance(obligation, Mapping)
+                    and isinstance(obligation.get("obligation_id"), str),
+                    "{} assurance action has no current obligation".format(task_id),
+                )
+                assurance_passed = passed
+                result = {
+                    "obligation_id": obligation["obligation_id"],
+                    "passed": assurance_passed,
+                    "evidence": [{
+                        "kind": "installed-command",
+                        "reference": integration_command,
+                        "summary": "Installed controller assurance simulation completed",
+                    }],
+                    "limitations": [],
+                }
+                if obligation.get("kind") == "independent-review":
+                    review_contract = action.get("review_contract")
+                    _require(
+                        isinstance(review_contract, Mapping),
+                        "{} review action has no review contract".format(task_id),
+                    )
+                    assurance_passed = passed and not review_unavailable
+                    result["passed"] = assurance_passed
+                    result["review"] = {
+                        "reviewer_available": not review_unavailable,
+                        "independent": not review_unavailable,
+                        "reviewer_digest": "a" * 64,
+                        "review_scope_digest": review_contract.get("review_scope_digest"),
+                        "guidance_digest": review_contract.get("guidance_digest"),
+                        "workspace_digest": review_contract.get("workspace_digest"),
+                        "findings": [],
+                        "claimed_outcome": (
+                            "approved" if assurance_passed else "unavailable"
+                        ),
+                    }
+                payload[field] = result
             elif field == "evidence":
                 payload[field] = {"finding": "installed behavior confirmed"}
             elif field == "passed":
@@ -1094,6 +1134,64 @@ class Stage1Acceptance:
             source_paths.append(
                 self._append_source(repository, task_id, str(action.get("node_id")))
             )
+            resources = payload.get("resources")
+            resource_items = (
+                resources.get("items") if isinstance(resources, Mapping) else None
+            )
+            if isinstance(resource_items, list):
+                source_paths.extend(
+                    str(item["path"])
+                    for item in resource_items
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("path"), str)
+                )
+            if "ownership_claims" not in payload:
+                contract = projection.get("contract")
+                criterion_ids = (
+                    contract.get("criterion_ids")
+                    if isinstance(contract, Mapping)
+                    else None
+                )
+                _require(
+                    isinstance(criterion_ids, list) and bool(criterion_ids),
+                    "{} source action has no accepted criteria".format(task_id),
+                )
+                repository_set = projection.get("repository_set")
+                members = (
+                    repository_set.get("repositories")
+                    if isinstance(repository_set, Mapping)
+                    else None
+                )
+                repository_id = next(
+                    (
+                        str(item["id"])
+                        for item in members
+                        if isinstance(item, Mapping)
+                        and item.get("path") == str(repository)
+                        and isinstance(item.get("id"), str)
+                    ),
+                    None,
+                ) if isinstance(members, list) else None
+                _require(
+                    repository_id is not None,
+                    "{} source action has no repository identity".format(task_id),
+                )
+                payload = {
+                    **dict(payload),
+                    "ownership_claims": {
+                        "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                        "claims": [
+                            {
+                                "repository_id": repository_id,
+                                "path": path,
+                                "classification": "implementation",
+                                "criterion_ids": sorted(str(item) for item in criterion_ids),
+                                "purpose": "Exercise the installed task-owned source interval",
+                            }
+                            for path in sorted(set(source_paths))
+                        ],
+                    },
+                }
         _require(
             not (
                 workspace == "produces-source"
@@ -1226,6 +1324,10 @@ class Stage1Acceptance:
             "contract_digest": body.get("contract_digest"),
             "coverage": body.get("coverage"),
             "verification": body.get("verification"),
+            "assurance_plan": body.get("assurance_plan"),
+            "obligation_states": body.get("obligation_states"),
+            "assurance_budget": body.get("assurance_budget"),
+            "decision": body.get("decision"),
             "review": body.get("review"),
             "review_assurance": body.get("review_assurance"),
             "decisions": body.get("decisions"),
@@ -1309,6 +1411,8 @@ class Stage1Acceptance:
         self.evidence["task_ids"].append(task_id)
 
     def _driver_status(self, workflow: str, tool: object) -> str:
+        if (workflow, tool) == ("investigation", "codebase-memory"):
+            return "unavailable"
         degraded = {
             ("bugfix", "codebase-memory"),
             ("bugfix", "openspec"),
@@ -1323,11 +1427,8 @@ class Stage1Acceptance:
         task_id: str,
         repository: Path,
         workflow: str,
-        *,
-        feature_review_waiver: bool = False,
     ) -> Mapping[str, object]:
         steps = 0
-        waiver_recorded = False
         while True:
             projection, next_process = self._next(controller, task_id)
             if projection.get("done") is True:
@@ -1336,36 +1437,6 @@ class Stage1Acceptance:
             _require(steps <= 32, "{} exceeded the bounded workflow length".format(task_id))
             action = projection.get("action")
             _require(isinstance(action, Mapping), "{} action is unavailable".format(task_id))
-            review_unavailable = False
-            if (
-                feature_review_waiver
-                and action.get("handler") == "review.record"
-                and not waiver_recorded
-            ):
-                decision = {
-                    "id": "installed-review-waiver",
-                    "kind": "assurance-waiver",
-                    "subject": str(action.get("node_id")),
-                    "outcome": "waived",
-                    "rationale": (
-                        "Independent reviewer is unavailable in the installed "
-                        "one-Codex acceptance journey"
-                    ),
-                    "actor_label": "installed-acceptance",
-                }
-                _, decision_process = controller.decide(task_id, decision)
-                self.evidence["decisions"].append(
-                    {
-                        "task_id": task_id,
-                        "process_index": decision_process,
-                        "decision": decision,
-                    }
-                )
-                waiver_recorded = True
-                projection, next_process = self._next(controller, task_id, "review")
-                action = projection.get("action")
-                _require(isinstance(action, Mapping), "review action disappeared after waiver")
-                review_unavailable = True
             driver = action.get("driver")
             tool = driver.get("tool") if isinstance(driver, Mapping) else None
             payload = self._standard_payload(
@@ -1373,7 +1444,6 @@ class Stage1Acceptance:
                 repository,
                 task_id,
                 driver_status=self._driver_status(workflow, tool),
-                review_unavailable=review_unavailable,
             )
             self._apply(
                 controller,
@@ -1410,7 +1480,6 @@ class Stage1Acceptance:
                 task_id,
                 repository,
                 workflow,
-                feature_review_waiver=(workflow == "feature"),
             )
             outcome = self._inspect_terminal(
                 controller,
@@ -1419,15 +1488,6 @@ class Stage1Acceptance:
                 expected_status="DONE",
                 expected_outcome="success",
             )
-            if workflow == "feature":
-                assurance = outcome["dossier"].get("review_assurance")
-                _require(
-                    isinstance(assurance, Mapping)
-                    and assurance.get("status") == "waived"
-                    and assurance.get("remaining_risk")
-                    == "independent review assurance was explicitly waived",
-                    "feature dossier did not retain the exact assurance waiver risk",
-                )
             self.evidence["journeys"].append(
                 {
                     "name": "official-success-{}".format(workflow),
@@ -1642,24 +1702,44 @@ class Stage1Acceptance:
             == set(repository_ids),
             "aggregate dossier does not identify both exact-set members",
         )
-        verification = dossier.get("verification")
-        coverage = (
-            verification.get("coverage")
-            if isinstance(verification, Mapping)
+        assurance_plan = dossier.get("assurance_plan")
+        obligations = (
+            assurance_plan.get("obligations")
+            if isinstance(assurance_plan, Mapping)
             else None
         )
-        repository_results = (
-            coverage.get("repositories") if isinstance(coverage, Mapping) else None
-        )
-        integration = (
-            coverage.get("integration") if isinstance(coverage, Mapping) else None
-        )
+        obligation_states = dossier.get("obligation_states")
+        repository_results = {
+            str(repository_id)
+            for obligation in obligations
+            if isinstance(obligation, Mapping)
+            and obligation.get("kind") == "repository-check"
+            for repository_id in obligation.get("repository_ids", [])
+        } if isinstance(obligations, list) else set()
+        integrations = [
+            obligation
+            for obligation in obligations
+            if isinstance(obligation, Mapping)
+            and obligation.get("kind") == "integration-check"
+        ] if isinstance(obligations, list) else []
         _require(
-            isinstance(repository_results, Mapping)
-            and set(repository_results) == set(repository_ids)
-            and isinstance(integration, Mapping)
-            and verification.get("command") == integration.get("command")
-            and verification.get("passed") is True,
+            repository_results == set(repository_ids)
+            and (
+                any(
+                    set(item.get("repository_ids", [])) == set(repository_ids)
+                    for item in integrations
+                )
+                or (
+                    isinstance(assurance_plan.get("not_required"), Mapping)
+                    and assurance_plan["not_required"].get("integration") is True
+                )
+            )
+            and isinstance(obligation_states, list)
+            and all(
+                isinstance(item, Mapping)
+                and item.get("state") in ("satisfied", "reused", "waived")
+                for item in obligation_states
+            ),
             "aggregate dossier does not retain complete structured verification",
         )
         resources = dossier.get("resources")
@@ -1830,12 +1910,12 @@ class Stage1Acceptance:
         _require(
             isinstance(interrupted_task, Mapping)
             and interrupted_task.get("revision") == 1
-            and interrupted_task.get("current_node") == "implement",
+            and interrupted_task.get("current_node") == "impact",
             "restart interruption state was not durably observable",
         )
         resumed_controller = self._controller("restart-resume", repository)
         resumed_projection, resumed_process = self._next(
-            resumed_controller, task_id, "implement"
+            resumed_controller, task_id, "impact"
         )
         payload = self._standard_payload(
             resumed_projection, repository, task_id
@@ -1926,6 +2006,15 @@ class Stage1Acceptance:
         self._record_task(task_id)
         projection, process_index = self._next(controller, task_id, "preflight")
         self._apply(controller, task_id, repository, projection, process_index, {})
+        projection, process_index = self._next(controller, task_id, "impact")
+        self._apply(
+            controller,
+            task_id,
+            repository,
+            projection,
+            process_index,
+            self._standard_payload(projection, repository, task_id),
+        )
         projection, process_index = self._next(controller, task_id, "implement")
         self._apply(
             controller,
@@ -2062,6 +2151,15 @@ class Stage1Acceptance:
                 "process_index": decision_process,
                 "decision": decision,
             }
+        )
+        impact, next_process = self._next(controller, task_id, "impact")
+        self._apply(
+            controller,
+            task_id,
+            repository,
+            impact,
+            next_process,
+            self._standard_payload(impact, repository, task_id),
         )
         implement, next_process = self._next(controller, task_id, "implement")
         self._apply(
@@ -2283,23 +2381,23 @@ class Stage1Acceptance:
             process_index,
             self._standard_payload(rework, repository, task_id),
         )
-        documentation, process_index = self._next(controller, task_id, "documentation")
-        self._apply(
-            controller,
-            task_id,
-            repository,
-            documentation,
-            process_index,
-            self._standard_payload(documentation, repository, task_id),
-        )
         retry_projection, retry_process = self._next(controller, task_id, "verify")
         retry_action = retry_projection.get("action")
         retry_before_revision = (
             retry_action.get("retry_budget") if isinstance(retry_action, Mapping) else None
         )
+        assurance_before_revision = (
+            retry_action.get("assurance") if isinstance(retry_action, Mapping) else None
+        )
+        aggregate_budget = (
+            assurance_before_revision.get("budget")
+            if isinstance(assurance_before_revision, Mapping)
+            else None
+        )
         _require(
             isinstance(retry_before_revision, Mapping)
-            and retry_before_revision.get("attempts_used") == 1,
+            and isinstance(aggregate_budget, Mapping)
+            and aggregate_budget.get("used", {}).get("verification") == 1,
             "verification retry budget was not consumed before revision",
         )
 
@@ -2415,7 +2513,7 @@ class Stage1Acceptance:
             isinstance(fresh_retry_budget, Mapping)
             and fresh_retry_budget.get("attempts_used") == 0
             and fresh_retry_budget.get("remaining")
-            == fresh_retry_budget.get("max_attempts"),
+            == fresh_retry_budget.get("allowance"),
             "contract revision did not establish a fresh assurance budget",
         )
         self._apply(

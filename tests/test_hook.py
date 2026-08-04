@@ -80,6 +80,7 @@ class HookTests(RepositoryTestCase):
                 "contract",
                 "repository_set",
                 "freshness",
+                "review",
                 "action",
                 "dossier",
                 "done",
@@ -114,6 +115,12 @@ class HookTests(RepositoryTestCase):
                 "clean",
                 "status_sha256",
                 "status_bytes",
+                "object_format",
+                "index_entry_count",
+                "index_output_bytes",
+                "has_unmerged_entries",
+                "git_worktree_dir",
+                "git_common_dir",
             },
         )
         self.assertEqual(projection["action"]["action_id"], "task.preflight")
@@ -222,7 +229,13 @@ class HookTests(RepositoryTestCase):
         self.assertIn("usage: dev-flow", completed.stdout)
 
     def test_apply_patch_command_targeting_data_is_denied(self) -> None:
-        state_path = Path(self.data_dir) / "tasks" / "x" / "state.json"
+        state_path = (
+            Path(self.data_dir)
+            / PLUGIN_DATA_NAMESPACE
+            / "tasks"
+            / "x"
+            / "state.json"
+        )
         payload = {
             "hook_event_name": "PreToolUse",
             "cwd": str(self.root),
@@ -294,7 +307,13 @@ class HookTests(RepositoryTestCase):
 
     def test_guard_runs_before_corrupt_state_loading(self) -> None:
         task_id = self.start_lite()
-        state_path = Path(self.data_dir) / "tasks" / task_id / "state.json"
+        state_path = (
+            Path(self.data_dir)
+            / PLUGIN_DATA_NAMESPACE
+            / "tasks"
+            / task_id
+            / "state.json"
+        )
         state_path.write_text("{broken", encoding="utf-8")
         payload = {
             "hook_event_name": "PreToolUse",
