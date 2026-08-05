@@ -39,8 +39,10 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _MODE = re.compile(r"^[0-7]{6}$")
 _INDEX_ENTRY_FIELDS = {"mode", "oid", "stage"}
+_HEAD_ENTRY_FIELDS = {"mode", "oid"}
 _ENTRY_FIELDS = {
-    "path", "kind", "mode", "size", "content_sha256", "index_entries", "submodule_head",
+    "path", "kind", "mode", "size", "content_sha256", "worktree_oid",
+    "index_entries", "head_entry", "submodule_head",
 }
 _RESOURCE_FIELDS = {
     "path", "role", "normalizer", "kind", "raw_sha256", "semantic_sha256",
@@ -185,7 +187,9 @@ def validate_snapshot(value: object) -> dict:
         mode = entry.get("mode")
         size = entry.get("size")
         content = entry.get("content_sha256")
+        worktree_oid = entry.get("worktree_oid")
         index_entries = entry.get("index_entries")
+        head_entry = entry.get("head_entry")
         submodule_head = entry.get("submodule_head")
         if not valid_relative_path(path) or path in seen_paths:
             raise _error("SNAPSHOT_INVALID", "workspace snapshot entry path is invalid")
@@ -230,6 +234,19 @@ def validate_snapshot(value: object) -> dict:
             key=lambda item: (item["stage"], item["mode"], item["oid"]),
         ):
             raise _error("SNAPSHOT_INVALID", "workspace snapshot index entries are not canonical")
+        if head_entry is not None:
+            if not isinstance(head_entry, dict) or set(head_entry) != _HEAD_ENTRY_FIELDS:
+                raise _error("SNAPSHOT_INVALID", "workspace snapshot HEAD entry is invalid")
+            head_mode = head_entry.get("mode")
+            head_oid = head_entry.get("oid")
+            if (
+                not isinstance(head_mode, str)
+                or not _MODE.fullmatch(head_mode)
+                or not isinstance(head_oid, str)
+                or len(head_oid) != oid_length
+                or not _OBJECT_ID.fullmatch(head_oid)
+            ):
+                raise _error("SNAPSHOT_INVALID", "workspace snapshot HEAD entry is invalid")
         observed_index_count += len(index_entries)
         if kind in ("regular", "symlink"):
             if (
@@ -237,6 +254,9 @@ def validate_snapshot(value: object) -> dict:
                 or not _MODE.fullmatch(mode)
                 or not isinstance(content, str)
                 or not _SHA256.fullmatch(content)
+                or not isinstance(worktree_oid, str)
+                or len(worktree_oid) != oid_length
+                or not _OBJECT_ID.fullmatch(worktree_oid)
                 or submodule_head is not None
             ):
                 raise _error("SNAPSHOT_INVALID", "workspace snapshot file entry is invalid")
@@ -250,12 +270,16 @@ def validate_snapshot(value: object) -> dict:
                 or not isinstance(submodule_head, str)
                 or len(submodule_head) != oid_length
                 or not _OBJECT_ID.fullmatch(submodule_head)
+                or worktree_oid != submodule_head
             ):
                 raise _error("SNAPSHOT_INVALID", "workspace snapshot gitlink entry is invalid")
             content_bytes += len(b"gitlink\x00") + sum(
                 len(item["mode"]) + len(item["oid"]) + 2 for item in index_entries
             ) + len(submodule_head)
-        elif any(item is not None for item in (mode, content, submodule_head)) or size != 0:
+        elif any(
+            item is not None
+            for item in (mode, content, worktree_oid, submodule_head)
+        ) or size != 0:
             raise _error("SNAPSHOT_INVALID", "workspace snapshot missing entry is invalid")
     if path_bytes > MAX_SNAPSHOT_PATH_BYTES or content_bytes > MAX_SNAPSHOT_CONTENT_BYTES:
         raise _error("SNAPSHOT_INVALID", "workspace snapshot exceeds canonical budgets")

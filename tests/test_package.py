@@ -198,7 +198,7 @@ class PackageValidationTests(unittest.TestCase):
         workflow = self.candidate / "workflows" / "lite.yaml"
         original = workflow.read_text(encoding="utf-8")
         changed = original.replace(
-            "  stages: [preflight, implement, verify, verification_rework]\n",
+            "  stages: [preflight, impact, implement, verify, verification_rework]\n",
             "  stages: [preflight, finalize_success]\n",
             1,
         )

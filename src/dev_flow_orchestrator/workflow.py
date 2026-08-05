@@ -397,7 +397,9 @@ def _artifact_contract(
             )
         input_type = item.get("type")
         edge = item.get("edge")
-        if not _valid_identifier(input_type):
+        if not _valid_identifier(input_type) and not (
+            input_type == "*" and edge == "source-predecessor"
+        ):
             raise _node_spec_error(
                 source, node_id, "artifact input.type must be an identifier"
             )

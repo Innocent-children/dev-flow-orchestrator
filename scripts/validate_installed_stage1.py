@@ -775,6 +775,7 @@ class InstalledController:
         self,
         task_id: str,
         contract: Mapping[str, object],
+        ownership_claims: Mapping[str, object],
         reason: str,
         actor_label: str,
     ) -> Tuple[dict, int]:
@@ -784,6 +785,8 @@ class InstalledController:
                 task_id,
                 "--contract-json",
                 _json_text(contract),
+                "--ownership-claims-json",
+                _json_text(ownership_claims),
                 "--reason",
                 reason,
                 "--actor-label",
@@ -1266,6 +1269,33 @@ class Stage1Acceptance:
             if isinstance(artifact, Mapping) and artifact.get("type") == artifact_type:
                 return {"record": dict(record), "artifact": dict(artifact)}
         raise AcceptanceFailure("task has no {} artifact".format(artifact_type))
+
+    def _revision_claims(
+        self,
+        task: Mapping[str, object],
+        criterion_id: str,
+    ) -> dict:
+        records = task.get("records")
+        _require(isinstance(records, list), "task record ledger is unavailable")
+        manifest = None
+        for record in reversed(records):
+            artifact = record.get("artifact") if isinstance(record, Mapping) else None
+            body = artifact.get("body") if isinstance(artifact, Mapping) else None
+            candidate = body.get("task_change_manifest") if isinstance(body, Mapping) else None
+            if isinstance(candidate, Mapping):
+                manifest = candidate
+                break
+        _require(isinstance(manifest, Mapping), "current task-change manifest is unavailable")
+        return {
+            "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+            "claims": [{
+                "repository_id": entry.get("repository_id"),
+                "path": entry.get("path"),
+                "classification": entry.get("classification"),
+                "criterion_ids": [criterion_id],
+                "purpose": "Reconcile installed journey ownership to the revised contract",
+            } for entry in manifest.get("entries", ()) if isinstance(entry, Mapping)],
+        }
 
     def _baseline_summary(self, pair: Mapping[str, object]) -> dict:
         record = pair["record"]
@@ -2438,9 +2468,16 @@ class Stage1Acceptance:
             "non_goals": [],
             "open_questions": [],
         }
+        before_revision_response, _ = controller.show(task_id)
+        before_revision_task = before_revision_response.get("task")
+        _require(
+            isinstance(before_revision_task, Mapping),
+            "pre-revision task view is unavailable",
+        )
         revised, revision_process = controller.revise(
             task_id,
             revised_contract,
+            self._revision_claims(before_revision_task, "requirement"),
             "Governing OpenSpec obligation changed",
             "installed-acceptance",
         )

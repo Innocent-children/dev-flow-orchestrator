@@ -95,7 +95,7 @@ nodes:
       type: implementation
       workspace: produces-source
       inputs:
-        - {type: documentation, edge: source-predecessor}
+        - {type: "*", edge: source-predecessor}
         - {type: verification-result, edge: causal}
         - {type: bugfix-plan, edge: governing}
 

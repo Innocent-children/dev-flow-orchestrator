@@ -202,8 +202,17 @@ def validate_finding(
             "evidence": _text(item.get("evidence"), "causal path evidence"),
             "source_confirmed": item["source_confirmed"],
         })
-    if relation == "introduced" and (repository_id, path) not in manifest_keys:
-        raise _error("REVIEW_FINDING_INVALID", "introduced finding is not in the task manifest")
+    if relation == "introduced" and (
+        (repository_id, path) not in manifest_keys
+        or {(
+            item["repository_id"], item["path"]
+        ) for item in normalized_causal_entries}
+        != {(repository_id, path)}
+    ):
+        raise _error(
+            "REVIEW_FINDING_INVALID",
+            "introduced finding must bind its exact task manifest entry",
+        )
     if relation == "affected" and (
         not normalized_causal_entries
         or not normalized_causal_path

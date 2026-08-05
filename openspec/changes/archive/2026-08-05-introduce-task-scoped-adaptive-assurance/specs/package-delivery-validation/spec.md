@@ -74,6 +74,18 @@ Candidate validation SHALL require exact version 0.3.0 in plugin manifest, packa
 - **WHEN** the candidate advertises task-scoped adaptive assurance but any runtime, CLI, workflow, Hook, Skill, Dossier, or installed journey retains fixed aggregate-only behavior
 - **THEN** candidate validation fails
 
+#### Scenario: Unsupported later-stage capability is claimed
+- **WHEN** candidate assets claim automatic branch/worktree management, parallel repository executors, per-repository partial assurance reuse, or external CI/PR/release orchestration
+- **THEN** candidate validation fails because those capabilities are outside the multi-repository personal delivery core
+
+#### Scenario: Installed exact-set journey succeeds
+- **WHEN** the installed candidate executes a task over two user-prepared worktrees, resumes it from the second repository, verifies current aggregate evidence, and finalizes delivery
+- **THEN** the recorded dossier identifies both repositories and candidate validation accepts the journey
+
+#### Scenario: Installed one-member journey succeeds
+- **WHEN** the installed candidate executes and finalizes a task with one `--repo` argument
+- **THEN** its snapshot, projection, structured verification, scoped resources, and Dossier use the same current repository-set schemas as the larger-set journey
+
 #### Scenario: Embedded current-product schema is missing or unsupported
 - **WHEN** an action submits a manifest, plan, verification, review, finding, driver, or decision value without its exact current schema and binding
 - **THEN** action validation fails without recording a partial result

@@ -24,6 +24,7 @@ from dev_flow_orchestrator.model import DevFlowError, json_value
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     DELIVERY_DOSSIER_SCHEMA,
+    DRIVER_RESULT_SCHEMA,
     PLUGIN_DATA_NAMESPACE,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     VERIFICATION_COVERAGE_SCHEMA,
@@ -75,11 +76,41 @@ class MultiRepositoryControllerTests(unittest.TestCase):
 
     def apply_current(self, task_id: str, payload: dict) -> dict:
         projection = self.controller.next(task_id)
+        action = projection["action"]
+        obligation = action.get("current_obligation")
+        if isinstance(obligation, dict):
+            result = {
+                "obligation_id": obligation["obligation_id"],
+                "passed": bool(payload.get("passed", True)),
+                "evidence": [{
+                    "kind": "command",
+                    "reference": str(payload.get("command", "repository-set-check")),
+                    "summary": str(payload.get("summary", "Assurance recorded")),
+                }],
+                "limitations": [],
+            }
+            if obligation["kind"] == "independent-review":
+                review = action["review_contract"]
+                result["review"] = {
+                    "reviewer_available": True,
+                    "independent": True,
+                    "reviewer_digest": "a" * 64,
+                    "review_scope_digest": review["review_scope_digest"],
+                    "guidance_digest": review["guidance_digest"],
+                    "workspace_digest": review["workspace_digest"],
+                    "findings": [],
+                    "claimed_outcome": "approved",
+                }
+                result["passed"] = True
+            payload = {
+                "summary": str(payload.get("summary", "Assurance recorded")),
+                "assurance_result": result,
+            }
         return self.controller.apply(
             task_id,
-            projection["action"]["action_id"],
+            action["action_id"],
             payload,
-            binding=projection["action"]["binding"],
+            binding=action["binding"],
         )
 
     @staticmethod
@@ -411,6 +442,16 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         self.apply_current(state.task_id, {})
         self.apply_current(
             state.task_id,
+            {
+                "summary": "Repository-set impact recorded",
+                "driver_result": {
+                    "schema": DRIVER_RESULT_SCHEMA,
+                    "status": "degraded",
+                },
+            },
+        )
+        self.apply_current(
+            state.task_id,
             {"summary": "Implemented the repository set"},
         )
 
@@ -419,15 +460,16 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         repository_ids = [
             repository.repository_id for repository in state.repositories
         ]
-        self.assertEqual(
-            verification["action"]["verification_coverage"]["repository_ids"],
-            repository_ids,
-        )
         command = "python3 -m unittest repository-set"
-        self.apply_current(
-            state.task_id,
-            self.passing_verification(state, command),
-        )
+        targeted = set()
+        while self.controller.next(state.task_id)["action"]["action_id"] == "assurance.execute":
+            obligation = self.controller.next(state.task_id)["action"]["current_obligation"]
+            targeted.update(obligation["repository_ids"])
+            self.apply_current(
+                state.task_id,
+                self.passing_verification(state, command),
+            )
+        self.assertEqual(targeted, set(repository_ids))
         completed = self.apply_current(
             state.task_id,
             {
@@ -461,9 +503,15 @@ class MultiRepositoryControllerTests(unittest.TestCase):
             ],
             repository_ids,
         )
+        criterion = dossier["coverage"]["requirement"]
+        self.assertEqual(criterion["status"], "proven")
         self.assertEqual(
-            dossier["verification"]["coverage"],
-            self.passing_verification(state, command)["coverage"],
+            {
+                repository_id
+                for proof in criterion["proofs"]
+                for repository_id in proof["repository_ids"]
+            },
+            set(repository_ids),
         )
         self.assertTrue(dossier["aggregate_freshness"]["current"])
 

@@ -58,12 +58,50 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
 
     def apply_current(self, task_id: str, payload: dict) -> dict:
         projection = self.controller.next(task_id)
+        action = projection["action"]
+        obligation = action.get("current_obligation")
+        if isinstance(obligation, dict):
+            result = {
+                "obligation_id": obligation["obligation_id"],
+                "passed": bool(payload.get("passed", True)),
+                "evidence": [{
+                    "kind": "command",
+                    "reference": str(payload.get("command", "repository-set-check")),
+                    "summary": str(payload.get("summary", "Assurance recorded")),
+                }],
+                "limitations": [],
+            }
+            if obligation["kind"] == "independent-review":
+                review = action["review_contract"]
+                result["review"] = {
+                    "reviewer_available": True,
+                    "independent": True,
+                    "reviewer_digest": "a" * 64,
+                    "review_scope_digest": review["review_scope_digest"],
+                    "guidance_digest": review["guidance_digest"],
+                    "workspace_digest": review["workspace_digest"],
+                    "findings": [],
+                    "claimed_outcome": "approved",
+                }
+                result["passed"] = True
+            payload = {
+                "summary": str(payload.get("summary", "Assurance recorded")),
+                "assurance_result": result,
+            }
         return self.controller.apply(
             task_id,
-            projection["action"]["action_id"],
+            action["action_id"],
             payload,
-            binding=projection["action"]["binding"],
+            binding=action["binding"],
         )
+
+    def complete_assurance(self, task_id: str, state) -> set[str]:
+        targeted = set()
+        while self.controller.next(task_id)["action"]["action_id"] == "assurance.execute":
+            obligation = self.controller.next(task_id)["action"]["current_obligation"]
+            targeted.update(obligation["repository_ids"])
+            self.apply_current(task_id, self.verification_payload(state))
+        return targeted
 
     def apply_after_mutation(self, task_id: str, payload: dict, mutation) -> dict:
         projection = self.controller.next(task_id)
@@ -207,21 +245,9 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
         )
 
         verification = self.controller.next(state.task_id)
-        self.assertEqual(
-            verification["action"]["verification_coverage"]["repository_ids"],
-            list(repository_ids),
-        )
-        self.apply_current(state.task_id, self.verification_payload(state))
-        self.apply_current(
-            state.task_id,
-            {
-                "outcome": "approved",
-                "assurance": "independent",
-                "findings": {},
-                "summary": "Independent review approved",
-                "driver_result": driver_result("available"),
-            },
-        )
+        self.assertEqual(verification["action"]["action_id"], "assurance.execute")
+        targeted = self.complete_assurance(state.task_id, state)
+        self.assertEqual(targeted, set(repository_ids))
         result = self.apply_current(
             state.task_id,
             {
@@ -245,10 +271,22 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
             list(repository_ids),
         )
         self.assertEqual(set(dossier["changed_repositories"]), set(repository_ids))
-        self.assertEqual(len(dossier["verification_attempts"]), 1)
-        self.assertTrue(dossier["verification_attempts"][0]["current"])
         self.assertEqual(
-            set(dossier["verification"]["coverage"]["repositories"]),
+            len(dossier["verification_attempts"]),
+            len(dossier["assurance_plan"]["obligations"]),
+        )
+        self.assertTrue(
+            all(
+                item["state"] in ("satisfied", "reused", "waived", "not-required")
+                for item in dossier["obligation_states"]
+            )
+        )
+        self.assertEqual(
+            {
+                repository_id
+                for proof in dossier["coverage"]["requirement"]["proofs"]
+                for repository_id in proof["repository_ids"]
+            },
             set(repository_ids),
         )
         self.assertTrue(dossier["aggregate_freshness"]["current"])
@@ -286,9 +324,16 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
             stale["freshness"][documentation_record["record_id"]]["reasons"],
         )
 
-    def test_nested_coverage_is_exact_and_unverified_is_a_failure_attempt(self) -> None:
+    def test_assurance_execution_is_exact_and_failure_is_charged(self) -> None:
         state = self.start_multi()
         self.apply_current(state.task_id, {})
+        self.apply_current(
+            state.task_id,
+            {
+                "summary": "Repository-set impact recorded",
+                "driver_result": driver_result("degraded"),
+            },
+        )
         self.apply_after_mutation(
             state.task_id,
             {"summary": "Implementation complete"},
@@ -297,24 +342,31 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
         projection = self.controller.next(state.task_id)
         binding = projection["action"]["binding"]
         baseline_revision = projection["revision"]
-        valid = self.verification_payload(state)
-
-        invalid_payloads = []
-        missing = self.verification_payload(state)
-        del missing["coverage"]["repositories"][self.member_ids(state)[0]]
-        invalid_payloads.append(missing)
-        unknown = self.verification_payload(state)
-        unknown["coverage"]["repositories"]["unknown"] = {
-            "command": "python3 unknown.py",
-            "passed": True,
+        obligation = projection["action"]["current_obligation"]
+        result = {
+            "obligation_id": obligation["obligation_id"],
+            "passed": False,
+            "evidence": [{
+                "kind": "command",
+                "reference": "python3 verify_repository.py",
+                "summary": "Focused repository evidence failed",
+            }],
+            "limitations": [],
         }
-        invalid_payloads.append(unknown)
-        command_mismatch = self.verification_payload(state)
-        command_mismatch["command"] = "python3 another.py"
-        invalid_payloads.append(command_mismatch)
-        passed_mismatch = self.verification_payload(state)
-        passed_mismatch["passed"] = False
-        invalid_payloads.append(passed_mismatch)
+        valid = {
+            "summary": "Current obligation failed",
+            "assurance_result": result,
+        }
+
+        missing = {**result}
+        del missing["limitations"]
+        wrong = {**result, "obligation_id": "not-the-current-obligation"}
+        extra = {**result, "caller_verdict": "passed"}
+        invalid_payloads = [
+            {"summary": "Missing field", "assurance_result": missing},
+            {"summary": "Wrong identity", "assurance_result": wrong},
+            {"summary": "Extra authority", "assurance_result": extra},
+        ]
 
         for payload in invalid_payloads:
             with self.subTest(payload=payload):
@@ -325,13 +377,15 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
                         payload,
                         binding=binding,
                     )
-                self.assertEqual(invalid.exception.code, "NODE_OUTPUT_INVALID")
+                self.assertEqual(
+                    invalid.exception.code,
+                    "ASSURANCE_EXECUTION_INVALID",
+                )
                 self.assertEqual(
                     self.controller.show(state.task_id).revision,
                     baseline_revision,
                 )
 
-        valid["coverage"]["criteria"]["requirement"] = "unverified"
         recorded = self.controller.apply(
             state.task_id,
             projection["action"]["action_id"],
@@ -339,52 +393,18 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
             binding=binding,
         )
         self.assertEqual(recorded["receipt"]["current_node"], "verification_rework")
-        self.assertEqual(
-            recorded["projection"]["action"]["retry_budget"],
-            {"attempts_used": 1, "max_attempts": 2, "remaining": 1},
-        )
         failed = self.controller.show(state.task_id).records[-1]
-        self.assertTrue(failed["payload"]["passed"])
+        execution = failed["artifact"]["body"]["assurance_execution"]
+        self.assertFalse(execution["passed"])
         self.assertEqual(
-            failed["artifact"]["body"]["coverage"]["criteria"]["requirement"],
-            "unverified",
+            execution["obligation_id"],
+            obligation["obligation_id"],
         )
-
-        reworked = self.apply_after_mutation(
-            state.task_id,
-            {"summary": "Addressed incomplete criterion evidence"},
-            lambda: self.append(self.client / "a.txt", "verification rework"),
-        )
+        budget = failed["artifact"]["body"]["budget"]
+        self.assertEqual(budget["used"]["verification"], 1)
         self.assertEqual(
-            reworked["projection"]["action"]["retry_budget"]["attempts_used"],
-            1,
-        )
-        exhausted_payload = self.verification_payload(state, criterion="unverified")
-        exhausted = self.apply_current(state.task_id, exhausted_payload)
-        self.assertEqual(
-            exhausted["receipt"]["current_node"],
-            "finalize_verification_incomplete",
-        )
-        finalized = self.apply_current(
-            state.task_id,
-            {
-                "summary": "Verification evidence remains incomplete",
-                "remaining_risks": {"requirement": "unverified"},
-                "handoff": "Collect complete aggregate evidence",
-            },
-        )
-        self.assertEqual(finalized["receipt"]["status"], "INCOMPLETE")
-        dossier = self.controller.show(state.task_id).records[-1]["artifact"]["body"]
-        self.assertEqual(dossier["schema"], DELIVERY_DOSSIER_SCHEMA)
-        self.assertEqual(dossier["outcome"], "incomplete")
-        self.assertEqual(len(dossier["verification_attempts"]), 2)
-        self.assertEqual(
-            [attempt["current"] for attempt in dossier["verification_attempts"]],
-            [False, True],
-        )
-        self.assertEqual(
-            dossier["verification"]["coverage"]["criteria"]["requirement"],
-            "unverified",
+            recorded["projection"]["action"]["action_id"],
+            "verification.rework.record",
         )
 
     def test_repository_scoped_governing_resource_stales_exact_member(self) -> None:
@@ -451,6 +471,13 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
     def test_dossier_keeps_old_contract_verification_as_stale(self) -> None:
         state = self.start_multi()
         self.apply_current(state.task_id, {})
+        self.apply_current(
+            state.task_id,
+            {
+                "summary": "Revision-one impact recorded",
+                "driver_result": driver_result("degraded"),
+            },
+        )
         self.apply_after_mutation(
             state.task_id,
             {"summary": "Revision one implementation"},
@@ -460,6 +487,7 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
             state.task_id,
             self.verification_payload(state, criterion="unverified"),
         )
+        historical_execution = self.controller.show(state.task_id).records[-1]
         revised_contract = {
             "schema": CONTRACT_SCHEMA,
             "revision": 2,
@@ -476,18 +504,32 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
         self.controller.revise_contract(
             state.task_id,
             contract=revised_contract,
+            ownership_claims={
+                "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                "claims": [{
+                    "repository_id": state.repositories[0].repository_id,
+                    "path": "a.txt",
+                    "classification": "implementation",
+                    "criterion_ids": ["revised"],
+                    "purpose": "Reconcile the retained API change",
+                }],
+            },
             reason="Replace the acceptance criterion",
             actor_label="maintainer",
+        )
+        self.apply_current(
+            state.task_id,
+            {
+                "summary": "Revision-two impact recorded",
+                "driver_result": driver_result("degraded"),
+            },
         )
         self.apply_after_mutation(
             state.task_id,
             {"summary": "Revision two implementation"},
             lambda: self.append(self.client / "a.txt", "revision two"),
         )
-        self.apply_current(
-            state.task_id,
-            self.verification_payload(state, criterion_id="revised"),
-        )
+        self.complete_assurance(state.task_id, state)
         self.apply_current(
             state.task_id,
             {
@@ -497,14 +539,19 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
             },
         )
         dossier = self.controller.show(state.task_id).records[-1]["artifact"]["body"]
-        self.assertEqual(len(dossier["verification_attempts"]), 2)
-        historical, current = dossier["verification_attempts"]
+        view = self.controller.show_view(state.task_id)
+        historical = view["artifact_freshness"][historical_execution["record_id"]]
         self.assertFalse(historical["current"])
-        self.assertIn("contract_changed", historical["stale_reasons"])
-        self.assertTrue(current["current"])
+        self.assertIn("contract_changed", historical["reasons"])
+        self.assertTrue(
+            all(
+                item["state"] in ("satisfied", "reused", "waived", "not-required")
+                for item in dossier["obligation_states"]
+            )
+        )
         self.assertEqual(
-            dossier["verification"]["coverage"]["criteria"],
-            {"revised": "proven"},
+            dossier["coverage"]["revised"]["status"],
+            "proven",
         )
 
     def test_revision_uses_set_snapshot_and_decisions_keep_three_nulls(self) -> None:

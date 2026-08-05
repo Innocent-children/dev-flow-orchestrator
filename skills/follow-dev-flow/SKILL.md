@@ -227,7 +227,10 @@ Record per-member evidence plus cross-repository
 effects, and confirm every material graph conclusion in the corresponding
 source root.
 
-Place the complete impact artifact in `driver_result.details`. Set driver
+Place the normalized impact object in the action payload's top-level
+`impact_manifest`; keep graph query/output provenance in `driver_result.details`.
+The controller reads `impact_manifest` as the assurance-planning authority and
+falls back to conservative `unknown` impact when it is absent. Set driver
 status to `degraded` when a required index is unavailable/stale, a bounded
 query cannot complete, or a material claim is unconfirmed. Direct source
 inspection is the fallback and remains read-only.
@@ -281,38 +284,31 @@ resource rules, and record `status: degraded` with the exact limitation.
 
 ## Record verification and bounded rework
 
-Run the smallest checks that directly prove the current contract. Record the
-actual commands and results. The `dev-flow-verification-coverage/0.3.0` object always has
-exactly this nested shape:
+Read `action.current_obligation` and run only the smallest checks required by
+that obligation's `evidence_contract`, repository scope, task-change slice,
+impact closure, and prerequisites. Submit exactly one `assurance_result`:
 
 ```json
 {
-  "schema": "dev-flow-verification-coverage/0.3.0",
-  "criteria": {"C1": "proven"},
-  "repositories": {
-    "<api-repository-id>": {"command": "<focused API check>", "passed": true},
-    "<client-repository-id>": {"command": "<focused client check>", "passed": true}
+  "assurance_result": {
+    "obligation_id": "<action.current_obligation.obligation_id>",
+    "passed": true,
+    "evidence": [
+      {"kind": "command", "reference": "<actual focused command>", "summary": "<actual result>"}
+    ],
+    "limitations": []
   },
-  "integration": {"command": "<cross-repository check>", "passed": true}
+  "summary": "<bounded assurance summary>"
 }
 ```
 
-`schema` must be exactly `dev-flow-verification-coverage/0.3.0`. `criteria`
-exactly covers the effective acceptance IDs. `repositories`
-exactly covers every canonical member ID, and `integration` is always present.
-Each result contains only a non-empty bounded command and boolean `passed`.
-The top-level `command` must equal `integration.command`; top-level `passed`
-must equal the conjunction of all member and integration result flags.
-
-The controller derives `waived` only from a current explicit decision. For a
-waived-but-unproven criterion, submit `unverified`. Command aggregation and
-assurance success are distinct: if all commands pass
-but one unwaived criterion remains `unverified`, submit the truthful
-`passed: true` command aggregate. The controller records that well-shaped
-attempt as unsuccessful assurance and follows bounded rework or exhaustion;
-it is not malformed input. Persist real failures and never hide an attempt or
-run an undeclared extra retry outside the projection. Prior proof from an
-unchanged member is not reused after any aggregate snapshot drift.
+The controller derives criterion coverage and obligation state; do not submit
+an aggregate coverage verdict. A failed, unavailable, or incomplete attempt is
+still persisted and consumes exactly one allowance. Never run an undeclared
+retry. When a later manifest/impact plan preserves an obligation fingerprint,
+the controller may reuse its passing evidence; disjoint aggregate drift alone
+does not invalidate that slice-bound proof. Intersecting task changes,
+governing-resource changes, impact-closure changes, or prerequisite changes do.
 
 ## Record independent review
 
@@ -324,25 +320,47 @@ remain unchanged through completion. Review every member and cross-repository
 acceptance behavior as one task-wide assurance result; never issue per-member
 approval or reuse partial approval after aggregate drift.
 
-Map the review result to the workflow payload:
+Use `action.review_contract` verbatim and submit the current obligation through
+the runtime schema:
 
-- independent `PASS` → `outcome: approved`, `assurance: independent`;
-- independent `FAIL` → `outcome: changes-requested`, `assurance: independent`;
-- independent degraded `CONDITIONAL` → `outcome: changes-requested`,
-  `assurance: independent`;
-- snapshot drift → discard the attempt, obtain a fresh action binding, and
-  rerun the review if the refreshed projection still requests it;
-- no independent reviewer → run a bounded self-review; use
-  `outcome: changes-requested`, `assurance: self` when it finds required
-  changes, otherwise `outcome: unavailable`, `assurance: self`.
+```json
+{
+  "assurance_result": {
+    "obligation_id": "<action.current_obligation.obligation_id>",
+    "passed": true,
+    "evidence": [{"kind": "review", "reference": "<review fingerprint>", "summary": "<result>"}],
+    "limitations": [],
+    "review": {
+      "reviewer_available": true,
+      "independent": true,
+      "reviewer_digest": "<sha256>",
+      "review_scope_digest": "<action.review_contract.review_scope_digest>",
+      "guidance_digest": "<action.review_contract.guidance_digest>",
+      "workspace_digest": "<action.review_contract.workspace_digest>",
+      "findings": [],
+      "claimed_outcome": "approved"
+    }
+  },
+  "summary": "<review summary>"
+}
+```
 
-Put `findings` in an object such as `{"items": [...]}` and put the complete
-fingerprinted review result in `driver_result.details`. Record independent
-driver status as `available`, `degraded`, or `unavailable` exactly as returned.
-Never record `approved` with self assurance.
+`findings` is a list of complete `dev-flow-review-finding/0.3.0` objects.
+Every introduced finding's `causal_manifest_entries` must contain its exact
+current manifest location; affected findings additionally carry a bounded,
+source-confirmed causal path.
+Independent PASS uses `claimed_outcome: approved`; FAIL/CONDITIONAL uses
+`changes-requested`; no reviewer uses `reviewer_available: false`,
+`independent: false`, `passed: false`, and `claimed_outcome: unavailable`.
+The controller derives the authoritative outcome and rejects contradictory
+`passed` or claimed outcomes. Snapshot drift invalidates the action binding and
+requires a fresh projection.
 
 An unavailable independent review follows the successful route only when a
-current explicit `assurance-waiver` targets the exact review node. Without it,
+current explicit `assurance-waiver` targets the exact review obligation after
+that same current obligation has recorded a controller-derived unavailable
+execution. No repository, integration, documentation, or manual obligation can
+be waived this way. Without it,
 the unavailable result consumes the bounded review budget and eventually
 finalizes `INCOMPLETE`.
 
@@ -357,15 +375,19 @@ Supply the complete next contract revision:
 ```text
 <ctl> revise-contract <task-id> \
   --contract-json <complete-next-contract-json> \
+  --ownership-claims-json <exact-reconciliation-claims-json> \
   --reason <non-empty-text> \
   --actor-label <non-empty-text>
 ```
 
 The revision must advance by exactly one. The controller captures a
-new-contract aggregate `revision-source` and reenters the workflow's declared
+new-contract aggregate `revision-source`, reconciles the latest accepted source
+snapshot to the stable revision snapshot, and reenters the workflow's declared
 impact or implementation node. It cannot change immutable
 repository membership; start a new task for a different set. Earlier-contract
-artifacts and waivers remain historical.
+artifacts and waivers remain historical. Reconciliation claims must exactly
+cover every ambient path being adopted and map it to current replacement
+criteria; omitted, extra, or incompatible claims reject the revision atomically.
 
 Record a criterion or review-assurance waiver:
 
@@ -375,7 +397,8 @@ Record a criterion or review-assurance waiver:
 
 The object has exactly `id`, `kind`, `subject`, `outcome`, `rationale`, and
 `actor_label`. Use `criterion-waiver` with an exact criterion ID or
-`assurance-waiver` with an exact review node ID; `outcome` is `waived`.
+`assurance-waiver` with the exact current independent-review obligation ID or
+fingerprint after an unavailable execution; `outcome` is `waived`.
 Decision IDs are task-unique, and one `(kind, subject)` is accepted per
 contract digest. Never invent an operator decision, actor label, or rationale.
 

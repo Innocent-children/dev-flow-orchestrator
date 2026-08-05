@@ -18,7 +18,7 @@ from dev_flow_orchestrator.assurance import (
     validate_assurance_execution,
 )
 from dev_flow_orchestrator.model import DevFlowError, RepositoryRecord
-from dev_flow_orchestrator.product import TASK_CHANGE_MANIFEST_SCHEMA
+from dev_flow_orchestrator.product import MAX_REVIEW_FINDINGS, TASK_CHANGE_MANIFEST_SCHEMA
 from dev_flow_orchestrator.review import (
     derive_review_result,
     finding_template,
@@ -111,12 +111,26 @@ class AdaptiveAssuranceTests(unittest.TestCase):
 
     def test_exact_budget_formula_and_dispatch(self) -> None:
         value = plan("feature", impact(triggers=("security",)))
-        verification = [item for item in value["obligations"] if item["budget_class"] == "verification"]
-        reviews = [item for item in value["obligations"] if item["budget_class"] == "review"]
+        verification = [item for item in value["budgets"]["reservation_set"] if item["budget_class"] == "verification"]
+        reviews = [item for item in value["budgets"]["reservation_set"] if item["budget_class"] == "review"]
         self.assertEqual(value["budgets"]["verification_ceiling"], min(2 * len(verification), len(verification) + 2))
         self.assertEqual(value["budgets"]["review_ceiling"], min(2 * len(reviews), len(reviews) + 1))
-        retry_units = sum(max(item["allowance"] - 1, 0) for item in value["obligations"] if item["source_rework"])
+        retry_units = sum(item["retry_units"] for item in value["budgets"]["reservation_set"])
         self.assertEqual(value["budgets"]["rework_ceiling"], min(2, retry_units))
+        self.assertEqual(
+            value["budgets"]["finding_disposition_reserve"],
+            MAX_REVIEW_FINDINGS * value["budgets"]["review_ceiling"],
+        )
+        prerequisite_reservations = value["budgets"]["prerequisite_reservation_set"]
+        self.assertEqual(len(prerequisite_reservations), 1)
+        self.assertEqual(
+            set(prerequisite_reservations[0]["prerequisite_reservation_ids"]),
+            {
+                item["reservation_id"]
+                for item in value["budgets"]["reservation_set"]
+                if item["kind"] != "independent-review"
+            },
+        )
         projected = next_obligation(value, ())
         self.assertIsNotNone(projected)
         first = projected["obligation"]
@@ -138,6 +152,86 @@ class AdaptiveAssuranceTests(unittest.TestCase):
         states = obligation_states(value, (execution,))
         self.assertEqual(states[0]["state"], "satisfied")
         self.assertEqual(budget_view(value, (execution,))["used"]["verification"], 1)
+
+    def test_same_contract_replan_keeps_conservative_budget_for_expanded_route(self) -> None:
+        focused = plan("feature")
+        conservative = derive_assurance_plan(
+            task_id="task-adaptive",
+            profile="feature",
+            contract=CONTRACT,
+            contract_digest=CONTRACT_DIGEST,
+            repositories=REPOSITORIES,
+            manifest=MANIFEST,
+            impact=impact(confidence="unknown"),
+            previous_plan=focused,
+        )
+        self.assertGreater(len(conservative["obligations"]), len(focused["obligations"]))
+        self.assertEqual(conservative["budgets"], focused["budgets"])
+        self.assertGreaterEqual(
+            conservative["budgets"]["verification_ceiling"],
+            sum(
+                item["budget_class"] == "verification"
+                for item in conservative["obligations"]
+            ),
+        )
+        self.assertGreaterEqual(conservative["budgets"]["review_ceiling"], 1)
+
+    def test_same_contract_replan_inherits_budget_before_expanding_prerequisites(self) -> None:
+        edges = tuple(
+            {
+                "from_repository_id": "app",
+                "to_repository_id": "client",
+                "evidence_contract": "contract-{}".format(index),
+                "criterion_ids": ["criterion-1"],
+                "affected": False,
+            }
+            for index in range(35)
+        )
+        focused = plan("feature", impact(edges=edges))
+        self.assertLess(focused["budgets"]["total_action_ceiling"], 256)
+        self.assertEqual(
+            len(focused["budgets"]["prerequisite_reservation_set"]),
+            1,
+        )
+
+        conservative = derive_assurance_plan(
+            task_id="task-adaptive",
+            profile="feature",
+            contract=CONTRACT,
+            contract_digest=CONTRACT_DIGEST,
+            repositories=REPOSITORIES,
+            manifest=MANIFEST,
+            impact=impact(confidence="unknown", edges=edges),
+            previous_plan=focused,
+        )
+
+        self.assertGreater(len(conservative["obligations"]), len(focused["obligations"]))
+        self.assertEqual(conservative["budgets"], focused["budgets"])
+        review = next(
+            item
+            for item in conservative["obligations"]
+            if item["kind"] == "independent-review"
+        )
+        self.assertEqual(len(review["prerequisites"]), 37)
+
+    def test_finding_disposition_reserve_rejects_route_over_product_ceiling(self) -> None:
+        edges = tuple(
+            {
+                "from_repository_id": "app",
+                "to_repository_id": "client",
+                "evidence_contract": "contract-{}".format(index),
+                "criterion_ids": ["criterion-1"],
+                "affected": True,
+            }
+            for index in range(20)
+        )
+        with self.assertRaises(DevFlowError) as context:
+            plan("full", impact(edges=edges))
+        self.assertEqual(context.exception.code, "ASSURANCE_BUDGET_INVALID")
+        self.assertGreater(
+            context.exception.details["total_action_ceiling"],
+            256,
+        )
 
 
 class CausalReviewTests(unittest.TestCase):
@@ -167,7 +261,9 @@ class CausalReviewTests(unittest.TestCase):
             "symbol": "run",
             "location_label": None,
             "evidence": [{"kind": "source", "reference": path, "summary": "confirmed", "source_confirmed": True}],
-            "causal_manifest_entries": [{"repository_id": "app", "path": "src/a.py"}] if causal else [],
+            "causal_manifest_entries": [
+                {"repository_id": "app", "path": "src/a.py"}
+            ] if causal or relation == "introduced" else [],
             "causal_path": [{"kind": "call", "from": "src/a.py", "to": path, "evidence": "direct call", "source_confirmed": True}] if causal else [],
             "smallest_sufficient_resolution": "Correct the bounded behavior",
             "reviewer_assurance": "independent",

@@ -147,16 +147,21 @@ class InstalledStage1JourneyTests(unittest.TestCase):
             self.assertEqual(len(baseline["snapshot"]["repositories"]), 1)
             self.assertEqual(dossier["schema"], DELIVERY_DOSSIER_SCHEMA)
             self.assertEqual(len(dossier["repository_set"]["members"]), 1)
-            verification = dossier.get("verification")
-            if verification is not None:
-                self.assertEqual(
-                    set(verification["coverage"]),
-                    {"schema", "criteria", "repositories", "integration"},
+            self.assertIsInstance(dossier.get("assurance_plan"), dict)
+            self.assertIsInstance(dossier.get("obligation_states"), list)
+            self.assertTrue(
+                all(
+                    item["state"]
+                    in ("satisfied", "reused", "waived", "not-required")
+                    for item in dossier["obligation_states"]
                 )
-                self.assertEqual(
-                    verification["coverage"]["schema"],
-                    VERIFICATION_COVERAGE_SCHEMA,
+            )
+            self.assertTrue(
+                all(
+                    item["status"] in ("proven", "waived")
+                    for item in dossier["coverage"].values()
                 )
+            )
         self.assertTrue(
             {
                 "process-restart-resume",

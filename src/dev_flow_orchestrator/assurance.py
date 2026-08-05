@@ -15,6 +15,7 @@ from .product import (
     MAX_ASSURANCE_OBLIGATIONS,
     MAX_EVIDENCE_ITEMS,
     MAX_IMPACT_ENTRIES,
+    MAX_REVIEW_FINDINGS,
     MAX_WORKFLOW_ACTIONS,
     RISK_TRIGGER_IDS,
     TASK_CHANGE_MANIFEST_SCHEMA,
@@ -270,6 +271,129 @@ def _manifest_entries(manifest: Mapping[str, object]) -> tuple:
     return tuple(entries)
 
 
+def _budget_reservations(
+    *,
+    profile: str,
+    repository_ids: Sequence[str],
+    edges: Sequence[Mapping[str, object]],
+    allowance: int,
+) -> list:
+    """Derive the stable conservative obligation subjects for one contract."""
+    subjects = [
+        {
+            "kind": "repository-check",
+            "repository_ids": [repository_id],
+            "evidence_contract": None,
+            "budget_class": "verification",
+            "source_rework": True,
+        }
+        for repository_id in repository_ids
+    ]
+    edge_groups = {}
+    for edge in edges:
+        edge_groups.setdefault(str(edge["evidence_contract"]), []).append(edge)
+    for evidence_contract in sorted(edge_groups, key=lambda item: item.encode("utf-8")):
+        members = sorted({
+            repository_id
+            for edge in edge_groups[evidence_contract]
+            for repository_id in (
+                str(edge["from_repository_id"]),
+                str(edge["to_repository_id"]),
+            )
+        })
+        subjects.append({
+            "kind": "integration-check",
+            "repository_ids": members,
+            "evidence_contract": evidence_contract,
+            "budget_class": "verification",
+            "source_rework": True,
+        })
+    subjects.extend((
+        {
+            "kind": "documentation-check",
+            "repository_ids": list(repository_ids),
+            "evidence_contract": None,
+            "budget_class": "verification",
+            "source_rework": True,
+        },
+        {
+            "kind": "manual-evidence",
+            "repository_ids": list(repository_ids),
+            "evidence_contract": None,
+            "budget_class": "verification",
+            "source_rework": False,
+        },
+        {
+            "kind": "independent-review",
+            "repository_ids": list(repository_ids),
+            "evidence_contract": None,
+            "budget_class": "review",
+            "source_rework": True,
+        },
+    ))
+    reservations = []
+    for subject in subjects:
+        identity = hashlib.sha256(canonical_json_bytes({
+            "profile": profile,
+            **subject,
+        })).hexdigest()
+        reservations.append({
+            "reservation_id": "reservation-{}".format(identity[:16]),
+            **subject,
+            "allowance": allowance,
+            "retry_units": (
+                max(allowance - 1, 0) if subject["source_rework"] else 0
+            ),
+        })
+    return reservations
+
+
+def _reservation_covers_obligation(
+    reservation: Mapping[str, object],
+    obligation: Mapping[str, object],
+) -> bool:
+    if reservation.get("kind") != obligation.get("kind"):
+        return False
+    kind = obligation.get("kind")
+    if kind == "repository-check":
+        return reservation.get("repository_ids") == obligation.get("repository_ids")
+    if kind == "integration-check":
+        evidence = obligation.get("evidence_contract")
+        return bool(
+            isinstance(evidence, Mapping)
+            and reservation.get("repository_ids") == obligation.get("repository_ids")
+            and reservation.get("evidence_contract") == evidence.get("name")
+        )
+    return True
+
+
+def _prerequisite_reservations(
+    reservation_set: Sequence[Mapping[str, object]],
+) -> list:
+    """Reserve one refresh subject for each conservative dependency set."""
+    values = []
+    prerequisite_reservation_ids = sorted(
+        str(reservation["reservation_id"])
+        for reservation in reservation_set
+        if reservation.get("kind") != "independent-review"
+    )
+    for reservation in reservation_set:
+        if reservation.get("kind") != "independent-review":
+            continue
+        body = {
+            "dependent_reservation_id": reservation["reservation_id"],
+            "dependent_kind": reservation["kind"],
+            "prerequisite_reservation_ids": prerequisite_reservation_ids,
+        }
+        values.append({
+            **body,
+            "subject_fingerprint": hashlib.sha256(
+                canonical_json_bytes(body)
+            ).hexdigest(),
+        })
+    return values
+
+
 def derive_assurance_plan(
     *,
     task_id: str,
@@ -337,6 +461,8 @@ def derive_assurance_plan(
                 "entry_digest": hashlib.sha256(
                     canonical_json_bytes(item)
                 ).hexdigest(),
+                "classification": item.get("classification"),
+                "criterion_ids": json_value(item.get("criterion_ids", [])),
             }
             for item in manifest_entries
             if isinstance(item, Mapping) and item.get("repository_id") == repository_id
@@ -535,12 +661,20 @@ def derive_assurance_plan(
     }
     if covered_criteria != set(criteria):
         raise _error("ASSURANCE_INVALID", "assurance plan does not cover every criterion")
-    verification_count = sum(item["budget_class"] == "verification" for item in obligations)
-    review_count = sum(item["budget_class"] == "review" for item in obligations)
+    reservation_set = _budget_reservations(
+        profile=profile,
+        repository_ids=repository_ids,
+        edges=all_edges,
+        allowance=allowance,
+    )
+    prerequisite_reservation_set = _prerequisite_reservations(reservation_set)
+    verification_count = sum(
+        item["budget_class"] == "verification" for item in reservation_set
+    )
+    review_count = sum(item["budget_class"] == "review" for item in reservation_set)
     retry_units = sum(
-        max(int(item["allowance"]) - 1, 0)
-        for item in obligations
-        if item["source_rework"]
+        int(item["retry_units"])
+        for item in reservation_set
     )
     if profile in ("lite", "investigation"):
         verification_ceiling = min(allowance * verification_count, verification_count + 1)
@@ -554,17 +688,13 @@ def derive_assurance_plan(
         verification_ceiling = min(allowance * verification_count, verification_count + 4)
         review_ceiling = min(allowance * review_count, review_count + 2)
         rework_ceiling = min(4, retry_units)
-    reservation_set = [
-        {
-            "obligation_id": item["obligation_id"],
-            "allowance": item["allowance"],
-            "source_rework": item["source_rework"],
-            "retry_units": max(int(item["allowance"]) - 1, 0) if item["source_rework"] else 0,
-        }
-        for item in obligations
-    ]
-    prerequisite_count = sum(len(item["prerequisites"]) for item in obligations)
-    governance_reserve = len(criteria) + len(obligations) + prerequisite_count
+    finding_disposition_reserve = review_ceiling * MAX_REVIEW_FINDINGS
+    governance_reserve = (
+        len(criteria)
+        + len(reservation_set)
+        + len(prerequisite_reservation_set)
+        + finding_disposition_reserve
+    )
     fixed_mutations = 3 if profile in ("lite", "investigation") else 5
     total_action_ceiling = (
         fixed_mutations
@@ -574,7 +704,12 @@ def derive_assurance_plan(
         + governance_reserve
         + 1
     )
-    if total_action_ceiling > MAX_WORKFLOW_ACTIONS:
+    prior_budgets = None
+    if previous_plan is not None:
+        prior = validate_assurance_plan(previous_plan)
+        if prior["contract_digest"] == contract_digest:
+            prior_budgets = json_value(prior["budgets"])
+    if prior_budgets is None and total_action_ceiling > MAX_WORKFLOW_ACTIONS:
         raise _error(
             "ASSURANCE_BUDGET_INVALID",
             "assurance route exceeds the product action ceiling",
@@ -588,7 +723,9 @@ def derive_assurance_plan(
         "rework_ceiling": rework_ceiling,
         "total_action_ceiling": total_action_ceiling,
         "retry_unit_total": retry_units,
+        "finding_disposition_reserve": finding_disposition_reserve,
         "reservation_set": reservation_set,
+        "prerequisite_reservation_set": prerequisite_reservation_set,
         "used": {
             "verification": 0,
             "review": 0,
@@ -596,10 +733,80 @@ def derive_assurance_plan(
             "total_action": 0,
         },
     }
-    if previous_plan is not None:
-        prior = validate_assurance_plan(previous_plan)
-        if prior["contract_digest"] == contract_digest:
-            budgets = json_value(prior["budgets"])
+    if prior_budgets is not None:
+        budgets = prior_budgets
+    uncovered = [
+        item["obligation_id"]
+        for item in obligations
+        if not any(
+            _reservation_covers_obligation(reservation, item)
+            for reservation in budgets["reservation_set"]
+        )
+    ]
+    required_verification = sum(
+        item["budget_class"] == "verification" for item in obligations
+    )
+    required_review = sum(item["budget_class"] == "review" for item in obligations)
+    obligations_by_id = {
+        item["obligation_id"]: item for item in obligations
+    }
+    prerequisite_subjects = {
+        item.get("dependent_reservation_id"): set(
+            item.get("prerequisite_reservation_ids", ())
+        )
+        for item in budgets.get("prerequisite_reservation_set", ())
+        if isinstance(item, Mapping)
+    }
+    uncovered_prerequisites = []
+    for dependent in obligations:
+        if not dependent["prerequisites"]:
+            continue
+        dependent_reservation = next(
+            (
+                reservation
+                for reservation in budgets["reservation_set"]
+                if _reservation_covers_obligation(reservation, dependent)
+            ),
+            None,
+        )
+        if (
+            dependent_reservation is None
+            or dependent_reservation["reservation_id"] not in prerequisite_subjects
+        ):
+            uncovered_prerequisites.append(dependent["obligation_id"])
+            continue
+        allowed_prerequisite_reservations = prerequisite_subjects[
+            dependent_reservation["reservation_id"]
+        ]
+        for prerequisite_id in dependent["prerequisites"]:
+            prerequisite = obligations_by_id.get(prerequisite_id)
+            prerequisite_reservation = next(
+                (
+                    reservation
+                    for reservation in budgets["reservation_set"]
+                    if prerequisite is not None
+                    and _reservation_covers_obligation(reservation, prerequisite)
+                ),
+                None,
+            )
+            if (
+                prerequisite_reservation is None
+                or prerequisite_reservation["reservation_id"]
+                not in allowed_prerequisite_reservations
+            ):
+                uncovered_prerequisites.append(prerequisite_id)
+    if (
+        uncovered
+        or uncovered_prerequisites
+        or required_verification > budgets["verification_ceiling"]
+        or required_review > budgets["review_ceiling"]
+    ):
+        raise _error(
+            "ASSURANCE_BUDGET_INVALID",
+            "replacement assurance obligations exceed the initial conservative reservation",
+            uncovered_obligation_ids=uncovered,
+            uncovered_prerequisite_ids=uncovered_prerequisites,
+        )
     not_required = {
         "repository_ids": [item for item in repository_ids if item not in required_members],
         "integration": not bool(required_edges),

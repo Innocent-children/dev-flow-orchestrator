@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
 from .model import DevFlowError, canonical_json_bytes, json_value
 from .product import (
@@ -58,6 +58,7 @@ def path_identity(entry: object) -> dict:
                 "mode": None,
                 "size": 0,
                 "content_sha256": None,
+                "worktree_oid": None,
                 "submodule_head": None,
             },
             "index_entries": [],
@@ -70,10 +71,63 @@ def path_identity(entry: object) -> dict:
             "mode": entry.get("mode"),
             "size": entry.get("size"),
             "content_sha256": entry.get("content_sha256"),
+            "worktree_oid": entry.get("worktree_oid"),
             "submodule_head": entry.get("submodule_head"),
         },
         "index_entries": json_value(entry.get("index_entries", [])),
     }
+
+
+def _tracked_origin(head_entry: object) -> Optional[dict]:
+    if not isinstance(head_entry, Mapping):
+        return None
+    mode = head_entry.get("mode")
+    kind = "gitlink" if mode == "160000" else "symlink" if mode == "120000" else "regular"
+    oid = head_entry.get("oid")
+    stage_zero = {"mode": mode, "oid": oid, "stage": 0}
+    return {
+        "worktree": {
+            "kind": kind,
+            "mode": mode,
+            "size": 0,
+            "content_sha256": None,
+            "worktree_oid": oid,
+            "submodule_head": oid if kind == "gitlink" else None,
+        },
+        "index_entries": [json_value(stage_zero)],
+    }
+
+
+def _entry_or_clean_head_identity(
+    entry: object,
+    peer_entry: object,
+    *,
+    same_head: bool,
+) -> dict:
+    if entry is not None:
+        return path_identity(entry)
+    if same_head and isinstance(peer_entry, Mapping):
+        origin = _tracked_origin(peer_entry.get("head_entry"))
+        if origin is not None:
+            return origin
+    return path_identity(None)
+
+
+def _identity_matches_origin(identity: Mapping[str, object], origin: Mapping[str, object]) -> bool:
+    if identity == origin:
+        return True
+    origin_worktree = origin.get("worktree")
+    current_worktree = identity.get("worktree")
+    return bool(
+        isinstance(origin_worktree, Mapping)
+        and isinstance(current_worktree, Mapping)
+        and origin_worktree.get("content_sha256") is None
+        and origin_worktree.get("worktree_oid") is not None
+        and current_worktree.get("kind") == origin_worktree.get("kind")
+        and current_worktree.get("mode") == origin_worktree.get("mode")
+        and current_worktree.get("worktree_oid") == origin_worktree.get("worktree_oid")
+        and identity.get("index_entries") == origin.get("index_entries")
+    )
 
 
 def derive_path_changes(
@@ -93,11 +147,23 @@ def derive_path_changes(
         repository_id = member["repository_id"]
         before_entries = _entry_map(before_members[repository_id])
         after_entries = _entry_map(after_members[repository_id])
+        same_head = (
+            before_members[repository_id].get("head")
+            == after_members[repository_id].get("head")
+        )
         for path in sorted(
             set(before_entries) | set(after_entries), key=lambda item: item.encode("utf-8")
         ):
-            old = path_identity(before_entries.get(path))
-            new = path_identity(after_entries.get(path))
+            old = _entry_or_clean_head_identity(
+                before_entries.get(path),
+                after_entries.get(path),
+                same_head=same_head,
+            )
+            new = _entry_or_clean_head_identity(
+                after_entries.get(path),
+                before_entries.get(path),
+                same_head=same_head,
+            )
             if old == new:
                 continue
             old_missing = old["worktree"]["kind"] == "missing" and not old["index_entries"]
@@ -110,6 +176,12 @@ def derive_path_changes(
                     "change_kind": change_kind,
                     "before": old,
                     "after": new,
+                    "before_head_entry": json_value(
+                        before_entries.get(path, {}).get("head_entry")
+                    ),
+                    "after_head_entry": json_value(
+                        after_entries.get(path, {}).get("head_entry")
+                    ),
                 }
             )
     return tuple(changes)
@@ -254,6 +326,7 @@ def derive_manifest(
     after_snapshot: object,
     claims: object,
     producer: Mapping[str, object],
+    reconcile_existing: bool = False,
 ) -> dict:
     """Roll one claimed source interval into the current net task-owned manifest."""
     baseline = validate_preflight_baseline(
@@ -265,12 +338,6 @@ def derive_manifest(
     before = validate_task_snapshot(before_snapshot, repositories)
     after = validate_task_snapshot(after_snapshot, repositories)
     changes = derive_path_changes(before, after, repositories)
-    normalized_claims = validate_ownership_claims(
-        claims, changes=changes, contract=contract
-    )
-    claim_map = {
-        (item["repository_id"], item["path"]): item for item in normalized_claims
-    }
     existing = {}
     predecessor_digest = None
     if predecessor is not None:
@@ -283,6 +350,22 @@ def derive_manifest(
         existing = {
             (item["repository_id"], item["path"]): item for item in prior["entries"]
         }
+    claim_subjects = list(changes)
+    if reconcile_existing:
+        changed_keys = {
+            (item["repository_id"], item["path"]) for item in changes
+        }
+        claim_subjects.extend(
+            {"repository_id": key[0], "path": key[1]}
+            for key in existing
+            if key not in changed_keys
+        )
+    normalized_claims = validate_ownership_claims(
+        claims, changes=claim_subjects, contract=contract
+    )
+    claim_map = {
+        (item["repository_id"], item["path"]): item for item in normalized_claims
+    }
     baseline_members = _member_map(baseline["snapshot"])
     baseline_entries = {
         (repository_id, path): path_identity(entry)
@@ -297,8 +380,14 @@ def derive_manifest(
         key = (change["repository_id"], change["path"])
         claim = claim_map[key]
         prior = existing.get(key)
-        origin = baseline_entries.get(key, path_identity(None))
-        if change["after"] == origin:
+        origin = (
+            prior.get("original_before")
+            if isinstance(prior, Mapping)
+            else baseline_entries.get(key)
+        )
+        if origin is None:
+            origin = _tracked_origin(change["after_head_entry"]) or path_identity(None)
+        if _identity_matches_origin(change["after"], origin):
             existing.pop(key, None)
             continue
         lineage = [] if prior is None else list(prior["producer_lineage"])
@@ -322,6 +411,21 @@ def derive_manifest(
             "criterion_ids": claim["criterion_ids"],
             "purpose": claim["purpose"],
         }
+    if reconcile_existing:
+        changed_keys = {
+            (item["repository_id"], item["path"]) for item in changes
+        }
+        for key, prior in tuple(existing.items()):
+            if key in changed_keys:
+                continue
+            claim = claim_map[key]
+            existing[key] = {
+                **prior,
+                "producer_lineage": [*prior["producer_lineage"], producer_value],
+                "classification": claim["classification"],
+                "criterion_ids": claim["criterion_ids"],
+                "purpose": claim["purpose"],
+            }
     entries = sorted(
         existing.values(),
         key=lambda item: (

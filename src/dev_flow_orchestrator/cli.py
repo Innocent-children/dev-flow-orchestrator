@@ -59,6 +59,7 @@ def _parser() -> argparse.ArgumentParser:
     revision = commands.add_parser("revise-contract")
     revision.add_argument("task_id")
     revision.add_argument("--contract-json", required=True)
+    revision.add_argument("--ownership-claims-json")
     revision.add_argument("--reason", required=True)
     revision.add_argument("--actor-label", required=True)
 
@@ -143,6 +144,14 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
             **controller.revise_contract(
                 arguments.task_id,
                 contract=_json_object(arguments.contract_json, "--contract-json"),
+                ownership_claims=(
+                    None
+                    if arguments.ownership_claims_json is None
+                    else _json_object(
+                        arguments.ownership_claims_json,
+                        "--ownership-claims-json",
+                    )
+                ),
                 reason=arguments.reason,
                 actor_label=arguments.actor_label,
             ),

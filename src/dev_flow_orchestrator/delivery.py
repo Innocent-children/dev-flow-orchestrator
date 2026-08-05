@@ -491,6 +491,48 @@ def _changed_repository_ids(left: object, right: object) -> tuple:
     )
 
 
+def _content_snapshot_member(snapshot: object) -> object:
+    if not isinstance(snapshot, Mapping):
+        return None
+    return {
+        key: json_value(snapshot.get(key))
+        for key in (
+            "repository_root", "git_worktree_dir", "git_common_dir",
+            "object_format", "head", "branch", "clean", "status_sha256",
+            "status_bytes", "index_entry_count", "index_output_bytes",
+            "has_unmerged_entries", "entries",
+        )
+    }
+
+
+def _content_snapshot_equal(left: object, right: object) -> bool:
+    left_map = _repository_snapshot_map(left)
+    right_map = _repository_snapshot_map(right)
+    return bool(
+        left_map
+        and right_map
+        and set(left_map) == set(right_map)
+        and all(
+            _content_snapshot_member(left_map[key])
+            == _content_snapshot_member(right_map[key])
+            for key in left_map
+        )
+    )
+
+
+def _content_changed_repository_ids(left: object, right: object) -> tuple:
+    left_map = _repository_snapshot_map(left)
+    right_map = _repository_snapshot_map(right)
+    if not left_map or not right_map:
+        return ()
+    return tuple(
+        repository_id
+        for repository_id in sorted(set(left_map) | set(right_map))
+        if _content_snapshot_member(left_map.get(repository_id))
+        != _content_snapshot_member(right_map.get(repository_id))
+    )
+
+
 def artifact_freshness(
     records: Sequence[object],
     contract: Mapping[str, object],
@@ -509,6 +551,20 @@ def artifact_freshness(
             if artifact.get("workspace_role") == "produces-source":
                 sources.append((record, artifact))
     latest_source = sources[-1] if sources else None
+    current_obligation_fingerprints = set()
+    for _, candidate in reversed(pairs):
+        body = candidate.get("body")
+        plan = body.get("assurance_plan") if isinstance(body, Mapping) else None
+        if (
+            isinstance(plan, Mapping)
+            and plan.get("contract_digest") == current_digest
+        ):
+            current_obligation_fingerprints = {
+                item.get("fingerprint")
+                for item in plan.get("obligations", ())
+                if isinstance(item, Mapping)
+            }
+            break
     resource_map = _snapshot_resource_map(current_snapshot)
     result = {}
     for record, artifact in pairs:
@@ -558,28 +614,55 @@ def artifact_freshness(
                             "governing_resource_changed:" + repository_id
                         )
         role = artifact.get("workspace_role")
-        if role == "verifies-source" and latest_source is not None:
+        body = artifact.get("body")
+        execution = body.get("assurance_execution") if isinstance(body, Mapping) else None
+        adaptive_current_proof = bool(
+            isinstance(execution, Mapping)
+            and execution.get("passed") is True
+            and execution.get("obligation_fingerprint")
+            in current_obligation_fingerprints
+        )
+        if (
+            role == "verifies-source"
+            and latest_source is not None
+            and not adaptive_current_proof
+        ):
             snapshot = artifact.get("snapshot")
             source_snapshot = latest_source[1].get("snapshot")
-            if not isinstance(snapshot, Mapping) or not isinstance(source_snapshot, Mapping) or snapshot.get("digest") != source_snapshot.get("digest"):
+            if not _content_snapshot_equal(snapshot, source_snapshot):
                 reasons.append("source_replaced")
                 reasons.extend(
                     "source_replaced:" + repository_id
-                    for repository_id in _changed_repository_ids(
+                    for repository_id in _content_changed_repository_ids(
                         snapshot, source_snapshot
+                    )
+                )
+            if (
+                not isinstance(snapshot, Mapping)
+                or not isinstance(current_snapshot, Mapping)
+                or not _content_snapshot_equal(snapshot, current_snapshot)
+            ):
+                reasons.append("workspace_changed")
+                reasons.extend(
+                    "workspace_changed:" + repository_id
+                    for repository_id in _content_changed_repository_ids(
+                        snapshot, current_snapshot
                     )
                 )
         if latest_source is not None and record_id == latest_source[0].get("record_id"):
             snapshot = artifact.get("snapshot")
-            if not isinstance(snapshot, Mapping) or not isinstance(current_snapshot, Mapping) or snapshot.get("digest") != current_snapshot.get("digest"):
+            if not _content_snapshot_equal(snapshot, current_snapshot):
                 reasons.append("workspace_changed")
                 reasons.extend(
                     "workspace_changed:" + repository_id
-                    for repository_id in _changed_repository_ids(
+                    for repository_id in _content_changed_repository_ids(
                         snapshot, current_snapshot
                     )
                 )
-        if latest_by_type.get(artifact.get("type")) != record_id:
+        if (
+            latest_by_type.get(artifact.get("type")) != record_id
+            and not adaptive_current_proof
+        ):
             reasons.append("superseded")
         result[str(record_id)] = {
             "current": not reasons,

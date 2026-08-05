@@ -62,9 +62,7 @@ def driver_result(status: str, **details: object) -> dict:
 
 
 class DeliveryRuntimeTests(RepositoryTestCase):
-    def apply_current(self, task_id: str, payload: dict) -> dict:
-        projection = self.controller.next(task_id)
-        action = projection["action"]
+    def adaptive_payload(self, task_id: str, action: Mapping, payload: dict) -> dict:
         obligation = action.get("current_obligation")
         if isinstance(obligation, Mapping):
             passed = payload.get("passed")
@@ -86,7 +84,10 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                         "symbol": None,
                         "location_label": None,
                         "evidence": [{"kind": "source", "reference": slice_item["path"], "summary": "test finding", "source_confirmed": True}],
-                        "causal_manifest_entries": [],
+                        "causal_manifest_entries": [{
+                            "repository_id": slice_item["repository_id"],
+                            "path": slice_item["path"],
+                        }],
                         "causal_path": [],
                         "smallest_sufficient_resolution": "Repair the introduced behavior",
                         "reviewer_assurance": "independent",
@@ -131,9 +132,6 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             if review is not None:
                 assurance_result["review"] = review
                 payload = {
-                    "passed": passed,
-                    "command": "independent-review",
-                    "coverage": {},
                     "summary": str(payload.get("summary", "Review recorded")),
                     "assurance_result": assurance_result,
                 }
@@ -142,12 +140,22 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                     "summary": str(payload.get("summary", "Assurance recorded")),
                     "assurance_result": assurance_result,
                 }
+        return payload
+
+    def apply_current(self, task_id: str, payload: dict) -> dict:
+        projection = self.controller.next(task_id)
+        action = projection["action"]
         return self.controller.apply(
             task_id,
             action["action_id"],
-            payload,
+            self.adaptive_payload(task_id, action, payload),
             binding=action["binding"],
         )
+
+    def current_obligation_id(self, task_id: str) -> str:
+        obligation = self.controller.next(task_id)["action"].get("current_obligation")
+        self.assertIsInstance(obligation, Mapping)
+        return str(obligation["obligation_id"])
 
     def preflight(self, task_id: str) -> None:
         self.apply_current(task_id, {})
@@ -237,8 +245,38 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             } for path in sorted(paths)],
         }
 
+    def revision_claims(self, task_id: str, criterion_id: str) -> dict:
+        state = self.controller.show(task_id)
+        manifest = next(
+            (
+                record["artifact"]["body"]["task_change_manifest"]
+                for record in reversed(state.records)
+                if isinstance(record.get("artifact"), Mapping)
+                and isinstance(record["artifact"].get("body"), Mapping)
+                and isinstance(
+                    record["artifact"]["body"].get("task_change_manifest"),
+                    Mapping,
+                )
+            ),
+            {"entries": []},
+        )
+        return {
+            "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+            "claims": [{
+                "repository_id": entry["repository_id"],
+                "path": entry["path"],
+                "classification": entry["classification"],
+                "criterion_ids": [criterion_id],
+                "purpose": "Reconcile retained task ownership to the revised contract",
+            } for entry in manifest["entries"]],
+        }
+
     def source_action(self, task_id: str, payload: dict, marker: str) -> None:
         projection = self.controller.next(task_id)
+        self.assertIsNotNone(
+            projection["action"]["binding"],
+            projection["action"].get("blocked"),
+        )
         with (self.repository / "a.txt").open("a", encoding="utf-8") as stream:
             stream.write(marker + "\n")
         payload = {
@@ -527,7 +565,10 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.assertNotIn("body", result["projection"]["dossier"])
         final = Controller(self.data_dir).show(task_id)
         self.assertEqual(final.revision, len(final.records))
-        self.assertEqual([record["task_revision"] for record in final.records], [1, 2, 3, 4])
+        self.assertEqual(
+            [record["task_revision"] for record in final.records],
+            [1, 2, 3, 4, 5],
+        )
 
     def test_preflight_precedes_decisions_and_advanced_binding_conflicts(self) -> None:
         task_id = self.start_lite()
@@ -564,9 +605,9 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             )
         self.assertEqual(stale.exception.code, "REVISION_CONFLICT")
         fresh = stale.exception.details["projection"]
-        self.assertEqual(fresh["revision"], 2)
+        self.assertEqual(fresh["revision"], 3)
         self.assertEqual(fresh["action"]["action_id"], "implementation.record")
-        self.assertEqual(self.controller.show(task_id).revision, 2)
+        self.assertEqual(self.controller.show(task_id).revision, 3)
 
     def test_invalid_contracts_fail_atomically_before_task_creation(self) -> None:
         missing = revised_contract(1)
@@ -643,25 +684,39 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             subject="requirement",
             outcome="waived",
         )
+        self.controller.decide(task_id, decision=criterion)
+        self.advance_feature_to_review(task_id, "replay-waiver")
+        review_obligation_id = self.current_obligation_id(task_id)
+        self.apply_current(
+            task_id,
+            self.review_payload(
+                "unavailable", "self", "Independent reviewer unavailable"
+            ),
+        )
         review = self.decision(
             "review-waiver-1",
             kind="assurance-waiver",
-            subject="review",
+            subject=review_obligation_id,
             outcome="waived",
         )
-        self.controller.decide(task_id, decision=criterion)
         self.controller.decide(task_id, decision=review)
 
         restarted = Controller(self.data_dir)
         replayed = restarted.show(task_id)
-        self.assertEqual(replayed.revision, 3)
         self.assertEqual(
-            [record["payload"]["id"] for record in replayed.records[1:]],
+            [
+                record["payload"]["id"]
+                for record in replayed.records
+                if record["kind"] == "decision"
+            ],
             ["criterion-waiver-1", "review-waiver-1"],
         )
         projection = restarted.next(task_id)
-        self.assertEqual(projection["current_node"], "impact")
-        self.assertEqual(projection["action"]["action_id"], "impact.record")
+        self.assertEqual(projection["current_node"], "verification_rework")
+        self.assertEqual(
+            projection["action"]["action_id"],
+            "delivery.finalize.success",
+        )
         with self.assertRaises(DevFlowError) as duplicate:
             restarted.decide(task_id, decision=criterion)
         self.assertEqual(duplicate.exception.code, "DECISION_CONFLICT")
@@ -683,7 +738,10 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             failure,
         )
         self.assertEqual(failed["projection"]["current_node"], "verification_rework")
-        self.assertEqual(self.controller.show(task_id).records[-1]["kind"], "verification")
+        self.assertEqual(
+            self.controller.show(task_id).records[-1]["kind"],
+            "assurance-execution",
+        )
         restarted_mid_rework = Controller(self.data_dir).next(task_id)
         self.assertFalse(restarted_mid_rework["done"])
         self.assertIsNone(restarted_mid_rework["dossier"])
@@ -706,10 +764,11 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         revised = self.controller.revise_contract(
             task_id,
             contract=revised_contract(2),
+            ownership_claims=self.revision_claims(task_id, "revised"),
             reason="Acceptance scope changed",
             actor_label="maintainer",
         )
-        self.assertEqual(revised["projection"]["current_node"], "implement")
+        self.assertEqual(revised["projection"]["current_node"], "impact")
         self.assertEqual(revised["projection"]["contract"]["revision"], 2)
         self.assertEqual(revised["projection"]["action"]["retry_budget"], None)
         revision_record = self.controller.show(task_id).records[-1]
@@ -723,20 +782,31 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         )
 
         self.controller = Controller(self.data_dir)
+        self.apply_current(
+            task_id,
+            {
+                "summary": "Revised impact confirmed",
+                "driver_result": driver_result("available"),
+            },
+        )
         self.source_action(task_id, {"summary": "Revised implementation"}, "revised")
         verification = self.controller.next(task_id)
         self.assertEqual(verification["action"]["retry_budget"]["attempts_used"], 0)
         self.assertEqual(verification["action"]["retry_budget"]["remaining"], 2)
         self.assertEqual(
             sum(
-                record["kind"] == "verification"
+                record["kind"] == "assurance-execution"
                 for record in self.controller.show(task_id).records
             ),
             2,
         )
-        self.assertEqual(
-            self.controller.show(task_id).records[-2]["artifact"]["type"],
+        self.assertIn(
             "revision-source",
+            [
+                record["artifact"]["type"]
+                for record in self.controller.show(task_id).records
+                if isinstance(record.get("artifact"), Mapping)
+            ],
         )
         first_revised_failure = self.apply_current(
             task_id,
@@ -758,14 +828,9 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         )
         self.source_action(task_id, {"summary": "Second bounded repair"}, "repair-2")
         restarted_verification = Controller(self.data_dir).next(task_id)
-        self.assertEqual(
-            restarted_verification["action"]["retry_budget"]["attempts_used"],
-            1,
-        )
-        self.assertEqual(
-            restarted_verification["action"]["retry_budget"]["remaining"],
-            1,
-        )
+        budget = restarted_verification["action"]["assurance"]["budget"]
+        self.assertEqual(budget["used"]["verification"], 1)
+        self.assertEqual(budget["used"]["rework"], 1)
 
     def test_feature_review_unavailable_succeeds_only_with_exact_waiver(self) -> None:
         state = self.controller.start(
@@ -833,36 +898,51 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 summary="Verified",
             ),
         )
+        review_obligation_id = self.current_obligation_id(task_id)
+        with self.assertRaises(DevFlowError) as context:
+            self.controller.decide(
+                task_id,
+                decision={
+                    "id": "premature-review-waiver",
+                    "kind": "assurance-waiver",
+                    "subject": review_obligation_id,
+                    "outcome": "waived",
+                    "rationale": "No unavailable review has been recorded",
+                    "actor_label": "maintainer",
+                },
+            )
+        self.assertEqual(context.exception.code, "DECISION_INVALID")
+        self.apply_current(
+            task_id,
+            self.review_payload(
+                "unavailable",
+                "self",
+                "Independent reviewer is unavailable",
+            ),
+        )
         self.controller.decide(
             task_id,
             decision={
                 "id": "review-waiver-1",
                 "kind": "assurance-waiver",
-                "subject": "review",
+                "subject": review_obligation_id,
                 "outcome": "waived",
                 "rationale": "Independent reviewer is unavailable for this personal delivery",
                 "actor_label": "maintainer",
             },
         )
-        review = self.apply_current(
-            task_id,
-            {
-                "outcome": "unavailable",
-                "assurance": "self",
-                "findings": {},
-                "summary": "Self-review complete; independence unavailable",
-                "driver_result": driver_result("unavailable"),
-            },
-        )
-        self.assertEqual(review["projection"]["current_node"], "finalize_success")
+        waived = self.controller.next(task_id)
+        self.assertEqual(waived["action"]["action_id"], "delivery.finalize.success")
         final = self.apply_current(
             task_id,
             {"summary": "Feature delivered", "remaining_risks": {}, "handoff": "Ready"},
         )
         dossier = self.controller.show(task_id).records[-1]["artifact"]["body"]
         self.assertEqual(final["projection"]["status"], "DONE")
-        self.assertEqual(dossier["review_assurance"]["status"], "waived")
-        self.assertIn("remaining_risk", dossier["review_assurance"])
+        self.assertIn(
+            "waived",
+            {item["state"] for item in dossier["obligation_states"]},
+        )
 
     def test_changes_requested_rework_lineage_replays_and_exhausts(self) -> None:
         task_id = self.start_feature("Feature requiring review rework")
@@ -874,13 +954,17 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 "changes-requested", "independent", "First review requests changes"
             ),
         )
-        self.assertEqual(first_review_result["projection"]["current_node"], "review_rework")
+        self.assertEqual(
+            first_review_result["projection"]["current_node"],
+            "verification_rework",
+        )
         first_review = self.controller.show(task_id).records[-1]
 
         self.controller = Controller(self.data_dir)
         rework_projection = self.controller.next(task_id)
         self.assertEqual(
-            rework_projection["action"]["action_id"], "review.rework.record"
+            rework_projection["action"]["action_id"],
+            "verification.rework.record",
         )
         projected_edges = {
             item["edge"]: item for item in rework_projection["action"]["inputs"]
@@ -908,57 +992,89 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             first_documentation["record_id"],
         )
 
-        self.source_action(
-            task_id,
-            {"summary": "Documentation updated after review"},
-            "review-documentation",
-        )
-        replacement_documentation = self.controller.show(task_id).records[-1]
-        self.assertEqual(
-            replacement_documentation["artifact"]["inputs"][0]["record_id"],
-            rework["record_id"],
-        )
-        self.apply_current(
-            task_id,
-            self.verification_payload(
+        while True:
+            current = self.controller.next(task_id)
+            obligation = current["action"].get("current_obligation")
+            if isinstance(obligation, Mapping) and obligation["kind"] == "independent-review":
+                break
+            self.apply_current(
                 task_id,
-                passed=True,
-                command="python3 focused_test.py",
-                criteria={"requirement": "proven"},
-                summary="Rework verified",
-            ),
-        )
-        replacement_verification = self.controller.show(task_id).records[-1]
-        verification_inputs = {
-            item["type"]: item
-            for item in replacement_verification["artifact"]["inputs"]
-        }
-        self.assertEqual(
-            verification_inputs["documentation"]["record_id"],
-            replacement_documentation["record_id"],
-        )
+                self.verification_payload(
+                    task_id,
+                    passed=True,
+                    command="python3 focused_test.py",
+                    criteria={"requirement": "proven"},
+                    summary="Rework assurance passed",
+                ),
+            )
         exhausted = self.apply_current(
             task_id,
             self.review_payload(
                 "changes-requested", "independent", "Second review requests changes"
             ),
         )
+        cycle = 0
+        while exhausted["projection"]["current_node"] == "verification_rework":
+            cycle += 1
+            self.assertLessEqual(cycle, 4)
+            self.source_action(
+                task_id,
+                {"summary": "Additional bounded review repair"},
+                "review-rework-{}".format(cycle),
+            )
+            while True:
+                current = self.controller.next(task_id)
+                if (
+                    current["action"]["action_id"]
+                    == "delivery.finalize.verification-incomplete"
+                ):
+                    exhausted = {"projection": current}
+                    break
+                obligation = current["action"].get("current_obligation")
+                if (
+                    isinstance(obligation, Mapping)
+                    and obligation["kind"] == "independent-review"
+                ):
+                    break
+                self.apply_current(
+                    task_id,
+                    self.verification_payload(
+                        task_id,
+                        passed=True,
+                        command="python3 focused_test.py",
+                        criteria={"requirement": "proven"},
+                        summary="Additional assurance passed",
+                    ),
+                )
+            if (
+                exhausted["projection"]["action"]["action_id"]
+                == "delivery.finalize.verification-incomplete"
+            ):
+                break
+            exhausted = self.apply_current(
+                task_id,
+                self.review_payload(
+                    "changes-requested",
+                    "independent",
+                    "Review still requests changes",
+                ),
+            )
         self.assertEqual(
-            exhausted["projection"]["current_node"], "finalize_review_incomplete"
+            exhausted["projection"]["action"]["action_id"],
+            "delivery.finalize.verification-incomplete",
         )
-        second_review = self.controller.show(task_id).records[-1]
-        self.assertEqual(second_review["producer"]["attempt"], 2)
-        second_inputs = {
-            item["type"]: item for item in second_review["artifact"]["inputs"]
-        }
-        self.assertEqual(
-            second_inputs["verification-result"]["record_id"],
-            replacement_verification["record_id"],
-        )
+        review_executions = [
+            record
+            for record in self.controller.show(task_id).records
+            if isinstance(record.get("artifact"), Mapping)
+            and isinstance(record["artifact"].get("body"), Mapping)
+            and isinstance(record["artifact"]["body"].get("review_result"), Mapping)
+        ]
+        self.assertGreaterEqual(len(review_executions), 2)
         replayed = Controller(self.data_dir).next(task_id)
         self.assertEqual(
             replayed["action"]["action_id"],
-            "delivery.finalize.review-incomplete",
+            "delivery.finalize.verification-incomplete",
         )
 
     def test_verification_incomplete_dossier_does_not_promote_stale_review(self) -> None:
@@ -981,11 +1097,6 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             {"summary": "Addressed the review finding"},
             "review-rework",
         )
-        self.source_action(
-            task_id,
-            {"summary": "Updated documentation after review"},
-            "review-documentation",
-        )
         failure = self.verification_payload(
             task_id,
             passed=False,
@@ -994,9 +1105,26 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             summary="Verification still fails",
         )
         exhausted = self.apply_current(task_id, failure)
+        cycle = 0
+        while exhausted["projection"]["current_node"] == "verification_rework":
+            cycle += 1
+            self.assertLessEqual(cycle, 4)
+            self.source_action(
+                task_id,
+                {"summary": "Additional verification repair"},
+                "verification-rework-{}".format(cycle),
+            )
+            current = self.controller.next(task_id)
+            if (
+                current["action"]["action_id"]
+                == "delivery.finalize.verification-incomplete"
+            ):
+                exhausted = {"projection": current}
+                break
+            exhausted = self.apply_current(task_id, failure)
         self.assertEqual(
-            exhausted["projection"]["current_node"],
-            "finalize_verification_incomplete",
+            exhausted["projection"]["action"]["action_id"],
+            "delivery.finalize.verification-incomplete",
         )
         self.apply_current(
             task_id,
@@ -1017,18 +1145,12 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         )
         self.assertFalse(review_history["current"])
         self.assertTrue(review_history["stale_reasons"])
-        review_attempt = next(
-            item
-            for item in dossier["review_attempts"]
-            if item["record_id"] == stale_review["record_id"]
-        )
-        self.assertFalse(review_attempt["current"])
-        self.assertTrue(review_attempt["stale_reasons"])
-        self.assertEqual(review_attempt["result"]["outcome"], "changes-requested")
-        self.assertEqual(review_attempt["result"]["assurance"], "independent")
+        review_result = stale_review["artifact"]["body"]["review_result"]
+        self.assertEqual(review_result["outcome"], "changes-requested")
+        self.assertTrue(review_result["finding_fingerprints"])
         self.assertEqual(
-            json_value(review_attempt["result"]["findings"]),
-            json_value(review_payload["findings"]),
+            {item["fingerprint"] for item in dossier["review_findings"]},
+            set(review_result["finding_fingerprints"]),
         )
 
     def test_unavailable_review_without_exact_waiver_replays_as_rework(self) -> None:
@@ -1053,22 +1175,37 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             task_id,
             self.review_payload("unavailable", "self", "Independence unavailable"),
         )
-        self.assertEqual(result["projection"]["current_node"], "review_rework")
+        self.assertEqual(
+            result["projection"]["current_node"],
+            "verification_rework",
+        )
         restarted = Controller(self.data_dir)
         state = restarted.show(task_id)
-        self.assertEqual(state.records[-1]["kind"], "review")
-        self.assertEqual(state.records[-1]["payload"]["outcome"], "unavailable")
+        self.assertEqual(state.records[-1]["kind"], "assurance-execution")
         self.assertEqual(
-            restarted.next(task_id)["action"]["action_id"], "review.rework.record"
+            state.records[-1]["artifact"]["body"]["review_result"]["outcome"],
+            "unavailable",
+        )
+        self.assertEqual(
+            restarted.next(task_id)["action"]["action_id"],
+            "verification.rework.record",
         )
 
     def test_old_contract_review_waiver_is_historical_after_revision(self) -> None:
         task_id = self.start_feature("Review waiver staleness")
         self.preflight(task_id)
+        self.advance_feature_to_review(task_id, "old-waiver-initial")
+        old_review_obligation_id = self.current_obligation_id(task_id)
+        self.apply_current(
+            task_id,
+            self.review_payload(
+                "unavailable", "self", "Independent reviewer unavailable"
+            ),
+        )
         waiver = self.decision(
             "old-review-waiver",
             kind="assurance-waiver",
-            subject="review",
+            subject=old_review_obligation_id,
             outcome="waived",
         )
         self.controller.decide(task_id, decision=waiver)
@@ -1076,6 +1213,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.controller.revise_contract(
             task_id,
             contract=revised_contract(2),
+            ownership_claims=self.revision_claims(task_id, "revised"),
             reason="Review scope changed",
             actor_label="maintainer",
         )
@@ -1086,26 +1224,23 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             task_id,
             self.review_payload("unavailable", "self", "Old waiver is not current"),
         )
-        self.assertEqual(result["projection"]["current_node"], "review_rework")
+        self.assertEqual(
+            result["projection"]["current_node"],
+            "verification_rework",
+        )
 
-    def test_current_waiver_does_not_turn_self_review_into_approval(self) -> None:
+    def test_self_review_does_not_turn_into_approval(self) -> None:
         task_id = self.start_feature("Self review remains non-independent")
         self.preflight(task_id)
         self.advance_feature_to_review(task_id, "self-review")
-        self.controller.decide(
-            task_id,
-            decision=self.decision(
-                "current-review-waiver",
-                kind="assurance-waiver",
-                subject="review",
-                outcome="waived",
-            ),
-        )
         result = self.apply_current(
             task_id,
             self.review_payload("approved", "self", "Self review found no issue"),
         )
-        self.assertEqual(result["projection"]["current_node"], "review_rework")
+        self.assertEqual(
+            result["projection"]["current_node"],
+            "verification_rework",
+        )
 
     def test_read_only_binding_rejects_unowned_source_change_and_stales_terminal_proof(self) -> None:
         task_id = self.start_feature("Read-only assurance binding")
@@ -1122,7 +1257,11 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             self.controller.apply(
                 task_id,
                 review_projection["action"]["action_id"],
-                self.review_payload("approved", "independent"),
+                self.adaptive_payload(
+                    task_id,
+                    review_projection["action"],
+                    self.review_payload("approved", "independent"),
+                ),
                 binding=review_binding,
             )
         self.assertEqual(changed.exception.code, "WORKSPACE_CHANGED")
@@ -1132,7 +1271,11 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         approved = self.controller.apply(
             task_id,
             review_projection["action"]["action_id"],
-            self.review_payload("approved", "independent"),
+            self.adaptive_payload(
+                task_id,
+                review_projection["action"],
+                self.review_payload("approved", "independent"),
+            ),
             binding=review_binding,
         )
         self.assertEqual(approved["projection"]["current_node"], "finalize_success")
@@ -1147,14 +1290,14 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         blocked = self.controller.next(task_id)
         self.assertIsNone(blocked["action"]["binding"])
         self.assertEqual(
-            blocked["action"]["blocked"]["code"], "ARTIFACT_INPUT_MISSING"
+            blocked["action"]["blocked"]["code"], "AMBIENT_DRIFT"
         )
         self.assertTrue(
             blocked["freshness"][records_by_type["impact-report"]["record_id"]][
                 "current"
             ]
         )
-        for artifact_type in ("verification-result", "review-result"):
+        for artifact_type in ("verification-result",):
             with self.subTest(artifact_type=artifact_type):
                 self.assertFalse(
                     blocked["freshness"][records_by_type[artifact_type]["record_id"]][
@@ -1235,7 +1378,12 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         result = self.controller.apply(
             task_id,
             implementation["action"]["action_id"],
-            {"summary": "Implemented"},
+            {
+                "summary": "Implemented",
+                "ownership_claims": self.ownership_claims(
+                    task_id, ["a.txt", "tasks.md"]
+                ),
+            },
             binding=implementation["action"]["binding"],
         )
         self.assertTrue(
@@ -1336,9 +1484,39 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             and record["artifact"].get("type") == "delivery-plan"
         )
 
+        (self.repository / "ambient.txt").write_text(
+            "explicitly adopted drift\n", encoding="utf-8"
+        )
+        incomplete_claims = self.revision_claims(task_id, "replacement")
+        before_rejected_revision = self.controller.show(task_id)
+        with self.assertRaises(DevFlowError) as omitted:
+            self.controller.revise_contract(
+                task_id,
+                contract=revised_contract(2, "replacement"),
+                ownership_claims=incomplete_claims,
+                reason="Omitted drift must not be adopted",
+                actor_label="maintainer",
+            )
+        self.assertEqual(omitted.exception.code, "OWNERSHIP_CLAIMS_INVALID")
+        self.assertEqual(self.controller.show(task_id), before_rejected_revision)
+        reconciliation_claims = {
+            **incomplete_claims,
+            "claims": [
+                *incomplete_claims["claims"],
+                {
+                    "repository_id": self.repository_id(task_id),
+                    "path": "ambient.txt",
+                    "classification": "implementation",
+                    "criterion_ids": ["replacement"],
+                    "purpose": "Adopt the exact ambient drift into revised scope",
+                },
+            ],
+        }
+
         revised = self.controller.revise_contract(
             task_id,
             contract=revised_contract(2, "replacement"),
+            ownership_claims=reconciliation_claims,
             reason="C2 replaces C1 scope",
             actor_label="maintainer",
         )
@@ -1352,11 +1530,14 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         plan_c1_snapshot = self.sole_member_snapshot(
             task_id, plan_c1["artifact"]["snapshot"]
         )
-        self.assertEqual(
+        self.assertNotEqual(
             revision_snapshot["status_sha256"],
             plan_c1_snapshot["status_sha256"],
         )
-        self.assertEqual(tuple(revision_snapshot["resources"]), ())
+        self.assertEqual(
+            {(item["path"], item["role"]) for item in revision_snapshot["resources"]},
+            {("plan.md", "reported"), ("tasks.md", "reported")},
+        )
         self.assertEqual(
             revision_record["payload"]["previous_contract_digest"],
             plan_c1["artifact"]["contract_digest"],
@@ -1364,6 +1545,23 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.assertEqual(
             revision_record["payload"]["new_contract_digest"],
             revision_record["artifact"]["contract_digest"],
+        )
+        revision_body = revision_record["artifact"]["body"]
+        self.assertEqual(
+            {item["path"] for item in revision_body["task_change_manifest"]["entries"]},
+            {"ambient.txt", "plan.md", "tasks.md"},
+        )
+        self.assertEqual(
+            {tuple(item["criterion_ids"]) for item in revision_body["task_change_manifest"]["entries"]},
+            {("replacement",)},
+        )
+        self.assertEqual(
+            revision_body["revision_interval"]["revision_snapshot_digest"],
+            revision_record["snapshot"]["digest"],
+        )
+        self.assertEqual(
+            Controller(self.data_dir).show(task_id).records[-1]["digest"],
+            revision_record["digest"],
         )
 
         self.apply_current(
@@ -1393,6 +1591,9 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 "summary": "C2 replacement plan",
                 "resources": resources,
                 "driver_result": driver_result("available", change="c2"),
+                "ownership_claims": self.ownership_claims(
+                    task_id, ["plan.md", "tasks.md"]
+                ),
             },
             binding=replacement_planning["action"]["binding"],
         )
@@ -1450,6 +1651,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             self.controller.revise_contract(
                 task_id,
                 contract=revised_contract(2),
+                ownership_claims=self.revision_claims(task_id, "revised"),
                 reason="Retry after a stable snapshot is available",
                 actor_label="maintainer",
             )
@@ -1457,7 +1659,10 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         after_failure = Controller(self.data_dir).show(task_id)
         self.assertEqual(after_failure, before)
         self.assertEqual(
-            sum(record["kind"] == "verification" for record in after_failure.records),
+            sum(
+                record["kind"] == "assurance-execution"
+                for record in after_failure.records
+            ),
             1,
         )
         self.assertEqual(after_failure.current_node, "verification_rework")
@@ -1465,6 +1670,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         recovered = Controller(self.data_dir).revise_contract(
             task_id,
             contract=revised_contract(2),
+            ownership_claims=self.revision_claims(task_id, "revised"),
             reason="Stable snapshot recovered",
             actor_label="maintainer",
         )
@@ -1503,9 +1709,12 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         finally:
             self.controller.store.update = original_update
         self.assertEqual(caught.exception.code, "REVISION_CONFLICT")
-        self.assertEqual(caught.exception.details["projection"]["revision"], 2)
+        self.assertEqual(caught.exception.details["projection"]["revision"], 3)
         state = self.controller.show(task_id)
-        self.assertEqual([record["kind"] for record in state.records], ["preflight", "decision"])
+        self.assertEqual(
+            [record["kind"] for record in state.records],
+            ["preflight", "action", "decision"],
+        )
         self.assertEqual(state.original_contract["revision"], 1)
         self.assertEqual(
             self.controller.next(task_id)["action"]["action_id"],
@@ -1552,7 +1761,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                     "contract_revision_replay_failed",
                 )
         self.state_path(task_id).write_text(json.dumps(original), encoding="utf-8")
-        self.assertEqual(Controller(self.data_dir).show(task_id).revision, 2)
+        self.assertEqual(Controller(self.data_dir).show(task_id).revision, 3)
 
     def test_verification_exhaustion_generates_incomplete_dossier(self) -> None:
         task_id = self.start_lite()
@@ -1727,7 +1936,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             Controller(self.data_dir).show(task_a)
         self.assertEqual(workflow_drift.exception.code, "WORKFLOW_IDENTITY_MISMATCH")
         self.assertEqual(Controller(self.data_dir).show(task_b).revision, 1)
-        self.assertEqual(Controller(self.data_dir).show(task_c).revision, 1)
+        self.assertEqual(Controller(self.data_dir).show(task_c).revision, 2)
 
         value = json.loads(self.state_path(task_b).read_text(encoding="utf-8"))
         value["records"][0]["schema"] = "dev-flow-record/unsupported"
@@ -1735,7 +1944,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         with self.assertRaises(DevFlowError) as record_drift:
             Controller(self.data_dir).show(task_b)
         self.assertEqual(record_drift.exception.code, "STATE_INVALID")
-        self.assertEqual(Controller(self.data_dir).show(task_c).revision, 1)
+        self.assertEqual(Controller(self.data_dir).show(task_c).revision, 2)
 
     def test_catalog_drift_is_local_but_product_identity_mismatch_fails_closed(self) -> None:
         task_id = self.start_lite("Identity isolation")
@@ -1753,7 +1962,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             )
             self.assertEqual(projection["revision"], persisted.revision)
             self.assertEqual(
-                projection["action"]["action_id"], "verification.record"
+                projection["action"]["action_id"], "assurance.execute"
             )
         finally:
             product_module.CATALOG_IDENTITY = original_catalog
@@ -1804,7 +2013,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
             ]
         )
         self.assertEqual(code, 0)
-        self.assertEqual(applied["projection"]["current_node"], "implement")
+        self.assertEqual(applied["projection"]["current_node"], "impact")
         code, invalid = invoke(
             [
                 "--data-dir",

@@ -13,7 +13,7 @@ import time
 from typing import Iterable, Mapping, Optional, Sequence
 
 from .delivery import normalize_resource_bytes
-from .model import DevFlowError
+from .model import DevFlowError, json_value
 from .product import (
     MAX_INDEX_COMMAND_OUTPUT_BYTES,
     MAX_INDEX_STAGE_ENTRIES,
@@ -605,6 +605,51 @@ class GitClient:
             for mode, oid, stage in index_entries.get(path, ())
         ]
 
+    @classmethod
+    def _head_entries(
+        cls,
+        repository: Path,
+        paths: Sequence[str],
+        deadline: float,
+    ) -> tuple:
+        """Read the immutable HEAD-tree identity for only the bounded snapshot paths."""
+        if not paths:
+            return b"", {}
+        arguments = ["ls-tree", "-z", "HEAD", "--"]
+        arguments.extend(":(literal){}".format(path) for path in paths)
+        raw = cls._run_snapshot(
+            repository,
+            deadline,
+            *arguments,
+            output_limit_bytes=MAX_INDEX_COMMAND_OUTPUT_BYTES,
+        )
+        if raw and not raw.endswith(b"\x00"):
+            raise _error("GIT_OUTPUT_INVALID", "Git HEAD-tree enumeration is not NUL terminated")
+        requested = set(paths)
+        result = {}
+        for encoded in raw.split(b"\x00")[:-1]:
+            try:
+                header, encoded_path = encoded.split(b"\t", 1)
+                mode_raw, type_raw, oid_raw = header.split()
+                path = encoded_path.decode("utf-8")
+                mode = mode_raw.decode("ascii")
+                object_type = type_raw.decode("ascii")
+                oid = oid_raw.decode("ascii")
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise _error("GIT_OUTPUT_INVALID", "Git HEAD-tree entry is malformed") from exc
+            if (
+                path not in requested
+                or not _valid_relative_path(path)
+                or not _MODE.fullmatch(mode)
+                or not _OBJECT_ID.fullmatch(oid)
+                or object_type not in ("blob", "commit")
+                or (object_type == "commit") != (mode == "160000")
+                or path in result
+            ):
+                raise _error("GIT_OUTPUT_INVALID", "Git HEAD-tree entry is invalid", path=path)
+            result[path] = {"mode": mode, "oid": oid}
+        return raw, result
+
     @staticmethod
     def _gitlink_entry(path: str, index_entries: Mapping[str, Sequence[tuple]]) -> Optional[tuple]:
         items = tuple(index_entries.get(path, ()))
@@ -776,13 +821,16 @@ class GitClient:
         root_fd: int,
         path: str,
         index_entries: Mapping[str, Sequence[tuple]],
+        head_entries: Mapping[str, Mapping[str, str]],
         deadline: float,
         total: list,
+        object_format: str,
     ) -> tuple:
         cls._check_deadline(deadline)
         lookup = cls._lookup_parent(root_fd, path)
         gitlink = cls._gitlink_entry(path, index_entries)
         serialized_index = cls._serialized_index_entries(path, index_entries)
+        head_entry = json_value(head_entries.get(path))
         parent_fd = lookup.get("parent_fd")
         if parent_fd is None:
             if gitlink is not None:
@@ -797,7 +845,9 @@ class GitClient:
                 "mode": None,
                 "size": 0,
                 "content_sha256": None,
+                "worktree_oid": None,
                 "index_entries": serialized_index,
+                "head_entry": head_entry,
                 "submodule_head": None,
             }
             observation = {
@@ -823,7 +873,9 @@ class GitClient:
                     "mode": None,
                     "size": 0,
                     "content_sha256": None,
+                    "worktree_oid": None,
                     "index_entries": serialized_index,
+                    "head_entry": head_entry,
                     "submodule_head": None,
                 }
                 observation = {
@@ -867,7 +919,9 @@ class GitClient:
                     "mode": "160000",
                     "size": 0,
                     "content_sha256": None,
+                    "worktree_oid": state[3],
                     "index_entries": serialized_index,
+                    "head_entry": head_entry,
                     "submodule_head": state[3],
                 }
                 observation = {
@@ -924,7 +978,9 @@ class GitClient:
                 "mode": "{:06o}".format(before.st_mode),
                 "size": len(raw),
                 "content_sha256": hashlib.sha256(raw).hexdigest(),
+                "worktree_oid": cls._blob_oid(raw, object_format),
                 "index_entries": serialized_index,
+                "head_entry": head_entry,
                 "submodule_head": None,
             }
             observation = {
@@ -1059,7 +1115,13 @@ class GitClient:
                 path_limit=MAX_SNAPSHOT_PATHS,
                 byte_limit=MAX_SNAPSHOT_PATH_BYTES,
             )
+        object_format = cls._decode_text(
+            initial["object_format"], ("rev-parse", "--show-object-format")
+        )
+        if object_format not in ("sha1", "sha256"):
+            raise _error("GIT_OUTPUT_INVALID", "Git object format is unsupported")
         initial_index, index_entries = cls._index_entries(root, paths, deadline)
+        initial_head_tree, head_entries = cls._head_entries(root, paths, deadline)
         root_fd, root_identity = cls._open_root(root)
         entries = []
         raw_by_path = {}
@@ -1072,15 +1134,22 @@ class GitClient:
                     root_fd,
                     path,
                     index_entries,
+                    head_entries,
                     deadline,
                     total,
+                    object_format,
                 )
                 entries.append(entry)
                 raw_by_path[path] = raw
                 observations[path] = observation
             final = cls._capture_enumeration(root, deadline)
             final_index, _ = cls._index_entries(root, paths, deadline)
-            if final != initial or final_index != initial_index:
+            final_head_tree, _ = cls._head_entries(root, paths, deadline)
+            if (
+                final != initial
+                or final_index != initial_index
+                or final_head_tree != initial_head_tree
+            ):
                 raise _error(
                     "SNAPSHOT_UNSTABLE",
                     "Git repository metadata or path enumeration changed during collection",
@@ -1127,11 +1196,6 @@ class GitClient:
                 }
             )
 
-        object_format = cls._decode_text(
-            initial["object_format"], ("rev-parse", "--show-object-format")
-        )
-        if object_format not in ("sha1", "sha256"):
-            raise _error("GIT_OUTPUT_INVALID", "Git object format is unsupported")
         oid_length = 40 if object_format == "sha1" else 64
         for path, items in index_entries.items():
             if any(len(item[1]) != oid_length for item in items):
@@ -1181,3 +1245,9 @@ class GitClient:
             "resources": resource_entries,
         }
         return validate_snapshot({**base, "digest": _snapshot_digest(base)})
+    @staticmethod
+    def _blob_oid(raw: bytes, object_format: str) -> str:
+        digest = hashlib.sha1() if object_format == "sha1" else hashlib.sha256()
+        digest.update("blob {}\0".format(len(raw)).encode("ascii"))
+        digest.update(raw)
+        return digest.hexdigest()

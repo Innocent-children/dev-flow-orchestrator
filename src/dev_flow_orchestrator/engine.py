@@ -152,20 +152,21 @@ def plan_current_action(
             status=state.status,
         )
     contract = current_node_contract(state, definition)
-    if contract.handler_id == "assurance.dispatch" and contract.action_id != action_id:
+    if (
+        contract.handler_id == "assurance.dispatch"
+        or ".rework." in contract.action_id
+    ) and contract.action_id != action_id:
         adaptive = _adaptive_context(state, definition)
-        if adaptive["selected"] is None:
-            success_finalizers = [
-                item
-                for item in definition.nodes.values()
-                if item.handler_id == "delivery.finalize"
-                and item.finalize_outcome == "success"
-            ]
-            if (
-                len(success_finalizers) == 1
-                and success_finalizers[0].action_id == action_id
-            ):
-                contract = success_finalizers[0]
+        finalizer = _adaptive_dispatch_finalizer(definition, adaptive)
+        if (
+            finalizer is not None
+            and finalizer.action_id == action_id
+            and (
+                contract.handler_id == "assurance.dispatch"
+                or finalizer.finalize_outcome == "success"
+            )
+        ):
+            contract = finalizer
     cancel = definition.cancel_for(state.current_node)
     is_cancel = cancel is not None and cancel.action_id == action_id
     if contract.action_id != action_id:
@@ -665,6 +666,12 @@ def _dossier_body(
             executions_by_fingerprint.setdefault(
                 execution["obligation_fingerprint"], []
             ).append(execution["digest"])
+        reused_execution_digests = {}
+        for decision in history["reuse_decisions"]:
+            if decision["status"] == "reused":
+                reused_execution_digests.setdefault(
+                    decision["current_obligation_id"], []
+                ).append(decision["execution_digest"])
         adaptive_coverage = {}
         for criterion in contract_value["acceptance_criteria"]:
             criterion_id = criterion["id"]
@@ -679,7 +686,8 @@ def _dossier_body(
                     "obligation_fingerprint": obligation["fingerprint"],
                     "state": state_by_id[obligation["obligation_id"]]["state"],
                     "execution_digests": sorted(
-                        executions_by_fingerprint.get(obligation["fingerprint"], ())
+                        executions_by_fingerprint.get(obligation["fingerprint"], [])
+                        + reused_execution_digests.get(obligation["obligation_id"], [])
                     ),
                     "task_change_slice": json_value(obligation["task_change_slice"]),
                     "impact_closure": json_value(obligation["impact_closure"]),
@@ -734,6 +742,111 @@ def _dossier_body(
             supplied=supplied,
             repositories=state.repositories,
         )
+        current_proof_record_ids = {
+            str(item["execution_record_id"])
+            for item in history["reuse_decisions"]
+            if item["status"] == "reused"
+        }
+        reusable_fingerprints = {
+            obligation["fingerprint"]
+            for obligation in plan["obligations"]
+            if state_by_id[obligation["obligation_id"]]["state"]
+            in ("satisfied", "reused")
+        }
+        manifest_history = []
+        revision_intervals = []
+        assurance_history = []
+        review_history = []
+        for record in state.records:
+            if not isinstance(record, Mapping):
+                continue
+            artifact = record.get("artifact")
+            if not isinstance(artifact, Mapping):
+                continue
+            body = artifact.get("body")
+            if not isinstance(body, Mapping):
+                continue
+            recorded_manifest = body.get("task_change_manifest")
+            if isinstance(recorded_manifest, Mapping):
+                manifest_history.append({
+                    "record_id": record.get("record_id"),
+                    "artifact_type": artifact.get("type"),
+                    "artifact_digest": artifact.get("digest"),
+                    "snapshot_digest": (
+                        artifact["snapshot"].get("digest")
+                        if isinstance(artifact.get("snapshot"), Mapping)
+                        else None
+                    ),
+                    "producer": json_value(artifact.get("producer")),
+                    "manifest": json_value(recorded_manifest),
+                })
+            if artifact.get("type") == "revision-source":
+                revision_intervals.append({
+                    "record_id": record.get("record_id"),
+                    "contract_digest": artifact.get("contract_digest"),
+                    "revision_interval": json_value(body.get("revision_interval")),
+                    "adoption_claims": json_value(body.get("adoption_claims")),
+                    "manifest_digest": (
+                        recorded_manifest.get("digest")
+                        if isinstance(recorded_manifest, Mapping)
+                        else None
+                    ),
+                })
+            execution = body.get("assurance_execution")
+            if isinstance(execution, Mapping):
+                current = (
+                    execution.get("obligation_fingerprint") in reusable_fingerprints
+                    or str(record.get("record_id")) in current_proof_record_ids
+                )
+                if current and execution.get("passed") is True:
+                    current_proof_record_ids.add(str(record.get("record_id")))
+                entry = {
+                    "record_id": record.get("record_id"),
+                    "artifact_digest": artifact.get("digest"),
+                    "current": current,
+                    "execution": json_value(execution),
+                    "obligation": json_value(body.get("obligation")),
+                    "review_result": json_value(body.get("review_result")),
+                    "review_binding": json_value(body.get("review_binding")),
+                    "reuse_basis": next(
+                        (
+                            json_value(item)
+                            for item in history["reuse_decisions"]
+                            if str(item["execution_record_id"])
+                            == str(record.get("record_id"))
+                        ),
+                        None,
+                    ),
+                }
+                assurance_history.append(entry)
+                if isinstance(body.get("review_result"), Mapping):
+                    review_history.append(entry)
+        for item in dossier.get("artifacts", ()):
+            if str(item.get("record_id")) not in current_proof_record_ids:
+                continue
+            item["stale_reasons"] = [
+                reason
+                for reason in item.get("stale_reasons", ())
+                if reason != "superseded"
+                and not str(reason).startswith(("source_replaced", "workspace_changed"))
+            ]
+            item["current"] = not item["stale_reasons"]
+        for key in ("verification_attempts", "review_attempts"):
+            for item in dossier.get(key, ()):
+                if str(item.get("record_id")) in current_proof_record_ids:
+                    item["stale_reasons"] = [
+                        reason
+                        for reason in item.get("stale_reasons", ())
+                        if reason != "superseded"
+                        and not str(reason).startswith(("source_replaced", "workspace_changed"))
+                    ]
+                    item["current"] = not item["stale_reasons"]
+        accepted_snapshot = _latest_manifest_snapshot(state)
+        drift = (
+            None
+            if accepted_snapshot is None
+            else ambient_drift(accepted_snapshot, snapshot, state.repositories)
+        )
         structured_findings = []
         for record in state.records:
             if not isinstance(record, Mapping):
@@ -787,6 +900,33 @@ def _dossier_body(
             "finding_dispositions": json_value(
                 _finding_dispositions(state, contract_value, current_only=False)
             ),
+            "manifest_history": manifest_history,
+            "revision_intervals": revision_intervals,
+            "ambient_drift": json_value(drift),
+            "assurance_history": assurance_history,
+            "assurance_reuse_history": json_value(history["reuse_decisions"]),
+            "review_history": review_history,
+            "governance_history": json_value([
+                {
+                    "record_id": record.get("record_id"),
+                    "kind": record.get("kind"),
+                    "contract": record.get("contract"),
+                    "payload": record.get("payload"),
+                }
+                for record in state.records
+                if isinstance(record, Mapping)
+                and record.get("kind") in ("decision", "finding-disposition", "contract-revision")
+            ]),
+            "repository_results": json_value([
+                state_by_id[item["obligation_id"]]
+                for item in plan["obligations"]
+                if item["kind"] == "repository-check"
+            ]),
+            "integration_results": json_value([
+                state_by_id[item["obligation_id"]]
+                for item in plan["obligations"]
+                if item["kind"] == "integration-check"
+            ]),
             "decision": {
                 "outcome": "DONE" if contract.finalize_outcome == "success" else "INCOMPLETE",
                 "unmet_obligation_ids": [item["obligation_id"] for item in unresolved],
@@ -986,6 +1126,7 @@ def _artifact_for_action(
             "obligation": json_value(adaptive["obligation"]),
             "budget": json_value(adaptive["budget"]),
             "review_result": json_value(adaptive.get("review_result")),
+            "review_binding": json_value(adaptive.get("review_binding")),
         }
     elif contract.handler_id == "delivery.finalize":
         body = _dossier_body(
@@ -1136,18 +1277,80 @@ def _latest_artifact_body(
     return None
 
 
+def _latest_manifest_snapshot(state: TaskState) -> Optional[Mapping[str, object]]:
+    for artifact in reversed(tuple(artifact_by_record_id(state.records).values())):
+        if not isinstance(artifact, Mapping):
+            continue
+        body = artifact.get("body")
+        snapshot = artifact.get("snapshot")
+        if (
+            isinstance(body, Mapping)
+            and isinstance(body.get("task_change_manifest"), Mapping)
+            and isinstance(snapshot, Mapping)
+        ):
+            return snapshot
+    return None
+
+
 def _assurance_history(
     state: TaskState,
     plan: Mapping[str, object],
 ) -> dict:
     """Project same-contract executions and slice-equivalent read-only reuse."""
-    current_by_fingerprint = {
-        item["fingerprint"]: item for item in plan["obligations"]
+    def governing_digest(obligation: Mapping[str, object]) -> str:
+        ignored = {"schema", "obligation_id", "fingerprint", "task_change_slice"}
+        return hashlib.sha256(canonical_json_bytes({
+            key: value for key, value in obligation.items() if key not in ignored
+        })).hexdigest()
+
+    def slice_map(obligation: Mapping[str, object]) -> dict:
+        return {
+            (str(item.get("repository_id")), str(item.get("path"))): json_value(item)
+            for item in obligation.get("task_change_slice", ())
+            if isinstance(item, Mapping)
+        }
+
+    def closure_keys(value: object) -> set:
+        result = set()
+        if isinstance(value, Mapping):
+            repository_id = value.get("repository_id")
+            path = value.get("path")
+            if isinstance(repository_id, str) and isinstance(path, str):
+                result.add((repository_id, path))
+            for nested in value.values():
+                result.update(closure_keys(nested))
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                result.update(closure_keys(nested))
+        return result
+
+    def resource_binding(snapshot: object) -> Optional[str]:
+        if not isinstance(snapshot, Mapping):
+            return None
+        resources = []
+        for member in snapshot.get("repositories", ()):
+            member_snapshot = member.get("snapshot") if isinstance(member, Mapping) else None
+            if not isinstance(member_snapshot, Mapping):
+                return None
+            for resource in member_snapshot.get("resources", ()):
+                if isinstance(resource, Mapping) and resource.get("role") == "governing":
+                    resources.append({
+                        "repository_id": member.get("repository_id"),
+                        "path": resource.get("path"),
+                        "normalizer": resource.get("normalizer"),
+                        "kind": resource.get("kind"),
+                        "semantic_sha256": resource.get("semantic_sha256"),
+                    })
+        return hashlib.sha256(canonical_json_bytes(resources)).hexdigest()
+
+    current_by_governing = {
+        governing_digest(item): item for item in plan["obligations"]
     }
     current_plan_digest = plan["digest"]
     all_executions = []
     state_executions = []
     reused_obligation_ids = set()
+    reuse_decisions = []
     execution_classes = {}
     rework_executions = 0
     governance_mutations = 0
@@ -1179,7 +1382,25 @@ def _assurance_history(
             isinstance(action_id, str) and action_id.startswith("delivery.finalize.")
         ):
             fixed_mutations += 1
-    for artifact in artifact_by_record_id(state.records).values():
+    artifacts = artifact_by_record_id(state.records)
+    current_source_artifact = next(
+        (
+            artifact
+            for artifact in reversed(tuple(artifacts.values()))
+            if isinstance(artifact, Mapping)
+            and isinstance(artifact.get("body"), Mapping)
+            and isinstance(artifact["body"].get("task_change_manifest"), Mapping)
+            and artifact["body"]["task_change_manifest"].get("digest")
+            == plan.get("manifest_digest")
+        ),
+        None,
+    )
+    current_resource_binding = resource_binding(
+        current_source_artifact.get("snapshot")
+        if isinstance(current_source_artifact, Mapping)
+        else None
+    )
+    for record_id, artifact in artifacts.items():
         if not isinstance(artifact, Mapping):
             continue
         body = artifact.get("body")
@@ -1211,20 +1432,75 @@ def _assurance_history(
         execution_classes[str(execution.get("digest", ""))] = old_obligation[
             "budget_class"
         ]
-        current = current_by_fingerprint.get(execution.get("obligation_fingerprint"))
-        if current is None:
-            continue
-        if (
-            execution.get("passed") is True
-            and execution.get("plan_digest") != current_plan_digest
-        ):
-            reused_obligation_ids.add(current["obligation_id"])
-        else:
+        if execution.get("plan_digest") == current_plan_digest:
             state_executions.append(execution)
+            continue
+        current = current_by_governing.get(governing_digest(old_obligation))
+        reasons = []
+        changed_keys = set()
+        closure = closure_keys(old_obligation.get("impact_closure"))
+        if execution.get("passed") is not True:
+            reasons.append("execution-did-not-pass")
+        if current is None:
+            reasons.append("governing-obligation-changed")
+        else:
+            old_slice = slice_map(old_obligation)
+            new_slice = slice_map(current)
+            changed_keys = {
+                key for key in set(old_slice) | set(new_slice)
+                if old_slice.get(key) != new_slice.get(key)
+            }
+            if changed_keys:
+                if old_obligation.get("kind") in (
+                    "integration-check", "independent-review"
+                ):
+                    reasons.append("reviewed-member-or-edge-slice-changed")
+                elif not closure:
+                    reasons.append("impact-closure-ambiguous")
+                elif changed_keys & closure:
+                    reasons.append("task-change-slice-intersects-impact-closure")
+                elif old_obligation.get("kind") == "documentation-check" and any(
+                    (old_slice.get(key) or new_slice.get(key) or {}).get("classification")
+                    == "documentation"
+                    for key in changed_keys
+                ):
+                    reasons.append("documentation-slice-changed")
+            old_resource_binding = resource_binding(artifact.get("snapshot"))
+            if (
+                old_resource_binding is None
+                or current_resource_binding is None
+                or old_resource_binding != current_resource_binding
+            ):
+                reasons.append("governing-resources-changed-or-unavailable")
+        decision = {
+            "execution_record_id": record_id,
+            "execution_digest": execution.get("digest"),
+            "prior_plan_digest": execution.get("plan_digest"),
+            "current_plan_digest": current_plan_digest,
+            "prior_obligation_id": old_obligation.get("obligation_id"),
+            "current_obligation_id": (
+                None if current is None else current.get("obligation_id")
+            ),
+            "status": "reused" if not reasons else "invalidated",
+            "reasons": reasons or ["same-governing-inputs-and-disjoint-slice-delta"],
+            "changed_slice": [
+                {"repository_id": key[0], "path": key[1]}
+                for key in sorted(changed_keys)
+            ],
+            "impact_closure": [
+                {"repository_id": key[0], "path": key[1]}
+                for key in sorted(closure)
+            ],
+            "governing_resource_binding": current_resource_binding,
+        }
+        reuse_decisions.append(decision)
+        if not reasons and current is not None:
+            reused_obligation_ids.add(current["obligation_id"])
     return {
         "all_executions": tuple(all_executions),
         "state_executions": tuple(state_executions),
         "reused_obligation_ids": tuple(sorted(reused_obligation_ids)),
+        "reuse_decisions": tuple(reuse_decisions),
         "execution_classes": execution_classes,
         "rework_executions": rework_executions,
         "governance_mutations": governance_mutations,
@@ -1408,6 +1684,7 @@ def _adaptive_context(
         "executions": history["state_executions"],
         "all_executions": history["all_executions"],
         "reused_obligation_ids": history["reused_obligation_ids"],
+        "reuse_decisions": history["reuse_decisions"],
         "waived_obligation_ids": waived_obligation_ids,
         "execution_classes": history["execution_classes"],
         "rework_executions": history["rework_executions"],
@@ -1429,6 +1706,36 @@ def _adaptive_context(
             reused_obligation_ids=history["reused_obligation_ids"],
         ),
     }
+
+
+def _adaptive_dispatch_finalizer(
+    definition: WorkflowDefinition,
+    adaptive: Mapping[str, object],
+) -> Optional[NodeContract]:
+    selected = adaptive["selected"]
+    outcome = None
+    if selected is None:
+        outcome = "success"
+    else:
+        budget_class = selected["obligation"]["budget_class"]
+        class_key = "review" if budget_class == "review" else "verification"
+        remaining = adaptive["budget"]["remaining"]
+        if remaining[class_key] <= 0 or remaining["total_action"] <= 1:
+            outcome = "incomplete"
+    if outcome is None:
+        return None
+    finalizers = [
+        item
+        for item in definition.nodes.values()
+        if item.handler_id == "delivery.finalize"
+        and item.finalize_outcome == outcome
+    ]
+    if len(finalizers) != 1:
+        raise _error(
+            "WORKFLOW_INVALID",
+            "adaptive workflow requires one {} finalizer".format(outcome),
+        )
+    return finalizers[0]
 
 
 def _adaptive_execution(
@@ -1467,6 +1774,7 @@ def _adaptive_execution(
     if submitted.get("obligation_id") != obligation["obligation_id"]:
         raise _error("ASSURANCE_EXECUTION_INVALID", "assurance result names a non-current obligation")
     review_result = None
+    review_binding = None
     passed = submitted.get("passed")
     if obligation["kind"] == "independent-review":
         review = submitted.get("review")
@@ -1497,6 +1805,26 @@ def _adaptive_execution(
         reviewer_digest = review.get("reviewer_digest")
         if not isinstance(reviewer_digest, str) or len(reviewer_digest) != 64:
             raise _error("REVIEW_INVALID", "reviewer identity digest is invalid")
+        review_binding_body = {
+            "task_id": state.task_id,
+            "contract_digest": context["plan"]["contract_digest"],
+            "plan_digest": context["plan"]["digest"],
+            "obligation_id": obligation["obligation_id"],
+            "obligation_fingerprint": obligation["fingerprint"],
+            "manifest_digest": context["manifest"]["digest"],
+            "review_scope_digest": scope_digest,
+            "guidance_digest": guidance_digest,
+            "reviewer_digest": reviewer_digest,
+            "workspace_digest": snapshot["digest"],
+            "reviewer_available": review.get("reviewer_available") is True,
+            "independent": review.get("independent") is True,
+        }
+        review_binding = {
+            **review_binding_body,
+            "digest": hashlib.sha256(
+                canonical_json_bytes(review_binding_body)
+            ).hexdigest(),
+        }
         raw_findings = review.get("findings")
         if not isinstance(raw_findings, (list, tuple)):
             raise _error("REVIEW_INVALID", "review findings are invalid")
@@ -1570,6 +1898,7 @@ def _adaptive_execution(
             reused_obligation_ids=context["reused_obligation_ids"],
         ),
         "review_result": review_result,
+        "review_binding": review_binding,
     }
 
 
@@ -1797,6 +2126,7 @@ def revise_contract(
     definition: WorkflowDefinition,
     *,
     new_contract: Mapping[str, object],
+    ownership_claims: Optional[Mapping[str, object]],
     reason: str,
     actor_label: str,
     snapshot: object,
@@ -1818,6 +2148,17 @@ def revise_contract(
     clean_reason = _text(reason, "reason")
     clean_actor = _text(actor_label, "actor_label")
     current_snapshot = _validated_snapshot(snapshot, state.repositories)
+    accepted_snapshot = _latest_manifest_snapshot(state)
+    if accepted_snapshot is None:
+        raise _error(
+            "CAPSULE_INVALID",
+            "contract revision cannot locate the accepted source snapshot",
+        )
+    reconciliation_claims = (
+        {"schema": TASK_CHANGE_CLAIMS_SCHEMA, "claims": []}
+        if ownership_claims is None
+        else ownership_claims
+    )
     target = definition.revision_target
     transition = {
         "from": state.current_node,
@@ -1852,9 +2193,9 @@ def revise_contract(
         repositories=state.repositories,
         preflight=baseline_body["preflight_baseline"],
         predecessor=manifest_body["task_change_manifest"],
-        before_snapshot=current_snapshot,
+        before_snapshot=accepted_snapshot,
         after_snapshot=current_snapshot,
-        claims={"schema": TASK_CHANGE_CLAIMS_SCHEMA, "claims": []},
+        claims=reconciliation_claims,
         producer={
             "action_id": "contract.revise",
             "task_revision": state.revision + 1,
@@ -1865,6 +2206,7 @@ def revise_contract(
                 "snapshot_digest": current_snapshot["digest"],
             })).hexdigest(),
         },
+        reconcile_existing=True,
     )
     artifact = seal_artifact(
         {
@@ -1879,6 +2221,11 @@ def revise_contract(
             "body": {
                 "reason": clean_reason,
                 "actor_label": clean_actor,
+                "revision_interval": {
+                    "accepted_snapshot_digest": accepted_snapshot["digest"],
+                    "revision_snapshot_digest": current_snapshot["digest"],
+                },
+                "adoption_claims": json_value(reconciliation_claims),
                 "task_change_manifest": rolled_manifest,
             },
         }
@@ -1889,6 +2236,7 @@ def revise_contract(
         "new_contract_digest": new_contract_digest,
         "reason": clean_reason,
         "actor_label": clean_actor,
+        "ownership_claims": json_value(reconciliation_claims),
     }
     record = seal_record(
         {
@@ -1937,18 +2285,37 @@ def record_decision(
     )
     if validated["kind"] == "assurance-waiver":
         adaptive = _adaptive_context(state, definition)
-        valid_subjects = {
-            value
-            for obligation in adaptive["plan"]["obligations"]
-            for value in (
-                obligation["obligation_id"],
-                obligation["fingerprint"],
-            )
-        }
-        if validated["subject"] not in valid_subjects:
+        review_obligation = next(
+            (
+                obligation
+                for obligation in adaptive["plan"]["obligations"]
+                if obligation["kind"] == "independent-review"
+                and validated["subject"]
+                in (obligation["obligation_id"], obligation["fingerprint"])
+            ),
+            None,
+        )
+        if review_obligation is None:
             raise _error(
                 "DECISION_INVALID",
-                "assurance waiver subject must be a current obligation identity",
+                "assurance waiver subject must be the current independent-review obligation",
+            )
+        unavailable_recorded = any(
+            isinstance(artifact, Mapping)
+            and isinstance(artifact.get("body"), Mapping)
+            and isinstance(artifact["body"].get("assurance_execution"), Mapping)
+            and artifact["body"]["assurance_execution"].get("plan_digest")
+            == adaptive["plan"]["digest"]
+            and artifact["body"]["assurance_execution"].get("obligation_id")
+            == review_obligation["obligation_id"]
+            and isinstance(artifact["body"].get("review_result"), Mapping)
+            and artifact["body"]["review_result"].get("outcome") == "unavailable"
+            for artifact in artifact_by_record_id(state.records).values()
+        )
+        if not unavailable_recorded:
+            raise _error(
+                "DECISION_INVALID",
+                "independent-review waiver requires a current unavailable review execution",
             )
     producer = {
         "kind": "decision",
@@ -2002,6 +2369,15 @@ def record_finding_disposition(
     if not isinstance(fingerprint, str):
         raise _error("FINDING_DISPOSITION_INVALID", "finding fingerprint is invalid")
     contract_value = _current_contract(state)
+    if any(
+        item.get("finding_fingerprint") == fingerprint
+        for item in _finding_dispositions(state, contract_value, current_only=True)
+    ):
+        raise _error(
+            "FINDING_DISPOSITION_INVALID",
+            "finding already has a current-contract disposition",
+            finding_fingerprint=fingerprint,
+        )
     plan_digest = submitted.get("plan_digest")
     finding, review_result, plan = _review_finding_context(
         state,
@@ -2045,6 +2421,7 @@ def record_finding_disposition(
             state,
             definition,
             new_contract=validated["next_contract"],
+            ownership_claims=None,
             reason=validated["rationale"],
             actor_label=validated["actor"],
             snapshot=snapshot,
@@ -2242,6 +2619,7 @@ def validate_persisted_state(
                 "new_contract_digest",
                 "reason",
                 "actor_label",
+                "ownership_claims",
             }
             if not isinstance(payload, Mapping) or set(payload) not in (
                 base_revision_fields,
@@ -2282,6 +2660,7 @@ def validate_persisted_state(
                         replay,
                         definition,
                         new_contract=payload["new_contract"],
+                        ownership_claims=payload["ownership_claims"],
                         reason=payload["reason"],
                         actor_label=payload["actor_label"],
                         snapshot=record.get("snapshot"),
@@ -2427,6 +2806,7 @@ def _latest_review_projection(
             return {
                 "digest": review_result.get("digest"),
                 "outcome": review_result.get("outcome"),
+                "binding": json_value(body.get("review_binding")),
                 "finding_fingerprints": json_value(
                     review_result.get("finding_fingerprints", [])
                 ),
@@ -2458,21 +2838,17 @@ def agent_projection(
     if not terminal:
         node = current_node_contract(state, definition)
         adaptive_projection = None
-        if node.handler_id == "assurance.dispatch":
+        if node.handler_id == "assurance.dispatch" or ".rework." in node.action_id:
             adaptive_projection = _adaptive_context(state, definition)
-            if adaptive_projection["selected"] is None:
-                success_finalizers = [
-                    item
-                    for item in definition.nodes.values()
-                    if item.handler_id == "delivery.finalize"
-                    and item.finalize_outcome == "success"
-                ]
-                if len(success_finalizers) != 1:
-                    raise _error(
-                        "WORKFLOW_INVALID",
-                        "adaptive workflow requires one success finalizer",
-                    )
-                node = success_finalizers[0]
+            finalizer = _adaptive_dispatch_finalizer(
+                definition,
+                adaptive_projection,
+            )
+            if finalizer is not None and (
+                node.handler_id == "assurance.dispatch"
+                or finalizer.finalize_outcome == "success"
+            ):
+                node = finalizer
         declared = _effective_artifact_contract(node)
         blocked = None
         try:
@@ -2483,6 +2859,45 @@ def agent_projection(
                 snapshot,
                 allow_revision_source=int(contract_value["revision"]) > 1,
             )
+            binding_snapshot = snapshot
+            if (
+                declared is not None
+                and declared.workspace_role == "produces-source"
+                and node.handler_id != "preflight"
+            ):
+                predecessor = next(
+                    (item for item in inputs if item.get("edge") == "source-predecessor"),
+                    None,
+                )
+                artifacts = artifact_by_record_id(state.records)
+                predecessor_artifact = (
+                    None
+                    if predecessor is None
+                    else artifacts.get(predecessor.get("record_id"))
+                )
+                predecessor_snapshot = (
+                    predecessor_artifact.get("snapshot")
+                    if isinstance(predecessor_artifact, Mapping)
+                    else None
+                )
+                if not isinstance(predecessor_snapshot, Mapping):
+                    raise _error(
+                        "ARTIFACT_INPUT_MISSING",
+                        "source predecessor snapshot is unavailable",
+                    )
+                drift = ambient_drift(
+                    predecessor_snapshot,
+                    snapshot,
+                    state.repositories,
+                )
+                if drift["present"]:
+                    raise _error(
+                        "AMBIENT_DRIFT",
+                        "unclaimed ambient drift blocks source production",
+                        ambient_drift=drift,
+                        recovery=("restore", "revise-contract", "cancel-with-authority"),
+                    )
+                binding_snapshot = predecessor_snapshot
             binding = make_action_binding(
                 task_id=state.task_id,
                 revision=state.revision,
@@ -2490,10 +2905,10 @@ def agent_projection(
                 node_id=node.node_id,
                 contract=contract_value,
                 inputs=inputs,
-                current_snapshot=snapshot,
+                current_snapshot=binding_snapshot,
             )
         except DevFlowError as exc:
-            if exc.code != "ARTIFACT_INPUT_MISSING":
+            if exc.code not in ("ARTIFACT_INPUT_MISSING", "AMBIENT_DRIFT"):
                 raise
             inputs = ()
             binding = None
@@ -2502,6 +2917,32 @@ def agent_projection(
                 "message": exc.message,
                 "details": dict(exc.details),
             }
+        if (
+            node.handler_id == "delivery.finalize"
+            and node.finalize_outcome == "success"
+        ):
+            accepted_snapshot = _latest_manifest_snapshot(state)
+            if accepted_snapshot is None:
+                raise _error(
+                    "ASSURANCE_BLOCKED",
+                    "completed assurance has no accepted task-change snapshot",
+                )
+            drift = ambient_drift(accepted_snapshot, snapshot, state.repositories)
+            if drift["present"]:
+                inputs = ()
+                binding = None
+                blocked = {
+                    "code": "AMBIENT_DRIFT",
+                    "message": "unclaimed ambient drift blocks successful finalization",
+                    "details": {
+                        "ambient_drift": drift,
+                        "recovery": [
+                            "restore",
+                            "revise-contract",
+                            "cancel-with-authority",
+                        ],
+                    },
+                }
         retry = None
         retry_owner = node if node.rework is not None else None
         if retry_owner is None:
@@ -2550,6 +2991,7 @@ def agent_projection(
                 "budget": json_value(adaptive["budget"]),
                 "maximum_remaining_actions": adaptive["budget"]["maximum_remaining_actions"],
                 "not_required": json_value(adaptive["plan"]["not_required"]),
+                "reuse_decisions": json_value(adaptive["reuse_decisions"]),
             }
             action["retry_budget"] = selected["state"]
             if selected["obligation"]["kind"] == "independent-review":

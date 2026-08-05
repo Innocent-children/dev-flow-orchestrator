@@ -64,6 +64,10 @@ A contract revision's complete aggregate revision source SHALL anchor only subse
 - **WHEN** a bound context or assurance action observes a change to its task-owned slice, governing inputs, or required member observation
 - **THEN** apply rejects the action and writes no record
 
+#### Scenario: Read-only action observes drift
+- **WHEN** any member changes after a context or verification action was projected
+- **THEN** apply rejects the action and writes no record
+
 #### Scenario: Unrelated ambient drift is present
 - **WHEN** a member differs from the latest accepted source outside a projected source-producing action
 - **THEN** the projection identifies the member and paths as ambient drift and withholds repository-dependent assurance until the drift is restored or exactly adopted by an authorized contract revision
@@ -89,6 +93,10 @@ A read-only controller derivation that reuses current evidence SHALL consume no 
 - **WHEN** the current obligation requires two members plus integration and every required result passes against the bound task capsule
 - **THEN** one verification record satisfies that obligation and binds its criterion and impact coverage
 
+#### Scenario: Complete repository-set verification passes
+- **WHEN** every nested member result and the repository-set integration result pass and the aggregate `passed` value is true
+- **THEN** one verification record binds that structured evidence to the current aggregate snapshot
+
 #### Scenario: Obligation requires one affected member
 - **WHEN** a validated plan requires a focused check for one changed member and no integration check
 - **THEN** coverage contains exactly that required member, omits integration evidence, and records why other members and integration are not required
@@ -97,9 +105,17 @@ A read-only controller derivation that reuses current evidence SHALL consume no 
 - **WHEN** coverage omits a repository ID required by the current obligation or includes an undeclared ID
 - **THEN** apply rejects the payload without advancing the task
 
+#### Scenario: Member result is missing
+- **WHEN** repository-aware coverage omits one repository ID or includes an unknown repository ID
+- **THEN** apply rejects the payload without advancing the task
+
 #### Scenario: Required integration result fails
 - **WHEN** every required member result passes but a required integration result fails
 - **THEN** the obligation remains unsatisfied and follows its bounded failure handling
+
+#### Scenario: Integration result fails
+- **WHEN** all member results pass but the integration result fails
+- **THEN** aggregate `passed` must be false and successful completion remains unavailable
 
 #### Scenario: Commands pass but a criterion remains unverified
 - **WHEN** all required commands pass and one obligation criterion remains unverified without a current waiver
@@ -125,6 +141,14 @@ Before any new task is admitted, every entry in the current `0.3.0` inventory SH
 Every repository-dependent projection, apply, contract revision, cancellation, and non-cancelled finalization SHALL validate all persisted canonical member roots, worktree-specific Git administrative directories, same-task Git-common topology, and active-task leases. A missing or moved root, canonical-root or worktree-specific-directory mismatch, newly duplicated same-task Git-common directory, overlapping root, or conflicting active owner SHALL block repository-dependent progress with member-specific diagnostics and SHALL NOT substitute another worktree. Pure stored-ledger inspection and stored diagnostics SHALL remain available when capture fails. Lease release SHALL be inferred only from a valid controller-confirmed `DONE`, `INCOMPLETE`, or `CANCELLED` task state, never from timeout, absence, capture failure, or corruption.
 
 Successful completion SHALL require a current canonical roll-forward task-change manifest bound to the immutable preflight origin and all applicable revision anchors, no unresolved ambient drift, no unresolved `triage-required` finding or `impact-gap`, complete proven-or-validly-waived acceptance coverage, a present current result or valid waiver/reuse for every obligation required by the current assurance plan, and no obligation, aggregate, or total-action budget overrun. Evidence for a member or integration path that the current plan does not require SHALL NOT be fabricated or promoted to assurance. Missing, failed, stale, ambiguous, or exhausted required evidence, missing current obligations, unresolved governance states, or exceeded ceilings SHALL prevent `DONE` and remain visible in an `INCOMPLETE` Dossier and its projections.
+
+#### Scenario: All obligations are current
+- **WHEN** all member and integration verification passes against the current aggregate snapshot and coverage is complete
+- **THEN** finalization may produce one `DONE` Delivery Dossier for the exact repository set
+
+#### Scenario: One member lacks current proof
+- **WHEN** every other member passes but one required member result is missing, failed, or stale
+- **THEN** successful finalization is rejected and the member is identified in completion diagnostics
 
 #### Scenario: Member is temporarily unavailable
 - **WHEN** one persisted member root cannot be inspected

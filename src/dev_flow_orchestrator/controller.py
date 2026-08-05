@@ -426,7 +426,24 @@ class Controller:
         include_current_resources: bool = True,
     ) -> Mapping[str, object]:
         current = current_resource_requests(state) if include_current_resources else ()
-        resources = _merge_resources(current, additional_resources)
+        task_paths = ()
+        for record in reversed(state.records):
+            artifact = record.get("artifact") if isinstance(record, Mapping) else None
+            body = artifact.get("body") if isinstance(artifact, Mapping) else None
+            manifest = body.get("task_change_manifest") if isinstance(body, Mapping) else None
+            if isinstance(manifest, Mapping):
+                task_paths = tuple(
+                    {
+                        "repository_id": entry["repository_id"],
+                        "path": entry["path"],
+                        "role": "reported",
+                        "normalizer": "none",
+                    }
+                    for entry in manifest.get("entries", ())
+                    if isinstance(entry, Mapping)
+                )
+                break
+        resources = _merge_resources(current, task_paths, additional_resources)
         partitions = self._partition_resources(state, resources)
         first = self._capture_members(
             state.repositories,
@@ -584,6 +601,7 @@ class Controller:
         task_id: str,
         *,
         contract: Mapping[str, object],
+        ownership_claims: Optional[Mapping[str, object]] = None,
         reason: str,
         actor_label: str,
     ) -> dict:
@@ -599,6 +617,7 @@ class Controller:
                     current,
                     definition,
                     new_contract=contract,
+                    ownership_claims=ownership_claims,
                     reason=reason,
                     actor_label=actor_label,
                     snapshot=snapshot,

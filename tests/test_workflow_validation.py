@@ -408,6 +408,13 @@ class OfficialWorkflowPortfolioTests(unittest.TestCase):
                 rework = definition.nodes[verification.rework.failure_node]
                 self.assertEqual(verification.handler_id, "assurance.dispatch")
                 self.assertEqual(rework.artifact.workspace_role, "produces-source")
+                predecessors = [
+                    item
+                    for item in rework.artifact.inputs
+                    if item.edge_kind == "source-predecessor"
+                ]
+                self.assertEqual(len(predecessors), 1)
+                self.assertEqual(predecessors[0].artifact_type, "*")
                 self.assertIn(
                     "causal", {item.edge_kind for item in rework.artifact.inputs}
                 )

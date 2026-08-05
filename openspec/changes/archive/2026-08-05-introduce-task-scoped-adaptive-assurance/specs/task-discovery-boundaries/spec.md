@@ -44,6 +44,10 @@ Repository-path discovery SHALL match a non-terminal task when the inspected pat
 - **WHEN** inventory contains two valid non-terminal current tasks that claim the same canonical member despite admission enforcement
 - **THEN** discovery reports a lease-integrity conflict with both task IDs and injects neither as implicit authority
 
+#### Scenario: Multiple tasks cover the same path
+- **WHEN** two non-terminal tasks include a repository that contains the inspected path
+- **THEN** discovery retains both task identities and requires explicit task selection
+
 #### Scenario: Matching task is terminal
 - **WHEN** the only task containing the inspected path is terminal
 - **THEN** automatic active-task discovery excludes it and the worktree is eligible for a new task admission

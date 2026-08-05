@@ -7,6 +7,14 @@ The controller SHALL accept contract revision only after preflight has committed
 - **WHEN** a non-terminal task records a valid replacement contract whose revision is exactly one greater than the effective contract
 - **THEN** one contract-revision record is appended, the current node follows the definition's revision target, and subsequent planning binds the new contract and revision-source digests
 
+#### Scenario: Repository-set scope revision is accepted
+- **WHEN** a scope revision captures every member safely and stably
+- **THEN** the same contract-revision record establishes the aggregate revision source, rolls the complete current task-owned manifest into the new source interval, and binds subsequent actions to the new contract and repository-set digests
+
+#### Scenario: Repository-set revision reenters planning
+- **WHEN** scope is revised after repository-backed plans exist in multiple members
+- **THEN** the aggregate revision source becomes the required cross-contract predecessor and replacement impact and assurance planning consume its roll-forward manifest before implementation resumes
+
 #### Scenario: Revision establishes a new source interval without erasing ownership
 - **WHEN** a valid revision captures every member safely and stably
 - **THEN** the same record establishes the aggregate revision source, carries all still-material owned entries into the replacement manifest, adopts every exactly authorized drift entry, and retains the immutable preflight ownership origin
@@ -74,9 +82,17 @@ The controller SHALL accept decisions, waivers, and review-finding dispositions 
 - **WHEN** verification or review output directly claims a criterion waiver, assurance waiver, risk acceptance, or scope disposition
 - **THEN** action validation rejects that claimed authority unless a current controller decision record supplies it
 
+#### Scenario: Agent evidence claims a waiver
+- **WHEN** repository or integration verification output directly classifies a criterion as waived without a current waiver decision
+- **THEN** the action fails without advancing the task
+
 #### Scenario: Contract changes after a decision
 - **WHEN** the contract is revised after a waiver or finding disposition
 - **THEN** the earlier decision remains historical and is excluded from current coverage and routing
+
+#### Scenario: Contract changes after a waiver
+- **WHEN** the contract is revised after a waiver was recorded
+- **THEN** the earlier waiver remains historical and is excluded from current acceptance coverage
 
 #### Scenario: Decision ID is reused in a task
 - **WHEN** a decision attempts to reuse any earlier decision ID in the same task
@@ -100,6 +116,10 @@ Contract revisions and decisions SHALL be controller mutations protected by the 
 #### Scenario: Revised scope refreshes planning and assurance
 - **WHEN** a contract revision is accepted after repository-backed planning and assurance evidence exist
 - **THEN** the revision record establishes the new source interval, complete roll-forward manifest, planning reentry, and requirement for a replacement assurance plan while retaining old evidence historically
+
+#### Scenario: Revised scope refreshes repository-backed planning
+- **WHEN** a contract is revised after repository-backed plans were recorded in one or more members
+- **THEN** the revision record binds the complete aggregate workspace as the new source interval, rolls forward the current task-owned manifest, and requires replacement impact and assurance planning before implementation resumes
 
 #### Scenario: Snapshot fails during contract revision
 - **WHEN** revision cannot capture a stable safe complete repository-set snapshot
