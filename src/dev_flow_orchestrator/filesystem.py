@@ -78,6 +78,35 @@ def read_regular_file_at(root: Path, parts: Tuple[str, ...]) -> bytes:
                 pass
 
 
+def list_directory_names_at(root: Path, parts: Tuple[str, ...]) -> Tuple[str, ...]:
+    """List one directory through a read-only no-follow descriptor chain."""
+    if not parts:
+        raise ValueError("relative directory parts are required")
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow
+    descriptors = []
+    target = root.joinpath(*parts)
+    try:
+        descriptor = os.open(str(root), directory_flags)
+        descriptors.append(descriptor)
+        for part in parts:
+            descriptor = os.open(part, directory_flags, dir_fd=descriptor)
+            descriptors.append(descriptor)
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise _unsafe_path(target)
+        return tuple(os.listdir(descriptor))
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise _unsafe_path(target) from exc
+        raise
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
 @contextlib.contextmanager
 def exclusive_file_lock(path: Path) -> Iterator[None]:
     ensure_private_directory(path.parent)

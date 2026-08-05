@@ -24,18 +24,38 @@ Dev Flow Orchestrator 0.3.0 是一个仅使用 Python 标准库的包，包含�
 ## 依赖方向
 
 ```text
-CLI ─┐
-Hook ┴─> Controller ─┬─> Engine ─> Delivery ─> Model
-                    │       └────> Workflow ─> Product
-                    ├─> Store ───> Engine
-                    │      └─────> Filesystem primitives
-                    ├─> Workflows ─> yaml_subset
-                    └─> GitClient (bounded, read-only)
+CLI ─────┐
+Hook ────┼─> Controller ─┬─> Engine ─> Delivery ─> Model
+Web UI ──┘               │       └────> Workflow ─> Product
+                         ├─> Store ───> Engine
+                         │      └─────> Filesystem primitives
+                         ├─> Web views (bounded projections)
+                         ├─> Workflows ─> yaml_subset
+                         └─> GitClient (bounded, read-only)
 ```
 
 领域层 (`model.py`, `product.py`, `snapshot.py`, `workflow.py`, `delivery.py` 和 `engine.py`) 不执行任何文件系统、进程、环境或网络 I/O。
 `workflows.py` 加载打包或选择的定义。`GitClient` 是唯一的目标仓库检查端口，为每个任务成员串行调用。
 驱动程序是 Codex 在控制器外执行的指令；运行时仅验证并记录其声明的结果。
+
+## 本地只读展示边界
+
+`web.py` 是现有 0.3.0 产品身份下仅使用标准库的 loopback 适配器。它只绑定
+`127.0.0.1`，持有临时进程令牌，只提供固定的同源资源/API 路由，严格校验 Host 和
+Origin，拒绝跨站 Fetch Metadata 和不安全方法，并且不发出任何 CORS 许可。原生 HTML、
+CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测、service worker、cookie
+或持久浏览器存储。
+
+`web_views.py` 负责有界展示投影。任务清单与存储详情调用
+`TaskStore.inspect_inventory()` 和 `inspect_with_definition()`，通过不跟随符号链接的
+文件描述符链读取，不获取锁、不创建目录、不更改权限，也不写入缓存。权威控制器操作仍
+保留原有的锁、修订 CAS、复放和原子替换行为。
+
+实时详情是对选中任务的显式操作。它捕获一次现有的聚合仓库集快照，将完全相同的值复用
+于任务和 Agent 投影，然后重新读取持久化状态；若修订已变化则返回 `VIEW_STALE`。全
+进程只有一个不排队的捕获槽，竞争的实时请求返回 `429`。关闭服务器会取消活动 Git
+进程组；存储视图不依赖 Git 或实时捕获是否可用。HTTP 响应不会暴露原始状态、账本负载、
+快照条目、binding、命令、绝对路径或原始内部错误。
 
 ## 模块所有权
 
@@ -54,6 +74,8 @@ Hook ┴─> Controller ─┬─> Engine ─> Delivery ─> Model
 | `controller.py` | 应用协调和创建后的所有状态变更 |
 | `cli.py` | 严格的 argv/JSON 接口，每个命令一个 JSON 响应 |
 | `hook.py` | 活动任务查找、精确定位器注入以及出错时放行的数据路径防护 |
+| `web.py` | 经过认证的 loopback 服务器、固定路由、安全策略、前台生命周期和实时捕获准入 |
+| `web_views.py` | 有界清单、存储详情、实时详情、时间线、Dossier 和恢复投影 |
 
 ## 当前产品身份
 

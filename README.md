@@ -71,6 +71,30 @@ Close Codex at any point. In a new session, resume the exact task by ID:
 Use $follow-dev-flow to resume task <task-id>.
 ```
 
+## Local read-only Web UI
+
+Dev Flow 0.3.0 includes a local task cockpit as another presentation surface of
+the same installed product. It has no separate WebUI version, package, plugin,
+state namespace, or compatibility line. Start it explicitly in the foreground:
+
+```sh
+dev-flow --data-dir <controller-data-root> web
+```
+
+The command binds only numeric `127.0.0.1`, selects an ephemeral port by
+default, and prints one JSON startup receipt containing a browser URL. The
+256-bit process-local access token is carried in the URL fragment, consumed
+into browser memory, and removed from the visible URL. The server does not open
+a browser, daemonize, enable CORS, load remote resources, emit telemetry, or
+persist browser selections or credentials.
+
+Task inventory and ordinary detail are derived only from persisted 0.3.0 state,
+so they remain immediate when a repository is unavailable and do not run Git.
+Use **Observe live** only for the selected task when current action readiness or
+repository health is needed. Live observation uses the existing bounded
+read-only aggregate snapshot, admits one capture process-wide, and never
+creates a task binding or changes controller or repository state.
+
 ## Install in one command
 
 Dev Flow 0.3.0 currently supports macOS with Git, Python 3.9–3.14, and Codex

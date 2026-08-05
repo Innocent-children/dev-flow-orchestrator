@@ -11,6 +11,14 @@ derived checks, while closed risk triggers and unknown impact expand assurance
 conservatively. Historical 0.2 state remains outside the 0.3 namespace and is
 not a runtime compatibility surface.
 
+The first Horizon 2 presentation slice is also delivered inside the same 0.3.0
+product: an authenticated loopback-only, local read-only Web UI for searchable
+persisted inventory, bounded task detail and timeline, Delivery Dossier summary,
+why-next/recovery guidance, and explicit selected-task live observation. It does
+not deliver the rest of Horizon 2: task mutation, approvals, workflow editing,
+artifact exploration, reusable workflow management, and external services all
+remain planned.
+
 [简体中文](ROADMAP_CN.md)
 
 **Status:** living feature roadmap
@@ -190,7 +198,11 @@ findings, bounded repair cycles, and accepted scope revisions.
 - Installed snapshot identity and real Hook/Skill pickup remain explicit
   release-evidence fields whenever those conditions require host observation.
 
-## Horizon 2 — Interactive workflow workbench (planned)
+## Horizon 2 — Interactive workflow workbench (first read-only slice delivered)
+
+The 0.3.0 local read-only Web UI delivers only the observation slice of this
+horizon. The broader workbench remains planned and does not gain mutation or
+approval authority from the Web UI.
 
 ### What becomes possible
 

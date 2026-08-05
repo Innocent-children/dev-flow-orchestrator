@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import threading
 import time
 from unittest import mock
 import unittest
@@ -103,6 +104,127 @@ class GitSnapshotTests(RepositoryTestCase):
                 GitClient._run(self.repository, "status")
         self.assertEqual(context.exception.code, "GIT_OUTPUT_TOO_LARGE")
         self.assertEqual(context.exception.details["limit_bytes"], 256)
+
+    def test_command_cancellation_before_start_does_not_spawn_git(self) -> None:
+        cancelled = threading.Event()
+        cancelled.set()
+        with mock.patch("dev_flow_orchestrator.git_client.subprocess.Popen") as popen:
+            with GitClient.cancellation(cancelled):
+                with self.assertRaises(DevFlowError) as context:
+                    GitClient._run(self.repository, "status")
+
+        self.assertEqual(context.exception.code, "GIT_COMMAND_CANCELLED")
+        popen.assert_not_called()
+
+    def test_command_cancellation_terminates_running_process(self) -> None:
+        pid_path = self.root / "cancelled-git.pid"
+        fake_bin = self._fake_git(
+            "printf '%s' $$ > {!r}\nwhile :; do :; done\n".format(str(pid_path))
+        )
+        cancelled = threading.Event()
+        outcome = {}
+
+        def run_git() -> None:
+            try:
+                with GitClient.cancellation(cancelled):
+                    GitClient._run(self.repository, "status")
+            except DevFlowError as exc:
+                outcome["error"] = exc
+
+        started = time.monotonic()
+        with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}), mock.patch(
+            "dev_flow_orchestrator.git_client.GIT_TERMINATE_GRACE_SECONDS", 0.05
+        ):
+            worker = threading.Thread(target=run_git)
+            worker.start()
+            deadline = time.monotonic() + 1
+            while not pid_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(pid_path.exists())
+            cancelled.set()
+            worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcome["error"].code, "GIT_COMMAND_CANCELLED")
+        self.assertLess(time.monotonic() - started, 2)
+        process_id = int(pid_path.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(process_id, 0)
+
+    def test_command_cancellation_force_kills_term_resistant_process(self) -> None:
+        pid_path = self.root / "term-resistant-git.pid"
+        fake_bin = self._fake_git(
+            "trap '' TERM\nprintf '%s' $$ > {!r}\nwhile :; do :; done\n".format(
+                str(pid_path)
+            )
+        )
+        cancelled = threading.Event()
+        outcome = {}
+
+        def run_git() -> None:
+            try:
+                with GitClient.cancellation(cancelled):
+                    GitClient._run(self.repository, "status")
+            except DevFlowError as exc:
+                outcome["error"] = exc
+
+        with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}), mock.patch(
+            "dev_flow_orchestrator.git_client.GIT_TERMINATE_GRACE_SECONDS", 0.05
+        ):
+            worker = threading.Thread(target=run_git)
+            worker.start()
+            deadline = time.monotonic() + 1
+            while not pid_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(pid_path.exists())
+            cancelled.set()
+            worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcome["error"].code, "GIT_COMMAND_CANCELLED")
+        process_id = int(pid_path.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(process_id, 0)
+
+    def test_cancellation_context_does_not_change_default_callers(self) -> None:
+        cancelled = threading.Event()
+        cancelled.set()
+        with GitClient.cancellation(cancelled):
+            with self.assertRaises(DevFlowError):
+                GitClient._run(self.repository, "status", "--porcelain")
+
+        output = GitClient._run(self.repository, "status", "--porcelain")
+        self.assertIsInstance(output, bytes)
+
+    def test_timeout_and_cancellation_ordering_remains_bounded(self) -> None:
+        fake_bin = self._fake_git("while :; do :; done\n")
+        cases = (
+            (0.01, 0.20, "GIT_COMMAND_CANCELLED"),
+            (0.20, 0.05, "GIT_COMMAND_TIMEOUT"),
+        )
+        for cancel_delay, timeout_seconds, expected in cases:
+            with self.subTest(expected=expected):
+                cancelled = threading.Event()
+                timer = threading.Timer(cancel_delay, cancelled.set)
+                timer.start()
+                started = time.monotonic()
+                try:
+                    with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}), mock.patch(
+                        "dev_flow_orchestrator.git_client.GIT_TERMINATE_GRACE_SECONDS",
+                        0.05,
+                    ):
+                        with GitClient.cancellation(cancelled):
+                            with self.assertRaises(DevFlowError) as context:
+                                GitClient._run(
+                                    self.repository,
+                                    "status",
+                                    timeout_seconds=timeout_seconds,
+                                )
+                    self.assertEqual(context.exception.code, expected)
+                    self.assertLess(time.monotonic() - started, 2)
+                finally:
+                    timer.cancel()
+                    timer.join(timeout=1)
 
     def test_modified_and_untracked_content_change_digest_with_same_status(self) -> None:
         (self.repository / "a.txt").write_text("first\n", encoding="utf-8")

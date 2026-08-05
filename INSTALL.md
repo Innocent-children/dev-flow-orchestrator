@@ -53,6 +53,30 @@ If the plugin is already installed, finish or explicitly cancel active tasks,
 then follow the replacement steps below. The remaining sections document the
 same process manually and provide the full installed acceptance checks.
 
+## Launch the local read-only Web UI
+
+The installed 0.3.0 plugin includes the Web UI; there is no separate WebUI
+installation or version. Use the same controller data root that contains the
+tasks you want to inspect:
+
+```sh
+dev-flow --data-dir <controller-data-root> web
+```
+
+The command remains in the foreground and prints one strict JSON receipt. Open
+the receipt's `url`, which uses numeric `127.0.0.1`, an ephemeral port by
+default, and a process-local token in the fragment. To request a stable local
+port for the current process, add `--port <port>`. There is deliberately no
+host, daemon, proxy, browser-opening, remote-access, or credential-persistence
+option.
+
+The initial list and stored task detail do not invoke Git. Select **Observe
+live** only when current repository health and action readiness are required.
+Stop the server with Ctrl-C; shutdown cancels any active live capture. Access is
+local capability security rather than multi-user authentication: do not share
+the startup URL, expose the port through a proxy, or weaken the Host, Origin,
+Fetch Metadata, CSP, bearer-token, no-CORS, or loopback checks.
+
 ## 1. Requirements
 
 Supported for this release:

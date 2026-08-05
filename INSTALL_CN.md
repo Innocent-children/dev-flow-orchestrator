@@ -30,6 +30,25 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 
 如果插件已安装，请完成或明确取消当前任务，然后按照以下替换步骤操作。其余部分手动记录相同过程并提供完整的安装接受检查。
 
+## 启动本地只读 Web UI
+
+已安装的 0.3.0 插件已经包含 Web UI；无需单独安装，也没有单独版本。使用包含待检查
+任务的同一个控制器数据根目录：
+
+```sh
+dev-flow --data-dir <控制器数据根目录> web
+```
+
+命令会保持前台运行并打印一条严格 JSON 收据。打开收据中的 `url`：它使用数字地址
+`127.0.0.1`、默认临时端口和 fragment 中的进程本地令牌。若要为当前进程指定固定
+本地端口，可添加 `--port <端口>`。产品刻意不提供 host、守护进程、代理、自动打开
+浏览器、远程访问或持久化凭据选项。
+
+初始清单和存储任务详情不会调用 Git。只有在需要当前仓库健康和动作就绪度时才选择
+**Observe live**。使用 Ctrl-C 停止服务器；关闭会取消任何活动的实时捕获。该访问机制
+是本地 capability 安全，而不是多用户认证：不得分享启动 URL、通过代理暴露端口，或
+削弱 Host、Origin、Fetch Metadata、CSP、bearer token、no-CORS 和 loopback 检查。
+
 ## 1. 要求
 
 此版本支持：

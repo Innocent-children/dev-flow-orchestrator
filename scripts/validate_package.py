@@ -69,8 +69,11 @@ PUBLIC_BOOTSTRAPS = (
 REQUIRED_STATIC = (
     ".codex-plugin/plugin.json",
     "ARCHITECTURE.md",
+    "ARCHITECTURE_CN.md",
     "CONTRIBUTING.md",
+    "CONTRIBUTING_CN.md",
     "INSTALL.md",
+    "INSTALL_CN.md",
     "LICENSE",
     "README.md",
     "README_CN.md",
@@ -107,12 +110,21 @@ REQUIRED_STATIC = (
     "src/dev_flow_orchestrator/review.py",
     "src/dev_flow_orchestrator/snapshot.py",
     "src/dev_flow_orchestrator/store.py",
+    "src/dev_flow_orchestrator/web.py",
+    "src/dev_flow_orchestrator/web_views.py",
+    "src/dev_flow_orchestrator/web_assets/index.html",
+    "src/dev_flow_orchestrator/web_assets/app.js",
+    "src/dev_flow_orchestrator/web_assets/styles.css",
     "src/dev_flow_orchestrator/workflow.py",
     "src/dev_flow_orchestrator/workflows.py",
     "src/dev_flow_orchestrator/yaml_subset.py",
     "templates/marketplace-entry.json",
     "templates/personal-marketplace.example.json",
     "tests/test_install_script.py",
+    "tests/test_read_only_inspection.py",
+    "tests/test_web_read_models.py",
+    "tests/test_web_server.py",
+    "tests/test_web_ui_product_identity.py",
 )
 FORBIDDEN_PATHS = (
     ".mcp.json",
@@ -183,7 +195,11 @@ CURRENT_PRODUCT_CLAIM_TEXT = frozenset(
         "README.md",
         "README_CN.md",
         "INSTALL.md",
+        "INSTALL_CN.md",
         "ARCHITECTURE.md",
+        "ARCHITECTURE_CN.md",
+        "CONTRIBUTING.md",
+        "CONTRIBUTING_CN.md",
         "skills/analyze-change-impact/SKILL.md",
         "skills/follow-dev-flow/SKILL.md",
         "skills/review-dev-flow-change/SKILL.md",
@@ -203,8 +219,11 @@ CURRENT_PRODUCT_ASSET_DIRECTORIES = (
 )
 CURRENT_PRODUCT_ASSET_FILES = (
     "ARCHITECTURE.md",
+    "ARCHITECTURE_CN.md",
     "CONTRIBUTING.md",
+    "CONTRIBUTING_CN.md",
     "INSTALL.md",
+    "INSTALL_CN.md",
     "LICENSE",
     "README.md",
     "README_CN.md",
@@ -243,6 +262,18 @@ UNSUPPORTED_LATER_STAGE_CLAIM = re.compile(
     r"并行(?:执行|处理)[^。！？；;]*(?:仓库|工作树)|"
     r"并行仓库执行器|协调并行 Agent|"
     r"调度外部 CI|自动创建 PR",
+    re.IGNORECASE,
+)
+UNSUPPORTED_WEB_UI_CLAIM = re.compile(
+    r"Web ?UI (?:can|will|does) (?:mutate|approve|edit|advance)|"
+    r"Web ?UI supports? (?:mutation|approvals?|task editing)|"
+    r"Web ?UI (?:可以|将|会)(?:修改|批准|审批|推进)|"
+    r"Web ?UI 支持(?:修改|批准|审批|推进)",
+    re.IGNORECASE,
+)
+FULL_HORIZON_TWO_CLAIM = re.compile(
+    r"Horizon 2 (?:is )?(?:fully|completely) (?:delivered|complete)|"
+    r"阶段 2 (?:已经|已)?(?:全部|完整|整体)(?:交付|完成)",
     re.IGNORECASE,
 )
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -1515,6 +1546,108 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
             "ROADMAP_CN.md is missing the delivered exact-set boundary",
         )
 
+    web_ui_documents = {
+        "README.md": (
+            "[简体中文](README_CN.md)",
+            "Local read-only Web UI",
+            "dev-flow --data-dir",
+            "127.0.0.1",
+            "no separate WebUI version",
+            "Observe live",
+        ),
+        "README_CN.md": (
+            "[English](README.md)",
+            "本地只读 Web UI",
+            "dev-flow --data-dir",
+            "127.0.0.1",
+            "独立的 WebUI 版本",
+            "Observe live",
+        ),
+        "ROADMAP.md": (
+            "[简体中文](ROADMAP_CN.md)",
+            "first read-only slice delivered",
+            "local read-only Web UI",
+            "remain planned",
+        ),
+        "ROADMAP_CN.md": (
+            "[English](ROADMAP.md)",
+            "首个只读切片已交付",
+            "本地只读 Web UI",
+            "仍处于规划中",
+        ),
+        "ARCHITECTURE.md": (
+            "[简体中文](ARCHITECTURE_CN.md)",
+            "Local read-only presentation boundary",
+            "web.py",
+            "web_views.py",
+            "VIEW_STALE",
+            "429",
+        ),
+        "ARCHITECTURE_CN.md": (
+            "[English](ARCHITECTURE.md)",
+            "本地只读展示边界",
+            "web.py",
+            "web_views.py",
+            "VIEW_STALE",
+            "429",
+        ),
+        "CONTRIBUTING.md": (
+            "[简体中文](CONTRIBUTING_CN.md)",
+            "Web UI contribution boundary",
+            "PRODUCT_IDENTITY",
+            "manual-unverified",
+        ),
+        "CONTRIBUTING_CN.md": (
+            "[English](CONTRIBUTING.md)",
+            "Web UI 贡献边界",
+            "PRODUCT_IDENTITY",
+            "manual-unverified",
+        ),
+        "INSTALL.md": (
+            "[简体中文](INSTALL_CN.md)",
+            "Launch the local read-only Web UI",
+            "dev-flow --data-dir",
+            "127.0.0.1",
+            "Observe live",
+        ),
+        "INSTALL_CN.md": (
+            "[English](INSTALL.md)",
+            "启动本地只读 Web UI",
+            "dev-flow --data-dir",
+            "127.0.0.1",
+            "Observe live",
+        ),
+    }
+    for relative, tokens in web_ui_documents.items():
+        path = root / relative
+        if path.is_file():
+            document = path.read_text(encoding="utf-8")
+            _require_tokens(
+                re.sub(r"\s+", " ", document),
+                (PRODUCT_VERSION,) + tokens,
+                errors,
+                relative + " is missing the integrated read-only Web UI boundary",
+            )
+            _check(
+                re.search(r"(?:Web ?UI|WebUI).{0,48}(?:version|版本)\s+[0-9]", document, re.IGNORECASE)
+                is None,
+                errors,
+                relative + " declares a separate numeric Web UI version",
+            )
+            _check(
+                UNSUPPORTED_WEB_UI_CLAIM.search(re.sub(r"\s+", " ", document))
+                is None,
+                errors,
+                relative + " claims unsupported Web UI mutation authority",
+            )
+            if relative in {"ROADMAP.md", "ROADMAP_CN.md"}:
+                _check(
+                    FULL_HORIZON_TWO_CLAIM.search(re.sub(r"\s+", " ", document))
+                    is None,
+                    errors,
+                    relative + " claims that all of Horizon 2 is delivered",
+                )
+
 
 def _validate_imports(module: Path, errors: list[str]) -> None:
     if not module.is_file():
@@ -1655,6 +1788,151 @@ def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
         _check(shell.returncode == 0, errors, "Hook locator is not shell executable")
 
 
+def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
+    runtime = root / "src" / "dev_flow_orchestrator"
+    web_path = runtime / "web.py"
+    views_path = runtime / "web_views.py"
+    cli_path = runtime / "cli.py"
+    assets = runtime / "web_assets"
+    if not all(path.is_file() for path in (web_path, views_path, cli_path)):
+        return
+    web = web_path.read_text(encoding="utf-8")
+    views = views_path.read_text(encoding="utf-8")
+    cli = cli_path.read_text(encoding="utf-8")
+    _require_tokens(
+        web,
+        (
+            'SERVER_HOST = "127.0.0.1"',
+            "secrets.token_urlsafe(32)",
+            '"Authorization"',
+            '"HTTP_HOST_FORBIDDEN"',
+            '"HTTP_ORIGIN_FORBIDDEN"',
+            '"LIVE_CAPTURE_BUSY"',
+            "LIVE_CAPTURE_SLOT.acquire(blocking=False)",
+            '"Cache-Control", "no-store"',
+            '"Content-Security-Policy"',
+        ),
+        errors,
+        "src/dev_flow_orchestrator/web.py is not the bounded loopback authority",
+    )
+    _require_tokens(
+        views,
+        (
+            "PRODUCT_VERSION",
+            "PRODUCT_IDENTITY",
+            '"not-evaluated"',
+            '"task-live-detail"',
+            '"$follow-dev-flow task_id={}"',
+        ),
+        errors,
+        "src/dev_flow_orchestrator/web_views.py is not the bounded read model",
+    )
+    _require_tokens(
+        cli,
+        (
+            'commands.add_parser("web")',
+            'web.add_argument("--port", type=int, default=0)',
+            "run_web(arguments.data_dir, port=arguments.port)",
+        ),
+        errors,
+        "CLI does not expose the integrated foreground Web UI",
+    )
+    asset_paths = tuple(
+        assets / name for name in ("index.html", "app.js", "styles.css")
+    )
+    for path in asset_paths:
+        _check(path.is_file() and path.stat().st_size > 0, errors, "missing Web UI asset " + path.name)
+        matches = tuple(
+            candidate
+            for candidate in root.rglob(path.name)
+            if not any(part in CURRENT_PRODUCT_ASSET_IGNORED_PARTS for part in candidate.parts)
+        )
+        _check(
+            matches == (path,),
+            errors,
+            "Web UI asset must appear exactly once: " + path.name,
+        )
+    if all(path.is_file() for path in asset_paths):
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in asset_paths)
+        for forbidden in (
+            "http://",
+            "https://",
+            "localStorage",
+            "sessionStorage",
+            "serviceWorker",
+            "document.cookie",
+            ".innerHTML",
+        ):
+            _check(
+                forbidden not in combined,
+                errors,
+                "Web UI asset uses forbidden browser capability " + forbidden,
+            )
+        _check(
+            "textContent" in combined and 'credentials: "omit"' in combined,
+            errors,
+            "Web UI assets do not use safe local-only rendering",
+        )
+    _check(
+        not (root / ".mcp.json").exists()
+        and not (root / "web-ui").exists()
+        and not (root / "package.json").exists(),
+        errors,
+        "Web UI must not introduce an app, MCP server, or Node package",
+    )
+    allowed_runtime_imports = {
+        "__future__",
+        "collections",
+        "datetime",
+        "http",
+        "importlib",
+        "json",
+        "select",
+        "secrets",
+        "signal",
+        "socket",
+        "socketserver",
+        "sys",
+        "threading",
+        "typing",
+        "urllib",
+    }
+    for module_path in (web_path, views_path):
+        try:
+            tree = ast.parse(module_path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            imported = None
+            if isinstance(node, ast.Import):
+                imported = next(
+                    (alias.name.split(".", 1)[0] for alias in node.names),
+                    None,
+                )
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                imported = (node.module or "").split(".", 1)[0]
+            if imported is not None:
+                _check(
+                    imported in allowed_runtime_imports,
+                    errors,
+                    module_path.name + " imports non-standard runtime dependency " + imported,
+                )
+    installed_path = root / "scripts" / "validate_installed_stage1.py"
+    if installed_path.is_file():
+        _require_tokens(
+            installed_path.read_text(encoding="utf-8"),
+            (
+                "def web_ui_journey(self)",
+                "self.web_ui_journey()",
+                '"state_unchanged": True',
+                '"status": "manual-unverified"',
+                '"hostile-origin"',
+            ),
+            errors,
+            "installed evidence does not preserve the Web UI observation boundary",
+        )
+
+
 def _validate_current_candidate(root: Path) -> dict:
     errors: list[str] = []
     _validate_current_product_versions(root, errors)
@@ -1708,6 +1986,7 @@ def _validate_current_candidate(root: Path) -> dict:
     )
     _validate_manifest(root, manifest, errors)
     _validate_package_versions(root, manifest, errors)
+    _validate_local_read_only_web_ui(root, errors)
     _validate_repository_topology(root, errors)
     _validate_adaptive_assurance_authority(root, errors)
     _check(

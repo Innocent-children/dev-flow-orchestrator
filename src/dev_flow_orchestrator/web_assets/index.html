@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dev Flow task cockpit</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to task workspace</a>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">Local read-only cockpit</p>
+      <h1>Dev Flow</h1>
+    </div>
+    <p id="product-meta" class="product-meta">Connecting…</p>
+  </header>
+  <p class="read-only-notice">Observation only. Continue or change tasks through the controller and Codex workflow.</p>
+  <main id="workspace" class="workspace" tabindex="-1">
+    <section class="inventory" aria-labelledby="inventory-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Persisted state</p>
+          <h2 id="inventory-title">Tasks</h2>
+        </div>
+        <button id="refresh-tasks" type="button">Refresh list</button>
+      </div>
+      <form id="filters" class="filters" role="search">
+        <div class="filter-grid">
+          <label>Search
+            <input id="query" name="q" maxlength="256" autocomplete="off" placeholder="Task, node, summary…">
+          </label>
+          <label>Status
+            <input id="status-filter" name="status" maxlength="64" autocomplete="off" placeholder="e.g. ACTIVE">
+          </label>
+          <label>Workflow
+            <input id="workflow-filter" name="workflow" maxlength="64" autocomplete="off" placeholder="e.g. feature">
+          </label>
+          <label>Repository ID
+            <input id="repository-filter" name="repository" maxlength="128" autocomplete="off">
+          </label>
+          <label>Terminal
+            <select id="terminal-filter" name="terminal">
+              <option value="">Any</option>
+              <option value="false">Active</option>
+              <option value="true">Terminal</option>
+            </select>
+          </label>
+        </div>
+        <div class="filter-actions">
+          <button type="submit">Apply filters</button>
+          <button id="clear-filters" class="secondary" type="button">Clear</button>
+        </div>
+      </form>
+      <p id="inventory-status" class="status" role="status" aria-live="polite"></p>
+      <ul id="inventory-diagnostics" class="diagnostics" aria-label="Inventory diagnostics"></ul>
+      <ul id="task-list" class="task-list"></ul>
+    </section>
+    <section class="detail" aria-labelledby="detail-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Selected task</p>
+          <h2 id="detail-title">Choose a task</h2>
+        </div>
+        <button id="live-refresh" type="button" disabled>Observe live</button>
+      </div>
+      <p id="detail-status" class="status" role="status" aria-live="polite">
+        Stored details are immediate. Live observation runs only when requested.
+      </p>
+      <div id="detail-body" class="detail-body"></div>
+    </section>
+  </main>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

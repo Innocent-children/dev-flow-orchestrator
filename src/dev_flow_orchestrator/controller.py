@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 from pathlib import Path
 import re
+import threading
 from typing import Iterable, Mapping, Optional, Sequence
 import uuid
 
@@ -46,6 +47,13 @@ from .model import (
 from .product import MAX_REPOSITORY_COUNT, MIN_REPOSITORY_COUNT
 from .snapshot import make_repository_set_snapshot, validate_snapshot
 from .store import TaskStore
+from .web_views import (
+    DEFAULT_PAGE_LIMIT,
+    inventory_view as web_inventory_view,
+    live_task_view as web_live_task_view,
+    product_metadata as web_product_metadata,
+    stored_task_view as web_stored_task_view,
+)
 
 
 def _utc_now() -> str:
@@ -531,6 +539,95 @@ class Controller:
                 snapshot_error=exc.as_dict()["error"],
             )
         return task_view(state, definition, snapshot)
+
+    def inspect_product(self) -> dict:
+        """Return current product metadata for the integrated read-only surface."""
+        return web_product_metadata(_utc_now())
+
+    def inspect_tasks(
+        self,
+        *,
+        query: str = "",
+        statuses: Sequence[str] = (),
+        workflows: Sequence[str] = (),
+        repositories: Sequence[str] = (),
+        terminal: Optional[bool] = None,
+        offset: int = 0,
+        limit: int = DEFAULT_PAGE_LIMIT,
+    ) -> dict:
+        entries, diagnostics = self.store.inspect_inventory()
+        return web_inventory_view(
+            entries,
+            diagnostics,
+            _utc_now(),
+            query=query,
+            statuses=statuses,
+            workflows=workflows,
+            repositories=repositories,
+            terminal=terminal,
+            offset=offset,
+            limit=limit,
+        )
+
+    def inspect_task(
+        self,
+        task_id: str,
+        *,
+        offset: int = 0,
+        limit: int = DEFAULT_PAGE_LIMIT,
+    ) -> dict:
+        state, definition = self.store.inspect_with_definition(task_id)
+        return web_stored_task_view(
+            state,
+            definition,
+            _utc_now(),
+            offset=offset,
+            limit=limit,
+        )
+
+    def inspect_live_task(
+        self,
+        task_id: str,
+        *,
+        offset: int = 0,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> dict:
+        state, definition = self.store.inspect_with_definition(task_id)
+        snapshot = None
+        projection = None
+        snapshot_error_code = None
+        try:
+            with GitClient.cancellation(cancel_event):
+                snapshot = self._snapshot(state)
+            projection = agent_projection(state, definition, snapshot)
+        except DevFlowError as exc:
+            snapshot_error_code = exc.code
+        latest, latest_definition = self.store.inspect_with_definition(task_id)
+        if (
+            latest.revision != state.revision
+            or latest.updated_at != state.updated_at
+            or latest.product_identity != state.product_identity
+            or latest_definition.identity != definition.identity
+        ):
+            raise DevFlowError(
+                "VIEW_STALE",
+                "task changed during live observation",
+                details={
+                    "task_id": task_id,
+                    "observed_revision": state.revision,
+                    "current_revision": latest.revision,
+                },
+            )
+        return web_live_task_view(
+            state,
+            definition,
+            _utc_now(),
+            projection=projection,
+            snapshot_error_code=snapshot_error_code,
+            offset=offset,
+            limit=limit,
+        )
 
     def next(self, task_id: str) -> dict:
         state, definition = self.store.load_with_definition(task_id)

@@ -55,6 +55,29 @@ executor, one projected action, and one controller-owned append-only ledger.
   degraded or unavailable assurance and retain the same terminal conditions.
 - Runtime code uses only the Python standard library.
 
+## Web UI contribution boundary
+
+The local Web UI is part of `dev-flow-orchestrator` 0.3.0. Do not introduce a
+WebUI-specific version, package, plugin, marketplace entry, app or MCP server,
+data namespace, persisted schema, dependency set, build pipeline, or release
+gate. Presentation changes must leave `product_document()` and
+`PRODUCT_IDENTITY` unchanged.
+
+Keep stored inventory and detail physically read-only: no task locks,
+directories, permission normalization, caches, Git calls, or repair behavior.
+Keep live observation explicit, selected-task-only, single-slot, cancellable,
+and based on one aggregate snapshot reused for all projections. New responses
+must use allowlisted fields and must not expose raw state, records, bindings,
+snapshot entries, commands, absolute paths, or raw exceptions.
+
+Browser changes must remain native HTML/CSS/JavaScript with safe text rendering,
+keyboard access, visible focus, responsive layouts, no background polling, no
+external requests, and no persistent browser storage. Extend focused tests in
+`test_read_only_inspection.py`, `test_web_read_models.py`,
+`test_web_server.py`, and `test_web_ui_product_identity.py`; then run package
+and installed-artifact validation. A missing real browser must be recorded as
+`manual-unverified`, never inferred from HTTP-only evidence.
+
 ## Module ownership
 
 - `product.py`: 0.3.0 identity vocabulary, official workflow catalog, and the
@@ -122,6 +145,10 @@ python3 -I -S tests/test_stale_mutations.py -v
 python3 -I -S tests/test_cli.py -v
 python3 -I -S tests/test_hook.py -v
 python3 -I -S tests/test_git_snapshot.py -v
+python3 -I -S tests/test_read_only_inspection.py -v
+python3 -I -S tests/test_web_read_models.py -v
+python3 -I -S tests/test_web_server.py -v
+python3 -I -S tests/test_web_ui_product_identity.py -v
 python3 -I -S tests/test_multi_repository_core.py -v
 python3 -I -S tests/test_multi_repository_controller.py -v
 python3 -I -S tests/test_multi_repository_delivery.py -v

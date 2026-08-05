@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import parse_qs, urlsplit
 
 
 PRODUCT_VERSION = "0.3.0"
@@ -2614,6 +2616,11 @@ class Stage1Acceptance:
             "scripts/dev_flow_python_launcher",
             "scripts/validate_package.py",
             "src/dev_flow_orchestrator/cli.py",
+            "src/dev_flow_orchestrator/web.py",
+            "src/dev_flow_orchestrator/web_views.py",
+            "src/dev_flow_orchestrator/web_assets/index.html",
+            "src/dev_flow_orchestrator/web_assets/app.js",
+            "src/dev_flow_orchestrator/web_assets/styles.css",
         )
         missing = [item for item in required if not (self.plugin_root / item).is_file()]
         _require(not missing, "installed snapshot is missing assets: {}".format(missing))
@@ -2701,9 +2708,161 @@ class Stage1Acceptance:
                         (self.plugin_root / "hooks" / "hooks.json").read_bytes()
                     ).hexdigest(),
                     "launcher_executable": True,
+                    "web_ui": {
+                        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in (
+                            self.plugin_root / "src/dev_flow_orchestrator/web.py",
+                            self.plugin_root / "src/dev_flow_orchestrator/web_views.py",
+                            self.plugin_root / "src/dev_flow_orchestrator/web_assets/index.html",
+                            self.plugin_root / "src/dev_flow_orchestrator/web_assets/app.js",
+                            self.plugin_root / "src/dev_flow_orchestrator/web_assets/styles.css",
+                        )
+                    },
                 },
             }
         )
+
+    def web_ui_journey(self) -> None:
+        task_id = "stage1-web-ui"
+        repository = self._make_repository("web-ui")
+        data_dir = self.scratch / "web-ui-data"
+        controller = InstalledController(
+            self.recorder,
+            self.launcher,
+            self.cli_handler,
+            data_dir,
+            repository,
+            kind_prefix="installed-web-ui",
+        )
+        _, start_process = controller.start_repositories(
+            task_id,
+            "lite",
+            (repository,),
+            "Inspect installed task state through the local read-only Web UI",
+        )
+        before = _tree_digest(data_dir, ignore_volatile=True)
+        process = subprocess.Popen(
+            (
+                str(self.launcher),
+                str(self.cli_handler),
+                "--data-dir",
+                str(data_dir),
+                "web",
+            ),
+            cwd=str(repository),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.recorder.environment,
+        )
+        checks = []
+        try:
+            _require(process.stdout is not None, "installed Web UI has no startup stream")
+            receipt = _strict_json(process.stdout.readline(), "installed Web UI receipt")
+            _require(isinstance(receipt, Mapping), "installed Web UI receipt is not an object")
+            parsed = urlsplit(str(receipt.get("url", "")))
+            token_values = parse_qs(parsed.fragment).get("token", ())
+            _require(
+                parsed.hostname == "127.0.0.1"
+                and isinstance(parsed.port, int)
+                and len(token_values) == 1,
+                "installed Web UI receipt is not loopback with fragment authority",
+            )
+            token = token_values[0]
+
+            def request(path: str, *, headers: Optional[Mapping[str, str]] = None) -> Tuple[int, Mapping[str, str], dict]:
+                selected = {"Authorization": "Bearer " + token}
+                if headers is not None:
+                    selected.update(headers)
+                connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=10)
+                connection.request("GET", path, headers=selected)
+                response = connection.getresponse()
+                body = _strict_json(
+                    response.read().decode("utf-8"),
+                    "installed Web UI response",
+                )
+                response_headers = dict(response.getheaders())
+                status = response.status
+                connection.close()
+                _require(isinstance(body, dict), "installed Web UI response is not an object")
+                return status, response_headers, body
+
+            inventory_status, inventory_headers, inventory = request("/api/tasks")
+            _require(
+                inventory_status == 200
+                and inventory.get("view") == "task-inventory"
+                and any(
+                    item.get("task_id") == task_id
+                    for item in inventory.get("result", {}).get("tasks", ())
+                    if isinstance(item, Mapping)
+                ),
+                "installed Web UI inventory did not expose the persisted task",
+            )
+            _require(
+                inventory_headers.get("Cache-Control") == "no-store"
+                and "Access-Control-Allow-Origin" not in inventory_headers,
+                "installed Web UI response policy is not local no-store/no-CORS",
+            )
+            detail_status, _, detail = request("/api/tasks/" + task_id)
+            live_status, _, live = request("/api/tasks/" + task_id + "/live")
+            hostile_status, hostile_headers, hostile = request(
+                "/api/tasks",
+                headers={"Origin": "https://attacker.invalid"},
+            )
+            _require(
+                detail_status == 200
+                and detail.get("result", {}).get("health") == "not-evaluated"
+                and live_status == 200
+                and live.get("view") == "task-live-detail",
+                "installed Web UI stored/live boundary did not complete",
+            )
+            _require(
+                hostile_status == 403
+                and hostile.get("error", {}).get("code") == "HTTP_ORIGIN_FORBIDDEN"
+                and "Access-Control-Allow-Origin" not in hostile_headers,
+                "installed Web UI hostile origin was not denied",
+            )
+            checks = ["inventory", "stored-detail", "live-detail", "hostile-origin"]
+        finally:
+            process.terminate()
+            try:
+                returncode = process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                returncode = process.wait(timeout=5)
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+        _require(returncode == 0, "installed Web UI did not shut down gracefully")
+        after = _tree_digest(data_dir, ignore_volatile=True)
+        _require(before == after, "installed Web UI observation mutated task storage")
+        cancelled, cancel_process = controller.cancel(
+            task_id,
+            "Installed Web UI observation complete",
+        )
+        _require(
+            self._projection(cancelled).get("status") == "CANCELLED",
+            "installed Web UI evidence task did not cancel",
+        )
+        self.evidence["web_ui"] = {
+            "task_id": task_id,
+            "start_process": start_process,
+            "cancel_process": cancel_process,
+            "checks": checks,
+            "state_tree_before": before,
+            "state_tree_after": after,
+            "state_unchanged": True,
+            "browser": {
+                "status": "manual-unverified",
+                "limitation": (
+                    "The installed validator has no browser-control channel and exercises HTTP only. "
+                    "A separate real-browser candidate check is not bound to this immutable installed "
+                    "snapshot, so installed rendering, CSP enforcement, and persistent-storage behavior "
+                    "remain unverified."
+                ),
+            },
+        }
 
     def run_package_validator(self) -> None:
         result, process_index = self.recorder.run_json(
@@ -2832,6 +2991,7 @@ class Stage1Acceptance:
 
     def run(self) -> None:
         self.inspect_assets()
+        self.web_ui_journey()
         self.official_success_journeys()
         self.exact_set_journey()
         self.exact_set_lite_journey()

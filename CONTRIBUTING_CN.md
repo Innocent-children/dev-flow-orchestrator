@@ -28,6 +28,25 @@
 - 将驱动程序执行保持在引擎之外。可选驱动程序回退记录降级或不可用的保障，并保留相同的终止条件。
 - 运行时代码仅使用 Python 标准库。
 
+## Web UI 贡献边界
+
+本地 Web UI 是 `dev-flow-orchestrator` 0.3.0 的组成部分。不得引入 WebUI 专属版本、
+包、插件、市场条目、App 或 MCP 服务器、数据命名空间、持久化 schema、依赖集、构建
+流水线或独立发布门。展示层变更必须保持 `product_document()` 和
+`PRODUCT_IDENTITY` 不变。
+
+存储清单和详情必须在物理层面只读：不得获取任务锁、创建目录、规范化权限、写缓存、
+调用 Git 或尝试修复。实时观察必须显式触发、只针对选中任务、使用单一捕获槽、支持
+取消，并基于一个供所有投影复用的聚合快照。新响应必须使用字段白名单，不得暴露原始
+状态、记录、binding、快照条目、命令、绝对路径或原始异常。
+
+浏览器变更必须继续使用原生 HTML/CSS/JavaScript 和安全文本渲染，支持键盘操作、可见
+焦点和响应式布局，不得后台轮询、请求外部资源或使用持久浏览器存储。扩展
+`test_read_only_inspection.py`、`test_web_read_models.py`、
+`test_web_server.py` 和 `test_web_ui_product_identity.py` 的聚焦测试，然后运行候选包
+和安装产物验证。缺少真实浏览器时必须记录为 `manual-unverified`，不得从纯 HTTP
+证据推断浏览器正确性。
+
 ## 模块所有权
 
 - `product.py`：0.3.0 身份词汇表、官方工作流目录和权威的仓库拓扑能力。
@@ -70,6 +89,10 @@ python3 -I -S tests/test_stale_mutations.py -v
 python3 -I -S tests/test_cli.py -v
 python3 -I -S tests/test_hook.py -v
 python3 -I -S tests/test_git_snapshot.py -v
+python3 -I -S tests/test_read_only_inspection.py -v
+python3 -I -S tests/test_web_read_models.py -v
+python3 -I -S tests/test_web_server.py -v
+python3 -I -S tests/test_web_ui_product_identity.py -v
 python3 -I -S tests/test_multi_repository_core.py -v
 python3 -I -S tests/test_multi_repository_controller.py -v
 python3 -I -S tests/test_multi_repository_delivery.py -v

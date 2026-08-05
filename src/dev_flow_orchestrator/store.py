@@ -14,6 +14,7 @@ from .filesystem import (
     atomic_write_bytes,
     ensure_private_directory,
     exclusive_file_lock,
+    list_directory_names_at,
     read_regular_file_at,
 )
 from .model import (
@@ -213,6 +214,61 @@ class TaskStore:
     ) -> Tuple[TaskState, WorkflowDefinition]:
         with self._lock(task_id):
             return self._read_state_with_definition(task_id)
+
+    def inspect_with_definition(
+        self,
+        task_id: str,
+    ) -> Tuple[TaskState, WorkflowDefinition]:
+        """Read one current task without locks, repairs, or filesystem writes."""
+        return self._read_state_with_definition(task_id)
+
+    @staticmethod
+    def _inspection_diagnostic(entry: str, exc: BaseException) -> dict:
+        code = getattr(exc, "code", "STATE_READ_FAILED")
+        if code not in {
+            "DATA_PATH_UNSAFE",
+            "PRODUCT_IDENTITY_MISMATCH",
+            "STATE_INVALID",
+            "STATE_READ_FAILED",
+            "TASK_NOT_FOUND",
+            "WORKFLOW_NOT_FOUND",
+        }:
+            code = "STATE_READ_FAILED"
+        diagnostic = {"code": code}
+        try:
+            diagnostic["task_id"] = validate_task_id(entry)
+        except DevFlowError:
+            diagnostic["entry"] = entry[:128]
+            if len(entry) > 128:
+                diagnostic["entry_truncated"] = True
+        return diagnostic
+
+    def inspect_inventory(
+        self,
+    ) -> Tuple[
+        Tuple[Tuple[TaskState, WorkflowDefinition], ...],
+        Tuple[dict, ...],
+    ]:
+        """Read current task inventory without creating directories or locks."""
+        try:
+            names = list_directory_names_at(
+                self.root,
+                (PLUGIN_DATA_NAMESPACE, "tasks"),
+            )
+        except FileNotFoundError:
+            return (), ()
+        except (DevFlowError, OSError) as exc:
+            return (), (self._inspection_diagnostic("tasks", exc),)
+
+        states = []
+        diagnostics = []
+        for name in sorted(names, key=lambda item: item.encode("utf-8")):
+            try:
+                task_id = validate_task_id(name)
+                states.append(self._read_state_with_definition(task_id))
+            except (DevFlowError, OSError) as exc:
+                diagnostics.append(self._inspection_diagnostic(name, exc))
+        return tuple(states), tuple(diagnostics)
 
     def list_states(self) -> Tuple[TaskState, ...]:
         return tuple(state for state, _ in self.list_states_with_definitions())

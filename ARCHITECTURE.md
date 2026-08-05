@@ -35,13 +35,14 @@ Codex executor.
 ## Dependency direction
 
 ```text
-CLI ─┐
-Hook ┴─> Controller ─┬─> Engine ─> Delivery ─> Model
-                    │       └────> Workflow ─> Product
-                    ├─> Store ───> Engine
-                    │      └─────> Filesystem primitives
-                    ├─> Workflows ─> yaml_subset
-                    └─> GitClient (bounded, read-only)
+CLI ─────┐
+Hook ────┼─> Controller ─┬─> Engine ─> Delivery ─> Model
+Web UI ──┘               │       └────> Workflow ─> Product
+                         ├─> Store ───> Engine
+                         │      └─────> Filesystem primitives
+                         ├─> Web views (bounded projections)
+                         ├─> Workflows ─> yaml_subset
+                         └─> GitClient (bounded, read-only)
 ```
 
 The domain layer (`model.py`, `product.py`, `snapshot.py`, `workflow.py`,
@@ -52,6 +53,31 @@ target-repository inspection port, invoked serially for every task member.
 Drivers are instructions executed by Codex
 outside the controller; the runtime only validates and records their declared
 results.
+
+## Local read-only presentation boundary
+
+`web.py` is a standard-library loopback adapter under the existing 0.3.0
+product identity. It binds only `127.0.0.1`, owns an ephemeral process token,
+serves a fixed same-origin asset/API route set, enforces exact Host and Origin
+checks, rejects cross-site Fetch Metadata and unsafe methods, and emits no CORS
+allowance. Native HTML, CSS, and JavaScript assets use no build step, external
+resource, telemetry, service worker, cookie, or persistent browser storage.
+
+`web_views.py` owns bounded presentation projections. Inventory and stored
+detail call `TaskStore.inspect_inventory()` and `inspect_with_definition()`,
+which traverse no-follow file-descriptor chains without acquiring locks,
+creating directories, changing modes, or writing caches. Authoritative
+controller operations retain their existing locks, revision CAS, replay, and
+atomic replacement behavior.
+
+Live detail is an explicit selected-task operation. It captures one existing
+aggregate repository-set snapshot and reuses that exact value for task and
+agent projections, then rereads persisted state and returns `VIEW_STALE` if the
+revision changed. A process-global non-queued slot returns `429` to competing
+live requests. Shutdown cancellation terminates the active Git process group;
+stored views remain independent of Git and live-capture availability. HTTP
+responses never expose raw state, ledger payloads, snapshot entries, bindings,
+commands, absolute paths, or raw internal errors.
 
 ## Module ownership
 
@@ -70,6 +96,8 @@ results.
 | `controller.py` | Application coordination and every post-creation state mutation |
 | `cli.py` | Strict argv/JSON interface and one JSON response per command |
 | `hook.py` | Active-task lookup, exact locator injection, and fail-open data-path guardrails |
+| `web.py` | Authenticated loopback server, fixed routes, security policy, foreground lifecycle, and live-capture admission |
+| `web_views.py` | Bounded inventory, stored detail, live detail, timeline, Dossier, and recovery projections |
 
 ## Current product identities
 

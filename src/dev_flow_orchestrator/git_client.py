@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import os
 from pathlib import Path
@@ -9,8 +11,9 @@ import selectors
 import signal
 import stat
 import subprocess
+import threading
 import time
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Iterable, Iterator, Mapping, Optional, Sequence
 
 from .delivery import normalize_resource_bytes
 from .model import DevFlowError, json_value
@@ -42,6 +45,12 @@ GIT_TERMINATE_GRACE_SECONDS = 1
 GIT_READ_CHUNK_BYTES = 64 * 1024
 SNAPSHOT_TIMEOUT_SECONDS = 30
 SNAPSHOT_READ_CHUNK_BYTES = 64 * 1024
+GIT_CANCEL_POLL_SECONDS = 0.1
+
+
+_GIT_CANCEL_EVENT: contextvars.ContextVar[Optional[threading.Event]] = (
+    contextvars.ContextVar("dev_flow_git_cancel_event", default=None)
+)
 
 
 def _error(code: str, message: str, **details: object) -> DevFlowError:
@@ -81,12 +90,38 @@ class GitClient:
             pass
 
     @staticmethod
+    @contextlib.contextmanager
+    def cancellation(cancel_event: Optional[threading.Event]) -> Iterator[None]:
+        """Scope optional cooperative cancellation to the current capture context."""
+        token = _GIT_CANCEL_EVENT.set(cancel_event)
+        try:
+            yield
+        finally:
+            _GIT_CANCEL_EVENT.reset(token)
+
+    @staticmethod
+    def _check_cancelled(
+        cancel_event: Optional[threading.Event],
+        process: Optional[subprocess.Popen] = None,
+    ) -> None:
+        if cancel_event is None or not cancel_event.is_set():
+            return
+        if process is not None:
+            GitClient._terminate(process)
+        raise DevFlowError(
+            "GIT_COMMAND_CANCELLED",
+            "Git evidence collection was cancelled",
+        )
+
+    @staticmethod
     def _run(
         repository: Path,
         *arguments: str,
         timeout_seconds: Optional[float] = None,
         output_limit_bytes: Optional[int] = None,
     ) -> bytes:
+        cancel_event = _GIT_CANCEL_EVENT.get()
+        GitClient._check_cancelled(cancel_event)
         effective_output_limit = (
             MAX_GIT_OUTPUT_BYTES
             if output_limit_bytes is None
@@ -145,6 +180,7 @@ class GitClient:
             selector.register(process.stdout, selectors.EVENT_READ, stdout)
             selector.register(process.stderr, selectors.EVENT_READ, stderr)
             while selector.get_map():
+                GitClient._check_cancelled(cancel_event, process)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     GitClient._terminate(process)
@@ -156,17 +192,14 @@ class GitClient:
                             "timeout_seconds": effective_timeout,
                         },
                     )
-                events = selector.select(remaining)
+                wait_seconds = (
+                    min(remaining, GIT_CANCEL_POLL_SECONDS)
+                    if cancel_event is not None
+                    else remaining
+                )
+                events = selector.select(wait_seconds)
                 if not events:
-                    GitClient._terminate(process)
-                    raise DevFlowError(
-                        "GIT_COMMAND_TIMEOUT",
-                        "Git command exceeded the preflight time budget",
-                        details={
-                            "arguments": list(arguments),
-                            "timeout_seconds": effective_timeout,
-                        },
-                    )
+                    continue
                 for key, _ in events:
                     chunk = os.read(key.fileobj.fileno(), GIT_READ_CHUNK_BYTES)
                     if not chunk:
@@ -187,18 +220,29 @@ class GitClient:
                             },
                         )
             remaining = max(0.0, deadline - time.monotonic())
-            try:
-                returncode = process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired as exc:
-                GitClient._terminate(process)
-                raise DevFlowError(
-                    "GIT_COMMAND_TIMEOUT",
-                    "Git command exceeded the preflight time budget",
-                    details={
-                        "arguments": list(arguments),
-                        "timeout_seconds": effective_timeout,
-                    },
-                ) from exc
+            while True:
+                GitClient._check_cancelled(cancel_event, process)
+                wait_seconds = (
+                    min(remaining, GIT_CANCEL_POLL_SECONDS)
+                    if cancel_event is not None
+                    else remaining
+                )
+                try:
+                    returncode = process.wait(timeout=wait_seconds)
+                    break
+                except subprocess.TimeoutExpired as exc:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    if remaining > 0 and cancel_event is not None:
+                        continue
+                    GitClient._terminate(process)
+                    raise DevFlowError(
+                        "GIT_COMMAND_TIMEOUT",
+                        "Git command exceeded the preflight time budget",
+                        details={
+                            "arguments": list(arguments),
+                            "timeout_seconds": effective_timeout,
+                        },
+                    ) from exc
         except DevFlowError:
             raise
         except (OSError, ValueError, KeyError) as exc:

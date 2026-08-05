@@ -97,6 +97,86 @@ class PackageValidationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("missing ROADMAP_CN.md", result["errors"])
 
+    def test_missing_chinese_install_guide_is_reported(self) -> None:
+        (self.candidate / "INSTALL_CN.md").unlink()
+        result = validate(self.candidate)
+        self.assertFalse(result["ok"])
+        self.assertIn("missing INSTALL_CN.md", result["errors"])
+
+    def test_chinese_web_ui_documentation_drift_is_reported(self) -> None:
+        readme = self.candidate / "README_CN.md"
+        current = readme.read_text(encoding="utf-8")
+        readme.write_text(
+            current.replace("本地只读 Web UI", "本地任务界面"),
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "README_CN.md is missing the integrated read-only Web UI boundary",
+        )
+
+    def test_roadmap_must_keep_read_only_slice_scope(self) -> None:
+        roadmap = self.candidate / "ROADMAP.md"
+        current = roadmap.read_text(encoding="utf-8")
+        roadmap.write_text(
+            current.replace(
+                "first read-only slice delivered",
+                "interactive workbench delivered",
+            ),
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "ROADMAP.md is missing the integrated read-only Web UI boundary",
+        )
+
+    def test_roadmap_rejects_full_horizon_two_delivery_claim(self) -> None:
+        roadmap = self.candidate / "ROADMAP.md"
+        roadmap.write_text(
+            roadmap.read_text(encoding="utf-8")
+            + "\nHorizon 2 is fully delivered.\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "ROADMAP.md claims that all of Horizon 2 is delivered",
+        )
+
+    def test_docs_reject_web_ui_mutation_authority(self) -> None:
+        install = self.candidate / "INSTALL_CN.md"
+        install.write_text(
+            install.read_text(encoding="utf-8") + "\nWeb UI 可以推进任务。\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "INSTALL_CN.md claims unsupported Web UI mutation authority",
+        )
+
+    def test_missing_web_ui_asset_is_reported(self) -> None:
+        (self.candidate / "src/dev_flow_orchestrator/web_assets/app.js").unlink()
+        self.assert_error_contains(validate(self.candidate), "missing Web UI asset app.js")
+
+    def test_web_ui_runtime_rejects_third_party_dependency(self) -> None:
+        web = self.candidate / "src/dev_flow_orchestrator/web.py"
+        web.write_text("import flask\n" + web.read_text(encoding="utf-8"), encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "web.py imports non-standard runtime dependency flask",
+        )
+
+    def test_installed_evidence_must_include_web_ui_journey(self) -> None:
+        runner = self.candidate / "scripts/validate_installed_stage1.py"
+        current = runner.read_text(encoding="utf-8")
+        runner.write_text(
+            current.replace("self.web_ui_journey()", "# Web UI journey omitted", 1),
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "installed evidence does not preserve the Web UI observation boundary",
+        )
+
     def test_foreign_candidate_uses_its_own_workflow(self) -> None:
         workflow = self.candidate / "workflows" / "lite.yaml"
         workflow.write_text("schema: [\n", encoding="utf-8")

@@ -68,6 +68,17 @@ class ExternalEvidenceValidationTests(unittest.TestCase):
                 changed, "a" * 64
             )
 
+    def test_incomplete_driver_statuses_cannot_be_upgraded_to_release_evidence(self) -> None:
+        for status in ("partial", "failed", "skipped", "stale", "manual-unverified"):
+            with self.subTest(status=status):
+                changed = self._external()
+                changed["driver_executions"][0]["result"]["status"] = status
+                with self.assertRaises(acceptance.AcceptanceFailure):
+                    acceptance._validate_external_release_evidence(
+                        changed,
+                        "a" * 64,
+                    )
+
 
 @unittest.skipUnless(sys.platform == "darwin", "installed acceptance is macOS-only")
 class InstalledStage1JourneyTests(unittest.TestCase):
@@ -116,6 +127,16 @@ class InstalledStage1JourneyTests(unittest.TestCase):
         )
         self.assertTrue(evidence["installed"]["immutable_during_run"])
         self.assertTrue(evidence["package_validation"]["result"]["ok"])
+        self.assertTrue(evidence["web_ui"]["state_unchanged"])
+        self.assertEqual(
+            evidence["web_ui"]["checks"],
+            ["inventory", "stored-detail", "live-detail", "hostile-origin"],
+        )
+        self.assertEqual(
+            evidence["web_ui"]["browser"]["status"],
+            "manual-unverified",
+        )
+        self.assertTrue(evidence["web_ui"]["browser"]["limitation"])
         official = {
             "official-success-{}".format(workflow)
             for workflow in (
