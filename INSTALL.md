@@ -41,6 +41,10 @@ receipt with the action, versions, touched directories, and first prompt. Review
 [`scripts/install.sh`](scripts/install.sh) before running it if you do not want
 to pipe a remote script directly to `sh`.
 
+The success receipt uses a neon terminal palette on interactive standard
+output. Redirected output, `TERM=dumb`, or `NO_COLOR` automatically emits the
+same receipt without ANSI color codes.
+
 The installer treats `main` as its non-configurable authoritative source ref.
 A fresh install selects `main` explicitly. An existing source proceeds only
 when its origin matches the configured repository URL, its attached branch is

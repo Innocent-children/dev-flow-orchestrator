@@ -8,6 +8,29 @@ MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
 PLUGIN_ID="dev-flow-orchestrator@personal"
 
+NEON_CYAN=""
+NEON_BLUE=""
+NEON_PURPLE=""
+NEON_GREEN=""
+BRIGHT_WHITE=""
+TEXT_DIM=""
+TEXT_BOLD=""
+COLOR_RESET=""
+if [ -z "${NO_COLOR:-}" ] && {
+  [ "${DEV_FLOW_FORCE_COLOR:-0}" = "1" ] \
+    || { [ -t 1 ] && [ "${TERM:-}" != "dumb" ]; }
+}; then
+  COLOR_ESCAPE="$(printf '\033')"
+  NEON_CYAN="${COLOR_ESCAPE}[38;5;51m"
+  NEON_BLUE="${COLOR_ESCAPE}[38;5;39m"
+  NEON_PURPLE="${COLOR_ESCAPE}[38;5;213m"
+  NEON_GREEN="${COLOR_ESCAPE}[38;5;82m"
+  BRIGHT_WHITE="${COLOR_ESCAPE}[38;5;255m"
+  TEXT_DIM="${COLOR_ESCAPE}[2m"
+  TEXT_BOLD="${COLOR_ESCAPE}[1m"
+  COLOR_RESET="${COLOR_ESCAPE}[0m"
+fi
+
 fail() {
   printf 'Dev Flow installation failed: %s\n' "$1" >&2
   exit 1
@@ -236,22 +259,60 @@ if ! codex plugin add "$PLUGIN_ID"; then
   exit 1
 fi
 
-printf '\n============================================================\n'
-printf '  Dev Flow Orchestrator %s is ready.\n' "$PLUGIN_VERSION"
-printf '  Resume with confidence. Verify with evidence.\n'
-printf '============================================================\n'
-printf '\nInstallation receipt\n'
-printf '  Plugin: %s\n' "$PLUGIN_ID"
-printf '  Action: %s\n' "$INSTALL_ACTION"
+case "$INSTALL_ACTION" in
+  installed)
+    ACTION_COLOR="$NEON_GREEN"
+    ;;
+  upgraded)
+    ACTION_COLOR="$NEON_CYAN"
+    ;;
+  repaired)
+    ACTION_COLOR="$NEON_PURPLE"
+    ;;
+esac
+
+printf '\n%s%s┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓%s\n' \
+  "$TEXT_BOLD" "$NEON_CYAN" "$COLOR_RESET"
+printf '%s%s┃%s  %sDEV FLOW ORCHESTRATOR%s  %s// SYSTEM ONLINE%s\n' \
+  "$TEXT_BOLD" "$NEON_CYAN" "$COLOR_RESET" \
+  "$BRIGHT_WHITE" "$COLOR_RESET" "$NEON_PURPLE" "$COLOR_RESET"
+printf '%s%s┃%s  %sCONTROL PLANE READY%s  %s·%s  VERSION %s%s%s\n' \
+  "$TEXT_BOLD" "$NEON_CYAN" "$COLOR_RESET" \
+  "$NEON_GREEN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" \
+  "$NEON_BLUE" "$PLUGIN_VERSION" "$COLOR_RESET"
+printf '%s%s┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛%s\n' \
+  "$TEXT_BOLD" "$NEON_CYAN" "$COLOR_RESET"
+
+printf '\n%s%s╭─ INSTALLATION RECEIPT%s\n' \
+  "$TEXT_BOLD" "$NEON_PURPLE" "$COLOR_RESET"
+printf '%s│%s  %sPLUGIN%s     %s\n' \
+  "$NEON_PURPLE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$PLUGIN_ID"
+printf '%s│%s  %sACTION%s     %s%s%s\n' \
+  "$NEON_PURPLE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" \
+  "$ACTION_COLOR" "$INSTALL_ACTION" "$COLOR_RESET"
 if [ -n "$PREVIOUS_VERSION" ]; then
-  printf '  Previous version: %s\n' "$PREVIOUS_VERSION"
+  printf '%s│%s  %sPREVIOUS%s   %s\n' \
+    "$NEON_PURPLE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" \
+    "$PREVIOUS_VERSION"
 fi
-printf '  Installed version: %s\n' "$PLUGIN_VERSION"
-printf '  Directories touched:\n'
-printf '    - Source checkout: %s\n' "$SOURCE_ROOT"
-printf '    - Marketplace metadata: %s\n' "$(dirname "$MARKETPLACE_FILE")"
-printf '    - Codex-managed state: %s\n' "$CODEX_ROOT"
-printf '\nNext steps\n'
-printf '  1. Start a new Codex task and review the installed Hook in /hooks.\n'
-printf '  2. Copy this first prompt:\n\n'
-printf 'Use $follow-dev-flow to start a lite task in this repository for: <your requirement>\n'
+printf '%s│%s  %sINSTALLED%s  %s%s%s\n' \
+  "$NEON_PURPLE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" \
+  "$NEON_GREEN" "$PLUGIN_VERSION" "$COLOR_RESET"
+printf '%s╰─%s\n' "$NEON_PURPLE" "$COLOR_RESET"
+
+printf '\n%s%s╭─ DIRECTORIES TOUCHED%s\n' \
+  "$TEXT_BOLD" "$NEON_BLUE" "$COLOR_RESET"
+printf '%s├─%s %sSOURCE%s       %s\n' \
+  "$NEON_BLUE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$SOURCE_ROOT"
+printf '%s├─%s %sMARKETPLACE%s  %s\n' \
+  "$NEON_BLUE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" \
+  "$(dirname "$MARKETPLACE_FILE")"
+printf '%s╰─%s %sCODEX STATE%s  %s\n' \
+  "$NEON_BLUE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$CODEX_ROOT"
+
+printf '\n%s%s▶ NEXT MISSION%s\n' "$TEXT_BOLD" "$NEON_GREEN" "$COLOR_RESET"
+printf '  %s1.%s Start a new Codex task and review the installed Hook in /hooks.\n' \
+  "$NEON_CYAN" "$COLOR_RESET"
+printf '  %s2.%s Launch with this prompt:\n\n' "$NEON_CYAN" "$COLOR_RESET"
+printf '%s%s  Use $follow-dev-flow to start a lite task in this repository for: <your requirement>%s\n' \
+  "$TEXT_BOLD" "$BRIGHT_WHITE" "$COLOR_RESET"

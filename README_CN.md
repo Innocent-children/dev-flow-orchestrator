@@ -99,6 +99,9 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 内容，同时保留无关的 ignored 内容。如果你希望执行前检查所有步骤，请先阅读
 [scripts/install.sh](scripts/install.sh)，或者使用[手动安装指南](INSTALL.md)。
 
+标准输出连接交互式终端时，成功收据会使用霓虹终端配色。重定向输出、`TERM=dumb` 或
+设置 `NO_COLOR` 时，同一收据会自动改为不含 ANSI 颜色代码的纯文本。
+
 安装后新建 Codex 任务，在 `/hooks` 中检查并信任已安装 Hook，然后尝试：
 
 ```text

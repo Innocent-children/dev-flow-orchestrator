@@ -162,7 +162,13 @@ class InstallerBehaviorTests(unittest.TestCase):
         )
 
         self.environment = os.environ.copy()
-        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        for name in (
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "NO_COLOR",
+            "DEV_FLOW_FORCE_COLOR",
+        ):
             self.environment.pop(name, None)
         self.environment.update(
             {
@@ -353,27 +359,44 @@ class InstallerBehaviorTests(unittest.TestCase):
     def test_success_prints_receipt_and_touched_directories(self) -> None:
         result = self.install_successfully()
 
-        self.assertIn("Dev Flow Orchestrator 0.3.0 is ready.", result.stdout)
-        self.assertIn("Installation receipt", result.stdout)
-        self.assertIn(
-            "Plugin: dev-flow-orchestrator@personal",
-            result.stdout,
-        )
-        self.assertIn("Action: installed", result.stdout)
-        self.assertIn("Installed version: 0.3.0", result.stdout)
-        self.assertIn(
-            "Source checkout: {}".format(self.source_root),
-            result.stdout,
-        )
-        self.assertIn(
-            "Marketplace metadata: {}".format(self.marketplace.parent),
-            result.stdout,
-        )
-        self.assertIn(
-            "Codex-managed state: {}".format(self.test_root / ".codex"),
-            result.stdout,
-        )
+        self.assertIn("DEV FLOW ORCHESTRATOR", result.stdout)
+        self.assertIn("// SYSTEM ONLINE", result.stdout)
+        self.assertIn("CONTROL PLANE READY", result.stdout)
+        self.assertIn("VERSION 0.3.0", result.stdout)
+        self.assertIn("INSTALLATION RECEIPT", result.stdout)
+        self.assertIn("dev-flow-orchestrator@personal", result.stdout)
+        self.assertIn("ACTION     installed", result.stdout)
+        self.assertIn("INSTALLED  0.3.0", result.stdout)
+        self.assertIn(str(self.source_root), result.stdout)
+        self.assertIn(str(self.marketplace.parent), result.stdout)
+        self.assertIn(str(self.test_root / ".codex"), result.stdout)
         self.assertIn("Use $follow-dev-flow", result.stdout)
+        self.assertNotIn("\x1b[", result.stdout)
+
+    def test_success_uses_neon_colors_when_forced(self) -> None:
+        result = self.run_installer({"DEV_FLOW_FORCE_COLOR": "1"})
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            "stdout:\n{}\nstderr:\n{}".format(result.stdout, result.stderr),
+        )
+        self.assertIn("\x1b[38;5;51m", result.stdout)
+        self.assertIn("\x1b[38;5;213m", result.stdout)
+        self.assertIn("\x1b[38;5;82m", result.stdout)
+        self.assertIn("\x1b[0m", result.stdout)
+
+    def test_no_color_disables_forced_neon_output(self) -> None:
+        result = self.run_installer(
+            {"DEV_FLOW_FORCE_COLOR": "1", "NO_COLOR": "1"}
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            "stdout:\n{}\nstderr:\n{}".format(result.stdout, result.stderr),
+        )
+        self.assertNotIn("\x1b[", result.stdout)
 
     def test_older_installed_plugin_is_upgraded_automatically(self) -> None:
         self.set_installed_version("0.2.0")
@@ -387,9 +410,9 @@ class InstallerBehaviorTests(unittest.TestCase):
                 "plugin add dev-flow-orchestrator@personal",
             ],
         )
-        self.assertIn("Action: upgraded", result.stdout)
-        self.assertIn("Previous version: 0.2.0", result.stdout)
-        self.assertIn("Installed version: 0.3.0", result.stdout)
+        self.assertIn("ACTION     upgraded", result.stdout)
+        self.assertIn("PREVIOUS   0.2.0", result.stdout)
+        self.assertIn("INSTALLED  0.3.0", result.stdout)
         self.assertEqual(self.codex_state.read_text(encoding="utf-8"), "0.3.0\n")
 
     def test_current_installed_plugin_is_repaired_automatically(self) -> None:
@@ -404,9 +427,9 @@ class InstallerBehaviorTests(unittest.TestCase):
                 "plugin add dev-flow-orchestrator@personal",
             ],
         )
-        self.assertIn("Action: repaired", result.stdout)
-        self.assertIn("Previous version: 0.3.0", result.stdout)
-        self.assertIn("Installed version: 0.3.0", result.stdout)
+        self.assertIn("ACTION     repaired", result.stdout)
+        self.assertIn("PREVIOUS   0.3.0", result.stdout)
+        self.assertIn("INSTALLED  0.3.0", result.stdout)
 
     def test_remove_failure_preserves_installed_plugin_and_stops(self) -> None:
         self.set_installed_version("0.3.0")

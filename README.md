@@ -120,6 +120,10 @@ step before running it, review
 [scripts/install.sh](scripts/install.sh) or follow the [manual installation
 guide](INSTALL.md).
 
+The success receipt uses a neon terminal palette when standard output is an
+interactive terminal. Redirected output, `TERM=dumb`, or `NO_COLOR` produces
+the same receipt without ANSI color codes.
+
 After installation, start a new Codex task, review and trust the installed Hook
 in `/hooks`, then try:
 
