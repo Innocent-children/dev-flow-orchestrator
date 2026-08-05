@@ -105,8 +105,11 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 ```
 
 The installer checks the host, clones or updates the source, validates the
-package, safely merges the personal marketplace entry, installs the plugin,
-and prints a first prompt. It treats `main` as the authoritative source ref:
+package, safely merges the personal marketplace entry, installs a missing
+plugin, upgrades an older installation, or repairs the current version by
+reinstalling it. It then prints an installation receipt with the action,
+versions, touched directories, and a first prompt. It treats `main` as the
+authoritative source ref:
 fresh installs select it explicitly, while an existing source must have the
 expected origin, a clean attached `main`, and history that can only fast-forward
 to the fetched commit. Other branches, local-ahead or diverged history, and

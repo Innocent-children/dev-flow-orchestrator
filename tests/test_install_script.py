@@ -116,6 +116,7 @@ class InstallerBehaviorTests(unittest.TestCase):
             self.test_root / ".agents" / "plugins" / "marketplace.json"
         )
         self.codex_log = self.test_root / "codex calls.log"
+        self.codex_state = self.test_root / "installed plugin version.txt"
         self.publisher_counter = 0
 
         fake_bin = self.test_root / "fake bin"
@@ -123,8 +124,31 @@ class InstallerBehaviorTests(unittest.TestCase):
         fake_codex = fake_bin / "codex"
         fake_codex.write_text(
             "#!/bin/sh\n"
-            "printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
-            "exit \"${DEV_FLOW_CODEX_EXIT:-0}\"\n",
+            "case \"$*\" in\n"
+            "  'plugin list --marketplace personal --json')\n"
+            "    if [ -f \"$DEV_FLOW_CODEX_STATE\" ]; then\n"
+            "      version=\"$(cat \"$DEV_FLOW_CODEX_STATE\")\"\n"
+            "      printf '{\"installed\":[{\"pluginId\":\"dev-flow-orchestrator@personal\",\"version\":\"%s\",\"installed\":true}]}\\n' \"$version\"\n"
+            "    else\n"
+            "      printf '{\"installed\":[]}\\n'\n"
+            "    fi\n"
+            "    ;;\n"
+            "  'plugin remove dev-flow-orchestrator@personal')\n"
+            "    printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
+            "    exit_code=\"${DEV_FLOW_CODEX_REMOVE_EXIT:-0}\"\n"
+            "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
+            "    rm -f \"$DEV_FLOW_CODEX_STATE\"\n"
+            "    ;;\n"
+            "  'plugin add dev-flow-orchestrator@personal')\n"
+            "    printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
+            "    exit_code=\"${DEV_FLOW_CODEX_ADD_EXIT:-0}\"\n"
+            "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
+            "    printf '%s\\n' \"${DEV_FLOW_PACKAGE_VERSION:-0.3.0}\" > \"$DEV_FLOW_CODEX_STATE\"\n"
+            "    ;;\n"
+            "  *)\n"
+            "    exit 2\n"
+            "    ;;\n"
+            "esac\n",
             encoding="utf-8",
         )
         fake_codex.chmod(
@@ -146,7 +170,11 @@ class InstallerBehaviorTests(unittest.TestCase):
                 "DEV_FLOW_SOURCE_ROOT": str(self.source_root),
                 "DEV_FLOW_MARKETPLACE_FILE": str(self.marketplace),
                 "DEV_FLOW_CODEX_LOG": str(self.codex_log),
-                "DEV_FLOW_CODEX_EXIT": "0",
+                "DEV_FLOW_CODEX_STATE": str(self.codex_state),
+                "DEV_FLOW_CODEX_ADD_EXIT": "0",
+                "DEV_FLOW_CODEX_REMOVE_EXIT": "0",
+                "DEV_FLOW_PACKAGE_VERSION": "0.3.0",
+                "CODEX_HOME": str(self.test_root / ".codex"),
                 "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_TERMINAL_PROMPT": "0",
@@ -193,6 +221,9 @@ class InstallerBehaviorTests(unittest.TestCase):
     def clear_activation_calls(self) -> None:
         if self.codex_log.exists():
             self.codex_log.unlink()
+
+    def set_installed_version(self, version: str) -> None:
+        self.codex_state.write_text(version + "\n", encoding="utf-8")
 
     def marketplace_plugins(self) -> list[object]:
         return json.loads(self.marketplace.read_text(encoding="utf-8"))["plugins"]
@@ -313,8 +344,82 @@ class InstallerBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(
             self.activation_calls(),
-            ["plugin add dev-flow-orchestrator@personal"],
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+            ],
         )
+
+    def test_success_prints_receipt_and_touched_directories(self) -> None:
+        result = self.install_successfully()
+
+        self.assertIn("Dev Flow Orchestrator 0.3.0 is ready.", result.stdout)
+        self.assertIn("Installation receipt", result.stdout)
+        self.assertIn(
+            "Plugin: dev-flow-orchestrator@personal",
+            result.stdout,
+        )
+        self.assertIn("Action: installed", result.stdout)
+        self.assertIn("Installed version: 0.3.0", result.stdout)
+        self.assertIn(
+            "Source checkout: {}".format(self.source_root),
+            result.stdout,
+        )
+        self.assertIn(
+            "Marketplace metadata: {}".format(self.marketplace.parent),
+            result.stdout,
+        )
+        self.assertIn(
+            "Codex-managed state: {}".format(self.test_root / ".codex"),
+            result.stdout,
+        )
+        self.assertIn("Use $follow-dev-flow", result.stdout)
+
+    def test_older_installed_plugin_is_upgraded_automatically(self) -> None:
+        self.set_installed_version("0.2.0")
+
+        result = self.install_successfully()
+
+        self.assertEqual(
+            self.activation_calls(),
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+            ],
+        )
+        self.assertIn("Action: upgraded", result.stdout)
+        self.assertIn("Previous version: 0.2.0", result.stdout)
+        self.assertIn("Installed version: 0.3.0", result.stdout)
+        self.assertEqual(self.codex_state.read_text(encoding="utf-8"), "0.3.0\n")
+
+    def test_current_installed_plugin_is_repaired_automatically(self) -> None:
+        self.set_installed_version("0.3.0")
+
+        result = self.install_successfully()
+
+        self.assertEqual(
+            self.activation_calls(),
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+            ],
+        )
+        self.assertIn("Action: repaired", result.stdout)
+        self.assertIn("Previous version: 0.3.0", result.stdout)
+        self.assertIn("Installed version: 0.3.0", result.stdout)
+
+    def test_remove_failure_preserves_installed_plugin_and_stops(self) -> None:
+        self.set_installed_version("0.3.0")
+
+        result = self.run_installer({"DEV_FLOW_CODEX_REMOVE_EXIT": "19"})
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Finish or cancel active Dev Flow tasks", result.stderr)
+        self.assertEqual(
+            self.activation_calls(),
+            ["plugin remove dev-flow-orchestrator@personal"],
+        )
+        self.assertEqual(self.codex_state.read_text(encoding="utf-8"), "0.3.0\n")
 
     def test_existing_install_fast_forwards_to_fetched_main(self) -> None:
         self.install_successfully()
@@ -332,7 +437,10 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(_git("status", "--porcelain", cwd=self.source_root), "")
         self.assertEqual(
             self.activation_calls(),
-            ["plugin add dev-flow-orchestrator@personal"],
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+            ],
         )
 
     def test_dirty_checkout_is_preserved_and_rejected(self) -> None:
@@ -399,7 +507,10 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(ignored_file.read_bytes(), b"local cache content\n")
         self.assertEqual(
             self.activation_calls(),
-            ["plugin add dev-flow-orchestrator@personal"],
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+            ],
         )
 
     def test_unexpected_origin_is_rejected_before_activation(self) -> None:
@@ -487,16 +598,12 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(self.marketplace.read_bytes(), malformed)
         self.assertEqual(self.activation_calls(), [])
 
-    def test_plugin_activation_failure_reports_recovery_commands(self) -> None:
-        result = self.run_installer({"DEV_FLOW_CODEX_EXIT": "17"})
+    def test_plugin_activation_failure_reports_rerun_guidance(self) -> None:
+        result = self.run_installer({"DEV_FLOW_CODEX_ADD_EXIT": "17"})
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "codex plugin remove dev-flow-orchestrator@personal",
-            result.stderr,
-        )
-        self.assertIn(
-            "codex plugin add dev-flow-orchestrator@personal",
+            "Plugin activation failed. Rerun this installer",
             result.stderr,
         )
         self.assertTrue(self.source_root.is_dir())

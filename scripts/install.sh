@@ -5,6 +5,8 @@ REPOSITORY_URL="${DEV_FLOW_REPOSITORY_URL:-https://github.com/Innocent-children/
 REPOSITORY_REF="main"
 SOURCE_ROOT="${DEV_FLOW_SOURCE_ROOT:-$HOME/plugins/dev-flow-orchestrator}"
 MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace.json}"
+CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
+PLUGIN_ID="dev-flow-orchestrator@personal"
 
 fail() {
   printf 'Dev Flow installation failed: %s\n' "$1" >&2
@@ -96,6 +98,19 @@ verify_and_update_source
 
 printf 'Validating the package...\n'
 "$PYTHON" -I -S "$SOURCE_ROOT/scripts/validate_package.py"
+PLUGIN_VERSION="$(
+  "$PYTHON" -I -S -c '
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+version = manifest.get("version")
+if not isinstance(version, str) or not version:
+    raise SystemExit("plugin manifest must contain a non-empty version")
+print(version)
+' "$SOURCE_ROOT/.codex-plugin/plugin.json"
+)" || fail "Cannot read the validated plugin version."
 
 mkdir -p "$(dirname "$MARKETPLACE_FILE")"
 DEV_FLOW_MARKETPLACE_FILE="$MARKETPLACE_FILE" \
@@ -157,15 +172,86 @@ temporary.replace(path)
 print(f"Updated {path}")
 PY
 
+printf 'Inspecting the installed Codex plugin...\n'
+PLUGIN_LIST_JSON="$(codex plugin list --marketplace personal --json)" \
+  || fail "Cannot inspect the installed Codex plugins."
+PLUGIN_STATE="$(
+  printf '%s' "$PLUGIN_LIST_JSON" | "$PYTHON" -I -S -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, OSError) as error:
+    raise SystemExit(f"invalid plugin list JSON: {error}")
+installed = payload.get("installed")
+if not isinstance(installed, list):
+    raise SystemExit("plugin list JSON must contain an installed array")
+matches = [
+    item
+    for item in installed
+    if isinstance(item, dict)
+    and item.get("pluginId") == "dev-flow-orchestrator@personal"
+    and item.get("installed") is True
+]
+if len(matches) > 1:
+    raise SystemExit("plugin list contains duplicate installed entries")
+if not matches:
+    print("not-installed")
+else:
+    version = matches[0].get("version")
+    if not isinstance(version, str) or not version:
+        raise SystemExit("installed plugin entry must contain a version")
+    print("installed:" + version)
+'
+)" || fail "Cannot interpret the installed Codex plugin state."
+
+INSTALL_ACTION="installed"
+PREVIOUS_VERSION=""
+case "$PLUGIN_STATE" in
+  not-installed)
+    ;;
+  installed:*)
+    PREVIOUS_VERSION="${PLUGIN_STATE#installed:}"
+    if [ "$PREVIOUS_VERSION" = "$PLUGIN_VERSION" ]; then
+      INSTALL_ACTION="repaired"
+      printf 'Repairing Dev Flow Orchestrator %s...\n' "$PLUGIN_VERSION"
+    else
+      INSTALL_ACTION="upgraded"
+      printf 'Upgrading Dev Flow Orchestrator from %s to %s...\n' \
+        "$PREVIOUS_VERSION" "$PLUGIN_VERSION"
+    fi
+    if ! codex plugin remove "$PLUGIN_ID"; then
+      fail "Cannot remove $PLUGIN_ID. Finish or cancel active Dev Flow tasks, then rerun this installer."
+    fi
+    ;;
+  *)
+    fail "Codex returned an unrecognized plugin state."
+    ;;
+esac
+
 printf 'Installing the Codex plugin...\n'
-if ! codex plugin add dev-flow-orchestrator@personal; then
-  printf '\nIf Dev Flow is already installed, finish or cancel active tasks, then run:\n' >&2
-  printf '  codex plugin remove dev-flow-orchestrator@personal\n' >&2
-  printf '  codex plugin add dev-flow-orchestrator@personal\n' >&2
+if ! codex plugin add "$PLUGIN_ID"; then
+  printf '\nPlugin activation failed. Rerun this installer after resolving the Codex error above.\n' >&2
   exit 1
 fi
 
-printf '\nDev Flow Orchestrator is installed.\n'
-printf '1. Start a new Codex task and review the installed Hook in /hooks.\n'
-printf '2. Copy this first prompt:\n\n'
+printf '\n============================================================\n'
+printf '  Dev Flow Orchestrator %s is ready.\n' "$PLUGIN_VERSION"
+printf '  Resume with confidence. Verify with evidence.\n'
+printf '============================================================\n'
+printf '\nInstallation receipt\n'
+printf '  Plugin: %s\n' "$PLUGIN_ID"
+printf '  Action: %s\n' "$INSTALL_ACTION"
+if [ -n "$PREVIOUS_VERSION" ]; then
+  printf '  Previous version: %s\n' "$PREVIOUS_VERSION"
+fi
+printf '  Installed version: %s\n' "$PLUGIN_VERSION"
+printf '  Directories touched:\n'
+printf '    - Source checkout: %s\n' "$SOURCE_ROOT"
+printf '    - Marketplace metadata: %s\n' "$(dirname "$MARKETPLACE_FILE")"
+printf '    - Codex-managed state: %s\n' "$CODEX_ROOT"
+printf '\nNext steps\n'
+printf '  1. Start a new Codex task and review the installed Hook in /hooks.\n'
+printf '  2. Copy this first prompt:\n\n'
 printf 'Use $follow-dev-flow to start a lite task in this repository for: <your requirement>\n'

@@ -24,11 +24,11 @@ plan ID、finding、计数器或审查结论。
 curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/install.sh | sh
 ```
 
-该脚本检查 macOS、Git、Python 3.9–3.14 和 Codex CLI；克隆或快进 `$HOME/plugins/dev-flow-orchestrator`；验证完整候选版本；保留其他个人市场条目，同时替换任何 Dev Flow 条目；安装插件；并打印第一个提示。如果您不想将远程脚本直接传递给 `sh`，请在运行前查看 [`scripts/install.sh`](scripts/install.sh)。
+该脚本检查 macOS、Git、Python 3.9–3.14 和 Codex CLI；克隆或快进 `$HOME/plugins/dev-flow-orchestrator`；验证完整候选版本；保留其他个人市场条目，同时替换任何 Dev Flow 条目；在插件未安装时完成安装、存在旧版本时完成升级，或通过重新安装修复当前版本；并打印包含执行类型、版本、本次涉及目录和第一个提示的安装收据。如果您不想将远程脚本直接传递给 `sh`，请在运行前查看 [`scripts/install.sh`](scripts/install.sh)。
 
 安装程序将 `main` 视为其不可配置的权威源引用。全新安装会显式选择 `main`。现有源只有在其来源与配置的仓库 URL 匹配、附加分支为干净的 `main`，且当前提交等于或可以快进到获取的 `main` 提交时才会继续。快进拒绝覆盖与传入 `main` 冲突的被忽略本地路径，但保留无关的被忽略内容。它拒绝其他分支、分离 HEAD、报告的本地更改、本地领先历史、分歧或非 Git 路径（不切换、重置、储藏、清理或覆盖签出）。
 
-如果插件已安装，请完成或明确取消当前任务，然后按照以下替换步骤操作。其余部分手动记录相同过程并提供完整的安装接受检查。
+一键安装器会自动卸载并重新安装已有插件。如果 Codex 因存在活动的 Dev Flow 任务而拒绝卸载，请完成或明确取消这些任务，然后重新运行同一命令。其余部分手动记录相同过程并提供完整的安装接受检查。
 
 ## 启动本地只读 Web UI
 

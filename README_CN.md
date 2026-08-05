@@ -90,7 +90,9 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 ```
 
 安装器会检查环境、克隆或更新源码、校验软件包、安全合并 personal marketplace 条目、
-安装插件并输出第一条 Prompt。安装器以 `main` 为权威源码 ref：首次安装会显式选择
+在插件未安装时完成安装、存在旧版本时完成升级，或通过重新安装修复当前版本。随后输出
+包含执行类型、版本、本次涉及目录和第一条 Prompt 的安装收据。安装器以 `main` 为权威
+源码 ref：首次安装会显式选择
 `main`；已有源码必须具有预期的 origin、干净且已附着的 `main`，并且只能快进到本次
 抓取的提交。其他分支、本地超前或分叉历史以及 Git 报告的本地改动都会停止安装，安装器
 不会自动 switch、reset、stash 或 clean。快进也会拒绝覆盖发生路径冲突的 ignored 本地

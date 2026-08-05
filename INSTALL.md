@@ -35,7 +35,9 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 The script checks macOS, Git, Python 3.9–3.14, and the Codex CLI; clones or
 fast-forwards `$HOME/plugins/dev-flow-orchestrator`; validates the complete
 candidate; preserves other personal marketplace entries while replacing any
-Dev Flow entry; installs the plugin; and prints the first prompt. Review
+Dev Flow entry; installs a missing plugin, upgrades an older installation, or
+repairs the current version by reinstalling it; and prints an installation
+receipt with the action, versions, touched directories, and first prompt. Review
 [`scripts/install.sh`](scripts/install.sh) before running it if you do not want
 to pipe a remote script directly to `sh`.
 
@@ -49,9 +51,11 @@ content. It refuses another branch, detached HEAD, reported local changes,
 local-ahead history, divergence, or a non-Git path without switching,
 resetting, stashing, cleaning, or overwriting the checkout.
 
-If the plugin is already installed, finish or explicitly cancel active tasks,
-then follow the replacement steps below. The remaining sections document the
-same process manually and provide the full installed acceptance checks.
+The one-command installer automatically removes and reinstalls an existing
+plugin. If Codex refuses removal because Dev Flow tasks are active, finish or
+explicitly cancel those tasks and rerun the same command. The remaining
+sections document the same process manually and provide the full installed
+acceptance checks.
 
 ## Launch the local read-only Web UI
 
