@@ -105,11 +105,28 @@ import json
 import os
 from pathlib import Path
 
-path = Path(os.environ["DEV_FLOW_MARKETPLACE_FILE"]).expanduser()
-source_root = str(Path(os.environ["DEV_FLOW_SOURCE_ROOT"]).expanduser().resolve())
+path = Path(os.environ["DEV_FLOW_MARKETPLACE_FILE"]).expanduser().resolve()
+source_root = Path(os.environ["DEV_FLOW_SOURCE_ROOT"]).expanduser().resolve()
+if (
+    path.name != "marketplace.json"
+    or path.parent.name != "plugins"
+    or path.parent.parent.name != ".agents"
+):
+    raise SystemExit(
+        f"{path} must be located at "
+        "<marketplace-root>/.agents/plugins/marketplace.json"
+    )
+marketplace_root = path.parent.parent.parent
+try:
+    relative_source = source_root.relative_to(marketplace_root)
+except ValueError:
+    raise SystemExit(
+        f"{source_root} must be inside marketplace root {marketplace_root}"
+    ) from None
+source_path = "./" + relative_source.as_posix()
 entry = {
     "name": "dev-flow-orchestrator",
-    "source": {"source": "local", "path": source_root},
+    "source": {"source": "local", "path": source_path},
     "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
     "category": "Productivity",
 }

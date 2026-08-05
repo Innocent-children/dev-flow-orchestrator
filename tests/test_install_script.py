@@ -109,8 +109,12 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.remote = self.test_root / "authoritative remote.git"
         shutil.copytree(self.remote_template, self.remote)
         self.remote_url = self.remote.as_uri()
-        self.source_root = self.test_root / "installed source with spaces"
-        self.marketplace = self.test_root / "marketplace" / "marketplace.json"
+        self.source_root = (
+            self.test_root / "plugins" / "installed source with spaces"
+        )
+        self.marketplace = (
+            self.test_root / ".agents" / "plugins" / "marketplace.json"
+        )
         self.codex_log = self.test_root / "codex calls.log"
         self.publisher_counter = 0
 
@@ -278,7 +282,7 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(len(dev_flow_entries), 1)
         self.assertEqual(
             dev_flow_entries[0]["source"]["path"],
-            str(self.source_root.resolve()),
+            "./plugins/installed source with spaces",
         )
         self.assertEqual(
             self.activation_calls(),
