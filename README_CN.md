@@ -193,6 +193,23 @@ codex plugin add dev-flow-orchestrator@personal
 Codex 任务，打开 `/hooks`，检查并信任已安装的 Hook 定义。替换安装、已安装验收、
 排错和卸载请参阅 [INSTALL.md](INSTALL.md)。
 
+## 一条命令卸载
+
+完成或取消活动的 Dev Flow 任务后运行：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
+```
+
+卸载器会移除 Codex 插件、personal marketplace 中的对应条目和安装器管理的干净源码
+checkout。如果源码存在本地改动、ignored 路径、仅本地提交、非预期 origin 或不同分支，
+卸载器会拒绝删除。外部 Dev Flow 任务数据始终保留。如需保留源码 checkout，请传入
+`--keep-source`：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh -s -- --keep-source
+```
+
 ## 选择工作流
 
 日常使用通过 `$follow-dev-flow` 完成。

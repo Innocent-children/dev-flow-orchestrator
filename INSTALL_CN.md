@@ -401,8 +401,26 @@ Codex 显示沙盒或权限提示
 
 ## 11. 移除
 
+完成或明确取消活动的 Dev Flow 任务后，运行一键卸载器：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
+```
+
+它会移除已安装的 Codex 插件、personal marketplace 中的 `dev-flow-orchestrator` 条目和
+安装器管理的源码 checkout。只有源码具有预期插件身份、origin、已附着的 `main`，并且
+不存在 Git 报告的改动、ignored 路径或仅存在于本地的提交时，才允许删除源码。任何预检
+失败都会在移除插件或修改 marketplace 之前停止。使用 `--keep-source` 可以移除插件和
+marketplace 条目，同时保留包含本地工作的源码 checkout：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh -s -- --keep-source
+```
+
+等价的仅移除插件手动命令为：
+
 ```sh
 codex plugin remove dev-flow-orchestrator@personal
 ```
 
-移除插件不会删除外部任务数据。市场条目和数据删除是独立的操作。除非明确意图删除且已评估可恢复性，否则保留活动的 0.3.0 任务。
+自动或手动移除都不会删除外部任务数据。数据删除仍是独立的操作。除非明确意图删除且已评估可恢复性，否则保留活动的 0.3.0 任务。

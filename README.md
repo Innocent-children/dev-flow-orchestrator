@@ -229,6 +229,24 @@ task after installation, open `/hooks`, and review and trust the installed
 Hook definition. See [INSTALL.md](INSTALL.md) for replacement installs,
 installed verification, troubleshooting, and removal.
 
+## Uninstall in one command
+
+Finish or cancel active Dev Flow tasks, then run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
+```
+
+The uninstaller removes the Codex plugin, its personal marketplace entry, and
+the clean installer-managed source checkout. It refuses to delete a source
+checkout with local changes, ignored paths, local-only commits, an unexpected
+origin, or a different branch. External Dev Flow task data is always preserved.
+To retain the source checkout, pass `--keep-source`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh -s -- --keep-source
+```
+
 ## Choose a workflow
 
 Daily use goes through `$follow-dev-flow`.

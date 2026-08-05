@@ -552,10 +552,31 @@ Multiple plugin rows
 
 ## 11. Remove
 
+Finish or explicitly cancel active Dev Flow tasks, then run the one-command
+uninstaller:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
+```
+
+It removes the installed Codex plugin, the `dev-flow-orchestrator` entry from
+the personal marketplace, and the installer-managed source checkout. Source
+removal is admitted only when the checkout has the expected plugin identity,
+origin, attached `main`, no reported changes, no ignored paths, and no commits
+that exist only locally. Any failed preflight stops before plugin removal or
+marketplace mutation. Use `--keep-source` to remove the plugin and marketplace
+entry while preserving the checkout, including local work:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh -s -- --keep-source
+```
+
+The equivalent plugin-only manual command is:
+
 ```sh
 codex plugin remove dev-flow-orchestrator@personal
 ```
 
-Removing the plugin does not remove external task data. Marketplace-entry and
-data deletion are separate operator actions. Preserve active 0.3.0 tasks unless
-the exact deletion scope is intentional and recoverability has been assessed.
+Neither automated nor manual removal deletes external task data. Data deletion
+remains a separate operator action. Preserve active 0.3.0 tasks unless the exact
+deletion scope is intentional and recoverability has been assessed.
