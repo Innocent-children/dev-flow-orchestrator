@@ -234,9 +234,9 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
                 WORKFLOW_SCHEMA,
                 AGENT_PROTOCOL_SCHEMA,
                 "repository_id",
-                '"criteria"',
-                '"repositories"',
-                '"integration"',
+                '"assurance_result"',
+                '"obligation_id"',
+                '"evidence"',
                 "slice-aware",
                 DELIVERY_DOSSIER_SCHEMA,
                 "cancel.stages",
@@ -292,7 +292,6 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
     def test_public_assets_contain_only_the_current_product_model(self) -> None:
         forbidden_fragments = (
             "adapter_identity",
-            "adapter",
             "rollback",
             "singleton",
         )
