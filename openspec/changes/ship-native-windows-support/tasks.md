@@ -37,9 +37,9 @@
 
 ## 6. Prove the installed product surfaces
 
-- [ ] 6.1 Run the existing Web UI on Windows and fix only concrete integration defects in startup receipt, loopback binding, authenticated inventory/detail, explicit live observation, cancellation, Ctrl+C shutdown, or no-mutation behavior.
-- [ ] 6.2 Add one installed Windows vertical journey covering verified source, marketplace, plugin activation, Hook bootstrap, one representative task through current assurance/Dossier completion, Web UI inspection, and uninstall.
-- [ ] 6.3 Add one shorter two-repository smoke proving Hook discovery and resume from the non-first member and one aggregate snapshot path.
+- [x] 6.1 Run the existing Web UI on Windows and fix only concrete integration defects in startup receipt, loopback binding, authenticated inventory/detail, explicit live observation, cancellation, Ctrl+C shutdown, or no-mutation behavior.
+- [x] 6.2 Add one installed Windows vertical journey covering verified source, marketplace, plugin activation, Hook bootstrap, one representative task through current assurance/Dossier completion, Web UI inspection, and uninstall.
+- [x] 6.3 Add one shorter two-repository smoke proving Hook discovery and resume from the non-first member and one aggregate snapshot path.
 
 ## 7. Extend validation and publish the bounded support claim
 
