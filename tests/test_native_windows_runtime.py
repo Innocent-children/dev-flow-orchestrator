@@ -25,6 +25,7 @@ from dev_flow_orchestrator._platform.paths import (
 )
 from dev_flow_orchestrator._platform.process import (
     ProcessFailure,
+    _run_windows,
     run_bounded_process,
 )
 from dev_flow_orchestrator._platform.storage import (
@@ -128,6 +129,81 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
             timer.cancel()
             timer.join(timeout=1)
         self.assertEqual(cancellation.exception.kind, "cancelled")
+
+    def test_windows_runner_times_out_after_parent_exits_with_inherited_pipes(self) -> None:
+        parent = (
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1]])"
+        )
+        descendant = "import time; time.sleep(1)"
+        started = time.monotonic()
+        with mock.patch(
+            "dev_flow_orchestrator._platform.process.TERMINATE_GRACE_SECONDS", 0.02
+        ):
+            with self.assertRaises(ProcessFailure) as context:
+                _run_windows(
+                    [sys.executable, "-c", parent, descendant],
+                    dict(os.environ),
+                    0.05,
+                    1024,
+                    None,
+                )
+        self.assertEqual(context.exception.kind, "timeout")
+        self.assertLess(time.monotonic() - started, 0.6)
+
+    def test_windows_snapshot_total_budget_is_consumed_per_chunk(self) -> None:
+        class CountingReader:
+            def __init__(self, stream: object) -> None:
+                self.stream = stream
+                self.bytes_read = 0
+
+            def __enter__(self) -> "CountingReader":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                self.stream.close()
+
+            def fileno(self) -> int:
+                return self.stream.fileno()
+
+            def read(self, size: int) -> bytes:
+                chunk = self.stream.read(size)
+                self.bytes_read += len(chunk)
+                return chunk
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.txt"
+            second = root / "second.txt"
+            first.write_bytes(b"1234")
+            second.write_bytes(b"abcdefghijkl")
+            total = [0]
+            deadline = time.monotonic() + 5
+            with mock.patch(
+                "dev_flow_orchestrator.git_client.MAX_SNAPSHOT_CONTENT_BYTES", 8
+            ), mock.patch(
+                "dev_flow_orchestrator.git_client.SNAPSHOT_READ_CHUNK_BYTES", 4
+            ):
+                GitClient._read_path_windows(
+                    root, "first.txt", {}, {}, deadline, total, "sha1"
+                )
+                original_open = Path.open
+                reader = None
+
+                def tracked_open(path: Path, *args: object, **kwargs: object) -> CountingReader:
+                    nonlocal reader
+                    reader = CountingReader(original_open(path, *args, **kwargs))
+                    return reader
+
+                with mock.patch.object(Path, "open", autospec=True, side_effect=tracked_open):
+                    with self.assertRaises(DevFlowError) as context:
+                        GitClient._read_path_windows(
+                            root, "second.txt", {}, {}, deadline, total, "sha1"
+                        )
+            self.assertEqual(context.exception.code, "SNAPSHOT_BUDGET_EXCEEDED")
+            self.assertEqual(context.exception.details["path"], "second.txt")
+            self.assertIsNotNone(reader)
+            self.assertEqual(reader.bytes_read, 8)
 
     def test_cross_process_lock_serializes_and_atomic_failure_preserves_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -234,6 +310,18 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
             )
             paths = tuple(item.path for item in state.repositories)
             self.assertEqual(paths, tuple(sorted(paths, key=lambda item: item.encode("utf-8"))))
+
+            nested = first / "src" / "module"
+            nested.mkdir(parents=True)
+            alternate = str(nested).replace("\\", "/")
+            if len(alternate) > 1 and alternate[1] == ":":
+                alternate = alternate[0].swapcase() + alternate[1:]
+            for spelling in (str(nested), alternate):
+                with self.subTest(spelling=spelling):
+                    matches = controller.tasks_for_path(spelling)
+                    self.assertEqual(
+                        tuple(item.task_id for item in matches), (state.task_id,)
+                    )
 
             missing = root / "missing-repository"
             before = tuple(controller.list_tasks())

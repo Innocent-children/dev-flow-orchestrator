@@ -202,40 +202,43 @@ def _run_windows(
         thread.start()
     deadline = time.monotonic() + max(0.001, timeout_seconds)
     failure = None
-    try:
-        while process.poll() is None:
-            if _cancelled(cancel_event):
-                failure = ProcessFailure("cancelled")
-                break
-            if overflow.is_set():
-                with state_lock:
-                    failure = ProcessFailure(
-                        "output-too-large", limit_bytes=output_limit_bytes,
-                        stdout_bytes=counts["stdout"], stderr_bytes=counts["stderr"],
-                    )
-                break
+    while True:
+        if _cancelled(cancel_event):
+            failure = ProcessFailure("cancelled")
+            break
+        if overflow.is_set():
             with state_lock:
-                if reader_error:
-                    failure = ProcessFailure("io-failed", error=reader_error[0])
-                    break
-            if time.monotonic() >= deadline:
-                failure = ProcessFailure("timeout")
+                failure = ProcessFailure(
+                    "output-too-large", limit_bytes=output_limit_bytes,
+                    stdout_bytes=counts["stdout"], stderr_bytes=counts["stderr"],
+                )
+            break
+        with state_lock:
+            if reader_error:
+                failure = ProcessFailure("io-failed", error=reader_error[0])
                 break
-            time.sleep(min(POLL_SECONDS, max(0.0, deadline - time.monotonic())))
-        if failure is not None:
-            _windows_terminate(process, environment)
-            for stream in (process.stdout, process.stderr):
-                try:
-                    stream.close()
-                except OSError:
-                    pass
-        else:
-            for thread in threads:
-                thread.join()
-    finally:
-        if failure is not None:
-            for thread in threads:
-                thread.join(timeout=TERMINATE_GRACE_SECONDS)
+        if time.monotonic() >= deadline:
+            failure = ProcessFailure("timeout")
+            break
+        if process.poll() is not None and all(not thread.is_alive() for thread in threads):
+            break
+        time.sleep(min(POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+
+    if failure is not None:
+        _windows_terminate(process, environment)
+        cleanup_deadline = time.monotonic() + TERMINATE_GRACE_SECONDS
+        for thread in threads:
+            thread.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+        for thread, stream in zip(threads, (process.stdout, process.stderr)):
+            if thread.is_alive():
+                continue
+            try:
+                stream.close()
+            except OSError:
+                pass
+    else:
+        for thread in threads:
+            thread.join()
     if failure is not None:
         raise failure
     with state_lock:

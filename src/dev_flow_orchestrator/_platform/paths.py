@@ -27,14 +27,20 @@ def canonical_repository_root(value: PathValue) -> Path:
     """Resolve one existing repository root to the host canonical spelling."""
     if os.name == "nt":
         _reject_windows_namespace(value)
-    return _normalized(Path(value).expanduser().resolve(strict=True))
+    resolved = Path(value).expanduser().resolve(strict=True)
+    if os.name == "nt":
+        _reject_windows_namespace(resolved)
+    return _normalized(resolved)
 
 
 def canonical_data_root(value: PathValue) -> Path:
     """Resolve a controller root that may not exist yet."""
     if os.name == "nt":
         _reject_windows_namespace(value)
-    return _normalized(Path(value).expanduser().resolve(strict=False))
+    resolved = Path(value).expanduser().resolve(strict=False)
+    if os.name == "nt":
+        _reject_windows_namespace(resolved)
+    return _normalized(resolved)
 
 
 def canonical_git_path(value: PathValue, *, repository_root: Path) -> Path:
@@ -44,7 +50,10 @@ def canonical_git_path(value: PathValue, *, repository_root: Path) -> Path:
         candidate = repository_root / candidate
     if os.name == "nt":
         _reject_windows_namespace(candidate)
-    return _normalized(candidate.resolve(strict=True))
+    resolved = candidate.resolve(strict=True)
+    if os.name == "nt":
+        _reject_windows_namespace(resolved)
+    return _normalized(resolved)
 
 
 def comparison_key(value: PathValue) -> str:

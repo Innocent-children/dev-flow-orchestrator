@@ -84,7 +84,7 @@ class GitSnapshotTests(RepositoryTestCase):
         with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}), mock.patch(
             "dev_flow_orchestrator.git_client.GIT_COMMAND_TIMEOUT_SECONDS", 0.05
         ), mock.patch(
-            "dev_flow_orchestrator.git_client.GIT_TERMINATE_GRACE_SECONDS", 0.05
+            "dev_flow_orchestrator._platform.process.TERMINATE_GRACE_SECONDS", 0.05
         ):
             with self.assertRaises(DevFlowError) as context:
                 GitClient._run(self.repository, "status")
@@ -98,7 +98,7 @@ class GitSnapshotTests(RepositoryTestCase):
         with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}), mock.patch(
             "dev_flow_orchestrator.git_client.MAX_GIT_OUTPUT_BYTES", 256
         ), mock.patch(
-            "dev_flow_orchestrator.git_client.GIT_TERMINATE_GRACE_SECONDS", 0.05
+            "dev_flow_orchestrator._platform.process.TERMINATE_GRACE_SECONDS", 0.05
         ):
             with self.assertRaises(DevFlowError) as context:
                 GitClient._run(self.repository, "status")
@@ -108,7 +108,9 @@ class GitSnapshotTests(RepositoryTestCase):
     def test_command_cancellation_before_start_does_not_spawn_git(self) -> None:
         cancelled = threading.Event()
         cancelled.set()
-        with mock.patch("dev_flow_orchestrator.git_client.subprocess.Popen") as popen:
+        with mock.patch(
+            "dev_flow_orchestrator._platform.process.subprocess.Popen"
+        ) as popen:
             with GitClient.cancellation(cancelled):
                 with self.assertRaises(DevFlowError) as context:
                     GitClient._run(self.repository, "status")
@@ -133,7 +135,7 @@ class GitSnapshotTests(RepositoryTestCase):
 
         started = time.monotonic()
         with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}), mock.patch(
-            "dev_flow_orchestrator.git_client.GIT_TERMINATE_GRACE_SECONDS", 0.05
+            "dev_flow_orchestrator._platform.process.TERMINATE_GRACE_SECONDS", 0.05
         ):
             worker = threading.Thread(target=run_git)
             worker.start()
@@ -169,7 +171,7 @@ class GitSnapshotTests(RepositoryTestCase):
                 outcome["error"] = exc
 
         with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}), mock.patch(
-            "dev_flow_orchestrator.git_client.GIT_TERMINATE_GRACE_SECONDS", 0.05
+            "dev_flow_orchestrator._platform.process.TERMINATE_GRACE_SECONDS", 0.05
         ):
             worker = threading.Thread(target=run_git)
             worker.start()
@@ -210,7 +212,7 @@ class GitSnapshotTests(RepositoryTestCase):
                 started = time.monotonic()
                 try:
                     with mock.patch.dict(os.environ, {"PATH": str(fake_bin)}), mock.patch(
-                        "dev_flow_orchestrator.git_client.GIT_TERMINATE_GRACE_SECONDS",
+                        "dev_flow_orchestrator._platform.process.TERMINATE_GRACE_SECONDS",
                         0.05,
                     ):
                         with GitClient.cancellation(cancelled):

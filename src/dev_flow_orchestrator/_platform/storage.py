@@ -159,9 +159,10 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
     try:
         if path.is_symlink():
             raise _unsafe_path(path)
-        descriptor = os.open(
-            str(path), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
-        )
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        if os.name == "nt":
+            flags |= os.O_BINARY
+        descriptor = os.open(str(path), flags, 0o600)
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise _unsafe_path(path)
         if path.is_symlink():

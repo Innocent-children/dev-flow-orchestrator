@@ -8,7 +8,6 @@ import hashlib
 import os
 from pathlib import Path
 import stat
-import subprocess  # Compatibility for existing import-boundary tests.
 import threading
 import time
 from typing import Iterable, Iterator, Mapping, Optional, Sequence
@@ -41,11 +40,8 @@ from .product import OPENSPEC_TASKS_NORMALIZER
 
 
 GIT_COMMAND_TIMEOUT_SECONDS = 30
-GIT_TERMINATE_GRACE_SECONDS = 1
-GIT_READ_CHUNK_BYTES = 64 * 1024
 SNAPSHOT_TIMEOUT_SECONDS = 30
 SNAPSHOT_READ_CHUNK_BYTES = 64 * 1024
-GIT_CANCEL_POLL_SECONDS = 0.1
 
 
 _GIT_CANCEL_EVENT: contextvars.ContextVar[Optional[threading.Event]] = (
@@ -1026,6 +1022,7 @@ class GitClient:
                                 "snapshot entry exceeds the per-file content budget",
                                 path=path, limit_bytes=MAX_SNAPSHOT_FILE_BYTES,
                             )
+                        cls._consume_content(total, len(chunk), path)
                         data.extend(chunk)
             except DevFlowError:
                 raise
@@ -1044,7 +1041,6 @@ class GitClient:
             if cls._file_identity(before) != cls._file_identity(after):
                 raise _error("SNAPSHOT_UNSTABLE", "snapshot file changed while it was read", path=path)
             raw = bytes(data)
-            cls._consume_content(total, len(raw), path)
             kind = "regular"
         elif stat.S_ISLNK(before.st_mode):
             try:
