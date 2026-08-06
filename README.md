@@ -411,3 +411,24 @@ unavailable, and `snapshot_error` identifies the blocked member.
 - [docs/PROMOTION.md](docs/PROMOTION.md): copy-ready About, Release, community
   post, and launch checklist.
 - [LICENSE](LICENSE): license terms.
+
+## Native Windows integration preview
+
+The current candidate contains one-product native integration for Windows 10
+22H2 x64 and Windows 11 x64 clients: a `.cmd` Hook launcher, paired
+`commandWindows` definitions, PowerShell 5.1/7 lifecycle scripts, the same
+Controller and read-only Web UI, and focused Windows automation. It requires a
+supported 64-bit CPython 3.9–3.14, Git for Windows, Codex plugin/Hook support,
+PowerShell, and ordinary local repositories.
+
+Install from an inspected checkout with `powershell -ExecutionPolicy Bypass
+-File .\scripts\install.ps1`. Plugin installation does not trust command Hooks.
+Start a new Codex session, open `/hooks`, review the exact installed definition,
+and trust it before relying on automatic task restoration or guardrails.
+
+Windows ARM64, 32-bit Python, Windows Server, WSL execution, UNC/SMB/NAS and
+mapped-network repositories, `\\wsl$`, historical migration, and
+cross-operating-system task transfer are outside the boundary. Hosted Windows
+Server CI is implementation evidence only. The public client-support claim
+remains a preview until the recorded Windows 11 journey and Windows 10 22H2
+smoke pass.

@@ -580,3 +580,40 @@ codex plugin remove dev-flow-orchestrator@personal
 Neither automated nor manual removal deletes external task data. Data deletion
 remains a separate operator action. Preserve active 0.3.0 tasks unless the exact
 deletion scope is intentional and recoverability has been assessed.
+
+## Windows integration preview
+
+On a Windows 10 22H2 x64 or Windows 11 x64 client with 64-bit CPython 3.9–3.14,
+Git for Windows, Codex plugin/Hook support, and Windows PowerShell 5.1 or
+PowerShell 7, inspect the checkout and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+The installer treats `main` as authoritative. It accepts only the expected
+origin, a clean attached `main`, and an equal or fast-forward-only fetched
+commit. It never switches, resets, stashes, cleans, or merges divergent work.
+It validates the candidate before atomically updating the personal marketplace
+and installing, repairing, or upgrading the plugin.
+
+Installation does not establish Hook trust. Start a new Codex session, open
+`/hooks`, inspect the exact installed Hook definition and source, and trust it.
+The Hook guard is useful but is not complete PowerShell or operating-system
+enforcement.
+
+Launch the existing foreground local read-only Web UI with the injected
+Controller locator followed by `web --port 0`. It binds numeric `127.0.0.1`,
+uses fragment token authority, and does not mutate tasks or repositories.
+
+Uninstall while preserving external Controller task data:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1 -KeepSource
+```
+
+Windows ARM64, 32-bit Python, Windows Server, WSL execution, UNC/SMB/NAS and
+mapped network repositories, `\\wsl$`, historical task migration, and
+cross-operating-system task transfer are unsupported. Client support remains a
+preview until Windows 11 and Windows 10 22H2 release evidence is recorded.

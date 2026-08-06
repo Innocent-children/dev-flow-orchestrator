@@ -424,3 +424,34 @@ codex plugin remove dev-flow-orchestrator@personal
 ```
 
 自动或手动移除都不会删除外部任务数据。数据删除仍是独立的操作。除非明确意图删除且已评估可恢复性，否则保留活动的 0.3.0 任务。
+
+## Windows 集成预览
+
+在装有 64 位 CPython 3.9–3.14、Git for Windows、Codex 插件/Hook 支持以及 Windows
+PowerShell 5.1 或 PowerShell 7 的 Windows 10 22H2 x64 或 Windows 11 x64 客户端上，
+先检查签出内容，再执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+安装器把 `main` 作为权威来源。它只接受预期 origin、干净且附加的 `main`，以及等于或
+可仅快进到已获取提交的历史；绝不切换、重置、stash、clean 或合并分歧工作。它先验证
+候选版本，再原子更新个人市场，并安装、修复或升级插件。
+
+安装不会建立 Hook 信任。请启动新的 Codex 会话，打开 `/hooks`，检查精确的已安装 Hook
+定义及源码并予以信任。Hook guard 很有用，但不是完整的 PowerShell 或操作系统强制边界。
+
+在注入的 Controller locator 后追加 `web --port 0`，即可启动现有的前台本地只读 Web UI。
+它只绑定数字地址 `127.0.0.1`，使用 fragment token 权限，并且不修改任务或仓库。
+
+卸载时始终保留外部 Controller 任务数据：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1 -KeepSource
+```
+
+Windows ARM64、32 位 Python、Windows Server、WSL 执行、UNC/SMB/NAS 和映射网络
+仓库、`\\wsl$`、历史任务迁移及跨操作系统任务转移均不受支持。在记录 Windows 11 与
+Windows 10 22H2 发布证据之前，客户端支持仍为预览。

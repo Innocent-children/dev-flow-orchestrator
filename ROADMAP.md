@@ -592,3 +592,12 @@ A capability is complete when all of the following hold:
    packaging, and bilingual documentation are updated where affected; and
 7. an independent read-only review confirms that implementation, evidence, and
    the roadmap outcome agree.
+
+## Native Windows release gate
+
+Native Windows product integration is implemented as a preview over the shared
+runtime: paired Hooks, `.cmd` launch, PowerShell lifecycle, package validation,
+focused hosted automation, and the existing Web UI. Delivery of the public
+client-support outcome requires recorded Windows 11 x64 install-to-uninstall
+evidence and a Windows 10 22H2 x64 install/Hook/resume/Web UI/uninstall smoke.
+Hosted Windows Server automation does not satisfy that consumer-client gate.

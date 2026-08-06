@@ -16,6 +16,18 @@ jobs:
         run: python -I -S tests/test_native_windows_runtime.py -v
       - name: Native Windows core controller journey
         run: python -I -S tests/test_cli.py -v
+      - name: Native Windows product integration assets and Hook behavior
+        run: python -I -S tests/test_windows_product_support.py -v
+      - name: Native Windows lifecycle
+        run: python -I -S tests/test_windows_lifecycle.py -v
+      - name: Native Windows Hook behavior
+        run: python -I -S tests/test_hook.py -v
+      - name: Native Windows Web UI behavior
+        run: |
+          python -I -S tests/test_web_read_models.py -v
+          python -I -S tests/test_web_server.py -v
+      - name: Candidate package validator
+        run: python -I -S scripts/validate_package.py
 
   focused:
     runs-on: macos-latest

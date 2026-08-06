@@ -344,3 +344,20 @@ normalizer 再记录一次；后者只忽略复选框状态。
 - [docs/PROMOTION.md](docs/PROMOTION.md)：可直接使用的 About、Release、社区发布
   文案和推广检查清单。
 - [LICENSE](LICENSE)：许可证条款。
+
+## 原生 Windows 集成预览
+
+当前候选版本为 Windows 10 22H2 x64 和 Windows 11 x64 客户端提供同一产品的原生
+集成：`.cmd` Hook 启动器、成对的 `commandWindows` 定义、兼容 PowerShell 5.1/7
+的生命周期脚本、同一个 Controller 与只读 Web UI，以及聚焦的 Windows 自动化。
+它要求受支持的 64 位 CPython 3.9–3.14、Git for Windows、Codex 插件/Hook 支持、
+PowerShell 和普通本地仓库。
+
+在已检查的签出中执行 `powershell -ExecutionPolicy Bypass -File
+.\scripts\install.ps1`。安装插件不会自动信任命令 Hook。请启动新的 Codex 会话，打开
+`/hooks`，审查精确的已安装定义并予以信任，然后再依赖自动任务恢复或 guardrail。
+
+Windows ARM64、32 位 Python、Windows Server、WSL 执行、UNC/SMB/NAS 和映射网络
+仓库、`\\wsl$`、历史迁移及跨操作系统任务转移均不在边界内。托管 Windows Server CI
+只属于实现证据；在记录的 Windows 11 完整旅程与 Windows 10 22H2 smoke 通过之前，
+公开的客户端支持声明仍为预览。

@@ -18,7 +18,12 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.controller import Controller
-from dev_flow_orchestrator.hook import HookConfig, _controller_command, handle
+from dev_flow_orchestrator.hook import (
+    HookConfig,
+    _controller_command,
+    _is_exact_controller_invocation,
+    handle,
+)
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     PLUGIN_DATA_NAMESPACE,
@@ -41,9 +46,14 @@ class HookTests(RepositoryTestCase):
         protected_data_root: Optional[str] = None,
     ) -> HookConfig:
         data_dir = state_data_dir or self.data_dir
+        launcher = (
+            "dev_flow_python_launcher.cmd"
+            if os.name == "nt"
+            else "dev_flow_python_launcher"
+        )
         return HookConfig(
             (
-                str(ROOT / "scripts" / "dev_flow_python_launcher"),
+                str(ROOT / "scripts" / launcher),
                 str(ROOT / "scripts" / "dev_flow.py"),
             ),
             data_dir,
@@ -132,7 +142,12 @@ class HookTests(RepositoryTestCase):
         self.assertIsNone(projection["dossier"])
         self.assertFalse(projection["done"])
         locator = context.split(" locator=", 1)[1].split(" projection=", 1)[0]
-        self.assertEqual(shlex.split(locator)[:2], list(self.config().controller_argv))
+        if os.name == "nt":
+            self.assertTrue(locator.startswith("& "))
+            for argument in self.config().controller_argv:
+                self.assertIn("'{}'".format(argument.replace("'", "''")), locator)
+        else:
+            self.assertEqual(shlex.split(locator)[:2], list(self.config().controller_argv))
 
     def test_no_task_returns_locator_hint(self) -> None:
         output = self.run_hook(
@@ -189,7 +204,11 @@ class HookTests(RepositoryTestCase):
             workflow="lite",
             repositories=(str(self.repository),),
         ).task_id
-        launcher = ROOT / "scripts" / "dev_flow_python_launcher"
+        launcher = ROOT / "scripts" / (
+            "dev_flow_python_launcher.cmd"
+            if os.name == "nt"
+            else "dev_flow_python_launcher"
+        )
         hook_script = ROOT / "hooks" / "dev_flow_hook.py"
         payload = event_payload("SessionStart", str(self.repository))
         completed = subprocess.run(
@@ -211,10 +230,18 @@ class HookTests(RepositoryTestCase):
         output = json.loads(completed.stdout)
         context = output["hookSpecificOutput"]["additionalContext"]
         self.assertIn(task_id, context)
-        self.assertIn(shlex.quote(str(state_data.resolve())), context)
+        if os.name == "nt":
+            self.assertIn(
+                "'{}'".format(str(state_data.resolve()).replace("'", "''")),
+                context,
+            )
+        else:
+            self.assertIn(shlex.quote(str(state_data.resolve())), context)
         self.assertIn("dev_flow_python_launcher", context)
 
     def test_locator_with_spaces_executes_via_shell(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX locator execution is covered on POSIX hosts")
         state_data = self.root / "state data with spaces"
         config = self.config(str(state_data), str(state_data))
         locator = _controller_command(config)
@@ -227,6 +254,38 @@ class HookTests(RepositoryTestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("usage: dev-flow", completed.stdout)
+
+    def test_windows_locator_uses_powershell_literals(self) -> None:
+        config = HookConfig(
+            (r"C:\Program Files\Dev Flow\launcher.cmd", r"C:\Dev Flow\dev_flow.py"),
+            r"C:\Users\O'Brien\plugin data\0.3.0",
+            r"C:\Users\O'Brien\plugin data",
+        )
+        self.assertEqual(
+            _controller_command(config, windows=True),
+            "& 'C:\\Program Files\\Dev Flow\\launcher.cmd' "
+            "'C:\\Dev Flow\\dev_flow.py' '--data-dir' "
+            "'C:\\Users\\O''Brien\\plugin data\\0.3.0'",
+        )
+        locator = _controller_command(config, windows=True)
+        self.assertTrue(
+            _is_exact_controller_invocation(
+                locator + " next task-example", config, windows=True
+            )
+        )
+        for suffix in (
+            "; Remove-Item x",
+            " | Out-File x",
+            " & whoami",
+            "`nRemove-Item x",
+            "\nRemove-Item x",
+        ):
+            with self.subTest(suffix=suffix):
+                self.assertFalse(
+                    _is_exact_controller_invocation(
+                        locator + suffix, config, windows=True
+                    )
+                )
 
     def test_apply_patch_command_targeting_data_is_denied(self) -> None:
         state_path = (

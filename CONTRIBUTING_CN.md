@@ -123,3 +123,14 @@ python3 /Users/innocent-children/.codex/skills/.system/plugin-creator/scripts/va
 - 确认英文和中文产品声明具有相同的范围和强度；
 - 针对精确当前聚合仓库集快照进行一次独立的只读审查；
 - 准确报告每个跳过的或手动检查。
+
+## Windows 集成贡献
+
+Windows 工作应保留在现有平台 seam。不得创建 Windows 专属工作流、schema、状态字段、
+版本、命名空间、Web UI 路径或迁移逻辑。为 `commandWindows` 配对时保留每个 POSIX Hook
+命令；保持 PowerShell 5.1 兼容性和 literal-path 处理。
+
+macOS 聚焦套件仍是广泛产品门禁。Windows 自动化应覆盖启动器、Hook 渲染/guard、
+生命周期权限、Web UI 集成、一个安装后旅程和一个双仓库恢复 smoke，而不是复制完整的
+平台无关矩阵。消费级客户端的 OS build、PowerShell、Python、Git、Codex 及实际结果应
+与托管 Server CI 分开记录。

@@ -281,3 +281,15 @@ next → 固定操作绑定 → 执行一个操作 → 使用绑定进行应用
 私有目录和文件使用仅本地账户权限。状态路径不能与目标仓库重叠。符号链接和格式错误的状态失败关闭；写入使用任务锁和原子替换。
 
 `scripts/dev_flow_python_launcher` 选择支持的解释器并运行固定的 CLI 或 Hook 引导。Hook 注册 `SessionStart`、`UserPromptSubmit` 和 `PreToolUse`，注入确切安装的 0.3.0 定位器和新鲜投影，并保护对插件数据根目录的直接写入。Hook 内部错误失败开放且从不修改任务状态。
+
+## 原生主机集成
+
+产品核心、产品身份、schema、工作流目录、状态命名空间、保障策略、Dossier 和 Web UI
+保持共享。`_platform` 拥有两套底层路径、存储和有界进程实现。主机集成只增加启动与
+生命周期边：POSIX 使用 `dev_flow_python_launcher`/shell 脚本；Windows 使用
+`dev_flow_python_launcher.cmd`/PowerShell 脚本和 PowerShell literal Controller locator。
+
+每个命令 Hook 保留 `command` 并增加 `commandWindows`。结构化的 `Write`、`Edit` 和
+`apply_patch` 路径在加载清单前使用 runtime 比较边界。shell 检查识别精确生成的 locator
+及明显的受保护数据引用，对含糊 PowerShell 保持 fail-open，并明确作为 guardrail 而非
+安全边界。

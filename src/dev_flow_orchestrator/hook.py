@@ -12,6 +12,7 @@ import shlex
 import sys
 from typing import Mapping, Optional, Sequence
 
+from ._platform.paths import canonical_data_root, path_contains
 from .controller import Controller
 from .product import PLUGIN_DATA_NAMESPACE, PRODUCT_VERSION
 
@@ -53,10 +54,19 @@ def _configuration(
     )
 
 
-def _controller_command(config: HookConfig) -> str:
-    return shlex.join(
-        (*config.controller_argv, "--data-dir", config.state_data_dir)
-    )
+def _powershell_literal(value: str) -> str:
+    return "'{}'".format(value.replace("'", "''"))
+
+
+def _controller_command(
+    config: HookConfig,
+    *,
+    windows: Optional[bool] = None,
+) -> str:
+    arguments = (*config.controller_argv, "--data-dir", config.state_data_dir)
+    if windows if windows is not None else os.name == "nt":
+        return "& " + " ".join(_powershell_literal(item) for item in arguments)
+    return shlex.join(arguments)
 
 
 def _context(
@@ -135,10 +145,10 @@ def _deny(event: str) -> dict:
 
 def _inside(candidate: Path, root: Path) -> bool:
     try:
-        resolved = candidate.expanduser().resolve()
+        resolved = canonical_data_root(candidate)
     except OSError:
         resolved = candidate.expanduser().absolute()
-    return resolved == root or root in resolved.parents
+    return path_contains(root, resolved)
 
 
 def _shell_tokens(command: str) -> Optional[tuple]:
@@ -159,7 +169,20 @@ def _is_shell_operator(token: str) -> bool:
     return bool(token) and all(char in "|&;<>()" for char in token)
 
 
-def _is_exact_controller_invocation(command: str, config: HookConfig) -> bool:
+def _is_exact_controller_invocation(
+    command: str,
+    config: HookConfig,
+    *,
+    windows: Optional[bool] = None,
+) -> bool:
+    if windows if windows is not None else os.name == "nt":
+        prefix = _controller_command(config, windows=True)
+        if not command.startswith(prefix):
+            return False
+        suffix = command[len(prefix):]
+        return not any(marker in suffix for marker in (
+            "\n", "\r", "`", "$(", ";", "|", "&", "<", ">",
+        ))
     if any(marker in command for marker in ("\n", "\r", "`", "$(")):
         return False
     if re.search(r"\$(?:\{PLUGIN_DATA\}|PLUGIN_DATA\b)", command):
@@ -198,7 +221,12 @@ def _command_references_protected_data(
     cwd: str,
     config: HookConfig,
 ) -> bool:
-    if re.search(r"\$(?:\{PLUGIN_DATA\}|PLUGIN_DATA\b)", command):
+    if re.search(
+        r"(?:\$(?:\{PLUGIN_DATA\}|PLUGIN_DATA\b)|\$env:PLUGIN_DATA\b|"
+        r"\$\{env:PLUGIN_DATA\}|%PLUGIN_DATA%)",
+        command,
+        flags=re.IGNORECASE,
+    ):
         return True
     root = Path(config.protected_data_root).resolve()
     if str(root) in command:
@@ -313,11 +341,16 @@ def main(
     try:
         arguments = _parser().parse_args(argv)
         plugin_root = Path(__file__).resolve().parents[2]
+        launcher_name = (
+            "dev_flow_python_launcher.cmd"
+            if os.name == "nt"
+            else "dev_flow_python_launcher"
+        )
         config = _configuration(
             arguments,
             controller_argv
             or (
-                str(plugin_root / "scripts" / "dev_flow_python_launcher"),
+                str(plugin_root / "scripts" / launcher_name),
                 str(plugin_root / "scripts" / "dev_flow.py"),
             ),
         )

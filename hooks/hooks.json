@@ -8,6 +8,7 @@
           {
             "type": "command",
             "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "commandWindows": "\"%PLUGIN_ROOT%\\scripts\\dev_flow_python_launcher.cmd\" \"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.py\"",
             "timeout": 10,
             "statusMessage": "Loading the active Dev Flow task"
           }
@@ -20,6 +21,7 @@
           {
             "type": "command",
             "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "commandWindows": "\"%PLUGIN_ROOT%\\scripts\\dev_flow_python_launcher.cmd\" \"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.py\"",
             "timeout": 10
           }
         ]
@@ -32,6 +34,7 @@
           {
             "type": "command",
             "command": "\"$PLUGIN_ROOT/scripts/dev_flow_python_launcher\" \"$PLUGIN_ROOT/hooks/dev_flow_hook.py\"",
+            "commandWindows": "\"%PLUGIN_ROOT%\\scripts\\dev_flow_python_launcher.cmd\" \"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.py\"",
             "timeout": 10,
             "statusMessage": "Checking Dev Flow guardrails"
           }

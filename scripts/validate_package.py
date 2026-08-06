@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the complete macOS plugin candidate from its own root."""
+"""Validate the complete cross-platform plugin candidate from its own root."""
 
 from __future__ import annotations
 
@@ -83,8 +83,11 @@ REQUIRED_STATIC = (
     "hooks/hooks.json",
     "scripts/dev_flow.py",
     "scripts/dev_flow_python_launcher",
+    "scripts/dev_flow_python_launcher.cmd",
     "scripts/install.sh",
+    "scripts/install.ps1",
     "scripts/uninstall.sh",
+    "scripts/uninstall.ps1",
     "scripts/validate_installed_stage1.py",
     "scripts/validate_package.py",
     "docs/assets/demo.gif",
@@ -122,6 +125,8 @@ REQUIRED_STATIC = (
     "templates/marketplace-entry.json",
     "templates/personal-marketplace.example.json",
     "tests/test_install_script.py",
+    "tests/test_windows_product_support.py",
+    "tests/test_windows_lifecycle.py",
     "tests/test_uninstall_script.py",
     "tests/test_read_only_inspection.py",
     "tests/test_web_read_models.py",
@@ -1790,6 +1795,63 @@ def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
         _check(shell.returncode == 0, errors, "Hook locator is not shell executable")
 
 
+def _validate_windows_product_integration(root: Path, errors: list[str]) -> None:
+    required_tokens = {
+        "scripts/dev_flow_python_launcher.cmd": (
+            "DisableDelayedExpansion",
+            "DEV_FLOW_PYTHON",
+            "struct.calcsize('P') == 8",
+            "-X utf8 -I -S",
+        ),
+        "scripts/install.ps1": (
+            "Set-StrictMode -Version Latest",
+            "refs/heads/$RepositoryRef",
+            "--ff-only",
+            "--no-overwrite-ignore",
+            "scripts\\validate_package.py",
+            "[IO.File]::Replace",
+            "/hooks",
+        ),
+        "scripts/uninstall.ps1": (
+            "[switch]$KeepSource",
+            "status', '--ignored', '--porcelain",
+            "--remotes=origin",
+            "[IO.File]::Replace",
+            "TASK DATA",
+        ),
+    }
+    for relative, tokens in required_tokens.items():
+        path = root / relative
+        if path.is_file():
+            _require_tokens(
+                path.read_text(encoding="utf-8"),
+                tokens,
+                errors,
+                relative + " does not preserve the Windows integration boundary",
+            )
+    document_tokens = {
+        "README.md": ("Windows 10 22H2 x64", "Windows 11 x64", "/hooks", "preview"),
+        "README_CN.md": ("Windows 10 22H2 x64", "Windows 11 x64", "/hooks", "预览"),
+        "INSTALL.md": ("install.ps1", "uninstall.ps1", "-KeepSource", "127.0.0.1"),
+        "INSTALL_CN.md": ("install.ps1", "uninstall.ps1", "-KeepSource", "127.0.0.1"),
+        "ARCHITECTURE.md": ("commandWindows", "PowerShell", "guardrail"),
+        "ARCHITECTURE_CN.md": ("commandWindows", "PowerShell", "guardrail"),
+        "ROADMAP.md": ("Windows 11 x64", "Windows 10 22H2 x64", "Server"),
+        "ROADMAP_CN.md": ("Windows 11 x64", "Windows 10 22H2 x64", "Server"),
+        "CONTRIBUTING.md": ("commandWindows", "PowerShell 5.1", "installed journey"),
+        "CONTRIBUTING_CN.md": ("commandWindows", "PowerShell 5.1", "安装后旅程"),
+    }
+    for relative, tokens in document_tokens.items():
+        path = root / relative
+        if path.is_file():
+            _require_tokens(
+                re.sub(r"\s+", " ", path.read_text(encoding="utf-8")),
+                tokens,
+                errors,
+                relative + " is missing the bounded Windows integration guidance",
+            )
+
+
 def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
     runtime = root / "src" / "dev_flow_orchestrator"
     web_path = runtime / "web.py"
@@ -1989,6 +2051,7 @@ def _validate_current_candidate(root: Path) -> dict:
     _validate_manifest(root, manifest, errors)
     _validate_package_versions(root, manifest, errors)
     _validate_local_read_only_web_ui(root, errors)
+    _validate_windows_product_integration(root, errors)
     _validate_repository_topology(root, errors)
     _validate_adaptive_assurance_authority(root, errors)
     _check(
@@ -2108,6 +2171,10 @@ def _validate_current_candidate(root: Path) -> dict:
         '"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" '
         '"$PLUGIN_ROOT/hooks/dev_flow_hook.py"'
     )
+    expected_windows_hook_command = (
+        '"%PLUGIN_ROOT%\\scripts\\dev_flow_python_launcher.cmd" '
+        '"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.py"'
+    )
     if isinstance(hook_groups, dict):
         for event, groups in hook_groups.items():
             if not isinstance(groups, list):
@@ -2125,6 +2192,15 @@ def _validate_current_candidate(root: Path) -> dict:
                         and entry.get("command") == expected_hook_command,
                         errors,
                         "Hook event {!r} bypasses the packaged launcher".format(event),
+                    )
+                    _check(
+                        isinstance(entry, dict)
+                        and entry.get("commandWindows")
+                        == expected_windows_hook_command,
+                        errors,
+                        "Hook event {!r} lacks the packaged Windows launcher".format(
+                            event
+                        ),
                     )
         pre_tool_groups = hook_groups.get("PreToolUse")
         matcher = (
@@ -2204,7 +2280,7 @@ def _validate_current_candidate(root: Path) -> dict:
     _hook_locator_smoke(root, errors)
     return {
         "ok": not errors,
-        "platform": "macOS-current-host",
+        "platform": "current-host",
         "builtin_workflows": list(discovered),
         "workflow_identities": [
             definition.identity[:12] for definition in definitions

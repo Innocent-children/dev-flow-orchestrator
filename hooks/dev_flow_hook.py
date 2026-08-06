@@ -2,6 +2,7 @@
 """Fixed public bootstrap for the Dev Flow 0.3.0 Hook."""
 
 from pathlib import Path
+import os
 import sys
 
 
@@ -12,10 +13,15 @@ from dev_flow_orchestrator.hook import main  # noqa: E402
 
 
 if __name__ == "__main__":
+    launcher_name = (
+        "dev_flow_python_launcher.cmd"
+        if os.name == "nt"
+        else "dev_flow_python_launcher"
+    )
     raise SystemExit(
         main(
             controller_argv=(
-                str(_PLUGIN_ROOT / "scripts" / "dev_flow_python_launcher"),
+                str(_PLUGIN_ROOT / "scripts" / launcher_name),
                 str(_PLUGIN_ROOT / "scripts" / "dev_flow.py"),
             )
         )

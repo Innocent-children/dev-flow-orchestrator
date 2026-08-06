@@ -54,6 +54,24 @@ class PackageValidationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("missing hooks/dev_flow_hook.py", result["errors"])
 
+    def test_missing_windows_launcher_is_reported(self) -> None:
+        (self.candidate / "scripts" / "dev_flow_python_launcher.cmd").unlink()
+        result = validate(self.candidate)
+        self.assertIn(
+            "missing scripts/dev_flow_python_launcher.cmd",
+            result["errors"],
+        )
+
+    def test_hook_requires_paired_windows_command(self) -> None:
+        path = self.candidate / "hooks" / "hooks.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        del document["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"]
+        path.write_text(json.dumps(document), encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "Hook event 'SessionStart' lacks the packaged Windows launcher",
+        )
+
     def test_non_executable_launcher_is_reported(self) -> None:
         launcher = self.candidate / "scripts" / "dev_flow_python_launcher"
         launcher.chmod(stat.S_IRUSR | stat.S_IWUSR)

@@ -191,3 +191,16 @@ Before handoff:
 - perform one independent read-only review against the exact current aggregate
   repository-set snapshot;
 - report every skipped or manual check precisely.
+
+## Windows integration contributions
+
+Keep Windows work at the existing platform seams. Do not create Windows-only
+workflows, schemas, state fields, versions, namespaces, Web UI paths, or
+migration logic. Preserve every POSIX Hook command while pairing it with
+`commandWindows`; keep PowerShell 5.1 compatibility and literal-path handling.
+
+Run the macOS focused suite as the broad product gate. Windows automation should
+cover launcher, Hook rendering/guards, lifecycle authority, Web UI integration,
+one installed journey, and one two-repository recovery smoke—not duplicate the
+complete platform-neutral matrix. Record consumer-client OS build, PowerShell,
+Python, Git, Codex, and actual outcomes separately from hosted Server CI.

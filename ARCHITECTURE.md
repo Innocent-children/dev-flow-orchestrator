@@ -427,3 +427,19 @@ the fixed CLI or Hook bootstrap. The Hook registers `SessionStart`,
 `UserPromptSubmit`, and `PreToolUse`, injects the exact installed 0.3.0 locator
 and fresh projection, and guards direct writes to the plugin data root. Hook
 internal errors fail open and never mutate task state.
+
+## Native host integration
+
+The product core, product identity, schemas, workflow catalog, state namespace,
+assurance policy, Dossier, and Web UI remain shared. `_platform` owns the two
+low-level path, storage, and bounded-process implementations. Host integration
+adds only launch and lifecycle edges: POSIX uses
+`dev_flow_python_launcher`/shell scripts; Windows uses
+`dev_flow_python_launcher.cmd`/PowerShell scripts and a PowerShell-literal
+Controller locator.
+
+Every command Hook retains `command` and adds `commandWindows`. Structured
+`Write`, `Edit`, and `apply_patch` paths use the runtime comparison boundary
+before inventory loading. Shell inspection recognizes the exact generated
+locator and obvious protected-data references, remains fail-open for ambiguous
+PowerShell, and is documented as a guardrail rather than a security boundary.
