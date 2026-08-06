@@ -219,6 +219,7 @@ else:
 
     def test_ignored_predecessor_cache_failure_has_recovery_commands(self) -> None:
         self.assertEqual(self.run_script("install.ps1").returncode, 0)
+        marketplace_before = self.marketplace.read_bytes()
         legacy = self.source / "scripts" / "dev_flow_parts" / "__pycache__"
         legacy.mkdir(parents=True)
         (legacy / "old.cpython-314.pyc").write_bytes(b"cache")
@@ -233,6 +234,7 @@ else:
         self.assertIn("Preserve and inspect", result.stderr)
         self.assertTrue(legacy.is_dir())
         self.assertEqual(self.log.read_text(encoding="utf-8"), "")
+        self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
 
     def test_unrelated_marketplace_entries_are_preserved(self) -> None:
         self.marketplace.parent.mkdir(parents=True)

@@ -99,6 +99,16 @@ if ($CurrentHead -ne $ApprovedHead) {
 $VerifiedHead = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'rev-parse', '--verify', 'HEAD^{commit}') 'Cannot verify final HEAD.'
 $FinalStatus = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--porcelain') 'Cannot verify final status.'
 if ($VerifiedHead -ne $ApprovedHead -or $FinalStatus) { Fail 'Source is not the clean fetched authoritative commit.' }
+$IgnoredStatus = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--ignored', '--porcelain') 'Cannot inspect ignored source paths.'
+if ($IgnoredStatus) {
+    $QuotedSource = Quote-PowerShellLiteral $SourceRoot
+    $QuotedInstaller = Quote-PowerShellLiteral $PSCommandPath
+    [Console]::Error.WriteLine('Candidate source contains ignored paths. Preserve and inspect them before removing only confirmed disposable caches:')
+    [Console]::Error.WriteLine("  git.exe -C $QuotedSource status --ignored --porcelain")
+    [Console]::Error.WriteLine('After resolving every ignored source path, retry:')
+    [Console]::Error.WriteLine("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File $QuotedInstaller")
+    Fail 'Candidate source contains ignored paths and cannot be activated.'
+}
 
 $PreviousNoBytecode = $env:PYTHONDONTWRITEBYTECODE
 try {
