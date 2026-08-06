@@ -16,6 +16,10 @@ function Fail([string]$Message) {
     exit 1
 }
 
+function Quote-PowerShellLiteral([string]$Value) {
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
 function Invoke-Checked([string]$Program, [string[]]$Arguments, [string]$Failure) {
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) { Fail $Failure }
@@ -105,7 +109,18 @@ try {
     if ($null -eq $PreviousNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue }
     else { $env:PYTHONDONTWRITEBYTECODE = $PreviousNoBytecode }
 }
-if ($ValidationExitCode -ne 0) { Fail 'Candidate package validation failed.' }
+if ($ValidationExitCode -ne 0) {
+    $IgnoredStatus = (& git.exe -C $SourceRoot status --ignored --porcelain 2>$null | Out-String).Trim()
+    if ($IgnoredStatus) {
+        $QuotedSource = Quote-PowerShellLiteral $SourceRoot
+        $QuotedInstaller = Quote-PowerShellLiteral $PSCommandPath
+        [Console]::Error.WriteLine('Candidate source contains ignored paths. Preserve and inspect them before removing only confirmed disposable caches:')
+        [Console]::Error.WriteLine("  git.exe -C $QuotedSource status --ignored --porcelain")
+        [Console]::Error.WriteLine('After resolving the candidate validation error, retry:')
+        [Console]::Error.WriteLine("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File $QuotedInstaller")
+    }
+    Fail 'Candidate package validation failed.'
+}
 $Manifest = Get-Content -LiteralPath (Join-Path $SourceRoot '.codex-plugin\plugin.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if (-not ($Manifest.version -is [string]) -or -not $Manifest.version) { Fail 'Validated manifest has no version.' }
 $PluginVersion = $Manifest.version

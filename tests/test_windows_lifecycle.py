@@ -217,6 +217,23 @@ else:
         self.assertEqual(self.marketplace.read_bytes(), original)
         self.assertFalse(self.state.exists())
 
+    def test_ignored_predecessor_cache_failure_has_recovery_commands(self) -> None:
+        self.assertEqual(self.run_script("install.ps1").returncode, 0)
+        legacy = self.source / "scripts" / "dev_flow_parts" / "__pycache__"
+        legacy.mkdir(parents=True)
+        (legacy / "old.cpython-314.pyc").write_bytes(b"cache")
+        self.log.write_text("", encoding="utf-8")
+
+        result = self.run_script("install.ps1")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("git.exe -C", result.stderr)
+        self.assertIn("status --ignored --porcelain", result.stderr)
+        self.assertIn("powershell.exe -NoProfile", result.stderr)
+        self.assertIn("Preserve and inspect", result.stderr)
+        self.assertTrue(legacy.is_dir())
+        self.assertEqual(self.log.read_text(encoding="utf-8"), "")
+
     def test_unrelated_marketplace_entries_are_preserved(self) -> None:
         self.marketplace.parent.mkdir(parents=True)
         self.marketplace.write_text(
