@@ -226,19 +226,16 @@ def _run_windows(
 
     if failure is not None:
         _windows_terminate(process, environment)
-        cleanup_deadline = time.monotonic() + TERMINATE_GRACE_SECONDS
         for thread in threads:
-            thread.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
-        for thread, stream in zip(threads, (process.stdout, process.stderr)):
-            if thread.is_alive():
-                continue
-            try:
-                stream.close()
-            except OSError:
-                pass
+            thread.join()
     else:
         for thread in threads:
             thread.join()
+    for stream in (process.stdout, process.stderr):
+        try:
+            stream.close()
+        except OSError:
+            pass
     if failure is not None:
         raise failure
     with state_lock:

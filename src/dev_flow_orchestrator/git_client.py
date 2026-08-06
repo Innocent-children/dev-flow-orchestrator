@@ -267,6 +267,14 @@ class GitClient:
                 "HEAD",
                 "--",
             ),
+            "eol": cls._run_snapshot(
+                repository,
+                deadline,
+                "ls-files",
+                "--eol",
+                "-z",
+                "--",
+            ),
             "untracked": cls._run_snapshot(
                 repository,
                 deadline,
@@ -284,6 +292,61 @@ class GitClient:
         if evidence["branch"] is not None:
             cls._decode_text(evidence["branch"], ("branch",))
         return evidence
+
+    @staticmethod
+    def _eol_entries(raw: bytes) -> dict:
+        if raw and not raw.endswith(b"\x00"):
+            raise _error(
+                "GIT_OUTPUT_INVALID",
+                "Git EOL enumeration is not NUL terminated",
+            )
+        result = {}
+        for encoded in raw.split(b"\x00")[:-1]:
+            fields, separator, encoded_path = encoded.partition(b"\t")
+            parts = fields.split()
+            if not separator or len(parts) != 3:
+                raise _error("GIT_OUTPUT_INVALID", "Git EOL entry is malformed")
+            try:
+                path = encoded_path.decode("utf-8")
+                values = tuple(part.decode("ascii") for part in parts)
+            except (UnicodeDecodeError, UnicodeError) as exc:
+                raise _error("GIT_OUTPUT_INVALID", "Git EOL entry is not valid text") from exc
+            if not _valid_relative_path(path) or path in result:
+                raise _error(
+                    "GIT_OUTPUT_INVALID", "Git EOL path is invalid", path=path,
+                )
+            result[path] = values
+        return result
+
+    @staticmethod
+    def _status_without_eol_only_changes(raw: bytes, ignored_paths: set) -> bytes:
+        if not ignored_paths:
+            return raw
+        if raw and not raw.endswith(b"\x00"):
+            raise _error("GIT_OUTPUT_INVALID", "Git status is not NUL terminated")
+        records = raw.split(b"\x00")[:-1]
+        filtered = []
+        index = 0
+        while index < len(records):
+            record = records[index]
+            if len(record) < 4 or record[2:3] != b" ":
+                raise _error("GIT_OUTPUT_INVALID", "Git status entry is malformed")
+            status = record[:2]
+            try:
+                path = record[3:].decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise _error("GIT_OUTPUT_INVALID", "Git status path is not UTF-8") from exc
+            extra = []
+            if b"R" in status or b"C" in status:
+                index += 1
+                if index >= len(records):
+                    raise _error("GIT_OUTPUT_INVALID", "Git rename status is incomplete")
+                extra.append(records[index])
+            if status != b" M" or path not in ignored_paths:
+                filtered.append(record)
+                filtered.extend(extra)
+            index += 1
+        return b"\x00".join(filtered) + (b"\x00" if filtered else b"")
 
     @staticmethod
     def _decode_paths(raw: bytes, source: str) -> tuple:
@@ -375,6 +438,48 @@ class GitClient:
             value.st_size,
             value.st_mtime_ns,
             value.st_ctime_ns,
+        )
+
+    @staticmethod
+    def _windows_object_identity(value: os.stat_result) -> tuple:
+        return (
+            value.st_dev,
+            value.st_ino,
+            stat.S_IFMT(value.st_mode),
+        )
+
+    @staticmethod
+    def _windows_content_identity(value: os.stat_result) -> tuple:
+        return (
+            value.st_size,
+            value.st_mtime_ns,
+        )
+
+    @classmethod
+    def _eol_only_index_match(
+        cls,
+        entry: Mapping[str, object],
+        raw: Optional[bytes],
+        eol_entry: Optional[tuple],
+        object_format: str,
+    ) -> bool:
+        if raw is None or entry["kind"] != "regular" or eol_entry is None:
+            return False
+        index_eol, worktree_eol, _attribute = eol_entry
+        if index_eol != "i/lf" or worktree_eol not in ("w/crlf", "w/mixed"):
+            return False
+        normalized = raw.replace(b"\r\n", b"\n")
+        if normalized == raw:
+            return False
+        index_entries = entry["index_entries"]
+        head_entry = entry["head_entry"]
+        return (
+            len(index_entries) == 1
+            and index_entries[0]["stage"] == 0
+            and head_entry is not None
+            and index_entries[0]["mode"] == head_entry["mode"]
+            and index_entries[0]["oid"] == head_entry["oid"]
+            and cls._blob_oid(normalized, object_format) == index_entries[0]["oid"]
         )
 
     @staticmethod
@@ -994,7 +1099,9 @@ class GitClient:
                 "submodule_head": state[3],
             }
             observation = {
-                "kind": "gitlink", "identity": cls._file_identity(before),
+                "kind": "gitlink",
+                "object_identity": cls._windows_object_identity(before),
+                "content_identity": cls._windows_content_identity(before),
                 "gitlink_state": state[:3],
             }
             return entry, raw, observation
@@ -1006,7 +1113,10 @@ class GitClient:
             try:
                 with target.open("rb") as stream:
                     opened = os.fstat(stream.fileno())
-                    if cls._file_identity(before) != cls._file_identity(opened):
+                    if (
+                        cls._windows_object_identity(before)
+                        != cls._windows_object_identity(opened)
+                    ):
                         raise _error(
                             "SNAPSHOT_UNSTABLE", "snapshot file was replaced while it was opened",
                             path=path,
@@ -1038,7 +1148,12 @@ class GitClient:
                     "SNAPSHOT_UNSTABLE", "snapshot file changed while it was read",
                     path=path, error=str(exc),
                 ) from exc
-            if cls._file_identity(before) != cls._file_identity(after):
+            if (
+                cls._windows_object_identity(before)
+                != cls._windows_object_identity(after)
+                or cls._windows_content_identity(before)
+                != cls._windows_content_identity(after)
+            ):
                 raise _error("SNAPSHOT_UNSTABLE", "snapshot file changed while it was read", path=path)
             raw = bytes(data)
             kind = "regular"
@@ -1052,7 +1167,12 @@ class GitClient:
                     "SNAPSHOT_UNSTABLE", "snapshot symbolic link changed while it was read",
                     path=path, error=str(exc),
                 ) from exc
-            if cls._file_identity(before) != cls._file_identity(after):
+            if (
+                cls._windows_object_identity(before)
+                != cls._windows_object_identity(after)
+                or cls._windows_content_identity(before)
+                != cls._windows_content_identity(after)
+            ):
                 raise _error(
                     "SNAPSHOT_UNSTABLE", "snapshot symbolic link changed while it was read",
                     path=path,
@@ -1072,7 +1192,9 @@ class GitClient:
             "submodule_head": None,
         }
         observation = {
-            "kind": kind, "identity": cls._file_identity(before),
+            "kind": kind,
+            "object_identity": cls._windows_object_identity(before),
+            "content_identity": cls._windows_content_identity(before),
             "raw": raw if kind == "symlink" else None,
         }
         return entry, raw, observation
@@ -1167,7 +1289,11 @@ class GitClient:
             raise _error(
                 "SNAPSHOT_UNSTABLE", "snapshot path changed during collection", path=path
             )
-        if observation["kind"] == "missing" or cls._file_identity(current) != observation["identity"]:
+        if (
+            observation["kind"] == "missing"
+            or cls._windows_object_identity(current) != observation["object_identity"]
+            or cls._windows_content_identity(current) != observation["content_identity"]
+        ):
             raise _error(
                 "SNAPSHOT_UNSTABLE", "snapshot path changed during collection", path=path
             )
@@ -1260,6 +1386,7 @@ class GitClient:
             raise _error("GIT_OUTPUT_INVALID", "Git object format is unsupported")
         initial_index, index_entries = cls._index_entries(root, paths, deadline)
         initial_head_tree, head_entries = cls._head_entries(root, paths, deadline)
+        eol_entries = cls._eol_entries(initial["eol"])
         if os.name == "nt":
             root_fd = None
             root_identity = cls._directory_identity(root.lstat())
@@ -1268,6 +1395,7 @@ class GitClient:
         entries = []
         raw_by_path = {}
         observations = {}
+        eol_only_paths = set()
         total = [0]
         try:
             for path in paths:
@@ -1281,7 +1409,17 @@ class GitClient:
                     total,
                     object_format,
                 )
-                entries.append(entry)
+                eol_only = (
+                    path in tracked
+                    and path not in requested_paths
+                    and cls._eol_only_index_match(
+                        entry, raw, eol_entries.get(path), object_format
+                    )
+                )
+                if eol_only:
+                    eol_only_paths.add(path)
+                else:
+                    entries.append(entry)
                 raw_by_path[path] = raw
                 observations[path] = observation
             final = cls._capture_enumeration(root, deadline)
@@ -1360,8 +1498,10 @@ class GitClient:
         git_common_path = canonical_git_path(git_common, repository_root=root)
         git_worktree = cls._decode_text(initial["git_worktree"], ("git-dir",))
         git_worktree_path = canonical_git_path(git_worktree, repository_root=root)
-        index_entry_count = sum(len(items) for items in index_entries.values())
-        status = initial["status"]
+        index_entry_count = sum(len(entry["index_entries"]) for entry in entries)
+        status = cls._status_without_eol_only_changes(
+            initial["status"], eol_only_paths
+        )
         base = {
             "schema": WORKSPACE_SNAPSHOT_SCHEMA,
             "repository_root": str(root),
@@ -1376,9 +1516,9 @@ class GitClient:
             "index_entry_count": index_entry_count,
             "index_output_bytes": len(initial_index),
             "has_unmerged_entries": any(
-                item[2] != "0"
-                for items in index_entries.values()
-                for item in items
+                item["stage"] != 0
+                for entry in entries
+                for item in entry["index_entries"]
             ),
             "entries": entries,
             "resources": resource_entries,

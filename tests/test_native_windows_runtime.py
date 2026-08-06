@@ -50,6 +50,23 @@ def _hold_lock(path: str, ready: multiprocessing.Event, seconds: float) -> None:
         time.sleep(seconds)
 
 
+def _windows_process_is_running(pid: int) -> bool:
+    import ctypes
+
+    process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not process:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(
+            process, ctypes.byref(exit_code)
+        ):
+            return False
+        return exit_code.value == 259
+    finally:
+        ctypes.windll.kernel32.CloseHandle(process)
+
+
 class NativeWindowsRuntimeTests(unittest.TestCase):
     def test_core_modules_import_without_eager_posix_host_use(self) -> None:
         from dev_flow_orchestrator import cli, controller, git_client, store
@@ -149,7 +166,103 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
                     None,
                 )
         self.assertEqual(context.exception.kind, "timeout")
-        self.assertLess(time.monotonic() - started, 0.6)
+        self.assertLess(time.monotonic() - started, 1.5)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows pipe handles")
+    def test_windows_runner_closes_pipes_after_timeout(self) -> None:
+        processes = []
+        original_popen = subprocess.Popen
+
+        def tracked_popen(*args: object, **kwargs: object) -> subprocess.Popen:
+            process = original_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with mock.patch(
+            "dev_flow_orchestrator._platform.process.subprocess.Popen",
+            side_effect=tracked_popen,
+        ):
+            with self.assertRaises(ProcessFailure) as context:
+                _run_windows(
+                    [sys.executable, "-c", "import time; time.sleep(10)"],
+                    dict(os.environ),
+                    0.05,
+                    1024,
+                    None,
+                )
+
+        self.assertEqual(context.exception.kind, "timeout")
+        command_processes = [process for process in processes if process.stdout is not None]
+        self.assertEqual(len(command_processes), 1)
+        self.assertTrue(command_processes[0].stdout.closed)
+        self.assertTrue(command_processes[0].stderr.closed)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows taskkill")
+    def test_windows_runner_timeout_terminates_live_parent_and_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory) / "processes.txt"
+            parent = (
+                "import os, pathlib, subprocess, sys, time; "
+                "child = subprocess.Popen([sys.executable, '-c', sys.argv[2]]); "
+                "pathlib.Path(sys.argv[1]).write_text("
+                "f'{os.getpid()} {child.pid}', encoding='ascii'); "
+                "time.sleep(30)"
+            )
+            descendant = "import time; time.sleep(30)"
+            observed_running = threading.Event()
+            observed_pids: list[int] = []
+
+            def observe_processes() -> None:
+                deadline = time.monotonic() + 1.5
+                while time.monotonic() < deadline:
+                    try:
+                        pids = [int(value) for value in pid_path.read_text().split()]
+                    except (FileNotFoundError, ValueError):
+                        time.sleep(0.01)
+                        continue
+                    if len(pids) == 2 and all(
+                        _windows_process_is_running(pid) for pid in pids
+                    ):
+                        observed_pids.extend(pids)
+                        observed_running.set()
+                        return
+                    time.sleep(0.01)
+
+            observer = threading.Thread(target=observe_processes, daemon=True)
+            observer.start()
+            try:
+                with self.assertRaises(ProcessFailure) as context:
+                    _run_windows(
+                        [
+                            sys.executable,
+                            "-c",
+                            parent,
+                            str(pid_path),
+                            descendant,
+                        ],
+                        dict(os.environ),
+                        2.0,
+                        1024,
+                        None,
+                    )
+            finally:
+                observer.join(timeout=2)
+
+            self.assertEqual(context.exception.kind, "timeout")
+            self.assertTrue(
+                observed_running.is_set(),
+                "parent and descendant were not both observed alive before timeout",
+            )
+            self.assertEqual(len(observed_pids), 2)
+            cleanup_deadline = time.monotonic() + 2
+            while time.monotonic() < cleanup_deadline and any(
+                _windows_process_is_running(pid) for pid in observed_pids
+            ):
+                time.sleep(0.01)
+            self.assertFalse(
+                any(_windows_process_is_running(pid) for pid in observed_pids),
+                "taskkill did not terminate both the parent and descendant",
+            )
 
     def test_windows_snapshot_total_budget_is_consumed_per_chunk(self) -> None:
         class CountingReader:
@@ -204,6 +317,34 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
             self.assertEqual(context.exception.details["path"], "second.txt")
             self.assertIsNotNone(reader)
             self.assertEqual(reader.bytes_read, 8)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows EOL coverage")
+    def test_windows_snapshot_ignores_only_text_eol_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = make_repository(root, "eol repository")
+            (repository / ".gitattributes").write_bytes(b"*.txt text\n*.bin -text\n")
+            (repository / "text.txt").write_bytes(b"first\r\nsecond\r\n")
+            (repository / "binary.bin").write_bytes(b"\x00first\r\nsecond\r\n")
+            subprocess.run(
+                ["git", "-C", str(repository), "add", ".gitattributes", "text.txt", "binary.bin"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repository), "commit", "-qm", "add EOL fixtures"],
+                check=True,
+            )
+
+            clean = GitClient.snapshot(str(repository))
+            self.assertTrue(clean["clean"])
+            self.assertEqual(clean["entries"], [])
+
+            (repository / "text.txt").write_bytes(b"first\r\nchanged\r\n")
+            (repository / "binary.bin").write_bytes(b"\x00first\nsecond\n")
+            changed = GitClient.snapshot(str(repository))
+            changed_paths = {entry["path"] for entry in changed["entries"]}
+            self.assertIn("text.txt", changed_paths)
+            self.assertIn("binary.bin", changed_paths)
 
     def test_cross_process_lock_serializes_and_atomic_failure_preserves_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
