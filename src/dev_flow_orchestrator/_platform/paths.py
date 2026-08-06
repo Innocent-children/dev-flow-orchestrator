@@ -18,9 +18,7 @@ def _reject_windows_namespace(value: PathValue) -> None:
 
 
 def _normalized(path: Path) -> Path:
-    if os.name == "nt":
-        return Path(os.path.normcase(os.path.normpath(str(path))))
-    return path
+    return Path(os.path.normpath(str(path)))
 
 
 def canonical_repository_root(value: PathValue) -> Path:
@@ -77,6 +75,10 @@ def path_contains(parent: PathValue, child: PathValue) -> bool:
 
 def paths_overlap(left: PathValue, right: PathValue) -> bool:
     return path_contains(left, right) or path_contains(right, left)
+
+
+def path_is_absolute(value: PathValue) -> bool:
+    return Path(value).is_absolute()
 
 
 def windows_comparison_key(value: PathValue) -> str:

@@ -20,6 +20,7 @@ sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator._platform.paths import (
     _reject_windows_namespace,
+    canonical_repository_root,
     windows_comparison_key,
     windows_path_contains,
 )
@@ -68,6 +69,12 @@ def _windows_process_is_running(pid: int) -> bool:
 
 
 class NativeWindowsRuntimeTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "requires native Windows paths")
+    def test_canonical_repository_root_preserves_host_spelling(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="Dev Flow Mixed Case ") as temporary:
+            expected = Path(temporary).resolve()
+            self.assertEqual(canonical_repository_root(expected), expected)
+
     def test_core_modules_import_without_eager_posix_host_use(self) -> None:
         from dev_flow_orchestrator import cli, controller, git_client, store
 
@@ -432,7 +439,7 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
                 check=True,
             )
             linked_snapshot = GitClient.snapshot(str(linked))
-            self.assertEqual(linked_snapshot["repository_root"], str(linked).lower())
+            self.assertEqual(linked_snapshot["repository_root"], str(linked.resolve()))
             self.assertNotEqual(
                 linked_snapshot["git_worktree_dir"], linked_snapshot["git_common_dir"]
             )

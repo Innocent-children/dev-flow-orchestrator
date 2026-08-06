@@ -605,7 +605,7 @@ def _validate_foreign_candidate(root: Path) -> dict:
         return _validation_failure("missing scripts/validate_package.py")
     try:
         completed = subprocess.run(
-            [sys.executable, "-I", "-S", str(validator)],
+            [sys.executable, "-B", "-I", "-S", str(validator)],
             cwd=str(root),
             text=True,
             stdout=subprocess.PIPE,
@@ -1730,7 +1730,11 @@ def _validate_imports(module: Path, errors: list[str]) -> None:
 
 
 def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
-    launcher = root / "scripts" / "dev_flow_python_launcher"
+    launcher = root / "scripts" / (
+        "dev_flow_python_launcher.cmd"
+        if os.name == "nt"
+        else "dev_flow_python_launcher"
+    )
     hook = root / "hooks" / "dev_flow_hook.py"
     if not launcher.is_file() or not hook.is_file():
         return
@@ -1764,28 +1768,41 @@ def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
             output = json.loads(completed.stdout)
             context = output["hookSpecificOutput"]["additionalContext"]
             locator = context.rsplit(": ", 1)[1]
-            tokens = shlex.split(locator)
         except (KeyError, TypeError, ValueError, IndexError) as exc:
             errors.append("Hook locator smoke returned invalid context: {}".format(exc))
             return
         expected_prefix = [str(launcher), str(root / "scripts" / "dev_flow.py")]
-        _check(tokens[:2] == expected_prefix, errors, "Hook locator bypasses launcher")
-        _check(
-            tokens[2:] == [
-                "--data-dir",
-                str((plugin_data / PLUGIN_DATA_NAMESPACE).resolve()),
-            ],
-            errors,
-            "Hook locator does not isolate current-version plugin data",
-        )
+        expected_tail = [
+            "--data-dir",
+            str((plugin_data / PLUGIN_DATA_NAMESPACE).resolve()),
+        ]
+        if os.name == "nt":
+            expected_locator = "& " + " ".join(
+                "'{}'".format(value.replace("'", "''"))
+                for value in (*expected_prefix, *expected_tail)
+            )
+            _check(locator == expected_locator, errors, "Hook locator bypasses launcher")
+        else:
+            tokens = shlex.split(locator)
+            _check(tokens[:2] == expected_prefix, errors, "Hook locator bypasses launcher")
+            _check(
+                tokens[2:] == expected_tail,
+                errors,
+                "Hook locator does not isolate current-version plugin data",
+            )
         _check(
             "Dev Flow {}".format(PRODUCT_VERSION) in context
             and "$follow-dev-flow" in context,
             errors,
             "Hook does not inject current-version Skill guidance",
         )
+        shell_command = (
+            ["powershell.exe", "-NoProfile", "-Command", locator + " --help"]
+            if os.name == "nt"
+            else ["/bin/sh", "-c", locator + " --help"]
+        )
         shell = subprocess.run(
-            ["/bin/sh", "-c", locator + " --help"],
+            shell_command,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -2062,12 +2079,13 @@ def _validate_current_candidate(root: Path) -> dict:
         "product version, data namespace, or agent protocol is inconsistent",
     )
     launcher = root / "scripts" / "dev_flow_python_launcher"
-    _check(
-        launcher.is_file()
-        and bool(launcher.stat().st_mode & stat.S_IXUSR),
-        errors,
-        "scripts/dev_flow_python_launcher is not executable",
-    )
+    if os.name != "nt":
+        _check(
+            launcher.is_file()
+            and bool(launcher.stat().st_mode & stat.S_IXUSR),
+            errors,
+            "scripts/dev_flow_python_launcher is not executable",
+        )
     for relative in PUBLIC_BOOTSTRAPS:
         path = root / relative
         if not path.is_file():
@@ -2086,7 +2104,7 @@ def _validate_current_candidate(root: Path) -> dict:
             relative + " references predecessor runtime",
         )
         completed = subprocess.run(
-            [sys.executable, "-I", "-S", str(path), "--help"],
+            [sys.executable, "-B", "-I", "-S", str(path), "--help"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,

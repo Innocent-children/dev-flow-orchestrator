@@ -507,7 +507,10 @@ def run_web(data_dir: str, *, port: int = 0, stream: TextIO = sys.stdout) -> int
 
     try:
         if threading.current_thread() is threading.main_thread():
-            for signum in (signal.SIGINT, signal.SIGTERM):
+            signals = [signal.SIGINT, signal.SIGTERM]
+            if sys.platform == "win32":
+                signals.append(signal.SIGBREAK)
+            for signum in signals:
                 previous[signum] = signal.getsignal(signum)
                 signal.signal(signum, stop)
         server.serve_forever(poll_interval=0.1)

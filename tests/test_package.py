@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -72,6 +73,7 @@ class PackageValidationTests(unittest.TestCase):
             "Hook event 'SessionStart' lacks the packaged Windows launcher",
         )
 
+    @unittest.skipIf(os.name == "nt", "POSIX executable bits are not a Windows contract")
     def test_non_executable_launcher_is_reported(self) -> None:
         launcher = self.candidate / "scripts" / "dev_flow_python_launcher"
         launcher.chmod(stat.S_IRUSR | stat.S_IWUSR)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Optional, Tuple
 
+from ._platform.paths import path_is_absolute, paths_equal
 from .delivery import effective_contract
 from .engine import is_terminal_state, task_view
 from .model import DevFlowError, TaskState
@@ -181,12 +182,12 @@ def inventory_view(
             continue
         if workflow_filter and state.workflow_id not in workflow_filter:
             continue
-        repository_values = {
-            value
+        repository_matches = any(
+            candidate == item.repository_id or paths_equal(candidate, item.path)
+            for candidate in repository_filter
             for item in state.repositories
-            for value in (item.repository_id, item.path)
-        }
-        if repository_filter and not repository_filter.intersection(repository_values):
+        )
+        if repository_filter and not repository_matches:
             continue
         if terminal is not None and row["terminal"] is not terminal:
             continue
@@ -214,10 +215,10 @@ def inventory_view(
                 "status": sorted(status_filter),
                 "workflow": sorted(workflow_filter),
                 "repository": sorted(
-                    value for value in repository_filter if not value.startswith("/")
+                    value for value in repository_filter if not path_is_absolute(value)
                 ),
                 "repository_path_count": sum(
-                    1 for value in repository_filter if value.startswith("/")
+                    1 for value in repository_filter if path_is_absolute(value)
                 ),
                 "terminal": terminal,
             },

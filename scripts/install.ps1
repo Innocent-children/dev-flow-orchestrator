@@ -96,8 +96,16 @@ $VerifiedHead = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'rev-parse', '--v
 $FinalStatus = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--porcelain') 'Cannot verify final status.'
 if ($VerifiedHead -ne $ApprovedHead -or $FinalStatus) { Fail 'Source is not the clean fetched authoritative commit.' }
 
-& $Python.Program @($Python.Prefix) -I -S (Join-Path $SourceRoot 'scripts\validate_package.py')
-if ($LASTEXITCODE -ne 0) { Fail 'Candidate package validation failed.' }
+$PreviousNoBytecode = $env:PYTHONDONTWRITEBYTECODE
+try {
+    $env:PYTHONDONTWRITEBYTECODE = '1'
+    & $Python.Program @($Python.Prefix) -B -I -S (Join-Path $SourceRoot 'scripts\validate_package.py')
+    $ValidationExitCode = $LASTEXITCODE
+} finally {
+    if ($null -eq $PreviousNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue }
+    else { $env:PYTHONDONTWRITEBYTECODE = $PreviousNoBytecode }
+}
+if ($ValidationExitCode -ne 0) { Fail 'Candidate package validation failed.' }
 $Manifest = Get-Content -LiteralPath (Join-Path $SourceRoot '.codex-plugin\plugin.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if (-not ($Manifest.version -is [string]) -or -not $Manifest.version) { Fail 'Validated manifest has no version.' }
 $PluginVersion = $Manifest.version

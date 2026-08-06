@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -205,7 +206,8 @@ class WebServerTests(RepositoryTestCase):
 
         repository_path = str(self.repository.resolve())
         repository_query = urlencode({"repository": repository_path})
-        self.assertIn("%2F", repository_query)
+        encoded_separator = "%5C" if os.name == "nt" else "%2F"
+        self.assertIn(encoded_separator, repository_query)
         repository_status, _, repository = self.json_request(
             "GET",
             "/api/tasks?" + repository_query,
@@ -402,14 +404,48 @@ class WebServerTests(RepositoryTestCase):
         occupying.sendall(b"GET / HTTP/1.1\r\n")
         try:
             rejected = socket.create_connection(("127.0.0.1", bounded.server_port), timeout=2)
-            rejected.sendall(
-                "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n".format(
-                    bounded.server_port
-                ).encode("ascii")
-            )
-            response = rejected.recv(256)
-            rejected.close()
-            self.assertIn(b"503 Service Unavailable", response)
+            try:
+                rejected.sendall(
+                    "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n".format(
+                        bounded.server_port
+                    ).encode("ascii")
+                )
+                try:
+                    response = rejected.recv(256)
+                except (ConnectionAbortedError, ConnectionResetError):
+                    if os.name != "nt":
+                        raise
+                else:
+                    self.assertIn(b"503 Service Unavailable", response)
+            finally:
+                rejected.close()
+            occupying.close()
+
+            deadline = time.monotonic() + 2
+            while True:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", bounded.server_port, timeout=2
+                )
+                try:
+                    connection.request(
+                        "GET",
+                        "/api/meta",
+                        headers={"Authorization": "Bearer " + self.token},
+                    )
+                    response = connection.getresponse()
+                    response.read()
+                    if response.status == 200:
+                        break
+                    self.assertEqual(response.status, 503)
+                    if time.monotonic() >= deadline:
+                        self.fail("handler slot was not released after rejected request")
+                    time.sleep(0.02)
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.02)
+                finally:
+                    connection.close()
         finally:
             occupying.close()
             bounded.shutdown()
@@ -431,9 +467,12 @@ class WebServerTests(RepositoryTestCase):
             occupied.close()
         self.assertEqual(context.exception.code, "WEB_BIND_FAILED")
 
-    def test_cli_web_is_foreground_and_stops_on_sigterm(self) -> None:
+    def test_cli_web_is_foreground_and_stops_on_console_interrupt(self) -> None:
         environment = dict(os.environ)
         environment["PYTHONPATH"] = str(SRC)
+        creationflags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        )
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -448,6 +487,7 @@ class WebServerTests(RepositoryTestCase):
             stderr=subprocess.PIPE,
             text=True,
             env=environment,
+            creationflags=creationflags,
         )
         try:
             self.assertIsNotNone(process.stdout)
@@ -465,7 +505,10 @@ class WebServerTests(RepositoryTestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(response.getheader("Connection"), "close")
             response.read()
-            process.terminate()
+            if os.name == "nt":
+                os.kill(process.pid, signal.CTRL_BREAK_EVENT)
+            else:
+                process.terminate()
             self.assertEqual(process.wait(timeout=5), 0)
             connection.close()
         finally:

@@ -10,6 +10,7 @@ import subprocess
 import sys
 from typing import Optional
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -29,7 +30,7 @@ from dev_flow_orchestrator.product import (
     PLUGIN_DATA_NAMESPACE,
     PRODUCT_VERSION,
 )
-from support import RepositoryTestCase
+from support import make_repository, RepositoryTestCase
 
 
 def event_payload(event: str, cwd: str) -> dict:
@@ -158,6 +159,27 @@ class HookTests(RepositoryTestCase):
         self.assertIn("--workflow", context)
         self.assertIn("--data-dir", context)
 
+    def test_session_start_recovers_two_repository_task_from_second_member(self) -> None:
+        second = make_repository(self.root, "second member 雪")
+        state = self.controller.start(
+            requirement="two repository resume",
+            workflow="lite",
+            repositories=(str(self.repository), str(second)),
+        )
+        output = self.run_hook(event_payload("SessionStart", str(second)))
+        projection = json.loads(
+            output["additionalContext"].split("projection=", 1)[1]
+        )
+        self.assertEqual(projection["task_id"], state.task_id)
+        projected_paths = [
+            item["path"] for item in projection["repository_set"]["repositories"]
+        ]
+        self.assertEqual(projected_paths, [item.path for item in state.repositories])
+        self.assertEqual(
+            set(projected_paths),
+            {str(self.repository.resolve()), str(second.resolve())},
+        )
+
     def test_pre_tool_use_denies_data_dir_writes(self) -> None:
         payload = {
             "hook_event_name": "PreToolUse",
@@ -171,6 +193,16 @@ class HookTests(RepositoryTestCase):
         )
         self.assertIsNotNone(result)
         output = result["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+
+    def test_edit_denies_data_dir_writes(self) -> None:
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(self.root),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(Path(self.data_dir) / "tasks" / "x")},
+        }
+        output = handle(payload, config=self.config())["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "deny")
 
     def test_user_prompt_submit_does_not_mutate_state(self) -> None:
@@ -327,6 +359,22 @@ class HookTests(RepositoryTestCase):
             output = handle(payload, config=self.config())["hookSpecificOutput"]
             self.assertEqual(output["permissionDecision"], "deny")
 
+    def test_windows_plugin_data_references_are_denied(self) -> None:
+        for command in (
+            "$env:PLUGIN_DATA\\0.3.0\\tasks\\x",
+            "${env:PLUGIN_DATA}\\0.3.0\\tasks\\x",
+            "%PLUGIN_DATA%\\0.3.0\\tasks\\x",
+        ):
+            with self.subTest(command=command):
+                payload = {
+                    "hook_event_name": "PreToolUse",
+                    "cwd": str(self.root),
+                    "tool_name": "Bash",
+                    "tool_input": {"command": command},
+                }
+                output = handle(payload, config=self.config())["hookSpecificOutput"]
+                self.assertEqual(output["permissionDecision"], "deny")
+
     def test_exact_controller_command_is_allowed(self) -> None:
         task_id = self.start_lite()
         payload = {
@@ -386,6 +434,20 @@ class HookTests(RepositoryTestCase):
         }
         output = handle(payload, config=self.config())["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "deny")
+
+    def test_internal_exception_is_fail_open_without_state_mutation(self) -> None:
+        task_id = self.start_lite()
+        revision = self.controller.show(task_id).revision
+        with mock.patch(
+            "dev_flow_orchestrator.hook.Controller.tasks_for_path",
+            side_effect=RuntimeError("hook probe"),
+        ):
+            result = handle(
+                event_payload("SessionStart", str(self.repository)),
+                config=self.config(),
+            )
+        self.assertIsNone(result)
+        self.assertEqual(self.controller.show(task_id).revision, revision)
 
 if __name__ == "__main__":
     unittest.main()

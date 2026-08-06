@@ -16,7 +16,7 @@
 - [x] 3.1 Render Windows Controller locators with one PowerShell call operator and single-quoted literal arguments; retain POSIX `shlex.join` unchanged.
 - [x] 3.2 Recognize only the exact generated Windows Controller prefix and reject obvious PowerShell command tails without introducing a general parser.
 - [x] 3.3 Route `Write`, `Edit`, and `apply_patch` paths through the runtime host comparison before inventory loading; add simple literal and `PLUGIN_DATA` environment-reference checks for Windows shell commands.
-- [ ] 3.4 Test SessionStart, UserPromptSubmit, no-task guidance, secondary-member discovery, exact locator execution, structured data-path denial, ordinary repository writes, and fail-open Hook exceptions on Windows.
+- [x] 3.4 Test SessionStart, UserPromptSubmit, no-task guidance, secondary-member discovery, exact locator execution, structured data-path denial, ordinary repository writes, and fail-open Hook exceptions on Windows.
 - [x] 3.5 Update Hook and installation text to describe the guard as useful but not complete enforcement and to require `/hooks` review of the exact installed definition.
 
 ## 4. Implement native PowerShell installation
@@ -33,7 +33,7 @@
 - [x] 5.1 Add `scripts/uninstall.ps1` with `-KeepSource` and help, validating marketplace and plugin state before mutation.
 - [x] 5.2 Remove only the installed plugin and Dev Flow marketplace entry while preserving unrelated entries and all external Controller task data.
 - [x] 5.3 Remove source by default only after validating product identity, allowed origin, attached `main`, clean tracked/untracked/ignored state, and no local-only commits; otherwise preserve it with an actionable refusal.
-- [ ] 5.4 Add focused Windows lifecycle tests for fresh install, repair, eligible fast-forward, dirty refusal, malformed marketplace, activation failure, uninstall, `-KeepSource`, and unsafe source refusal using isolated local Git remotes and stub Codex executables.
+- [x] 5.4 Add focused Windows lifecycle tests for fresh install, repair, eligible fast-forward, dirty refusal, malformed marketplace, activation failure, uninstall, `-KeepSource`, and unsafe source refusal using isolated local Git remotes and stub Codex executables.
 
 ## 6. Prove the installed product surfaces
 
