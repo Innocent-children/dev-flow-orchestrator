@@ -5,6 +5,18 @@ on:
   pull_request:
 
 jobs:
+  windows-runtime:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Native Windows import, path, storage, process, and snapshot
+        run: python -I -S tests/test_native_windows_runtime.py -v
+      - name: Native Windows core controller journey
+        run: python -I -S tests/test_cli.py -v
+
   focused:
     runs-on: macos-latest
     steps:

@@ -11,6 +11,15 @@ from typing import Iterable, Mapping, Optional, Sequence
 import uuid
 
 from . import workflows
+from ._platform.paths import (
+    canonical_git_path,
+    canonical_data_root,
+    canonical_repository_root,
+    comparison_key,
+    path_contains,
+    paths_equal,
+    paths_overlap,
+)
 from .delivery import (
     contract_digest,
     effective_contract,
@@ -84,10 +93,6 @@ def _merge_resources(*groups: Sequence[Mapping[str, object]]) -> tuple:
     return tuple(result)
 
 
-def _paths_overlap(left: Path, right: Path) -> bool:
-    return left == right or left in right.parents or right in left.parents
-
-
 class Controller:
     """Coordinate selected workflows, safe snapshots, and the private store."""
 
@@ -124,8 +129,8 @@ class Controller:
         resolved = []
         for repository in records:
             try:
-                root = Path(repository.path).resolve(strict=True)
-            except (OSError, RuntimeError) as exc:
+                root = canonical_repository_root(repository.path)
+            except (OSError, RuntimeError, ValueError) as exc:
                 raise DevFlowError(
                     "REPOSITORY_INVALID",
                     "repository path cannot be resolved",
@@ -144,7 +149,7 @@ class Controller:
                         "repository_path": repository.path,
                     },
                 )
-            if str(root) != repository.path:
+            if not paths_equal(root, repository.path):
                 raise DevFlowError(
                     "REPOSITORY_IDENTITY_MISMATCH",
                     "repository no longer resolves to its canonical task root",
@@ -154,7 +159,7 @@ class Controller:
                         "resolved_path": str(root),
                     },
                 )
-            if _paths_overlap(self.store.root, root):
+            if paths_overlap(self.store.root, root):
                 raise DevFlowError(
                     "DATA_DIR_INSIDE_REPOSITORY",
                     "controller data directory must remain outside target repositories",
@@ -167,7 +172,7 @@ class Controller:
             resolved.append((repository, root))
         for index, (repository, root) in enumerate(resolved):
             for other, other_root in resolved[index + 1 :]:
-                if _paths_overlap(root, other_root):
+                if paths_overlap(root, other_root):
                     raise DevFlowError(
                         "REPOSITORY_OVERLAP",
                         "task repository roots must not overlap",
@@ -201,7 +206,7 @@ class Controller:
                         resources=resources_by_id.get(repository.repository_id, ()),
                     )
                 )
-                if snapshot["repository_root"] != repository.path:
+                if not paths_equal(snapshot["repository_root"], repository.path):
                     raise DevFlowError(
                         "REPOSITORY_IDENTITY_MISMATCH",
                         "captured repository root does not match task membership",
@@ -210,8 +215,12 @@ class Controller:
                         },
                     )
                 if verify_persisted_identity and (
-                    snapshot["git_worktree_dir"] != repository.git_worktree_dir
-                    or snapshot["git_common_dir"] != repository.git_common_dir
+                    not paths_equal(
+                        snapshot["git_worktree_dir"], repository.git_worktree_dir
+                    )
+                    or not paths_equal(
+                        snapshot["git_common_dir"], repository.git_common_dir
+                    )
                 ):
                     raise DevFlowError(
                         "REPOSITORY_IDENTITY_MISMATCH",
@@ -223,7 +232,10 @@ class Controller:
                             "expected_git_common_dir": repository.git_common_dir,
                         },
                     )
-                common_path = Path(snapshot["git_common_dir"]).resolve(strict=True)
+                common_path = canonical_git_path(
+                    snapshot["git_common_dir"],
+                    repository_root=canonical_repository_root(repository.path),
+                )
                 if not common_path.is_dir():
                     raise DevFlowError(
                         "REPOSITORY_INVALID",
@@ -237,7 +249,7 @@ class Controller:
                     phase=phase,
                     capture_pass=capture_pass,
                 ) from exc
-            except (OSError, RuntimeError) as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 wrapped = DevFlowError(
                     "REPOSITORY_INVALID",
                     "Git common directory cannot be resolved",
@@ -249,7 +261,7 @@ class Controller:
                     phase=phase,
                     capture_pass=capture_pass,
                 ) from exc
-            common_identity = str(common_path)
+            common_identity = comparison_key(common_path)
             other = common_directories.get(common_identity)
             if other is not None:
                 raise DevFlowError(
@@ -313,8 +325,8 @@ class Controller:
                     details={"input_index": input_index},
                 )
             try:
-                path = Path(supplied).expanduser().resolve(strict=True)
-            except (OSError, RuntimeError) as exc:
+                path = canonical_repository_root(supplied)
+            except (OSError, RuntimeError, ValueError) as exc:
                 raise DevFlowError(
                     "REPOSITORY_INVALID",
                     "repository path cannot be resolved",
@@ -841,14 +853,20 @@ class Controller:
         )
 
     def tasks_for_path(self, path: str) -> tuple:
-        candidate = Path(path).expanduser().resolve()
+        try:
+            candidate = canonical_data_root(path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise DevFlowError(
+                "REPOSITORY_INVALID",
+                "repository discovery path cannot be resolved",
+                details={"path": str(path), "error": str(exc)},
+            ) from exc
         matches = []
         for state, definition in self.store.list_states_with_definitions():
             if is_terminal_state(state, definition):
                 continue
             if any(
-                candidate == Path(repository.path)
-                or Path(repository.path) in candidate.parents
+                path_contains(repository.path, candidate)
                 for repository in state.repositories
             ):
                 matches.append(state)

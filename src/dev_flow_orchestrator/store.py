@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Tuple
 
+from ._platform.paths import canonical_data_root, paths_equal
 from .engine import (
     is_terminal_state,
     validate_persisted_state,
@@ -43,10 +44,10 @@ class TaskStore:
                     "controller data directory must not be a symlink",
                     details={"path": str(supplied_root)},
                 )
-            self.root = supplied_root.resolve()
+            self.root = canonical_data_root(supplied_root)
         except DevFlowError:
             raise
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             raise DevFlowError(
                 "DATA_PATH_FAILED",
                 "controller data directory could not be resolved",
@@ -188,8 +189,10 @@ class TaskStore:
             for requested in state.repositories:
                 for owned in existing.repositories:
                     if (
-                        requested.path == owned.path
-                        or requested.git_worktree_dir == owned.git_worktree_dir
+                        paths_equal(requested.path, owned.path)
+                        or paths_equal(
+                            requested.git_worktree_dir, owned.git_worktree_dir
+                        )
                     ):
                         raise DevFlowError(
                             "TASK_MEMBERSHIP_LEASED",

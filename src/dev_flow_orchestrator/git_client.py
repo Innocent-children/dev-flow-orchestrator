@@ -7,14 +7,14 @@ import contextvars
 import hashlib
 import os
 from pathlib import Path
-import selectors
-import signal
 import stat
-import subprocess
+import subprocess  # Compatibility for existing import-boundary tests.
 import threading
 import time
 from typing import Iterable, Iterator, Mapping, Optional, Sequence
 
+from ._platform.paths import canonical_git_path, canonical_repository_root, paths_equal
+from ._platform.process import ProcessFailure, run_bounded_process
 from .delivery import normalize_resource_bytes
 from .model import DevFlowError, json_value
 from .product import (
@@ -71,25 +71,6 @@ class GitClient:
     """Read current repository evidence without mutating Git state."""
 
     @staticmethod
-    def _terminate(process: subprocess.Popen) -> None:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-        try:
-            process.wait(timeout=GIT_TERMINATE_GRACE_SECONDS)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        try:
-            process.wait(timeout=GIT_TERMINATE_GRACE_SECONDS)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    @staticmethod
     @contextlib.contextmanager
     def cancellation(cancel_event: Optional[threading.Event]) -> Iterator[None]:
         """Scope optional cooperative cancellation to the current capture context."""
@@ -102,12 +83,9 @@ class GitClient:
     @staticmethod
     def _check_cancelled(
         cancel_event: Optional[threading.Event],
-        process: Optional[subprocess.Popen] = None,
     ) -> None:
         if cancel_event is None or not cancel_event.is_set():
             return
-        if process is not None:
-            GitClient._terminate(process)
         raise DevFlowError(
             "GIT_COMMAND_CANCELLED",
             "Git evidence collection was cancelled",
@@ -127,9 +105,19 @@ class GitClient:
             if output_limit_bytes is None
             else output_limit_bytes
         )
+        inherited_names = ("PATH", "HOME")
+        if os.name == "nt":
+            inherited_names = (
+                "PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC",
+                "PATHEXT", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE",
+                "HOMEPATH", "HOME",
+            )
         environment = {
-            "PATH": os.environ.get("PATH", ""),
-            "HOME": os.environ.get("HOME", ""),
+            name: os.environ[name]
+            for name in inherited_names
+            if name in os.environ
+        }
+        environment.update({
             "LC_ALL": "C",
             "LANG": "C",
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -137,7 +125,7 @@ class GitClient:
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_OPTIONAL_LOCKS": "0",
             "GIT_PAGER": "cat",
-        }
+        })
         command = [
             "git",
             "-c",
@@ -146,134 +134,42 @@ class GitClient:
             str(repository),
             *arguments,
         ]
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                env=environment,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise DevFlowError(
-                "GIT_UNAVAILABLE",
-                "Git could not be executed",
-                details={"error": str(exc)},
-            ) from exc
-        stdout = bytearray()
-        stderr = bytearray()
-        selector = selectors.DefaultSelector()
         effective_timeout = (
             GIT_COMMAND_TIMEOUT_SECONDS
             if timeout_seconds is None
             else max(0.001, timeout_seconds)
         )
-        deadline = time.monotonic() + effective_timeout
         try:
-            if process.stdout is None or process.stderr is None:
-                GitClient._terminate(process)
-                raise DevFlowError(
-                    "GIT_UNAVAILABLE",
-                    "Git output pipes could not be created",
-                )
-            selector.register(process.stdout, selectors.EVENT_READ, stdout)
-            selector.register(process.stderr, selectors.EVENT_READ, stderr)
-            while selector.get_map():
-                GitClient._check_cancelled(cancel_event, process)
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    GitClient._terminate(process)
-                    raise DevFlowError(
-                        "GIT_COMMAND_TIMEOUT",
-                        "Git command exceeded the preflight time budget",
-                        details={
-                            "arguments": list(arguments),
-                            "timeout_seconds": effective_timeout,
-                        },
-                    )
-                wait_seconds = (
-                    min(remaining, GIT_CANCEL_POLL_SECONDS)
-                    if cancel_event is not None
-                    else remaining
-                )
-                events = selector.select(wait_seconds)
-                if not events:
-                    continue
-                for key, _ in events:
-                    chunk = os.read(key.fileobj.fileno(), GIT_READ_CHUNK_BYTES)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        key.fileobj.close()
-                        continue
-                    key.data.extend(chunk)
-                    if len(stdout) + len(stderr) > effective_output_limit:
-                        GitClient._terminate(process)
-                        raise DevFlowError(
-                            "GIT_OUTPUT_TOO_LARGE",
-                            "Git output exceeds the preflight budget",
-                            details={
-                                "arguments": list(arguments),
-                                "limit_bytes": effective_output_limit,
-                                "stdout_bytes": len(stdout),
-                                "stderr_bytes": len(stderr),
-                            },
-                        )
-            remaining = max(0.0, deadline - time.monotonic())
-            while True:
-                GitClient._check_cancelled(cancel_event, process)
-                wait_seconds = (
-                    min(remaining, GIT_CANCEL_POLL_SECONDS)
-                    if cancel_event is not None
-                    else remaining
-                )
-                try:
-                    returncode = process.wait(timeout=wait_seconds)
-                    break
-                except subprocess.TimeoutExpired as exc:
-                    remaining = max(0.0, deadline - time.monotonic())
-                    if remaining > 0 and cancel_event is not None:
-                        continue
-                    GitClient._terminate(process)
-                    raise DevFlowError(
-                        "GIT_COMMAND_TIMEOUT",
-                        "Git command exceeded the preflight time budget",
-                        details={
-                            "arguments": list(arguments),
-                            "timeout_seconds": effective_timeout,
-                        },
-                    ) from exc
-        except DevFlowError:
-            raise
-        except (OSError, ValueError, KeyError) as exc:
-            GitClient._terminate(process)
-            raise DevFlowError(
-                "GIT_COMMAND_FAILED",
-                "Git evidence collection failed",
-                details={
-                    "arguments": list(arguments),
-                    "error": str(exc),
-                },
-            ) from exc
-        finally:
-            selector.close()
-            for stream in (process.stdout, process.stderr):
-                if stream is not None and not stream.closed:
-                    stream.close()
-        if returncode != 0:
+            result = run_bounded_process(
+                command, environment, effective_timeout, effective_output_limit,
+                cancel_event,
+            )
+        except ProcessFailure as exc:
+            details = {"arguments": list(arguments), **exc.details}
+            if exc.kind == "unavailable":
+                raise DevFlowError("GIT_UNAVAILABLE", "Git could not be executed", details=details) from exc
+            if exc.kind == "cancelled":
+                raise DevFlowError("GIT_COMMAND_CANCELLED", "Git evidence collection was cancelled", details=details) from exc
+            if exc.kind == "timeout":
+                details["timeout_seconds"] = effective_timeout
+                raise DevFlowError("GIT_COMMAND_TIMEOUT", "Git command exceeded the preflight time budget", details=details) from exc
+            if exc.kind == "output-too-large":
+                raise DevFlowError("GIT_OUTPUT_TOO_LARGE", "Git output exceeds the preflight budget", details=details) from exc
+            raise DevFlowError("GIT_COMMAND_FAILED", "Git evidence collection failed", details=details) from exc
+        if result.returncode != 0:
             raise DevFlowError(
                 "GIT_COMMAND_FAILED",
                 "required Git evidence is unavailable",
                 details={
                     "arguments": list(arguments),
-                    "returncode": returncode,
-                    "stderr": bytes(stderr).decode(
+                    "returncode": result.returncode,
+                    "stderr": result.stderr.decode(
                         "utf-8",
                         errors="replace",
                     )[:1024],
                 },
             )
-        return bytes(stdout)
+        return result.stdout
 
     @classmethod
     def _text(cls, repository: Path, *arguments: str) -> str:
@@ -843,7 +739,13 @@ class GitClient:
         top = cls._decode_text(top_raw, ("rev-parse", "--show-toplevel"))
         head = cls._decode_text(head_raw, ("rev-parse", "HEAD"))
         cls._decode_text(status, ("status",))
-        if Path(top).resolve() != path.resolve() or not _OBJECT_ID.fullmatch(head):
+        try:
+            canonical_top = canonical_git_path(top, repository_root=path)
+            canonical_path = canonical_repository_root(path)
+        except (OSError, RuntimeError, ValueError):
+            canonical_top = None
+            canonical_path = path
+        if not paths_equal(canonical_top, canonical_path) or not _OBJECT_ID.fullmatch(head):
             raise _error(
                 "SNAPSHOT_GITLINK_MISSING",
                 "gitlink is not an initialized submodule",
@@ -862,7 +764,7 @@ class GitClient:
     def _read_path(
         cls,
         root: Path,
-        root_fd: int,
+        root_fd: Optional[int],
         path: str,
         index_entries: Mapping[str, Sequence[tuple]],
         head_entries: Mapping[str, Mapping[str, str]],
@@ -870,6 +772,13 @@ class GitClient:
         total: list,
         object_format: str,
     ) -> tuple:
+        if os.name == "nt":
+            return cls._read_path_windows(
+                root, path, index_entries, head_entries, deadline, total,
+                object_format,
+            )
+        if root_fd is None:
+            raise AssertionError("POSIX snapshot requires a root descriptor")
         cls._check_deadline(deadline)
         lookup = cls._lookup_parent(root_fd, path)
         gitlink = cls._gitlink_entry(path, index_entries)
@@ -1039,14 +948,153 @@ class GitClient:
             os.close(parent_fd)
 
     @classmethod
+    def _read_path_windows(
+        cls,
+        root: Path,
+        path: str,
+        index_entries: Mapping[str, Sequence[tuple]],
+        head_entries: Mapping[str, Mapping[str, str]],
+        deadline: float,
+        total: list,
+        object_format: str,
+    ) -> tuple:
+        cls._check_deadline(deadline)
+        target = root.joinpath(*path.split("/"))
+        gitlink = cls._gitlink_entry(path, index_entries)
+        serialized_index = cls._serialized_index_entries(path, index_entries)
+        head_entry = json_value(head_entries.get(path))
+        try:
+            before = target.lstat()
+        except FileNotFoundError:
+            if gitlink is not None:
+                raise _error("SNAPSHOT_GITLINK_MISSING", "gitlink worktree is missing", path=path)
+            entry = {
+                "path": path, "kind": "missing", "mode": None, "size": 0,
+                "content_sha256": None, "worktree_oid": None,
+                "index_entries": serialized_index, "head_entry": head_entry,
+                "submodule_head": None,
+            }
+            return entry, None, {"kind": "missing"}
+        except OSError as exc:
+            raise _error(
+                "SNAPSHOT_READ_FAILED", "snapshot entry cannot be inspected",
+                path=path, error=str(exc),
+            ) from exc
+
+        if gitlink is not None:
+            if not stat.S_ISDIR(before.st_mode):
+                raise _error("SNAPSHOT_GITLINK_MISSING", "gitlink worktree is missing", path=path)
+            state = cls._gitlink_state(target, path, deadline)
+            serialized_bytes = b"\x00".join(
+                "{} {} {}".format(item["mode"], item["oid"], item["stage"]).encode("ascii")
+                for item in serialized_index
+            )
+            raw = b"gitlink\x00" + serialized_bytes + b"\x00" + state[3].encode("ascii")
+            cls._consume_content(total, len(raw), path)
+            entry = {
+                "path": path, "kind": "gitlink", "mode": "160000", "size": 0,
+                "content_sha256": None, "worktree_oid": state[3],
+                "index_entries": serialized_index, "head_entry": head_entry,
+                "submodule_head": state[3],
+            }
+            observation = {
+                "kind": "gitlink", "identity": cls._file_identity(before),
+                "gitlink_state": state[:3],
+            }
+            return entry, raw, observation
+
+        if stat.S_ISREG(before.st_mode):
+            if before.st_size > MAX_SNAPSHOT_FILE_BYTES:
+                cls._consume_content(total, before.st_size, path)
+            data = bytearray()
+            try:
+                with target.open("rb") as stream:
+                    opened = os.fstat(stream.fileno())
+                    if cls._file_identity(before) != cls._file_identity(opened):
+                        raise _error(
+                            "SNAPSHOT_UNSTABLE", "snapshot file was replaced while it was opened",
+                            path=path,
+                        )
+                    while True:
+                        cls._check_deadline(deadline)
+                        chunk = stream.read(SNAPSHOT_READ_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        if len(data) + len(chunk) > MAX_SNAPSHOT_FILE_BYTES:
+                            raise _error(
+                                "SNAPSHOT_BUDGET_EXCEEDED",
+                                "snapshot entry exceeds the per-file content budget",
+                                path=path, limit_bytes=MAX_SNAPSHOT_FILE_BYTES,
+                            )
+                        data.extend(chunk)
+            except DevFlowError:
+                raise
+            except OSError as exc:
+                raise _error(
+                    "SNAPSHOT_READ_FAILED", "snapshot file could not be read",
+                    path=path, error=str(exc),
+                ) from exc
+            try:
+                after = target.lstat()
+            except OSError as exc:
+                raise _error(
+                    "SNAPSHOT_UNSTABLE", "snapshot file changed while it was read",
+                    path=path, error=str(exc),
+                ) from exc
+            if cls._file_identity(before) != cls._file_identity(after):
+                raise _error("SNAPSHOT_UNSTABLE", "snapshot file changed while it was read", path=path)
+            raw = bytes(data)
+            cls._consume_content(total, len(raw), path)
+            kind = "regular"
+        elif stat.S_ISLNK(before.st_mode):
+            try:
+                link = os.readlink(str(target))
+                raw = _utf8(link) if isinstance(link, str) else link
+                after = target.lstat()
+            except OSError as exc:
+                raise _error(
+                    "SNAPSHOT_UNSTABLE", "snapshot symbolic link changed while it was read",
+                    path=path, error=str(exc),
+                ) from exc
+            if cls._file_identity(before) != cls._file_identity(after):
+                raise _error(
+                    "SNAPSHOT_UNSTABLE", "snapshot symbolic link changed while it was read",
+                    path=path,
+                )
+            cls._consume_content(total, len(raw), path)
+            kind = "symlink"
+        else:
+            raise _error(
+                "SNAPSHOT_SPECIAL_FILE", "snapshot path has an unsupported filesystem type",
+                path=path, kind=cls._special_kind(before.st_mode),
+            )
+        entry = {
+            "path": path, "kind": kind, "mode": "{:06o}".format(before.st_mode),
+            "size": len(raw), "content_sha256": hashlib.sha256(raw).hexdigest(),
+            "worktree_oid": cls._blob_oid(raw, object_format),
+            "index_entries": serialized_index, "head_entry": head_entry,
+            "submodule_head": None,
+        }
+        observation = {
+            "kind": kind, "identity": cls._file_identity(before),
+            "raw": raw if kind == "symlink" else None,
+        }
+        return entry, raw, observation
+
+    @classmethod
     def _verify_observation(
         cls,
         root: Path,
-        root_fd: int,
+        root_fd: Optional[int],
         path: str,
         observation: Mapping[str, object],
         deadline: float,
     ) -> None:
+        if os.name == "nt":
+            cls._verify_observation_windows(root, path, observation, deadline)
+            return
+        if root_fd is None:
+            raise AssertionError("POSIX snapshot requires a root descriptor")
         cls._check_deadline(deadline)
         lookup = cls._lookup_parent(root_fd, path)
         parent_fd = lookup.get("parent_fd")
@@ -1106,6 +1154,43 @@ class GitClient:
                 os.close(parent_fd)
 
     @classmethod
+    def _verify_observation_windows(
+        cls,
+        root: Path,
+        path: str,
+        observation: Mapping[str, object],
+        deadline: float,
+    ) -> None:
+        cls._check_deadline(deadline)
+        target = root.joinpath(*path.split("/"))
+        try:
+            current = target.lstat()
+        except FileNotFoundError:
+            if observation["kind"] == "missing":
+                return
+            raise _error(
+                "SNAPSHOT_UNSTABLE", "snapshot path changed during collection", path=path
+            )
+        if observation["kind"] == "missing" or cls._file_identity(current) != observation["identity"]:
+            raise _error(
+                "SNAPSHOT_UNSTABLE", "snapshot path changed during collection", path=path
+            )
+        if observation["kind"] == "symlink":
+            target_value = os.readlink(str(target))
+            raw = _utf8(target_value) if isinstance(target_value, str) else target_value
+            if raw != observation["raw"]:
+                raise _error(
+                    "SNAPSHOT_UNSTABLE", "snapshot symbolic link changed during collection",
+                    path=path,
+                )
+        elif observation["kind"] == "gitlink":
+            state = cls._gitlink_state(target, path, deadline)
+            if state[:3] != observation["gitlink_state"]:
+                raise _error(
+                    "SNAPSHOT_UNSTABLE", "gitlink changed during snapshot collection", path=path
+                )
+
+    @classmethod
     def snapshot(
         cls,
         repository_path: str,
@@ -1115,9 +1200,9 @@ class GitClient:
         deadline = time.monotonic() + SNAPSHOT_TIMEOUT_SECONDS
         requests = cls._resource_requests(resources)
         try:
-            supplied = Path(repository_path).expanduser().resolve()
+            supplied = canonical_repository_root(repository_path)
             _utf8(str(supplied))
-        except (OSError, RuntimeError, TypeError) as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise _error(
                 "REPOSITORY_INVALID",
                 "repository path cannot be resolved",
@@ -1130,8 +1215,17 @@ class GitClient:
                 path=str(supplied),
             )
         top_raw = cls._run_snapshot(supplied, deadline, "rev-parse", "--show-toplevel")
-        root = Path(cls._decode_text(top_raw, ("rev-parse", "--show-toplevel"))).resolve()
-        if root != supplied:
+        try:
+            root = canonical_git_path(
+                cls._decode_text(top_raw, ("rev-parse", "--show-toplevel")),
+                repository_root=supplied,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _error(
+                "REPOSITORY_INVALID", "Git worktree root cannot be resolved",
+                path=str(supplied), error=str(exc),
+            ) from exc
+        if not paths_equal(root, supplied):
             raise _error(
                 "REPOSITORY_ROOT_REQUIRED",
                 "repository path must name the Git worktree root",
@@ -1139,7 +1233,11 @@ class GitClient:
                 root=str(root),
             )
         initial = cls._capture_enumeration(root, deadline)
-        if Path(cls._decode_text(initial["top_level"], ("top_level",))).resolve() != root:
+        initial_root = canonical_git_path(
+            cls._decode_text(initial["top_level"], ("top_level",)),
+            repository_root=root,
+        )
+        if not paths_equal(initial_root, root):
             raise _error(
                 "SNAPSHOT_UNSTABLE",
                 "repository root changed during snapshot collection",
@@ -1166,7 +1264,11 @@ class GitClient:
             raise _error("GIT_OUTPUT_INVALID", "Git object format is unsupported")
         initial_index, index_entries = cls._index_entries(root, paths, deadline)
         initial_head_tree, head_entries = cls._head_entries(root, paths, deadline)
-        root_fd, root_identity = cls._open_root(root)
+        if os.name == "nt":
+            root_fd = None
+            root_identity = cls._directory_identity(root.lstat())
+        else:
+            root_fd, root_identity = cls._open_root(root)
         entries = []
         raw_by_path = {}
         observations = {}
@@ -1216,7 +1318,8 @@ class GitClient:
                     path=str(root),
                 )
         finally:
-            os.close(root_fd)
+            if root_fd is not None:
+                os.close(root_fd)
         cls._check_deadline(deadline)
 
         resource_entries = []
@@ -1258,20 +1361,16 @@ class GitClient:
             else None
         )
         git_common = cls._decode_text(initial["git_common"], ("git-common-dir",))
-        git_common_path = Path(git_common)
-        if not git_common_path.is_absolute():
-            git_common_path = root / git_common_path
+        git_common_path = canonical_git_path(git_common, repository_root=root)
         git_worktree = cls._decode_text(initial["git_worktree"], ("git-dir",))
-        git_worktree_path = Path(git_worktree)
-        if not git_worktree_path.is_absolute():
-            git_worktree_path = root / git_worktree_path
+        git_worktree_path = canonical_git_path(git_worktree, repository_root=root)
         index_entry_count = sum(len(items) for items in index_entries.values())
         status = initial["status"]
         base = {
             "schema": WORKSPACE_SNAPSHOT_SCHEMA,
             "repository_root": str(root),
-            "git_worktree_dir": str(git_worktree_path.resolve()),
-            "git_common_dir": str(git_common_path.resolve()),
+            "git_worktree_dir": str(git_worktree_path),
+            "git_common_dir": str(git_common_path),
             "object_format": object_format,
             "head": head,
             "branch": branch,
