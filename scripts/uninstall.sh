@@ -7,7 +7,33 @@ REPOSITORY_REF="main"
 SOURCE_ROOT="${DEV_FLOW_SOURCE_ROOT:-$HOME/plugins/dev-flow-orchestrator}"
 MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace.json}"
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
-BIN_DIR="${DEV_FLOW_BIN_DIR:-$HOME/.local/bin}"
+select_path_bin_dir() {
+  if [ -n "${DEV_FLOW_BIN_DIR:-}" ]; then
+    printf '%s\n' "$DEV_FLOW_BIN_DIR"
+    return
+  fi
+  original_ifs="$IFS"
+  IFS=:
+  for candidate in $PATH; do
+    case "$candidate" in
+      /*)
+        if [ -d "$candidate" ] && [ ! -L "$candidate" ] \
+          && [ -w "$candidate" ] && [ -x "$candidate" ]; then
+          IFS="$original_ifs"
+          printf '%s\n' "$candidate"
+          return
+        fi
+        ;;
+    esac
+  done
+  IFS="$original_ifs"
+  return 1
+}
+
+BIN_DIR="$(select_path_bin_dir)" || {
+  printf 'Dev Flow uninstallation failed: PATH has no writable absolute directory; set DEV_FLOW_BIN_DIR explicitly.\n' >&2
+  exit 1
+}
 LAUNCHER_PATH="$BIN_DIR/dev-flow"
 PLUGIN_ID="dev-flow-orchestrator@personal"
 LAUNCHER_MARKER="# dev-flow-orchestrator managed launcher"

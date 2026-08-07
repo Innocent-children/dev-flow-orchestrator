@@ -40,8 +40,9 @@
 发出信号前同时验证 PID、随机实例身份和经过鉴权的 loopback 响应；不得仅把 PID 当作
 权限依据。
 
-macOS 安装器只拥有 `<DEV_FLOW_BIN_DIR>/dev-flow`，该目录默认为 `~/.local/bin`。路径
-冲突必须关闭失败，启动器必须原子写入；卸载时只有在验证精确所有权标记后才可删除。
+macOS 安装器只拥有 `<DEV_FLOW_BIN_DIR>/dev-flow`；未显式指定时，它选择 `PATH` 中第一个
+可写的绝对目录。路径冲突必须关闭失败，启动器必须原子写入；卸载时只有在验证精确所有权
+标记后才可删除。
 已安装 CLI 调用可以省略 `--data-dir`：解析时必须优先使用 `PLUGIN_DATA`，否则使用
 `CODEX_HOME`（或 `~/.codex`）、personal 插件数据目录及 `PLUGIN_DATA_NAMESPACE`。
 开发和恢复场景中显式 `--data-dir` 仍具有最高优先级。

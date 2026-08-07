@@ -360,6 +360,15 @@ class InstallerBehaviorTests(unittest.TestCase):
         )
         self.assertFalse(expected.exists())
 
+    def test_launcher_defaults_to_a_writable_directory_already_on_path(self) -> None:
+        result = self.run_installer({"DEV_FLOW_BIN_DIR": ""})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path_directory = Path(self.environment["DEV_FLOW_BIN_DIR"])
+        launcher = path_directory / "dev-flow"
+        self.assertTrue(launcher.is_file())
+        self.assertIn(str(launcher), result.stdout)
+
     def test_unowned_launcher_collision_stops_before_activation(self) -> None:
         launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow"
         launcher.write_text("#!/bin/sh\necho user-owned\n", encoding="utf-8")

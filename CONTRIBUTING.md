@@ -69,8 +69,9 @@ written, instance-bound, and removable on shutdown. A stop operation must
 verify the PID together with the random instance identity and an authenticated
 loopback response before signaling; never treat a PID alone as authority.
 
-The macOS installer owns only `<DEV_FLOW_BIN_DIR>/dev-flow` and defaults that
-directory to `~/.local/bin`. Keep collision handling fail-closed, write the
+The macOS installer owns only `<DEV_FLOW_BIN_DIR>/dev-flow` and otherwise
+selects the first writable absolute directory already on `PATH`. Keep collision
+handling fail-closed, write the
 launcher atomically, and let uninstall remove it only after verifying the exact
 ownership marker. Installed CLI invocations may omit `--data-dir`; resolution
 must prefer `PLUGIN_DATA`, otherwise use `CODEX_HOME` (or `~/.codex`) plus the

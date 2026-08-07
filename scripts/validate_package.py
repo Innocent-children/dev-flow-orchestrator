@@ -2084,7 +2084,8 @@ def _validate_current_candidate(root: Path) -> dict:
         _require_tokens(
             installer.read_text(encoding="utf-8"),
             (
-                'DEV_FLOW_BIN_DIR:-$HOME/.local/bin',
+                'select_path_bin_dir',
+                'PATH has no writable absolute directory',
                 '# dev-flow-orchestrator managed launcher',
                 'os.replace(str(temporary), str(target))',
                 'dev-flow web start',
@@ -2096,7 +2097,8 @@ def _validate_current_candidate(root: Path) -> dict:
         _require_tokens(
             uninstaller.read_text(encoding="utf-8"),
             (
-                'DEV_FLOW_BIN_DIR:-$HOME/.local/bin',
+                'select_path_bin_dir',
+                'PATH has no writable absolute directory',
                 '# dev-flow-orchestrator managed launcher',
                 'grep -Fqx "$LAUNCHER_MARKER"',
                 'rm -f -- "$LAUNCHER_PATH"',

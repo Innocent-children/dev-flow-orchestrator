@@ -117,13 +117,14 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 ```
 
 The installer checks the host, clones or updates the source, validates the
-package, installs an owned `dev-flow` launcher in `~/.local/bin`, safely merges
+package, installs an owned `dev-flow` launcher into a writable directory
+already on `PATH`, safely merges
 the personal marketplace entry, installs a missing
 plugin, upgrades an older installation, or repairs the current version by
 reinstalling it. It then prints an installation receipt with the action,
-versions, touched directories, and a first prompt. `~/.local/bin` must already
-be on `PATH`; set `DEV_FLOW_BIN_DIR` to another writable directory already on
-`PATH` when needed. It treats `main` as the
+versions, touched directories, and a first prompt. Set `DEV_FLOW_BIN_DIR` to
+choose a specific writable directory already on `PATH`; otherwise the installer
+selects one automatically. It treats `main` as the
 authoritative source ref:
 fresh installs select it explicitly, while an existing source must have the
 expected origin, a clean attached `main`, and history that can only fast-forward

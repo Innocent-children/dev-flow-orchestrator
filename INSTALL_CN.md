@@ -26,9 +26,10 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 
 该脚本检查 macOS、Git、Python 3.9–3.14 和 Codex CLI；克隆或快进 `$HOME/plugins/dev-flow-orchestrator`；验证完整候选版本；保留其他个人市场条目，同时替换任何 Dev Flow 条目；在插件未安装时完成安装、存在旧版本时完成升级，或通过重新安装修复当前版本；并打印包含执行类型、版本、本次涉及目录和第一个提示的安装收据。如果您不想将远程脚本直接传递给 `sh`，请在运行前查看 [`scripts/install.sh`](scripts/install.sh)。
 
-安装器会在 `~/.local/bin` 创建带所有权标记的 `dev-flow` 启动器，拒绝覆盖该路径上的
-非 Dev Flow 文件，并要求该目录已在 `PATH` 中。需要其他可写且已在 `PATH` 中的目录时，
-可设置 `DEV_FLOW_BIN_DIR`。卸载器只删除包含精确 Dev Flow 所有权标记的启动器。
+安装器会选择 `PATH` 中第一个可写的绝对目录，并在其中创建带所有权标记的 `dev-flow`
+启动器，因此无需修改 shell 启动文件即可立即使用该命令。安装器拒绝覆盖该路径上的非
+Dev Flow 文件。需要指定目录时，可将 `DEV_FLOW_BIN_DIR` 设置为一个可写的 `PATH`
+目录。卸载器使用相同的选择规则，并且只删除包含精确 Dev Flow 所有权标记的启动器。
 
 标准输出连接交互式终端时，成功收据会使用霓虹终端配色。重定向输出、`TERM=dumb` 或设置 `NO_COLOR` 时，同一收据会自动改为不含 ANSI 颜色代码的纯文本。
 

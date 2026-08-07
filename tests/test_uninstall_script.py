@@ -226,6 +226,21 @@ class UninstallerBehaviorTests(unittest.TestCase):
         self.assertIn("UNINSTALL RECEIPT", result.stdout)
         self.assertIn("External Dev Flow task data", result.stdout)
 
+    def test_uninstall_uses_the_same_path_directory_selection(self) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow"
+        launcher.write_text(
+            "#!/bin/sh\n# dev-flow-orchestrator managed launcher\nexit 0\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+
+        result = self.run_uninstaller(overrides={"DEV_FLOW_BIN_DIR": ""})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(launcher.exists())
+
     def test_unowned_launcher_is_preserved_and_blocks_uninstall(self) -> None:
         self.write_marketplace()
         self.codex_state.write_text("installed\n", encoding="utf-8")

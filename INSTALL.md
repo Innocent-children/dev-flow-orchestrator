@@ -41,11 +41,12 @@ receipt with the action, versions, touched directories, and first prompt. Review
 [`scripts/install.sh`](scripts/install.sh) before running it if you do not want
 to pipe a remote script directly to `sh`.
 
-The installer creates an owned `dev-flow` launcher in `~/.local/bin`, refuses
-to replace a foreign file at that path, and requires the directory to be on
-`PATH`. Set `DEV_FLOW_BIN_DIR` to another writable directory already on `PATH`
-when needed. The uninstaller removes only a launcher carrying the exact Dev
-Flow ownership marker.
+The installer selects the first writable absolute directory already on `PATH`
+and creates an owned `dev-flow` launcher there, so the command is immediately
+available without editing shell startup files. It refuses to replace a foreign
+file at that path. Set `DEV_FLOW_BIN_DIR` to choose a specific writable `PATH`
+directory. The uninstaller uses the same selection rule and removes only a
+launcher carrying the exact Dev Flow ownership marker.
 
 The success receipt uses a neon terminal palette on interactive standard
 output. Redirected output, `TERM=dumb`, or `NO_COLOR` automatically emits the

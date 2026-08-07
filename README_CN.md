@@ -99,11 +99,11 @@ PID、随机实例身份、产品身份、端口及 token 鉴权回环响应同�
 curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/install.sh | sh
 ```
 
-安装器会检查环境、克隆或更新源码、校验软件包、在 `~/.local/bin` 安装自有的
+安装器会检查环境、克隆或更新源码、校验软件包、在 `PATH` 中现有的可写目录安装自有的
 `dev-flow` 启动器、安全合并 personal marketplace 条目、
 在插件未安装时完成安装、存在旧版本时完成升级，或通过重新安装修复当前版本。随后输出
-包含执行类型、版本、本次涉及目录和第一条 Prompt 的安装收据。`~/.local/bin` 必须已在
-`PATH` 中；需要使用其他可写且已在 `PATH` 中的目录时可设置 `DEV_FLOW_BIN_DIR`。安装器以 `main` 为权威
+包含执行类型、版本、本次涉及目录和第一条 Prompt 的安装收据。安装器默认自动选择目录；
+需要指定一个已在 `PATH` 中的可写目录时可设置 `DEV_FLOW_BIN_DIR`。安装器以 `main` 为权威
 源码 ref：首次安装会显式选择
 `main`；已有源码必须具有预期的 origin、干净且已附着的 `main`，并且只能快进到本次
 抓取的提交。其他分支、本地超前或分叉历史以及 Git 报告的本地改动都会停止安装，安装器
