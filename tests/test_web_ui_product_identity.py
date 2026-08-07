@@ -16,7 +16,8 @@ sys.path.insert(0, str(SRC))
 from dev_flow_orchestrator.product import (
     PLUGIN_DATA_NAMESPACE,
     PRODUCT_IDENTITY,
-    PRODUCT_VERSION,
+    RELEASE_VERSION,
+    MODEL_VERSION,
     product_document,
 )
 
@@ -42,11 +43,12 @@ def javascript_function(source: str, name: str) -> str:
 
 class WebUiProductIdentityTests(unittest.TestCase):
     def test_current_product_identity_remains_exactly_pinned(self) -> None:
-        self.assertEqual(PRODUCT_VERSION, "0.3.0")
-        self.assertEqual(PLUGIN_DATA_NAMESPACE, "0.3.0")
+        self.assertEqual(MODEL_VERSION, "0.4.0")
+        self.assertEqual(RELEASE_VERSION, "0.4.0")
+        self.assertEqual(PLUGIN_DATA_NAMESPACE, "0.4.0")
         self.assertEqual(
             PRODUCT_IDENTITY,
-            "0a4eb2f79d96d063511fe3488f2aec3f1684bc7b6fc0ba1caeb38f288c229523",
+            "0cafdc0d0146a705146f7e9e723924f865b324b064c0974bb5a3b47b5b932d88",
         )
 
     def test_product_document_has_no_web_ui_protocol_authority(self) -> None:

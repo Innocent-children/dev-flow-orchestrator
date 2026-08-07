@@ -25,7 +25,7 @@ from .model import (
     strict_json_loads,
     validate_task_id,
 )
-from .product import PLUGIN_DATA_NAMESPACE, PRODUCT_IDENTITY, PRODUCT_VERSION
+from .product import PLUGIN_DATA_NAMESPACE, PRODUCT_IDENTITY, MODEL_VERSION
 from .workflow import WorkflowDefinition
 from .workflows import load_definition, task_definition
 
@@ -115,11 +115,11 @@ class TaskStore:
             ) from exc
         if not isinstance(value, dict):
             raise DevFlowError("STATE_INVALID", "task state must be an object")
-        if value.get("version") != PRODUCT_VERSION:
+        if value.get("version") != MODEL_VERSION:
             raise DevFlowError(
                 "STATE_INVALID",
                 "task state is not current product version {}".format(
-                    PRODUCT_VERSION
+                    MODEL_VERSION
                 ),
             )
         if value.get("product_identity") != PRODUCT_IDENTITY:

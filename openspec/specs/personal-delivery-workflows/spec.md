@@ -4,7 +4,7 @@
 TBD - created by archiving change complete-personal-delivery. Update Purpose after archive.
 ## Requirements
 ### Requirement: The product ships an official personal workflow family
-The product SHALL provide built-in `lite`, `feature`, `bugfix`, `investigation`, `refactor`, and `full` workflows using the current `dev-flow-workflow/0.3.0` language. Each workflow SHALL begin with bounded read-only preflight over the task's exact repository set and task-owned change capsule, remain within one task, one current action, and one Codex executor, declare the artifacts and assurance policy it can produce, and finalize non-cancelled delivery through the current aggregate Delivery Dossier. Official workflow definitions SHALL declare deterministic delivery phases, obligation-capable action templates, the versioned closed `dev-flow-assurance-policy/0.3.0`, and absolute budget ceilings. After impact and task-change evidence are current, the controller SHALL project only the actions needed to discharge the current assurance plan's outstanding obligations.
+The product SHALL provide built-in `lite`, `feature`, `bugfix`, `investigation`, `refactor`, and `full` workflows using the current `dev-flow-workflow/0.4.0` language. Each workflow SHALL begin with bounded read-only preflight over the task's exact repository set and task-owned change capsule, remain within one task, one current action, and one Codex executor, declare the artifacts and assurance policy it can produce, and finalize non-cancelled delivery through the current aggregate Delivery Dossier. Official workflow definitions SHALL declare deterministic delivery phases, obligation-capable action templates, the versioned closed `dev-flow-assurance-policy/0.4.0`, and absolute budget ceilings. After impact and task-change evidence are current, the controller SHALL project only the actions needed to discharge the current assurance plan's outstanding obligations.
 
 The official assurance policy SHALL use the exact following profile matrix. `A` is the per-obligation execution allowance.
 
@@ -23,7 +23,7 @@ Cancellation availability SHALL be declared explicitly by workflow stage. Offici
 
 #### Scenario: User selects each official workflow
 - **WHEN** a caller starts a task with any official workflow ID and one or more valid repository roots
-- **THEN** the controller validates the packaged current-version workflow definition, pins its identity and exact repository set, and projects its preflight action using the same current product version
+- **THEN** the controller validates the packaged current-model workflow definition, pins its identity and exact repository set, and projects its preflight action using the same compatibility model
 
 #### Scenario: Official workflow uses multiple repositories
 - **WHEN** a caller starts any official workflow with two valid user-prepared worktrees
@@ -46,7 +46,7 @@ Cancellation availability SHALL be declared explicitly by workflow stage. Offici
 - **THEN** its workflow records investigation evidence and projects only the assurance obligations required by that investigation without requiring a fabricated implementation artifact
 
 #### Scenario: Official policy value drifts
-- **WHEN** an official or custom workflow supplies an assurance-policy schema, profile floor, review trigger, allowance, or maximum that conflicts with `dev-flow-assurance-policy/0.3.0`
+- **WHEN** an official or custom workflow supplies an assurance-policy schema, profile floor, review trigger, allowance, or maximum that conflicts with `dev-flow-assurance-policy/0.4.0`
 - **THEN** workflow validation rejects the definition before task creation or assurance dispatch
 
 #### Scenario: A stage declares cancellation
@@ -160,7 +160,7 @@ An official workflow action template that names an optional OpenSpec, codebase-m
 - **THEN** no independent-review driver action or fallback self-review is projected
 
 ### Requirement: Optional tool outputs follow tool-specific correctness contracts
-OpenSpec stages SHALL request current machine-readable status and instructions for the selected change and SHALL record the concrete artifact paths and digests they used. An OpenSpec stage that creates or updates repository files SHALL be a source-producing stage with a pinned source predecessor, a controller-derived task-change manifest successor, and authoritative governing resource bindings for proposal, design, and specs. Its `tasks.md` SHALL record a raw progress digest and a governing semantic digest that ignores only task-list checkbox state while preserving text, order, and test obligations. Machine-generated status output MAY be reported without governing plan freshness. Codebase-memory stages SHALL keep baseline and current-generation workspace project IDs separate, select the graph appropriate to the current workflow phase, confirm material conclusions in source, bind conclusions to affected repositories, paths, symbols, and behavior, and record stale, unavailable, or unconfirmed graph evidence as degraded. Independent review SHALL emit `dev-flow-independent-review/0.3.0` evidence with `dev-flow-review-finding/0.3.0` values and bind reviewer identity, assurance, base revision, assurance-plan and obligation fingerprints, reviewed task-change-manifest and slice digests, guidance and complete snapshot digests, and per-finding evidence to the exact reviewed slice. Each finding SHALL declare its stable finding ID, fingerprint, severity, blocking flag, one of the causal relations `introduced`, `affected`, `pre-existing`, `out-of-scope`, or `unknown`, acceptance-criterion IDs, repository ID, bounded path, symbol, resource, or integration locator, evidence, and smallest sufficient resolution. These contracts SHALL be enforced by controller validation where authoritative and by Skill guidance and package validation where driver execution remains outside the controller.
+OpenSpec stages SHALL request current machine-readable status and instructions for the selected change and SHALL record the concrete artifact paths and digests they used. An OpenSpec stage that creates or updates repository files SHALL be a source-producing stage with a pinned source predecessor, a controller-derived task-change manifest successor, and authoritative governing resource bindings for proposal, design, and specs. Its `tasks.md` SHALL record a raw progress digest and a governing semantic digest that ignores only task-list checkbox state while preserving text, order, and test obligations. Machine-generated status output MAY be reported without governing plan freshness. Codebase-memory stages SHALL keep baseline and current-generation workspace project IDs separate, select the graph appropriate to the current workflow phase, confirm material conclusions in source, bind conclusions to affected repositories, paths, symbols, and behavior, and record stale, unavailable, or unconfirmed graph evidence as degraded. Independent review SHALL emit `dev-flow-independent-review/0.4.0` evidence with `dev-flow-review-finding/0.4.0` values and bind reviewer identity, assurance, base revision, assurance-plan and obligation fingerprints, reviewed task-change-manifest and slice digests, guidance and complete snapshot digests, and per-finding evidence to the exact reviewed slice. Each finding SHALL declare its stable finding ID, fingerprint, severity, blocking flag, one of the causal relations `introduced`, `affected`, `pre-existing`, `out-of-scope`, or `unknown`, acceptance-criterion IDs, repository ID, bounded path, symbol, resource, or integration locator, evidence, and smallest sufficient resolution. These contracts SHALL be enforced by controller validation where authoritative and by Skill guidance and package validation where driver execution remains outside the controller.
 
 #### Scenario: OpenSpec stage uses current instructions
 - **WHEN** an OpenSpec-backed stage runs
@@ -182,10 +182,12 @@ OpenSpec stages SHALL request current machine-readable status and instructions f
 - **WHEN** review output supplies an aggregate `changes-requested` outcome without valid structured findings and current causal evidence
 - **THEN** the controller rejects the output without entering source rework
 
-### Requirement: One pre-release version seals the supported protocol
-The product SHALL expose exact semantic version `0.3.0` from one `PRODUCT_VERSION` runtime authority. Plugin and package metadata, task state, workflow and assurance-policy documents, controller data namespace, every current persisted schema identifier and digest domain, projections, task-change manifests, assurance plans, obligations, structured findings, snapshots, action bindings, records, evidence, Delivery Dossier, receipt, Skills, local Web UI server and assets, local HTTP view envelopes, tests, installed evidence, and public guidance SHALL use that same value. The local Web UI SHALL expose no component-specific version, package, plugin, marketplace entry, state namespace, or release gate. The product SHALL derive one current `PRODUCT_IDENTITY` from the shared version, accepted persisted schema vocabulary, and one-to-eight repository topology authorities. Selected-workflow identity SHALL bind only the workflow selector, current schema, and canonical document. Presentation-only Web UI assets, HTTP view names, and content digests SHALL NOT change the accepted persisted schema vocabulary, `product_document()`, or `PRODUCT_IDENTITY`.
+### Requirement: Release and compatibility-model versions have separate authority
+The product SHALL expose its distributable semantic version from one `RELEASE_VERSION` source and SHALL expose exact compatibility model `0.4.0` from one `MODEL_VERSION` runtime authority. Plugin manifest, Python package metadata, lock metadata, installation receipts, Hook presentation, local Web UI startup receipts, and HTTP presentation envelopes SHALL use `RELEASE_VERSION`. Task state, workflow and assurance-policy documents, controller data namespace, every persisted schema identifier and digest domain, projections, task-change manifests, assurance plans, obligations, structured findings, snapshots, action bindings, records, evidence, Delivery Dossier, Skills, and protocol guidance SHALL use `MODEL_VERSION`.
 
-Every supplied workflow, policy, task, contract, record, snapshot, binding, manifest, plan, obligation, finding, projection, evidence, and Dossier value SHALL carry its exact supported 0.3.0 identity; a supplied non-0.3 value SHALL be rejected at the current input boundary without migration, translation, repair, recovery, fallback parsing, or partial recording. Runtime discovery SHALL be confined to the 0.3 data namespace. The 0.3 runtime SHALL never enumerate, discover, read, import, migrate, translate, repair, reinterpret, recover, or delete retained 0.2 namespace bytes. Retained 0.2 bytes SHALL remain byte-for-byte unchanged outside the 0.3 product boundary and SHALL have no effect on current installation, discovery, admission, replay, task operations, or local Web UI inventory.
+The product SHALL derive `PRODUCT_IDENTITY` from the compatibility model, accepted persisted schema vocabulary, and one-to-eight repository topology authorities without including `RELEASE_VERSION`. A release-only patch SHALL NOT change the controller namespace, persisted fields, schemas, workflow identities, `PRODUCT_IDENTITY`, replay rules, or active-task readability. Selected-workflow identity SHALL continue to bind only the workflow selector, current model schema, and canonical document. The local Web UI SHALL expose no component-specific version, package, plugin, marketplace entry, state namespace, or release gate.
+
+Every supplied workflow, policy, task, contract, record, snapshot, binding, manifest, plan, obligation, finding, projection, evidence, and Dossier value SHALL carry its exact supported `0.4.0` model identity; a supplied non-`0.4.0` model value SHALL be rejected at the current input boundary without migration, translation, repair, recovery, fallback parsing, or partial recording. Runtime discovery SHALL be confined to the `0.4.0` data namespace. The `0.4.0` model runtime SHALL never enumerate, discover, read, import, migrate, translate, repair, reinterpret, recover, or delete retained `0.2.0` namespace bytes.
 
 #### Scenario: Current task loads
 - **WHEN** a task and every persisted value match the installed current identities and schemas
@@ -193,7 +195,11 @@ Every supplied workflow, policy, task, contract, record, snapshot, binding, mani
 
 #### Scenario: Product surfaces are inspected
 - **WHEN** package validation inspects runtime constants, plugin and package metadata, workflow assets, Skills, local Web UI runtime and assets, HTTP view envelopes, tests, installed evidence, and public guidance
-- **THEN** every current version equals `0.3.0` and any generation-coded or component-specific current version causes validation to fail
+- **THEN** release metadata equals `RELEASE_VERSION`, protocol-bearing values equal `MODEL_VERSION` `0.4.0`, and any component-specific version causes validation to fail
+
+#### Scenario: A patch release keeps the compatibility model
+- **WHEN** `RELEASE_VERSION` advances while persisted fields, schemas, workflow documents, topology authority, and replay rules remain unchanged
+- **THEN** existing `0.4.0` tasks retain the same namespace, workflow identity, `PRODUCT_IDENTITY`, replay result, and current action without migration or rewrite
 
 #### Scenario: Existing current task is inspected through the Web UI
 - **WHEN** a valid current task created before the local Web UI assets were installed is opened after the same-version candidate is installed
@@ -204,7 +210,7 @@ Every supplied workflow, policy, task, contract, record, snapshot, binding, mani
 - **THEN** the task fails with a workflow identity mismatch
 
 #### Scenario: Unsupported schema is encountered
-- **WHEN** a caller supplies any workflow, policy, task, record, snapshot, action binding, task-change manifest, assurance plan, obligation, finding, projection, verification, or Dossier value whose identity is not exactly supported by 0.3.0
+- **WHEN** a caller supplies any workflow, policy, task, record, snapshot, action binding, task-change manifest, assurance plan, obligation, finding, projection, verification, or Dossier value whose identity is not exactly supported by 0.4.0
 - **THEN** the current input boundary rejects the value without invoking an alternate parser, compatibility path, conversion, repair, or partial mutation
 
 #### Scenario: Repository topology authority changes
@@ -212,15 +218,15 @@ Every supplied workflow, policy, task, contract, record, snapshot, binding, mani
 - **THEN** the derived product identity changes and persisted tasks under the prior identity are not reinterpreted
 
 #### Scenario: Prior-version files remain on disk
-- **WHEN** persisted `0.2.0` bytes exist outside the `0.3.0` data namespace
+- **WHEN** persisted `0.2.0` bytes exist outside the `0.4.0` data namespace
 - **THEN** the current runtime and local Web UI leave them byte-for-byte unchanged, never enumerate, discover, read, migrate, translate, repair, or delete them, and exclude them from current installation, inventory, and task operations
 
 ### Requirement: Assurance plans project only outstanding task-scoped obligations
-After preflight and every accepted contract, impact, task-change-manifest, finding disposition, or evidence change, the controller SHALL derive or replay one canonical `dev-flow-assurance-plan/0.3.0` from `dev-flow-assurance-policy/0.3.0`. The plan SHALL bind a stable plan ID and digest to the effective contract, selected workflow, complete roll-forward task-change manifest, affected behavior and impact closure, governing inputs, closed risk classification, current waivers, and absolute budgets. It SHALL enumerate stable obligation IDs and fingerprints whose kinds are exactly `repository-check`, `integration-check`, `documentation-check`, `independent-review`, or `manual-evidence`. Each obligation SHALL declare its acceptance-criterion IDs; exact member and task-change slice; path, symbol, resource, or integration scope; prerequisites; evidence contract; impact closure; completion, invalidation, and reuse rules; driver requirement; execution class; and absolute allowance.
+After preflight and every accepted contract, impact, task-change-manifest, finding disposition, or evidence change, the controller SHALL derive or replay one canonical `dev-flow-assurance-plan/0.4.0` from `dev-flow-assurance-policy/0.4.0`. The plan SHALL bind a stable plan ID and digest to the effective contract, selected workflow, complete roll-forward task-change manifest, affected behavior and impact closure, governing inputs, closed risk classification, current waivers, and absolute budgets. It SHALL enumerate stable obligation IDs and fingerprints whose kinds are exactly `repository-check`, `integration-check`, `documentation-check`, `independent-review`, or `manual-evidence`. Each obligation SHALL declare its acceptance-criterion IDs; exact member and task-change slice; path, symbol, resource, or integration scope; prerequisites; evidence contract; impact closure; completion, invalidation, and reuse rules; driver requirement; execution class; and absolute allowance.
 
 Obligations SHALL be grouped canonically as at most one repository check for each required member, one integration check for each distinct evidence contract over the sorted set of required canonical boundaries, and at most one documentation, manual-evidence, and independent-review obligation per plan. Each grouped obligation SHALL bind the sorted union of applicable criteria, slices, and boundaries. The plan SHALL reserve bounded finding-disposition and source-rework routes and aggregate verification, review, source-rework, and total-action ceilings without treating those routes as additional assurance kinds. The controller SHALL project exactly one action using deterministic plan order, reuse evidence only when the declared slice, closure, criteria, prerequisites, and governing fingerprints remain current, and derive obligation state only from `required`, `blocked`, `outstanding`, `satisfied`, `reused`, `not-required`, `waived`, and `exhausted`.
 
-The 0.3 product bounds SHALL be:
+The `0.4.0` compatibility-model bounds SHALL be:
 
 | Bounded collection or output | Maximum |
 | --- | ---: |
@@ -276,7 +282,7 @@ A contract revision's complete aggregate `revision-source` SHALL anchor later so
 - **THEN** it derives the same assurance-plan digest, obligation states, absolute budget consumption, and current action
 
 ### Requirement: Structured review findings gate rework by task causality
-The controller SHALL accept review evidence only through `dev-flow-independent-review/0.3.0` and `dev-flow-review-finding/0.3.0`. It SHALL validate each finding's stable ID and fingerprint, severity, blocking flag, causal relation, criterion bindings, repository ID, bounded path, symbol, resource, or integration locator, evidence, smallest sufficient resolution, reviewed task-change-manifest, assurance-plan, review scope, guidance, snapshot, and reviewer fingerprints. The controller SHALL derive review-obligation status and the aggregate `approved`, `changes-requested`, `triage-required`, or `unavailable` outcome from the complete current finding set, current dispositions, reviewer availability, and independence.
+The controller SHALL accept review evidence only through `dev-flow-independent-review/0.4.0` and `dev-flow-review-finding/0.4.0`. It SHALL validate each finding's stable ID and fingerprint, severity, blocking flag, causal relation, criterion bindings, repository ID, bounded path, symbol, resource, or integration locator, evidence, smallest sufficient resolution, reviewed task-change-manifest, assurance-plan, review scope, guidance, snapshot, and reviewer fingerprints. The controller SHALL derive review-obligation status and the aggregate `approved`, `changes-requested`, `triage-required`, or `unavailable` outcome from the complete current finding set, current dispositions, reviewer availability, and independence.
 
 Only a current `blocking: true` finding whose relation is `introduced` or `affected` within the current plan's impact closure SHALL create source rework. A `pre-existing`, `out-of-scope`, or `blocking: false` unknown finding SHALL remain reportable evidence and SHALL NOT consume source-rework budget or expand task scope by itself. A current `blocking: true` finding with `unknown` or disputed causality SHALL keep the review obligation unresolved in `triage-required`; it SHALL permit neither approval nor direct source rework until bounded causal prerequisite refresh establishes a governed relation or an authorized current finding disposition resolves it.
 
@@ -313,4 +319,3 @@ An `affected` relation SHALL require current source-confirmed evidence connectin
 #### Scenario: Rework addresses one of several findings
 - **WHEN** rework records successor manifest evidence for one `introduced` or `affected` finding while another current blocking `introduced` or `affected` finding remains unresolved
 - **THEN** the first finding gains resolution lineage and the remaining finding keeps the review obligation outstanding
-

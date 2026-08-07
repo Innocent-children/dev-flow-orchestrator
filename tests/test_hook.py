@@ -28,7 +28,7 @@ from dev_flow_orchestrator.hook import (
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     PLUGIN_DATA_NAMESPACE,
-    PRODUCT_VERSION,
+    MODEL_VERSION,
 )
 from support import make_repository, RepositoryTestCase
 
@@ -99,7 +99,7 @@ class HookTests(RepositoryTestCase):
         )
         self.assertEqual(projection["schema"], AGENT_PROTOCOL_SCHEMA)
         self.assertEqual(projection["task_id"], task_id)
-        self.assertEqual(projection["workflow"]["version"], PRODUCT_VERSION)
+        self.assertEqual(projection["workflow"]["version"], MODEL_VERSION)
         self.assertEqual(
             projection["contract"],
             {
@@ -290,14 +290,14 @@ class HookTests(RepositoryTestCase):
     def test_windows_locator_uses_powershell_literals(self) -> None:
         config = HookConfig(
             (r"C:\Program Files\Dev Flow\launcher.cmd", r"C:\Dev Flow\dev_flow.py"),
-            r"C:\Users\O'Brien\plugin data\0.3.0",
+            r"C:\Users\O'Brien\plugin data\0.4.0",
             r"C:\Users\O'Brien\plugin data",
         )
         self.assertEqual(
             _controller_command(config, windows=True),
             "& 'C:\\Program Files\\Dev Flow\\launcher.cmd' "
             "'C:\\Dev Flow\\dev_flow.py' '--data-dir' "
-            "'C:\\Users\\O''Brien\\plugin data\\0.3.0'",
+            "'C:\\Users\\O''Brien\\plugin data\\0.4.0'",
         )
         locator = _controller_command(config, windows=True)
         self.assertTrue(
@@ -361,9 +361,9 @@ class HookTests(RepositoryTestCase):
 
     def test_windows_plugin_data_references_are_denied(self) -> None:
         for command in (
-            "$env:PLUGIN_DATA\\0.3.0\\tasks\\x",
-            "${env:PLUGIN_DATA}\\0.3.0\\tasks\\x",
-            "%PLUGIN_DATA%\\0.3.0\\tasks\\x",
+            "$env:PLUGIN_DATA\\0.4.0\\tasks\\x",
+            "${env:PLUGIN_DATA}\\0.4.0\\tasks\\x",
+            "%PLUGIN_DATA%\\0.4.0\\tasks\\x",
         ):
             with self.subTest(command=command):
                 payload = {

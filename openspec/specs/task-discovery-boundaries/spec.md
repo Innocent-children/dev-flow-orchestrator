@@ -30,10 +30,10 @@ Starting a task SHALL require the controller data directory to be disjoint in bo
 - **THEN** task creation fails as an invalid exact repository set instead of silently removing or prioritizing a member
 
 ### Requirement: Active task discovery covers every member repository
-Repository-path discovery SHALL match a non-terminal task when the inspected path equals or is contained by any canonical member repository root. Discovery SHALL return each matching task at most once. Valid 0.3.0 task creation SHALL prevent active worktree overlap, so a healthy current inventory SHALL produce at most one active match for a canonical member path. If persisted valid current task state nevertheless contains conflicting active membership, discovery SHALL report an explicit lease-integrity conflict and SHALL NOT choose one task implicitly. If a current-namespace entry cannot be validated, automatic discovery SHALL isolate and report it without injecting it as task authority, while task admission remains globally fail closed until the current lease inventory is valid. Terminal tasks remain excluded from automatic active discovery.
+Repository-path discovery SHALL match a non-terminal task when the inspected path equals or is contained by any canonical member repository root. Discovery SHALL return each matching task at most once. Valid 0.4.0 task creation SHALL prevent active worktree overlap, so a healthy current inventory SHALL produce at most one active match for a canonical member path. If persisted valid current task state nevertheless contains conflicting active membership, discovery SHALL report an explicit lease-integrity conflict and SHALL NOT choose one task implicitly. If a current-namespace entry cannot be validated, automatic discovery SHALL isolate and report it without injecting it as task authority, while task admission remains globally fail closed until the current lease inventory is valid. Terminal tasks remain excluded from automatic active discovery.
 
 #### Scenario: Discovery isolates corrupt current state
-- **WHEN** Hook discovery encounters a corrupt 0.3 task entry while inspecting a repository path
+- **WHEN** Hook discovery encounters a corrupt model `0.4.0` task entry while inspecting a repository path
 - **THEN** it injects no authority from that entry, exposes bounded diagnostics, and does not imply that its membership lease was released for a future start
 
 #### Scenario: Hook starts in a secondary repository
@@ -76,5 +76,26 @@ Task creation SHALL acquire one controller-data-directory membership lock, canon
 - **THEN** each valid repository set may be leased by its own active task
 
 #### Scenario: Current inventory contains an unreadable task
-- **WHEN** admission encounters any task entry in the 0.3 namespace whose immutable membership or controller-confirmed terminal state cannot be validated
+- **WHEN** admission encounters any task entry in the model `0.4.0` namespace whose immutable membership or controller-confirmed terminal state cannot be validated
 - **THEN** it rejects the new start with lease-inventory diagnostics and writes no task state rather than treating the unreadable entry as terminal or unleased
+
+### Requirement: Windows admission and discovery share one canonical path comparison
+
+On documented Windows x64 client systems, task admission, repository-path discovery, active membership leases, repository overlap, and controller-data separation SHALL use the same normalized host path comparison. Discovery SHALL match a path equal to or contained by any active member regardless of equivalent drive-letter case or separator spelling and SHALL return each matching task at most once.
+
+The data root may be created after its canonical non-strict path is derived; repository roots SHALL already exist and SHALL still be validated as exact Git worktree roots before task state is created.
+
+#### Scenario: Discovery uses a different Windows spelling
+
+- **WHEN** the inspected current directory is beneath an active member but differs in drive-letter case or separator spelling
+- **THEN** discovery returns the same active task
+
+#### Scenario: Data root and repository are on different drives
+
+- **WHEN** a valid local data root and valid local repository root are on different Windows drives
+- **THEN** containment comparison treats them as disjoint without raising a path-comparison failure
+
+#### Scenario: Repository is inside the data root
+
+- **WHEN** the normalized Windows repository root equals or is contained by the normalized controller data root, or contains it
+- **THEN** task creation fails before revision-zero state is written

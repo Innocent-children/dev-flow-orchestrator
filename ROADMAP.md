@@ -1,6 +1,6 @@
 # Dev Flow Orchestrator Product Roadmap
 
-## Current product: 0.3.0 task-scoped adaptive assurance
+## Current compatibility model: 0.4.0 task-scoped adaptive assurance
 
 The current product delivers task-owned change capsules, membership leases,
 index-exact Git evidence, a closed six-profile assurance policy, deterministic
@@ -8,11 +8,11 @@ obligation dispatch, absolute attempt budgets, slice-aware evidence reuse,
 structured causal review, and explainable Dossier finalization. This replaces
 the previous fixed-loop model: focused source-confirmed changes run only the
 derived checks, while closed risk triggers and unknown impact expand assurance
-conservatively. Historical 0.2 state remains outside the 0.3 namespace and is
+conservatively. Historical 0.2 state remains outside the 0.4.0 namespace and is
 not a runtime compatibility surface.
 
-The first Horizon 2 presentation slice is also delivered inside the same 0.3.0
-product: an authenticated loopback-only, local read-only Web UI for searchable
+The first Horizon 2 presentation slice is also delivered inside the same 0.4.0
+compatibility model: an authenticated loopback-only, local read-only Web UI for searchable
 persisted inventory, bounded task detail and timeline, Delivery Dossier summary,
 why-next/recovery guidance, and explicit selected-task live observation. It does
 not deliver the rest of Horizon 2: task mutation, approvals, workflow editing,
@@ -66,15 +66,15 @@ In that end state, developers focus on decisions that require judgment: scope,
 design, risk, exceptions, and final approval. The orchestrator carries the full
 delivery context forward and advances routine coordination work.
 
-## Current product: 0.3.0 complete personal delivery
+## Current product: 0.4.0 complete personal delivery
 
-Stage 1 is delivered in 0.3.0. A developer can carry a feature, bug fix,
+Stage 1 is delivered in 0.4.0. A developer can carry a feature, bug fix,
 investigation, refactor, or fast change from structured intent to a current
 Delivery Dossier through one resumable local task. The shipped product
 provides:
 
 - `lite`, `feature`, `bugfix`, `investigation`, `refactor`, and `full`
-  workflows, plus pinned absolute-path `dev-flow-workflow/0.3.0` definitions;
+  workflows, plus pinned absolute-path `dev-flow-workflow/0.4.0` definitions;
 - a versioned delivery contract, append-only revisions, decisions, criterion
   waivers, and exact review-assurance waivers;
 - typed artifacts with contract binding, producer, safe repository snapshot,
@@ -91,9 +91,9 @@ provides:
 
 The current support boundary is one task, one immutable repository set, one
 current action, and one Codex executor. Every set cardinality uses
-`dev-flow-agent/0.3.0`, aggregate repository-set snapshots, repository-scoped
+`dev-flow-agent/0.4.0`, aggregate repository-set snapshots, repository-scoped
 resources, structured member/integration verification, and Delivery Dossier
-0.3.0. The core neither manages branches/worktrees nor
+0.4.0. The core neither manages branches/worktrees nor
 publishes Git changes, coordinates parallel agents, operates external
 CI/PR/release systems. Its partial assurance reuse selectively preserves current evidence for unchanged,
 provably disjoint task-owned slices.
@@ -105,9 +105,9 @@ Workflow depth, repository topology, execution topology, and workspace strategy
 combine through one explicit supported-capability matrix. Git branches and
 workflow branches remain distinct concepts.
 
-| Dimension | 0.3.0 current selection | Later horizon choices |
+| Dimension | 0.4.0 current selection | Later horizon choices |
 |---|---|---|
-| Workflow depth | six official personal workflows and pinned `dev-flow-workflow/0.3.0` custom definitions | reusable workflow packages and further delivery families |
+| Workflow depth | six official personal workflows and pinned `dev-flow-workflow/0.4.0` custom definitions | reusable workflow packages and further delivery families |
 | Control flow | one current action with finite verification/review failure routes | general named outcomes, optional stages, fan-out, and join |
 | Task topology | one task | parent-child graphs, initiatives, and batches |
 | Repository topology | one exact canonical set of 1–8 local worktrees | monorepo component scopes, repository roles, and dependency topology |
@@ -122,10 +122,10 @@ matrix defines every supported combination and product restriction explicitly.
 
 ## Capability destination map
 
-| Capability area | 0.3.0 product | Destination | User value |
+| Capability area | 0.4.0 product | Destination | User value |
 |---|---|---|---|
 | Intent and scope | Versioned contract, stable criteria, revisions, decisions, and waivers | Policy-backed approvals and delegated scope authority | Every implementation and proof is traceable to accepted intent |
-| Workflow portfolio | Six official personal workflows plus pinned `dev-flow-workflow/0.3.0` custom definitions | Reusable workflow packages and additional risk/domain families | Users select delivery rigor suited to the work |
+| Workflow portfolio | Six official personal workflows plus pinned `dev-flow-workflow/0.4.0` custom definitions | Reusable workflow packages and additional risk/domain families | Users select delivery rigor suited to the work |
 | Execution model | One task, one current action, one executor | Dependency graphs, claims, leases, fan-out, join, and operator intervention | Complex work can be divided, recovered, and recombined |
 | Repositories and workspaces | One exact set of 1–8 supplied current worktrees with immutable membership and aggregate recovery | Component scopes, roles, dependencies, and branch/worktree strategies with ownership | Large changes progress with explicit scope and isolation |
 | Decisions and authority | Contract-bound criterion and review-assurance waivers with actor labels | Authenticated roles, quorum, approvals, and exact effect authorization | Judgment remains attributable and narrowly scoped |
@@ -136,11 +136,11 @@ matrix defines every supported combination and product restriction explicitly.
 ## Feature horizons at a glance
 
 The sequence follows product dependencies. Current support is Horizon 1, the
-shipped 0.3.0 capability. Horizons 2–7 are planned product directions.
+shipped 0.4.0 capability. Horizons 2–7 are planned product directions.
 
 | Horizon | Status | User outcome | Depends on |
 |---|---|---|---|
-| 1. Complete personal delivery | Delivered in 0.3.0 | Take a real change from intent to an evidence-backed Delivery Dossier | Dev Flow 0.3.0 local controller and ledger |
+| 1. Complete personal delivery | Delivered in 0.4.0 | Take a real change from intent to an evidence-backed Delivery Dossier | Dev Flow 0.4.0 local controller and ledger |
 | 2. Interactive workflow workbench | Planned | Manage many tasks, decisions, and reusable workflows from one cockpit | Horizon 1 artifacts and outcomes |
 | 3. Isolated workspace orchestration | Planned | Run independent tasks through explicit in-place, branch, or worktree strategies | Horizon 2 authority model and a recoverable effect protocol |
 | 4. Project-scale task and multi-agent orchestration | Planned | Decompose an initiative and coordinate parallel Codex executors | Horizons 2 and 3 |
@@ -148,7 +148,7 @@ shipped 0.3.0 capability. Horizons 2–7 are planned product directions.
 | 6. Team delivery network | Planned | Hand off, assign, approve, audit, and optionally share task state | Stable task, artifact, identity, and permission protocols |
 | 7. Open ecosystem and adaptive orchestration | Planned | Publish trusted delivery capabilities and receive explainable recommendations | Mature workflows, evidence, and team operating model |
 
-## Horizon 1 — Complete personal delivery (delivered in 0.3.0)
+## Horizon 1 — Complete personal delivery (delivered in 0.4.0)
 
 ### Delivered outcome
 
@@ -172,7 +172,7 @@ findings, bounded repair cycles, and accepted scope revisions.
   degraded, and unavailable behavior while the controller remains tool-agnostic.
 - Verification and review persist all attempts, consume finite rework budgets,
   and route exhausted work to an incomplete dossier.
-- `dev-flow-workflow/0.3.0` definitions declare cancellation for a strict majority of normal
+- `dev-flow-workflow/0.4.0` definitions declare cancellation for a strict majority of normal
   nonterminal stages; delivery finalizers are never cancellable.
 - Contract revisions create a new-contract revision source and reenter declared
   planning; decisions and exact waivers remain attributable and replayable.
@@ -181,11 +181,11 @@ findings, bounded repair cycles, and accepted scope revisions.
   partial proof reuse.
 - Successful and incomplete Delivery Dossiers summarize current coverage,
   assurance, documentation, risks, decisions, provenance, and handoff, with
-  canonical member diagnostics in Delivery Dossier 0.3.0.
+  canonical member diagnostics in Delivery Dossier 0.4.0.
 
 ### Delivery evidence
 
-- Focused 0.3.0 journeys cover every official workflow, success and exhaustion,
+- Focused 0.4.0 journeys cover every official workflow, success and exhaustion,
   optional-driver available/degraded paths, cancellation, decisions, and
   contract-revision recovery.
 - Restart and stale-binding paths preserve exactly one current action and
@@ -200,7 +200,7 @@ findings, bounded repair cycles, and accepted scope revisions.
 
 ## Horizon 2 — Interactive workflow workbench (first read-only slice delivered)
 
-The 0.3.0 local read-only Web UI delivers only the observation slice of this
+The 0.4.0 local read-only Web UI delivers only the observation slice of this
 horizon. The broader workbench remains planned and does not gain mutation or
 approval authority from the Web UI.
 
@@ -494,7 +494,7 @@ evidence across the full set.
 | Foundation lane | Required product capability | Release evidence |
 |---|---|---|
 | Reproducible release | Validate the exact tracked candidate, identify every installed snapshot, and reproduce package, Skill, manifest, and documentation evidence | Every published version reproduces package, Skill, manifest, workflow identity, and bilingual documentation validation from its tracked tree |
-| Identity and version authority | Separate release, state-format, workflow-language, selected-workflow, capability, connector, artifact, and agent-protocol identities; classify active tasks before a version change | Version-change simulation classifies every active task and verifies the owned identity domain for each decision |
+| Identity and version authority | Keep one independently bumpable `RELEASE_VERSION`; separate it from the state-format, workflow-language, selected-workflow, capability, connector, artifact, and agent-protocol identities; classify active tasks before a model change | A release-only bump changes four metadata files and preserves active-task identity; model-change simulation classifies every active task and verifies the owned identity domain for each decision |
 | Diagnosis and data lifecycle | Provide `version`, `doctor`, exhaustive health inventory, stable error catalog, bounded support export, retention, archive, import, and exact-scope removal | A read-only health view inventories every task entry, installed snapshot, capability condition, and available recovery or removal action |
 | Safety and recoverable effects | Bound inputs and locks; persist intent, authorization, receipts, retries, and reconciliation for external effects | Installed effect journeys prove scoped authority, idempotent receipt handling, interruption recovery, and exact resource ownership |
 | Security and privacy | Default to local storage, least privilege, redaction, explicit data egress, secret isolation, actor attribution, and revocation | Handoff and connector journeys prove redaction, explicit egress, secret isolation, actor attribution, and revocation |
@@ -510,7 +510,7 @@ trustworthy:
    UIs, agents, and connectors all submit commands to the same authority.
    Terminal graph membership defines completion, and the Hook is advisory and
    passes control through on internal errors.
-2. **One claimed worker receives one clear current action.** Current 0.3.0 has
+2. **One claimed worker receives one clear current action.** Current 0.4.0 has
    one Codex and one task-wide action even for multiple repositories. A future
    project graph may expose a bounded runnable set, with ownership explicit for
    every action.

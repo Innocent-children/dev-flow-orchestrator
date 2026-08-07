@@ -1,7 +1,7 @@
-schema: dev-flow-workflow/0.3.0
+schema: dev-flow-workflow/0.4.0
 id: refactor
-version: "0.3.0"
-assurance: {policy: dev-flow-assurance-policy/0.3.0, profile: refactor}
+version: "0.4.0"
+assurance: {policy: dev-flow-assurance-policy/0.4.0, profile: refactor}
 description: "Refactoring delivery with structural impact analysis, explicit invariants, verification, and independent review."
 entry: preflight
 revision_target: impact

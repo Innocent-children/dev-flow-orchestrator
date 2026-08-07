@@ -1,6 +1,6 @@
 interface:
   display_name: "Review Dev Flow Change"
-  short_description: "Review an exact 0.3.0 task-owned change slice"
+  short_description: "Review an exact 0.4.0 task-owned change slice"
   default_prompt: "Use $review-dev-flow-change to independently review the exact aggregate snapshot for a set of one to eight repositories and return one fingerprinted task-wide verdict."
 dependencies:
   tools:

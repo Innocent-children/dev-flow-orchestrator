@@ -283,7 +283,7 @@ class AdaptiveDeliveryRuntimeTests(unittest.TestCase):
 
         review_contract = projection["action"]["review_contract"]
         finding = finding_template({
-            "schema": "dev-flow-review-finding/0.3.0",
+            "schema": "dev-flow-review-finding/0.4.0",
             "severity": "high",
             "blocking": True,
             "causal_relation": "introduced",
@@ -408,7 +408,7 @@ class AdaptiveDeliveryRuntimeTests(unittest.TestCase):
         review_obligation = projection["action"]["current_obligation"]
         review_contract = projection["action"]["review_contract"]
         finding = finding_template({
-            "schema": "dev-flow-review-finding/0.3.0",
+            "schema": "dev-flow-review-finding/0.4.0",
             "severity": "high",
             "blocking": True,
             "causal_relation": "introduced",
@@ -513,7 +513,7 @@ class AdaptiveDeliveryRuntimeTests(unittest.TestCase):
 
         review_contract = projection["action"]["review_contract"]
         finding = finding_template({
-            "schema": "dev-flow-review-finding/0.3.0",
+            "schema": "dev-flow-review-finding/0.4.0",
             "severity": "high",
             "blocking": True,
             "causal_relation": "unknown",

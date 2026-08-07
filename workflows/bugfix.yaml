@@ -1,7 +1,7 @@
-schema: dev-flow-workflow/0.3.0
+schema: dev-flow-workflow/0.4.0
 id: bugfix
-version: "0.3.0"
-assurance: {policy: dev-flow-assurance-policy/0.3.0, profile: bugfix}
+version: "0.4.0"
+assurance: {policy: dev-flow-assurance-policy/0.4.0, profile: bugfix}
 description: "Bug-fix delivery with diagnosis, repository-backed planning, regression verification, and independent review."
 entry: preflight
 revision_target: impact

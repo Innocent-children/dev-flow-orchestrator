@@ -1,11 +1,11 @@
 # Contributing
 
-For 0.3 changes, test the smallest causally affected layer first: index-exact
+For compatibility-model 0.4.0 changes, test the smallest causally affected layer first: index-exact
 snapshot behavior, capsule/lease rules, assurance policy and budgets, causal
 review, workflow dispatch, controller replay, then package and installed
 journeys. Do not add open-ended policy knobs or fixed unconditional verification
-and review loops. Every official or custom `dev-flow-workflow/0.3.0` must name
-the closed `dev-flow-assurance-policy/0.3.0`, preserve conservative unknown
+and review loops. Every official or custom `dev-flow-workflow/0.4.0` must name
+the closed `dev-flow-assurance-policy/0.4.0`, preserve conservative unknown
 impact behavior, finite retry authority, complete criterion/change coverage,
 and deterministic incomplete finalization.
 
@@ -17,7 +17,7 @@ task rework.
 
 [简体中文](CONTRIBUTING_CN.md)
 
-Contributions preserve the 0.3.0 product contract: one task over an exact
+Contributions preserve the 0.4.0 product contract: one task over an exact
 canonical set of one to eight user-prepared local Git worktrees, one Codex
 executor, one projected action, and one controller-owned append-only ledger.
 
@@ -57,7 +57,7 @@ executor, one projected action, and one controller-owned append-only ledger.
 
 ## Web UI contribution boundary
 
-The local Web UI is part of `dev-flow-orchestrator` 0.3.0. Do not introduce a
+The local Web UI is part of `dev-flow-orchestrator` 0.4.0. Do not introduce a
 WebUI-specific version, package, plugin, marketplace entry, app or MCP server,
 data namespace, persisted schema, dependency set, build pipeline, or release
 gate. Presentation changes must leave `product_document()` and
@@ -80,13 +80,13 @@ and installed-artifact validation. A missing real browser must be recorded as
 
 ## Module ownership
 
-- `product.py`: 0.3.0 identity vocabulary, official workflow catalog, and the
+- `product.py`: 0.4.0 identity vocabulary, official workflow catalog, and the
   authoritative repository-topology capability.
 - `model.py`: immutable task values and canonical repository membership,
   strict JSON, errors, and receipts.
 - `snapshot.py`: aggregate repository-set snapshots and nested member
   workspace snapshots, validation, lookup, and digests.
-- `workflow.py`: `dev-flow-workflow/0.3.0` contracts, stage-scoped cancellation, graph
+- `workflow.py`: `dev-flow-workflow/0.4.0` contracts, stage-scoped cancellation, graph
   validation, and selected-definition identity.
 - `delivery.py`: contracts, decisions, seals, bindings, resources, freshness,
   coverage, and dossiers.
@@ -104,7 +104,7 @@ pure domain modules.
 ## Current workflow and identity changes
 
 Official workflows are `lite`, `feature`, `bugfix`, `investigation`,
-`refactor`, and `full`. `dev-flow-workflow/0.3.0` nodes declare typed artifacts, workspace
+`refactor`, and `full`. `dev-flow-workflow/0.4.0` nodes declare typed artifacts, workspace
 roles, inputs, finite assurance rework, exhausted dossier paths, and optional-
 driver degraded/unavailable metadata. Every workflow declares a shared cancel
 action with explicit `cancel.stages`; official definitions cover the normal
@@ -118,10 +118,29 @@ selector, schema, and canonical document. Any change to these current
 authorities must update the corresponding product contract and focused proof.
 
 Repository topology is selected independently of the official workflow. Every
-cardinality uses `dev-flow-agent/0.3.0`, an exact
-`dev-flow-repository-set-snapshot/0.3.0`, required `repository_id` resources,
+cardinality uses `dev-flow-agent/0.4.0`, an exact
+`dev-flow-repository-set-snapshot/0.4.0`, required `repository_id` resources,
 structured `criteria`/`repositories`/`integration` verification, aggregate
-freshness/review, and Delivery Dossier 0.3.0.
+freshness/review, and Delivery Dossier 0.4.0.
+
+## Release and compatibility versions
+
+Use the standard-library release command for an ordinary release bump:
+
+```sh
+python3 -I -S scripts/bump_version.py 0.4.1
+```
+
+`src/dev_flow_orchestrator/_version.py` is the single `RELEASE_VERSION`
+source. The command updates only that authority plus derived plugin,
+`pyproject.toml`, and `uv.lock` metadata. Validate existing metadata without
+writing through `python3 -I -S scripts/bump_version.py --check`.
+
+Do not change `MODEL_VERSION`, the controller data namespace, schemas,
+workflow documents, workflow identities, or `PRODUCT_IDENTITY` for a
+release-only patch. Change the compatibility model only when persisted fields,
+protocol semantics, topology authority, or replay rules actually become
+incompatible, and declare that larger cut explicitly.
 
 ## Validation
 
@@ -157,7 +176,7 @@ python3 -I -S scripts/validate_package.py
 python3 -m json.tool .codex-plugin/plugin.json
 ```
 
-Choose only the applicable commands from the 0.3.0 focused CI matrix. Validate
+Choose only the applicable commands from the 0.4.0 focused CI matrix. Validate
 the active OpenSpec change with its current CLI instructions.
 
 Validate every bundled Skill after editing it:

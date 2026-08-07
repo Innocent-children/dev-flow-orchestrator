@@ -11,7 +11,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from dev_flow_orchestrator import yaml_subset
-from dev_flow_orchestrator.product import PRODUCT_VERSION, WORKFLOW_SCHEMA
+from dev_flow_orchestrator.product import MODEL_VERSION, WORKFLOW_SCHEMA
 
 
 class YamlSubsetParserTest(unittest.TestCase):
@@ -19,7 +19,7 @@ class YamlSubsetParserTest(unittest.TestCase):
         document = (
             f"schema: {WORKFLOW_SCHEMA}\n"
             "id: lite\n"
-            f"version: {PRODUCT_VERSION}\n"
+            f"version: {MODEL_VERSION}\n"
             "entry: preflight\n"
             "nodes:\n"
             "  implement:\n"
@@ -32,7 +32,7 @@ class YamlSubsetParserTest(unittest.TestCase):
         value = yaml_subset.load(document)
         self.assertEqual(value["schema"], WORKFLOW_SCHEMA)
         self.assertEqual(value["id"], "lite")
-        self.assertEqual(value["version"], PRODUCT_VERSION)
+        self.assertEqual(value["version"], MODEL_VERSION)
         self.assertEqual(value["entry"], "preflight")
         implement = value["nodes"]["implement"]
         self.assertEqual(implement["action_id"], "implementation.record")

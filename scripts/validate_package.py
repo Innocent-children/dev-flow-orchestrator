@@ -45,7 +45,8 @@ from dev_flow_orchestrator.product import (  # noqa: E402
     MIN_REPOSITORY_COUNT,
     OPENSPEC_TASKS_NORMALIZER,
     PLUGIN_DATA_NAMESPACE,
-    PRODUCT_VERSION,
+    RELEASE_VERSION,
+    MODEL_VERSION,
     RECORD_SCHEMA,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     REPOSITORY_TOPOLOGY_CAPABILITIES,
@@ -81,6 +82,7 @@ REQUIRED_STATIC = (
     "ROADMAP_CN.md",
     "hooks/dev_flow_hook.py",
     "hooks/hooks.json",
+    "scripts/bump_version.py",
     "scripts/dev_flow.py",
     "scripts/dev_flow_python_launcher",
     "scripts/dev_flow_python_launcher.cmd",
@@ -100,8 +102,10 @@ REQUIRED_STATIC = (
     "skills/review-dev-flow-change/SKILL.md",
     "skills/review-dev-flow-change/agents/openai.yaml",
     "src/dev_flow_orchestrator/__init__.py",
+    "src/dev_flow_orchestrator/_version.py",
     "src/dev_flow_orchestrator/cli.py",
     "src/dev_flow_orchestrator/capsule.py",
+    "tests/test_bump_version.py",
     "src/dev_flow_orchestrator/controller.py",
     "src/dev_flow_orchestrator/delivery.py",
     "src/dev_flow_orchestrator/engine.py",
@@ -212,7 +216,7 @@ CURRENT_PRODUCT_CLAIM_TEXT = frozenset(
         "skills/review-dev-flow-change/SKILL.md",
     }
 )
-EXPECTED_PRODUCT_VERSION = "0.3.0"
+EXPECTED_MODEL_VERSION = "0.4.0"
 CURRENT_PRODUCT_ASSET_DIRECTORIES = (
     ".codex-plugin",
     ".github/workflows",
@@ -432,9 +436,9 @@ def _without_external_version_literals(relative: str, document: str) -> str:
 
 def _validate_current_product_versions(root: Path, errors: list[str]) -> None:
     _check(
-        PRODUCT_VERSION == EXPECTED_PRODUCT_VERSION,
+        MODEL_VERSION == EXPECTED_MODEL_VERSION,
         errors,
-        "product.PRODUCT_VERSION is not the supported package version",
+        "product.MODEL_VERSION is not the supported compatibility model",
     )
     for relative_path in _current_product_asset_paths(root):
         relative = relative_path.as_posix()
@@ -455,7 +459,7 @@ def _validate_current_product_versions(root: Path, errors: list[str]) -> None:
                 + relative
             )
         if any(
-            match.group("version") != EXPECTED_PRODUCT_VERSION
+            match.group("version") != EXPECTED_MODEL_VERSION
             for match in DEV_FLOW_NUMERIC_SCHEMA.finditer(inspected)
         ):
             errors.append(
@@ -706,7 +710,7 @@ def _validate_main_skill_agent(root: Path, errors: list[str]) -> None:
     _check(
         short_description is not None
         and 25 <= len(short_description) <= 64
-        and PRODUCT_VERSION in guidance
+        and MODEL_VERSION in guidance
         and _is_exact_repository_set_guidance(guidance)
         and _is_user_prepared_guidance(guidance)
         and _is_single_executor_guidance(guidance),
@@ -990,7 +994,7 @@ def _validate_manifest(
             "plugin interface default prompts are invalid",
         )
         _check(
-            PRODUCT_VERSION in str(interface.get("longDescription", "")),
+            MODEL_VERSION in str(interface.get("longDescription", "")),
             errors,
             "plugin interface does not describe the current product version",
         )
@@ -1008,9 +1012,9 @@ def _validate_package_versions(
 ) -> None:
     manifest_version = manifest.get("version") if isinstance(manifest, dict) else None
     _check(
-        manifest_version == PRODUCT_VERSION,
+        manifest_version == RELEASE_VERSION,
         errors,
-        "plugin version does not match PRODUCT_VERSION",
+        "plugin version does not match RELEASE_VERSION",
     )
     pyproject_path = root / "pyproject.toml"
     if pyproject_path.is_file():
@@ -1089,7 +1093,7 @@ def _validate_official_workflow(
     prefix = "workflow {!r}".format(selector)
     _check(
         definition.schema == WORKFLOW_SCHEMA
-        and definition.version == PRODUCT_VERSION,
+        and definition.version == MODEL_VERSION,
         errors,
         prefix + " does not use the current workflow version",
     )
@@ -1234,7 +1238,7 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
         _require_tokens(
             document,
             (
-                PRODUCT_VERSION,
+                MODEL_VERSION,
                 DELIVERY_CONTRACT_SCHEMA,
                 "$follow-dev-flow",
                 "--binding-json",
@@ -1362,7 +1366,7 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
         _require_tokens(
             review,
             (
-                PRODUCT_VERSION,
+                MODEL_VERSION,
                 "independent",
                 "exact",
                 "snapshot",
@@ -1399,7 +1403,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         _require_tokens(
             english,
             (
-                PRODUCT_VERSION,
+                MODEL_VERSION,
                 "delivery contract",
                 "bounded",
                 "rework",
@@ -1433,7 +1437,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         _require_tokens(
             chinese,
             (
-                PRODUCT_VERSION,
+                MODEL_VERSION,
                 "交付契约",
                 "有界",
                 "返工",
@@ -1489,7 +1493,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         _require_tokens(
             architecture,
             (
-                PRODUCT_VERSION,
+                MODEL_VERSION,
                 WORKFLOW_SCHEMA,
                 AGENT_PROTOCOL_SCHEMA,
                 REPOSITORY_SET_SNAPSHOT_SCHEMA,
@@ -1528,7 +1532,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         _require_tokens(
             roadmap_path.read_text(encoding="utf-8"),
             (
-                PRODUCT_VERSION,
+                MODEL_VERSION,
                 "multi-repository",
                 "user-prepared",
                 "one Codex",
@@ -1543,7 +1547,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         _require_tokens(
             roadmap_cn_path.read_text(encoding="utf-8"),
             (
-                PRODUCT_VERSION,
+                MODEL_VERSION,
                 "user-prepared",
                 "one Codex",
                 "部分复用",
@@ -1631,7 +1635,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
             document = path.read_text(encoding="utf-8")
             _require_tokens(
                 re.sub(r"\s+", " ", document),
-                (PRODUCT_VERSION,) + tokens,
+                (MODEL_VERSION,) + tokens,
                 errors,
                 relative + " is missing the integrated read-only Web UI boundary",
             )
@@ -1791,7 +1795,7 @@ def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
                 "Hook locator does not isolate current-version plugin data",
             )
         _check(
-            "Dev Flow {}".format(PRODUCT_VERSION) in context
+            "Dev Flow {}".format(RELEASE_VERSION) in context
             and "$follow-dev-flow" in context,
             errors,
             "Hook does not inject current-version Skill guidance",
@@ -1899,7 +1903,7 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
     _require_tokens(
         views,
         (
-            "PRODUCT_VERSION",
+            "RELEASE_VERSION",
             "PRODUCT_IDENTITY",
             '"not-evaluated"',
             '"task-live-detail"',
@@ -2072,7 +2076,7 @@ def _validate_current_candidate(root: Path) -> dict:
     _validate_repository_topology(root, errors)
     _validate_adaptive_assurance_authority(root, errors)
     _check(
-        PLUGIN_DATA_NAMESPACE == PRODUCT_VERSION
+        PLUGIN_DATA_NAMESPACE == MODEL_VERSION
         and WORKFLOW_SCHEMA == product_schema("workflow")
         and AGENT_PROTOCOL_SCHEMA == product_schema("agent"),
         errors,
@@ -2092,11 +2096,6 @@ def _validate_current_candidate(root: Path) -> dict:
             continue
         source = path.read_text(encoding="utf-8")
         _check("src" in source, errors, relative + " does not bootstrap src")
-        _check(
-            PRODUCT_VERSION in source,
-            errors,
-            relative + " does not identify the current product version",
-        )
         _check("exec(" not in source, errors, relative + " executes source")
         _check(
             FORBIDDEN_SOURCE.search(source) is None,
@@ -2241,7 +2240,7 @@ def _validate_current_candidate(root: Path) -> dict:
         _check(
             'os.environ.get("PLUGIN_DATA")' in hook_source
             and "PLUGIN_DATA_NAMESPACE" in hook_source
-            and "PRODUCT_VERSION" in hook_source
+            and "RELEASE_VERSION" in hook_source
             and "$follow-dev-flow" in hook_source,
             errors,
             "Hook does not honor the current PLUGIN_DATA and Skill guidance contract",

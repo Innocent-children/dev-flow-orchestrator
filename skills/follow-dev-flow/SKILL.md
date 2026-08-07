@@ -1,6 +1,6 @@
 ---
 name: follow-dev-flow
-description: Start or resume a Dev Flow 0.3.0 delivery task for code, configuration, tests, generated files, documentation, or OpenSpec work in an exact set of one to eight user-prepared local Git worktrees. Use the exact Hook-injected controller locator, select one of six official workflows or a pinned dev-flow-workflow/0.3.0 custom definition, follow the dev-flow-agent/0.3.0 repository-set projection, and apply the one current action with its exact binding until a Delivery Dossier 0.3.0 terminal.
+description: Start or resume a Dev Flow 0.4.0 delivery task for code, configuration, tests, generated files, documentation, or OpenSpec work in an exact set of one to eight user-prepared local Git worktrees. Use the exact Hook-injected controller locator, select one of six official workflows or a pinned dev-flow-workflow/0.4.0 custom definition, follow the dev-flow-agent/0.4.0 repository-set projection, and apply the one current action with its exact binding until a Delivery Dossier 0.4.0 terminal.
 ---
 
 # Follow Dev Flow
@@ -8,7 +8,7 @@ description: Start or resume a Dev Flow 0.3.0 delivery task for code, configurat
 ## Follow the task-owned capsule and current obligation
 
 For every source-producing action, compare the bound starting snapshot with the
-current controller capture and submit `dev-flow-task-change-claims/0.3.0` for
+current controller capture and submit `dev-flow-task-change-claims/0.4.0` for
 every and only observed changed path. Include its repository ID, relative path,
 classification, criterion IDs, and purpose. Never claim ambient drift silently.
 
@@ -22,13 +22,13 @@ delta only when the controller projects that reuse, while an intersecting or
 ambiguous delta requires fresh execution. Stop at the controller-derived
 `DONE`, `INCOMPLETE`, or `CANCELLED` terminal.
 
-Invoke this workflow as `$follow-dev-flow`. Treat the 0.3.0 controller as the
+Invoke this workflow as `$follow-dev-flow`. Treat the 0.4.0 controller as the
 only task-state writer and source of workflow truth. The supported boundary is
 one task, one immutable exact repository set, one current action, and one Codex
 executor. The set contains one to eight user-prepared local Git worktrees;
 workflow depth never determines repository count.
 
-The 0.3.0 evidence model uses `governing`, `source-predecessor`, and `causal`
+The 0.4.0 evidence model uses `governing`, `source-predecessor`, and `causal`
 lineage between typed artifacts. Source-changing stages are
 `produces-source`; verification and review stages are `verifies-source`.
 OpenSpec, codebase-memory, and `independent-review` are optional drivers with
@@ -43,11 +43,11 @@ Preserve the complete Hook-injected locator as:
 ```
 
 It already contains the installed Python launcher, CLI, and
-`--data-dir <PLUGIN_DATA>/0.3.0`. Do not reconstruct, shorten, or append another
+`--data-dir <PLUGIN_DATA>/0.4.0`. Do not reconstruct, shorten, or append another
 data directory. Never read or edit controller state files directly.
 
-Require a 0.3.0 context: the Hook identifies Dev Flow 0.3.0 and `next` emits
-`schema: dev-flow-agent/0.3.0` with `repository_set`. A one-member set uses this
+Require a 0.4.0 context: the Hook identifies Dev Flow 0.4.0 and `next` emits
+`schema: dev-flow-agent/0.4.0` with `repository_set`. A one-member set uses this
 same projection and aggregate binding.
 
 The Hook may reconnect the same active task from any member repository. When
@@ -71,8 +71,8 @@ that fits the requested outcome:
 - `full`: the complete personal-delivery path with three verification and
   review attempts.
 
-An absolute path to a valid `dev-flow-workflow/0.3.0` JSON/YAML document is accepted for a
-new 0.3.0 task. The controller pins its schema, selector, canonical source
+An absolute path to a valid `dev-flow-workflow/0.4.0` JSON/YAML document is accepted for a
+new 0.4.0 task. The controller pins its schema, selector, canonical source
 document, and identity.
 
 ## Start with a contract
@@ -81,7 +81,7 @@ Prefer an explicit initial contract for normal delivery:
 
 ```json
 {
-  "schema": "dev-flow-delivery-contract/0.3.0",
+  "schema": "dev-flow-delivery-contract/0.4.0",
   "revision": 1,
   "summary": "<accepted outcome>",
   "acceptance_criteria": [
@@ -181,7 +181,7 @@ never substitute another worktree or silently omit the member.
 
 ## Official action payloads
 
-Use the current projection as authority. The official 0.3.0 workflow actions use
+Use the current projection as authority. The official 0.4.0 workflow actions use
 these exact payload shapes:
 
 | Action | Payload |
@@ -203,7 +203,7 @@ Use this common driver envelope inside `driver_result`:
 
 ```json
 {
-  "schema": "dev-flow-driver-result/0.3.0",
+  "schema": "dev-flow-driver-result/0.4.0",
   "tool": "<declared tool>",
   "status": "available",
   "phase": "<current workflow phase>",
@@ -259,7 +259,7 @@ every item has exactly `repository_id`, `path`, `role`, and `normalizer`:
     {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/proposal.md", "role": "governing", "normalizer": "none"},
     {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/design.md", "role": "governing", "normalizer": "none"},
     {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/specs/capability/spec.md", "role": "governing", "normalizer": "none"},
-    {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/tasks.md", "role": "governing", "normalizer": "openspec-tasks/0.3.0"},
+    {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/tasks.md", "role": "governing", "normalizer": "openspec-tasks/0.4.0"},
     {"repository_id": "<planning-repository-id>", "path": "openspec/changes/example/tasks.md", "role": "reported", "normalizer": "none"}
   ]
 }
@@ -267,7 +267,7 @@ every item has exactly `repository_id`, `path`, `role`, and `normalizer`:
 
 Bind every concrete proposal, design, and spec path returned for the plan as
 `governing` with `normalizer: none`. Bind `tasks.md` twice: governing with
-`openspec-tasks/0.3.0` and reported with `none`. The semantic normalizer ignores
+`openspec-tasks/0.4.0` and reported with `none`. The semantic normalizer ignores
 only checkbox state; task text, ordering, and test obligations remain
 governing. Treat machine-generated status/instruction output as reported
 driver evidence; if it is persisted as a repository file, bind it as
@@ -345,7 +345,7 @@ the runtime schema:
 }
 ```
 
-`findings` is a list of complete `dev-flow-review-finding/0.3.0` objects.
+`findings` is a list of complete `dev-flow-review-finding/0.4.0` objects.
 Every introduced finding's `causal_manifest_entries` must contain its exact
 current manifest location; affected findings additionally carry a bounded,
 source-confirmed causal path.
@@ -417,7 +417,7 @@ the complete record and Delivery Dossier before handoff:
 ```
 
 Report the exact dossier outcome, coverage, assurance or waiver, remaining
-risks, freshness, and handoff. `dev-flow-delivery-dossier/0.3.0` always includes the
+risks, freshness, and handoff. `dev-flow-delivery-dossier/0.4.0` always includes the
 repository-set identity, canonical inventory, member baseline/final summaries,
 changed-member diagnostics, scoped resources, every verification attempt, and
 current aggregate evidence.

@@ -1,6 +1,6 @@
 ---
 name: analyze-change-impact
-description: Produce a bounded, read-only 0.3.0 change-impact artifact for an exact set of one to eight repositories, with per-member phase-selected codebase-memory evidence, a bounded impact closure, closed risk triggers, and direct source confirmation. Use for impact, diagnosis, or structural-analysis workflow stages before implementation or assurance replanning.
+description: Produce a bounded, read-only 0.4.0 change-impact artifact for an exact set of one to eight repositories, with per-member phase-selected codebase-memory evidence, a bounded impact closure, closed risk triggers, and direct source confirmation. Use for impact, diagnosis, or structural-analysis workflow stages before implementation or assurance replanning.
 ---
 
 # Analyze Change Impact
@@ -18,7 +18,7 @@ Git state, controller state, or task evidence.
 
 ## Bind the analysis input
 
-Read the current 0.3.0 projection or supplied review packet and retain:
+Read the current 0.4.0 projection or supplied review packet and retain:
 
 - task ID, workflow ID, node ID, and analysis `phase`;
 - effective contract revision/digest and acceptance IDs;
@@ -82,12 +82,12 @@ inside `driver_result.details`:
 
 ```json
 {
-  "schema": "dev-flow-driver-result/0.3.0",
+  "schema": "dev-flow-driver-result/0.4.0",
   "tool": "codebase-memory",
   "status": "available",
   "phase": "impact",
   "details": {
-    "schema": "dev-flow-impact-report/0.3.0",
+    "schema": "dev-flow-impact-report/0.4.0",
     "status": "available",
     "phase": "impact",
     "contract_digest": "<sha256>",

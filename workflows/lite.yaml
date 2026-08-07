@@ -1,7 +1,7 @@
-schema: dev-flow-workflow/0.3.0
+schema: dev-flow-workflow/0.4.0
 id: lite
-version: "0.3.0"
-assurance: {policy: dev-flow-assurance-policy/0.3.0, profile: lite}
+version: "0.4.0"
+assurance: {policy: dev-flow-assurance-policy/0.4.0, profile: lite}
 description: "Fast personal delivery with bounded impact, implementation, adaptive assurance, and a Delivery Dossier."
 entry: preflight
 revision_target: impact

@@ -50,7 +50,7 @@ The candidate SHALL include standard-library behavior suites that invoke each su
 
 Validation SHALL NOT require either host to execute the other host's shell language, and the Windows suite SHALL NOT duplicate every established Git-history permutation merely for platform parity.
 
-#### Scenario: Candidate installer behavior is validated on macOS
+#### Scenario: Candidate installer behavior is validated
 
 - **WHEN** focused validation runs on macOS
 - **THEN** it retains the established fresh authoritative-ref selection, idempotent and fast-forward upgrades, dirty state, ignored-path collision, unexpected origin and branch, local-ahead and diverged histories, marketplace preservation and rejection, and plugin activation failure coverage
@@ -71,7 +71,7 @@ Public English and Simplified Chinese installation documentation SHALL identify 
 
 Windows guidance SHALL state the x64 client support boundary, native PowerShell and Git for Windows prerequisites, Hook `/hooks` review step, preserved task-data behavior, and explicit unsupported environments. macOS guidance SHALL retain its existing shell path. Neither language SHALL imply that installing a plugin automatically trusts its Hook.
 
-#### Scenario: macOS operator reviews installation guidance
+#### Scenario: Operator reviews installation guidance
 
 - **WHEN** an operator reads a public macOS installation entry point
 - **THEN** the operator can determine which ref is installed, which checkout states require manual intervention, and how to review the installed Hook

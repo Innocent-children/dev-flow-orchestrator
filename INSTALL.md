@@ -1,24 +1,24 @@
 # Install Dev Flow Orchestrator
 
-Dev Flow 0.3.0 is a clean protocol cut. Configure the installed controller with
-the exact `<PLUGIN_DATA>/0.3.0` directory. Retained `<PLUGIN_DATA>/0.2.0` bytes
-may remain for operator reference, but the 0.3 runtime does not discover, load,
+Dev Flow compatibility model 0.4.0 is a clean protocol cut. Configure the installed controller with
+the exact `<PLUGIN_DATA>/0.4.0` directory. Retained `<PLUGIN_DATA>/0.2.0` bytes
+may remain for operator reference, but the model 0.4.0 runtime does not discover, load,
 migrate, repair, or mutate them. Explicit 0.2 schemas or state are unsupported.
 
 Prepare every Git worktree yourself before starting a task. Admission creates
 one active lease for each canonical root and worktree-specific Git directory;
 distinct linked worktrees may share a common Git directory across distinct
-tasks. During source actions, submit exact `dev-flow-task-change-claims/0.3.0`.
+tasks. During source actions, submit exact `dev-flow-task-change-claims/0.4.0`.
 During `assurance.execute`, follow only `current_obligation` and its evidence
 contract. Do not reconstruct bindings, plan IDs, findings, counters, or review
 outcomes.
 
 [简体中文](INSTALL_CN.md)
 
-This guide installs Dev Flow Orchestrator 0.3.0 from a local Codex marketplace and
+This guide installs the current Dev Flow Orchestrator release from a local Codex marketplace and
 verifies the installed launcher, Hook, Skill, and controller path.
 
-The installed 0.3.0 core runs one local task over an exact canonical set of one to
+The installed core uses compatibility model 0.4.0 and runs one local task over an exact canonical set of one to
 eight user-prepared Git worktrees. It always projects one current action to one
 Codex executor. It does not create or switch branches/worktrees,
 publish Git changes, coordinate parallel agents, call external CI/PR/release
@@ -63,7 +63,7 @@ acceptance checks.
 
 ## Launch the local read-only Web UI
 
-The installed 0.3.0 plugin includes the Web UI; there is no separate WebUI
+The installed 0.4.0 plugin includes the Web UI; there is no separate WebUI
 installation or version. Use the same controller data root that contains the
 tasks you want to inspect:
 
@@ -171,7 +171,7 @@ Keep exactly one entry named `dev-flow-orchestrator`.
 python3 -m json.tool "$HOME/.agents/plugins/marketplace.json"
 ```
 
-## 3. Install 0.3.0
+## 3. Install 0.4.0
 
 ```sh
 codex plugin list
@@ -188,9 +188,10 @@ source-checkout test cannot establish installed Hook or Skill pickup.
 
 ## 4. Replace an installation
 
-Codex installs an immutable cached snapshot. The package, runtime protocols,
-and product documentation therefore carry the same declared product version;
-this source currently uses `0.3.0` without a separate cache-only version.
+Codex installs an immutable cached snapshot. Plugin, Python package, and lock
+metadata carry one `RELEASE_VERSION`; runtime protocols and persisted tasks use
+the independently governed `MODEL_VERSION` `0.4.0`. A release-only patch does
+not change the state namespace, schemas, workflow identities, or active tasks.
 
 1. Obtain the complete reviewed candidate.
 2. Replace the marketplace source tree as one candidate.
@@ -208,7 +209,7 @@ this source currently uses `0.3.0` without a separate cache-only version.
 
 5. Start a new Codex task and verify the installed version and Hook source.
 
-Replacement installs operate on the current 0.3.0 product model and state
+Replacement installs operate on the current 0.4.0 product model and state
 namespace. Finish or explicitly cancel active tasks before replacing the
 installed snapshot.
 
@@ -216,7 +217,7 @@ installed snapshot.
 
 Task state must remain outside every target repository in the task. The Hook
 injects one complete locator containing the installed Python launcher,
-installed CLI, and exact `<PLUGIN_DATA>/0.3.0` state directory:
+installed CLI, and exact `<PLUGIN_DATA>/0.4.0` state directory:
 
 ```text
 <ctl> = <exact Hook-injected locator>
@@ -227,11 +228,11 @@ append another `--data-dir`.
 
 For a separate direct-CLI smoke, choose an explicit data directory outside the
 target repository. Here `--data-dir` means the exact directory and does not
-append `0.3.0`:
+append `0.4.0`:
 
 ```sh
 SOURCE_ROOT="$HOME/plugins/dev-flow-orchestrator"
-DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
+DATA_DIR="/absolute/path/to/independent-dev-flow-0.4.0-state"
 
 "$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
   "$SOURCE_ROOT/scripts/dev_flow.py" \
@@ -243,7 +244,7 @@ uses private directories/files, a task lock, revision compare-and-swap,
 deterministic replay, and atomic replacement. Direct state edits, symlinked
 state paths, malformed records, and data/repository tree overlap fail closed.
 
-## 6. Verify the 0.3.0 CLI contract
+## 6. Verify the 0.4.0 CLI contract
 
 Create a task in a disposable initialized Git repository:
 
@@ -266,7 +267,7 @@ its `task_id`, then request the projection:
   --data-dir "$DATA_DIR" next <task-id>
 ```
 
-The first 0.3.0 action is `task.preflight`. Every `apply`, including preflight,
+The first 0.4.0 action is `task.preflight`. Every `apply`, including preflight,
 requires the exact object returned as `projection.action.binding`. Copy the
 fresh binding as strict JSON; do not reconstruct or reuse it:
 
@@ -299,7 +300,7 @@ after it exits successfully. The minimal contract criterion ID is
   "$SOURCE_ROOT/scripts/dev_flow.py" \
   --data-dir "$DATA_DIR" apply <task-id> \
   --action verification.record \
-  --payload-json '{"passed":true,"command":"git -C /absolute/path/to/disposable-repository status --short","coverage":{"schema":"dev-flow-verification-coverage/0.3.0","criteria":{"requirement":"proven"},"repositories":{"<repository-id>":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"integration":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"summary":"member and integration checks passed"}' \
+  --payload-json '{"passed":true,"command":"git -C /absolute/path/to/disposable-repository status --short","coverage":{"schema":"dev-flow-verification-coverage/0.4.0","criteria":{"requirement":"proven"},"repositories":{"<repository-id>":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"integration":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"summary":"member and integration checks passed"}' \
   --binding-json '<fresh verification binding JSON>'
 ```
 
@@ -324,9 +325,9 @@ dossier summary. Inspect the full ledger and dossier artifact:
 ```
 
 The one-argument `--repo` path above creates a one-member exact repository set.
-It uses `dev-flow-agent/0.3.0`, an aggregate repository-set snapshot,
-`dev-flow-verification-coverage/0.3.0`, scoped resources, and
-`dev-flow-delivery-dossier/0.3.0`, exactly like every larger set.
+It uses `dev-flow-agent/0.4.0`, an aggregate repository-set snapshot,
+`dev-flow-verification-coverage/0.4.0`, scoped resources, and
+`dev-flow-delivery-dossier/0.4.0`, exactly like every larger set.
 
 To smoke-test a larger set, prepare two to eight initialized,
 non-bare local Git worktree roots and repeat `--repo`:
@@ -346,7 +347,7 @@ Admission canonicalizes and sorts the exact set and rejects duplicate or
 overlapping roots, shared Git common directories, non-worktree roots, and
 data-directory overlap. Caller order has no meaning, and membership is
 immutable after start. Save the returned member IDs. The
-`dev-flow-agent/0.3.0` projection's `repository_set` carries the aggregate
+`dev-flow-agent/0.4.0` projection's `repository_set` carries the aggregate
 snapshot digest, and every apply still uses its single fresh action binding.
 
 At `verification.record`, cover the exact criterion and member sets plus one
@@ -357,11 +358,11 @@ integration result:
 ```sh
 <ctl> apply <task-id> \
   --action verification.record \
-  --payload-json '{"passed":true,"command":"./verify-integration.sh","coverage":{"schema":"dev-flow-verification-coverage/0.3.0","criteria":{"requirement":"proven"},"repositories":{"<api-repository-id>":{"command":"./verify-api.sh","passed":true},"<client-repository-id>":{"command":"./verify-client.sh","passed":true}},"integration":{"command":"./verify-integration.sh","passed":true}},"summary":"all member and integration checks passed"}' \
+  --payload-json '{"passed":true,"command":"./verify-integration.sh","coverage":{"schema":"dev-flow-verification-coverage/0.4.0","criteria":{"requirement":"proven"},"repositories":{"<api-repository-id>":{"command":"./verify-api.sh","passed":true},"<client-repository-id>":{"command":"./verify-client.sh","passed":true}},"integration":{"command":"./verify-integration.sh","passed":true}},"summary":"all member and integration checks passed"}' \
   --binding-json '<fresh verification binding JSON>'
 ```
 
-Finalization produces one aggregate `dev-flow-delivery-dossier/0.3.0`. It includes
+Finalization produces one aggregate `dev-flow-delivery-dossier/0.4.0`. It includes
 the canonical inventory, per-member baseline/final summaries, changed-member
 diagnostics, scoped resources, verification attempts, current
 member/integration proof, and aggregate freshness. Before the task reaches a
@@ -383,7 +384,7 @@ structured initial contract:
   --workflow feature \
   --repo /absolute/path/to/repository \
   --requirement "Deliver observable behavior" \
-  --contract-json '{"schema":"dev-flow-delivery-contract/0.3.0","revision":1,"summary":"Deliver observable behavior","acceptance_criteria":[{"id":"C1","statement":"The behavior is observable"}],"scope":["implementation and focused verification"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}'
+  --contract-json '{"schema":"dev-flow-delivery-contract/0.4.0","revision":1,"summary":"Deliver observable behavior","acceptance_criteria":[{"id":"C1","statement":"The behavior is observable"}],"scope":["implementation and focused verification"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}'
 ```
 
 The object has exactly the documented fields, positive revision `1`, at least
@@ -404,7 +405,7 @@ contract revision, reason, and actor label:
 
 ```sh
 <ctl> revise-contract <task-id> \
-  --contract-json '{"schema":"dev-flow-delivery-contract/0.3.0","revision":2,"summary":"Revised scope","acceptance_criteria":[{"id":"C1","statement":"Revised observable condition"}],"scope":["revised work"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}' \
+  --contract-json '{"schema":"dev-flow-delivery-contract/0.4.0","revision":2,"summary":"Revised scope","acceptance_criteria":[{"id":"C1","statement":"Revised observable condition"}],"scope":["revised work"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}' \
   --reason 'accepted scope correction' \
   --actor-label 'operator'
 ```
@@ -464,9 +465,9 @@ do not replace immutable membership or start an implicit replacement task.
 2. Open `/hooks`; confirm the source is the installed immutable snapshot and
    trust the definition.
 3. Invoke `$follow-dev-flow` and start an official workflow.
-4. Confirm the injected context names Dev Flow 0.3.0, includes the installed
-   launcher and CLI, selects `<PLUGIN_DATA>/0.3.0`, and projects
-   `dev-flow-agent/0.3.0` with the exact `repository_set` for every cardinality.
+4. Confirm the injected context names Dev Flow 0.4.0, includes the installed
+   launcher and CLI, selects `<PLUGIN_DATA>/0.4.0`, and projects
+   `dev-flow-agent/0.4.0` with the exact `repository_set` for every cardinality.
 5. Confirm `$follow-dev-flow` passes the exact current action binding on every
    apply and inspects the terminal dossier with `show`.
 6. Confirm common shell/edit attempts that target the plugin data root are
@@ -475,7 +476,7 @@ do not replace immutable membership or start an implicit replacement task.
 Installed release evidence covers all six official workflows and records the
 installed snapshot identity, task IDs, repository baselines, optional-driver
 status, verification/review paths, contract-revision recovery, bounded
-exhaustion, and Dossier 0.3.0 outcomes. Any condition that depends on a real new
+exhaustion, and Dossier 0.4.0 outcomes. Any condition that depends on a real new
 Codex task loading a Hook or Skill remains a manual
 installed pickup check when the validation environment cannot observe it.
 
@@ -538,7 +539,7 @@ Running the controller matrix alone reports
   creation or start a new task.
 
 `STATE_INVALID`
-: Stored 0.3.0 state failed schema, seal, identity, ledger, or replay validation.
+: Stored 0.4.0 state failed schema, seal, identity, ledger, or replay validation.
   Preserve it for diagnosis and do not edit it. Confirm that every command
   used the task's exact controller locator and data directory.
 
@@ -578,7 +579,7 @@ codex plugin remove dev-flow-orchestrator@personal
 ```
 
 Neither automated nor manual removal deletes external task data. Data deletion
-remains a separate operator action. Preserve active 0.3.0 tasks unless the exact
+remains a separate operator action. Preserve active 0.4.0 tasks unless the exact
 deletion scope is intentional and recoverability has been assessed.
 
 ## Windows integration preview

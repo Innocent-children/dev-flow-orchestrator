@@ -25,7 +25,7 @@ from .model import (
 from .product import (
     ASSURANCE_POLICY_SCHEMA,
     ASSURANCE_PROFILES,
-    PRODUCT_VERSION,
+    MODEL_VERSION,
     WORKFLOW_SCHEMA,
     product_domain,
 )
@@ -937,10 +937,10 @@ def validate_definition_document(
             "id must be 1-64 characters using letters, digits, '.', '_' or '-'",
         )
     version = document.get("version")
-    if version != PRODUCT_VERSION:
+    if version != MODEL_VERSION:
         raise _workflow_error(
             source,
-            "workflow version must be exactly {}".format(PRODUCT_VERSION),
+            "workflow version must be exactly {}".format(MODEL_VERSION),
         )
     assurance = document.get("assurance")
     if (

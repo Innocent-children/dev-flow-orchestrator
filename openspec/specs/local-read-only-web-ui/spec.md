@@ -4,20 +4,20 @@
 TBD - created by archiving change introduce-local-read-only-web-ui. Update Purpose after archive.
 ## Requirements
 ### Requirement: The Web UI is one current-product presentation surface
-The local Web UI SHALL obtain its product name, exact `0.3.0` version, and `PRODUCT_IDENTITY` from the existing runtime product authority. Its startup receipt, JSON views, page chrome, plugin metadata, package metadata, installed evidence, and public guidance SHALL identify the same `dev-flow-orchestrator` product and version. The Web UI SHALL NOT define a component version, independent semantic-version line, package, plugin, marketplace entry, release gate, controller data namespace, persisted schema vocabulary, or compatibility policy.
+The local Web UI SHALL obtain its product name, `RELEASE_VERSION`, and compatibility-model `PRODUCT_IDENTITY` from the existing runtime authorities. Its startup receipt, JSON views, page chrome, plugin metadata, package metadata, installed evidence, and public guidance SHALL identify the same `dev-flow-orchestrator` release while stored task views retain the exact `0.4.0` model schemas. The Web UI SHALL NOT define a component version, independent semantic-version line, package, plugin, marketplace entry, release gate, controller data namespace, persisted schema vocabulary, or compatibility policy.
 
 Adding, replacing, or serving the presentation assets SHALL leave `product_document()`, `PRODUCT_IDENTITY`, `PLUGIN_DATA_NAMESPACE`, every persisted task and record schema, workflow identity, binding contract, replay rule, and retained prior-version boundary unchanged. Non-persisted HTTP view names and static-asset content digests SHALL remain presentation metadata and SHALL NOT enter task identity or become mutation inputs.
 
 #### Scenario: Current Web UI reports product identity
 - **WHEN** the installed Web UI starts and its page and JSON views are inspected
-- **THEN** every surface reports `dev-flow-orchestrator` version `0.3.0` and the installed `PRODUCT_IDENTITY` without a Web UI-specific version field
+- **THEN** every presentation surface reports `dev-flow-orchestrator` `RELEASE_VERSION` and the installed model `PRODUCT_IDENTITY` without a Web UI-specific version field
 
 #### Scenario: Existing current task is viewed
-- **WHEN** the Web UI opens a valid task created by the same `0.3.0` product before the Web UI assets were installed
+- **WHEN** the Web UI opens a valid task created under the same `0.4.0` compatibility model before the current release was installed
 - **THEN** the controller loads and projects that task without migration, repair, identity replacement, ledger mutation, or state rewrite
 
 #### Scenario: Component-specific version is introduced
-- **WHEN** a candidate declares a Web UI version, separate namespace, separate package identity, or presentation value with a numeric version other than the shared `PRODUCT_VERSION`
+- **WHEN** a candidate declares a Web UI version, separate namespace, separate package identity, or presentation release other than the shared `RELEASE_VERSION`
 - **THEN** candidate validation fails before installation
 
 ### Requirement: The Web UI runs as an explicit loopback foreground process
@@ -72,7 +72,7 @@ Every other method, including `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `TRAC
 - **THEN** their content types and security headers match the closed local policy and no response grants cross-origin read authority
 
 ### Requirement: Inspection storage reads are physically non-mutating
-The Web UI SHALL use a dedicated inspection store and controller facade that never acquires or creates a task lock, never calls a directory-creation or permission-normalization helper, and never writes, replaces, touches, repairs, or removes controller data. A missing controller namespace SHALL produce an empty inventory observation without creating the data directory. Existing task directories, state files, workflow selectors, and inventory entries SHALL be read with no-follow regular-file and containment checks and SHALL pass the same task ID, `PRODUCT_VERSION`, `PRODUCT_IDENTITY`, selected-workflow identity, strict state-shape, record-ledger, and deterministic replay validation required by authoritative loads.
+The Web UI SHALL use a dedicated inspection store and controller facade that never acquires or creates a task lock, never calls a directory-creation or permission-normalization helper, and never writes, replaces, touches, repairs, or removes controller data. A missing controller namespace SHALL produce an empty inventory observation without creating the data directory. Existing task directories, state files, workflow selectors, and inventory entries SHALL be read with no-follow regular-file and containment checks and SHALL pass the same task ID, `MODEL_VERSION`, model `PRODUCT_IDENTITY`, selected-workflow identity, strict state-shape, record-ledger, and deterministic replay validation required by authoritative loads.
 
 Inventory inspection SHALL isolate invalid entries through stable error codes and bounded safe identifiers. It SHALL NOT expose a raw operating-system error, traceback, access token, controller data-root path, or followed symlink target. Concurrent atomic state replacement SHALL yield either one complete old revision or one complete new revision and SHALL never combine record or scalar fields from different revisions. Inspection SHALL never enumerate a prior-version namespace.
 
@@ -209,3 +209,23 @@ Live detail SHALL use only the existing bounded read-only Git observation path. 
 - **WHEN** an authorized non-Web client commits a valid task mutation while the Web UI is running
 - **THEN** a later refresh shows the complete new revision and the Web UI records no mutation or intermediate state of its own
 
+### Requirement: The installed Web UI preserves its current product boundary on Windows
+
+On documented Windows x64 clients, the installed `dev-flow --data-dir <path> web` command SHALL use the existing current-product server, routes, assets, token authority, inspection facade, read-only views, explicit live observation, and Controller runtime. It SHALL bind numeric `127.0.0.1`, remain in the foreground, and require no Windows-specific package, version, namespace, browser integration, service, or daemon.
+
+Live observation and shutdown SHALL use the Windows runtime's bounded Git cancellation behavior. A normal Ctrl+C shutdown SHALL close the listener and release active capture resources without changing task, repository, marketplace, or installed plugin state.
+
+#### Scenario: Installed Windows Web UI starts and serves stored views
+
+- **WHEN** the operator starts the installed Web UI on an ephemeral port on a supported Windows client
+- **THEN** it emits the current startup receipt and serves authenticated inventory and stored detail through the existing read-only contract
+
+#### Scenario: Windows live observation succeeds
+
+- **WHEN** the operator explicitly requests live detail for a stable task
+- **THEN** the server performs one current aggregate observation and returns the existing ready, blocked, unavailable, or terminal view without exposing a mutation binding
+
+#### Scenario: Windows Web UI is interrupted during live capture
+
+- **WHEN** Ctrl+C or normal process termination occurs while a live Git observation is active
+- **THEN** cancellation is requested through the existing runtime, the listener closes, and no task or repository mutation is attributed to the Web UI

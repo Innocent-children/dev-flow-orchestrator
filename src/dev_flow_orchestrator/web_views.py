@@ -9,7 +9,7 @@ from ._platform.paths import path_is_absolute, paths_equal
 from .delivery import effective_contract
 from .engine import is_terminal_state, task_view
 from .model import DevFlowError, TaskState
-from .product import PRODUCT_IDENTITY, PRODUCT_VERSION
+from .product import PRODUCT_IDENTITY, RELEASE_VERSION
 from .workflow import WorkflowDefinition
 
 
@@ -46,7 +46,7 @@ def _page(offset: int, limit: int) -> Tuple[int, int]:
 def envelope(view: str, observed_at: str, result: Mapping[str, object]) -> dict:
     return {
         "ok": True,
-        "version": PRODUCT_VERSION,
+        "version": RELEASE_VERSION,
         "product_identity": PRODUCT_IDENTITY,
         "view": view,
         "observed_at": observed_at,
@@ -60,7 +60,7 @@ def product_metadata(observed_at: str) -> dict:
         observed_at,
         {
             "product": "dev-flow-orchestrator",
-            "version": PRODUCT_VERSION,
+            "version": RELEASE_VERSION,
             "product_identity": PRODUCT_IDENTITY,
             "surface": "local-read-only-web-ui",
             "capabilities": ["stored-inspection", "explicit-live-observation"],

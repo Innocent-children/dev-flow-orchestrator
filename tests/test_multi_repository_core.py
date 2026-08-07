@@ -30,7 +30,7 @@ from dev_flow_orchestrator.product import (
     MAX_REPOSITORY_COUNT,
     MIN_REPOSITORY_COUNT,
     PRODUCT_IDENTITY,
-    PRODUCT_VERSION,
+    MODEL_VERSION,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     REPOSITORY_TOPOLOGY_CAPABILITIES,
     WORKSPACE_SNAPSHOT_SCHEMA,
@@ -74,14 +74,14 @@ class RepositoryTopologyProductTests(unittest.TestCase):
     def test_topology_and_current_schemas_define_product_identity(self) -> None:
         self.assertEqual(MIN_REPOSITORY_COUNT, 1)
         self.assertEqual(MAX_REPOSITORY_COUNT, 8)
-        self.assertEqual(PRODUCT_VERSION, "0.3.0")
-        self.assertEqual(AGENT_PROTOCOL_SCHEMA, "dev-flow-agent/0.3.0")
-        self.assertEqual(REPOSITORY_SET_SNAPSHOT_SCHEMA, "dev-flow-repository-set-snapshot/0.3.0")
+        self.assertEqual(MODEL_VERSION, "0.4.0")
+        self.assertEqual(AGENT_PROTOCOL_SCHEMA, "dev-flow-agent/0.4.0")
+        self.assertEqual(REPOSITORY_SET_SNAPSHOT_SCHEMA, "dev-flow-repository-set-snapshot/0.4.0")
         self.assertIsInstance(REPOSITORY_TOPOLOGY_CAPABILITIES, MappingProxyType)
         with self.assertRaises(TypeError):
             REPOSITORY_TOPOLOGY_CAPABILITIES["maximum_repositories"] = 9
         document = product_document()
-        self.assertEqual(document["version"], PRODUCT_VERSION)
+        self.assertEqual(document["version"], MODEL_VERSION)
         self.assertEqual(
             document["repository_topology"],
             dict(REPOSITORY_TOPOLOGY_CAPABILITIES),

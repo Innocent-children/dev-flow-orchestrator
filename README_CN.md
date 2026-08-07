@@ -1,7 +1,7 @@
 # Dev Flow Orchestrator
 
-0.3.0 用任务范围的自适应保障取代固定的测试与审查循环。每个任务拥有不可变的预检
-起点和持续滚动的变更清单。封闭的 `dev-flow-assurance-policy/0.3.0` 仅根据当前契约、
+兼容模型 0.4.0 用任务范围的自适应保障取代固定的测试与审查循环。每个任务拥有不可变的预检
+起点和持续滚动的变更清单。封闭的 `dev-flow-assurance-policy/0.4.0` 仅根据当前契约、
 经源码确认的影响闭包和八种封闭风险触发器，推导确有依据的仓库、集成、文档、人工
 证据与独立审查义务。`degraded`、`partial` 或未知影响一律保守处理。
 `assurance.dispatch` 每次只暴露一个当前可执行义务，记录绝对尝试次数，重启不会重置权限。
@@ -62,7 +62,7 @@ Dev Flow 会把它转化成一条可恢复路径：
 
 ## 本地只读 Web UI
 
-Dev Flow 0.3.0 内置本地任务驾驶舱，它只是同一已安装产品的另一个展示界面，不具有
+当前 Dev Flow 发布内置本地任务驾驶舱，它只是同一已安装产品的另一个展示界面，不具有
 独立的 WebUI 版本、包、插件、状态命名空间或兼容性线路。通过以下命令显式以前台方式
 启动：
 
@@ -75,14 +75,14 @@ JSON 启动收据。256 位进程本地访问令牌位于 URL fragment 中，浏
 从可见 URL 移除。服务器不会自动打开浏览器、转为守护进程、启用 CORS、加载远程资源、
 发送遥测，也不会持久化浏览器选择或凭据。
 
-任务清单和普通详情只从已持久化的 0.3.0 状态推导，因此仓库不可用时仍可立即查看，
+任务清单和普通详情只从已持久化的 0.4.0 模型状态推导，因此仓库不可用时仍可立即查看，
 且不会运行 Git。只有在需要当前动作就绪度或仓库健康时，才对选中的任务使用
 **Observe live**。实时观察复用现有的有界只读聚合快照，全进程只允许一个捕获，并且
 不会创建任务 binding，也不会改变控制器或仓库状态。
 
 ## 一条命令安装
 
-Dev Flow 0.3.0 当前支持 macOS，并要求 Git、Python 3.9–3.14 以及支持插件和 Hook
+当前 Dev Flow 发布支持 macOS，并要求 Git、Python 3.9–3.14 以及支持插件和 Hook
 的 Codex：
 
 ```sh
@@ -135,7 +135,7 @@ Dev Flow 不会替代指导文件或规格。它提供运行时状态、转换�
 
 ## Dev Flow 控制什么
 
-Dev Flow 0.3.0 在由一至八个本地 Git 工作树组成的精确规范集合中提供完整的个人交付能力：
+Dev Flow 0.4.0 在由一至八个本地 Git 工作树组成的精确规范集合中提供完整的个人交付能力：
 
 - 带版本的结构化交付契约，包含稳定的验收标准 ID、范围、约束、风险、非目标与
   未决事项；
@@ -224,9 +224,9 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 | `full` | 完整影响分析与规划 → 实施 → 文档 → 验证 → 独立审查 → Dossier | 3 次验证与 3 次审查尝试 |
 
 每个官方工作流都从覆盖完整仓库集合的有界、只读 Git 预检开始，并通过一个聚合
-Delivery Dossier 0.3.0 收尾每个未取消结果。`dev-flow-workflow/0.3.0` 定义通过 `cancel.stages`
+Delivery Dossier 0.4.0 收尾每个未取消结果。`dev-flow-workflow/0.4.0` 定义通过 `cancel.stages`
 声明可取消阶段；官方工作流在大多数正常非终态阶段允许取消，并排除所有
-`delivery.finalize` 阶段。自定义工作流必须是以绝对路径选择的有效 `dev-flow-workflow/0.3.0`
+`delivery.finalize` 阶段。自定义工作流必须是以绝对路径选择的有效 `dev-flow-workflow/0.4.0`
 JSON 或 YAML 文档，其身份绑定 selector、schema 与规范化文档。仓库数量不会选择或
 改变工作流。
 
@@ -262,7 +262,7 @@ CLI 每个成员重复一次 `--repo`。只传一次会通过同一准入与证�
 重复、共享 Git identity、互相包含、不安全或与数据目录重叠的根目录。成员集合在任务
 生命周期内不可变；需要改变仓库集合时必须新建任务。
 
-契约 schema 为 `dev-flow-delivery-contract/0.3.0`。它仅包含 `schema`、`revision`、
+契约 schema 为 `dev-flow-delivery-contract/0.4.0`。它仅包含 `schema`、`revision`、
 `summary`、`acceptance_criteria`、`scope`、`constraints`、`risks`、
 `non_goals` 和 `open_questions`，初始契约修订为 `1`。快速启动 `lite` 任务时，
 省略 `--contract-json` 会从非空需求和完整仓库集合生成一个有界的最小契约。
@@ -275,15 +275,15 @@ CLI 每个成员重复一次 `--repo`。只传一次会通过同一准入与证�
 
 当前目录位于任意成员仓库内时，已安装 Hook 会重新接入同一任务；检查成员下的嵌套
 路径时，同一任务只返回一次，多个活动任务仍保持显式歧义。Hook 注入的 locator 已经
-包含已安装 launcher、CLI 和精确的 0.3.0 数据目录。Skill 通过 `next` 获取一个带
-`repository_set` 摘要的 `dev-flow-agent/0.3.0` 投影，执行其中唯一的当前动作，再通过
+包含已安装 launcher、CLI 和精确的 0.4.0 数据目录。Skill 通过 `next` 获取一个带
+`repository_set` 摘要的 `dev-flow-agent/0.4.0` 投影，执行其中唯一的当前动作，再通过
 `apply --binding-json` 原样传回 `projection.action.binding`。binding 固定任务修订、
 契约、输入、源码前驱和聚合起始快照；过期工作会被拒绝，并返回新投影。一成员集合在
 `repository_set.repositories` 中只有一个条目，其余结构完全相同。
 
 ## 证据、决策与完成
 
-`dev-flow-workflow/0.3.0` 工件声明一种工作区角色：
+`dev-flow-workflow/0.4.0` 工件声明一种工作区角色：
 
 - `context` 记录只读分析；
 - `produces-source` 消费固定的源码前驱，并记录后继工作树快照；
@@ -292,10 +292,10 @@ CLI 每个成员重复一次 `--repo`。只传一次会通过同一准入与证�
 输入血缘使用 `governing`、`source-predecessor` 或 `causal`。治理型仓库资源参与
 新鲜度计算；报告型资源只保留来源。每项仓库资源必须带显式 `repository_id`，因此不同
 成员中的相同相对路径仍保持独立。OpenSpec 的 proposal、design 和 spec 文件属于
-治理资源。`tasks.md` 会以原始报告进度记录一次，并以 `openspec-tasks/0.3.0` 语义
+治理资源。`tasks.md` 会以原始报告进度记录一次，并以 `openspec-tasks/0.4.0` 语义
 normalizer 再记录一次；后者只忽略复选框状态。
 
-验证对所有集合大小统一使用 `dev-flow-verification-coverage/0.3.0` 契约，包含精确的
+验证对所有集合大小统一使用 `dev-flow-verification-coverage/0.4.0` 契约，包含精确的
 当前 `schema`、`criteria`、`repositories` 和 `integration` 对象：每个成员和集成命令都必须存在，
 顶层命令必须等于集成命令，顶层 `passed` 必须是所有成员与集成结果的合取。验证必须
 把每项验收标准报告为
@@ -311,7 +311,7 @@ normalizer 再记录一次；后者只忽略复选框状态。
 满足修订后的范围。
 
 `show <task-id>` 暴露完整的只读 ledger 和 Dossier。终态
-`dev-flow-delivery-dossier/0.3.0` 包含有效契约、仓库集合身份与规范成员清单、验收覆盖、
+`dev-flow-delivery-dossier/0.4.0` 包含有效契约、仓库集合身份与规范成员清单、验收覆盖、
 当前结构化验证、审查保障、文档证据、决策、工件来源与新鲜度、逐成员基线/最终摘要、
 变更成员诊断、带仓库范围的资源、剩余风险、结果、移交建议，以及每次当前或已过期的
 验证和审查尝试。
@@ -323,21 +323,21 @@ normalizer 再记录一次；后者只忽略复选框状态。
 
 - 控制器是唯一任务状态写入者。状态使用锁、修订 compare-and-swap、确定性重放和
   原子替换。
-- 任务状态位于每个目标仓库之外。已安装的 Dev Flow 0.3.0 Hook 使用 `<PLUGIN_DATA>/0.3.0`，并保护
+- 任务状态位于每个目标仓库之外。已安装的 Dev Flow 0.4.0 Hook 使用 `<PLUGIN_DATA>/0.4.0`，并保护
   插件数据根目录，避免常见 shell 和编辑操作直接写入。
 - 仓库快照有边界限制、内容敏感并且只读；仓库集合以全有或全无方式捕获。规范成员
   缺失或移动时，依赖仓库的进度会停止且不修改 ledger；恢复同一精确根目录后再重试，
   控制器不会替换成其他工作树。控制器不会自动执行 stash、reset、clean、
   commit、checkout、rebase、merge、push、force-push，也不会删除用户工作。
 - Hook 是内部错误时放行的操作护栏。工作流校验和状态转换权威仍属于控制器。
-- 所有集合大小统一使用 `dev-flow-repository-set-snapshot/0.3.0`、
-  `dev-flow-agent/0.3.0`、带仓库范围的资源、结构化成员/集成验证与 Delivery Dossier 0.3.0。
-  每个聚合快照按规范顺序嵌套每位成员的一个 `dev-flow-workspace-snapshot/0.3.0` 值。
+- 所有集合大小统一使用 `dev-flow-repository-set-snapshot/0.4.0`、
+  `dev-flow-agent/0.4.0`、带仓库范围的资源、结构化成员/集成验证与 Delivery Dossier 0.4.0。
+  每个聚合快照按规范顺序嵌套每位成员的一个 `dev-flow-workspace-snapshot/0.4.0` 值。
 
 ## 更多文档
 
 - [INSTALL.md](INSTALL.md)：安装、替换、已安装验收和排错。
-- [ARCHITECTURE.md](ARCHITECTURE.md)：契约、`dev-flow-workflow/0.3.0`、binding、血缘、重放、
+- [ARCHITECTURE.md](ARCHITECTURE.md)：契约、`dev-flow-workflow/0.4.0`、binding、血缘、重放、
   投影和模块职责。
 - [ROADMAP_CN.md](ROADMAP_CN.md)：已交付的阶段 1 能力与后续产品阶段。
 - [CONTRIBUTING.md](CONTRIBUTING.md)：聚焦校验与贡献规则。

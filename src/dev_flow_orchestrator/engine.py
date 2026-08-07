@@ -1860,7 +1860,7 @@ def _adaptive_execution(
             )
     execution = validate_assurance_execution(
         {
-            "schema": "dev-flow-assurance-execution/0.3.0",
+            "schema": "dev-flow-assurance-execution/0.4.0",
             "plan_digest": context["plan"]["digest"],
             "obligation_id": obligation["obligation_id"],
             "obligation_fingerprint": obligation["fingerprint"],
@@ -3007,7 +3007,7 @@ def agent_projection(
                     "workspace_digest": snapshot["digest"],
                     "manifest_digest": adaptive["manifest"]["digest"],
                     "contract_digest": adaptive["plan"]["contract_digest"],
-                    "finding_schema": "dev-flow-review-finding/0.3.0",
+                    "finding_schema": "dev-flow-review-finding/0.4.0",
                     "causal_relations": [
                         "introduced", "affected", "pre-existing",
                         "out-of-scope", "unknown",

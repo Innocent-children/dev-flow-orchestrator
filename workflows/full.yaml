@@ -1,7 +1,7 @@
-schema: dev-flow-workflow/0.3.0
+schema: dev-flow-workflow/0.4.0
 id: full
-version: "0.3.0"
-assurance: {policy: dev-flow-assurance-policy/0.3.0, profile: full}
+version: "0.4.0"
+assurance: {policy: dev-flow-assurance-policy/0.4.0, profile: full}
 description: "High-assurance personal delivery with repository-backed planning, documentation, bounded verification, and independent review."
 entry: preflight
 revision_target: impact

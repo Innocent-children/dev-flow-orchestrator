@@ -38,7 +38,7 @@ from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.model import DevFlowError
 from dev_flow_orchestrator.product import (
     PLUGIN_DATA_NAMESPACE,
-    PRODUCT_VERSION,
+    MODEL_VERSION,
     WORKFLOW_IDS,
     WORKSPACE_SNAPSHOT_SCHEMA,
 )
@@ -384,9 +384,9 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
             self.assertEqual(state_path.read_bytes(), b"old\n")
 
     def test_runtime_change_keeps_product_authority(self) -> None:
-        self.assertEqual(PRODUCT_VERSION, "0.3.0")
-        self.assertEqual(PLUGIN_DATA_NAMESPACE, "0.3.0")
-        self.assertEqual(WORKSPACE_SNAPSHOT_SCHEMA, "dev-flow-workspace-snapshot/0.3.0")
+        self.assertEqual(MODEL_VERSION, "0.4.0")
+        self.assertEqual(PLUGIN_DATA_NAMESPACE, "0.4.0")
+        self.assertEqual(WORKSPACE_SNAPSHOT_SCHEMA, "dev-flow-workspace-snapshot/0.4.0")
         self.assertEqual(
             WORKFLOW_IDS,
             ("bugfix", "feature", "full", "investigation", "lite", "refactor"),

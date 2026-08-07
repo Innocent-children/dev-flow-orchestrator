@@ -14,7 +14,7 @@ from .product import (
     MAX_REPOSITORY_COUNT,
     MIN_REPOSITORY_COUNT,
     PRODUCT_IDENTITY,
-    PRODUCT_VERSION,
+    MODEL_VERSION,
     RECEIPT_SCHEMA,
     WORKFLOW_SCHEMA,
     product_domain,
@@ -277,7 +277,7 @@ class TaskState:
     repositories: Tuple[RepositoryRecord, ...]
     original_contract: Mapping[str, object]
     records: Tuple[object, ...] = ()
-    version: str = PRODUCT_VERSION
+    version: str = MODEL_VERSION
     product_identity: str = PRODUCT_IDENTITY
 
     def __post_init__(self) -> None:
@@ -349,11 +349,11 @@ class TaskState:
                 "task state fields are invalid",
                 details={"fields": sorted(str(field) for field in value)},
             )
-        if value.get("version") != PRODUCT_VERSION:
+        if value.get("version") != MODEL_VERSION:
             raise DevFlowError(
                 "STATE_INVALID",
                 "task state is not current product version {}".format(
-                    PRODUCT_VERSION
+                    MODEL_VERSION
                 ),
             )
         if value.get("product_identity") != PRODUCT_IDENTITY:
@@ -406,7 +406,7 @@ class TaskState:
         if not isinstance(workflow_version, str):
             raise DevFlowError("STATE_INVALID", "task workflow version is invalid")
         if (
-            workflow_version != PRODUCT_VERSION
+            workflow_version != MODEL_VERSION
             or scalar_fields["workflow_schema"] != WORKFLOW_SCHEMA
         ):
             raise DevFlowError(

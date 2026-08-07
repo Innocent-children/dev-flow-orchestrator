@@ -9,7 +9,7 @@
 - [x] 2.1 Add `scripts/dev_flow_python_launcher.cmd` with disabled delayed expansion, handler validation, supported 64-bit Python selection, `-X utf8 -I -S`, original argument forwarding, and nonzero no-Python diagnostics.
 - [x] 2.2 Add `commandWindows` to SessionStart, UserPromptSubmit, and PreToolUse while preserving every current POSIX command, matcher, timeout, and status message.
 - [x] 2.3 Update the public Hook bootstrap and internal fallback to select the `.cmd` launcher only on Windows.
-- [ ] 2.4 Test the real Windows command string and launcher with ordinary, spaced, and Unicode plugin/data paths plus missing or unsupported Python.
+- [x] 2.4 Test the real Windows command string and launcher with ordinary, spaced, and Unicode plugin/data paths plus missing or unsupported Python.
 
 ## 3. Add the PowerShell locator and bounded guard behavior
 
@@ -44,7 +44,7 @@
 ## 7. Extend validation and publish the bounded support claim
 
 - [x] 7.1 Add `.cmd` and PowerShell assets and tests to package inventory/version scanning; validate paired `command`/`commandWindows` values and make validator result text host-neutral.
-- [ ] 7.2 Extend the focused Windows CI path with launcher, Hook, lifecycle, Web UI, and installed-smoke tests while retaining the existing macOS job as the broad product regression gate.
-- [ ] 7.3 Record a complete Windows 11 x64 client install-to-uninstall journey and a shorter Windows 10 22H2 x64 smoke, including OS build, PowerShell, Python, Git, and Codex versions.
+- [x] 7.2 Extend the focused Windows CI path with launcher, Hook, lifecycle, Web UI, and installed-smoke tests while retaining the existing macOS job as the broad product regression gate.
+- [x] 7.3 Record a complete Windows 11 x64 client install-to-uninstall journey and a shorter Windows 10 22H2 x64 smoke, including OS build, PowerShell, Python, Git, and Codex versions.
 - [x] 7.4 Update README, INSTALL, ARCHITECTURE, ROADMAP, and CONTRIBUTING in English and Simplified Chinese with PowerShell commands, Hook trust, supported Windows x64 clients, exclusions, Web UI use, validation limits, and no-migration boundaries.
-- [ ] 7.5 Run the package validator on macOS and Windows, run existing macOS installer/uninstaller and focused suites, run `openspec validate ship-native-windows-support --type change --strict`, and review the final diff for runtime duplication or test-matrix expansion.
+- [x] 7.5 Run the package validator on macOS and Windows, run existing macOS installer/uninstaller and focused suites, run `openspec validate ship-native-windows-support --type change --strict`, and review the final diff for runtime duplication or test-matrix expansion.

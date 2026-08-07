@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
 
-from dev_flow_orchestrator.product import IMPACT_REPORT_SCHEMA, PRODUCT_VERSION
+from dev_flow_orchestrator.product import IMPACT_REPORT_SCHEMA, MODEL_VERSION, RELEASE_VERSION
 from scripts.validate_package import validate
 
 
@@ -42,6 +43,24 @@ class PackageValidationTests(unittest.TestCase):
         )
 
     def test_current_candidate_is_valid(self) -> None:
+        self.assertEqual(validate(self.candidate)["errors"], [])
+
+    def test_patch_release_keeps_current_model_candidate_valid(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(self.candidate / "scripts" / "bump_version.py"),
+                "--root",
+                str(self.candidate),
+                "0.4.1",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertEqual(validate(self.candidate)["errors"], [])
 
     def test_shipped_candidate_excludes_host_local_tooling_metadata(self) -> None:
@@ -84,20 +103,12 @@ class PackageValidationTests(unittest.TestCase):
             result["errors"],
         )
 
-    def test_hook_bootstrap_must_identify_current_version(self) -> None:
+    def test_hook_bootstrap_is_release_neutral(self) -> None:
         hook = self.candidate / "hooks" / "dev_flow_hook.py"
         current = hook.read_text(encoding="utf-8")
-        current_label = "Dev Flow {} Hook".format(PRODUCT_VERSION)
-        self.assertIn(current_label, current)
-        hook.write_text(
-            current.replace(current_label, "unversioned Hook"),
-            encoding="utf-8",
-        )
-        result = validate(self.candidate)
-        self.assert_error_contains(
-            result,
-            "hooks/dev_flow_hook.py does not identify the current product version",
-        )
+        self.assertIn("current Dev Flow Hook", current)
+        self.assertNotIn(MODEL_VERSION, current)
+        self.assertNotIn(RELEASE_VERSION, current)
 
     def test_missing_canonical_chinese_readme_is_reported(self) -> None:
         (self.candidate / "README_CN.md").unlink()
@@ -328,7 +339,7 @@ class PackageValidationTests(unittest.TestCase):
         current = lock.read_text(encoding="utf-8")
         lock.write_text(
             current.replace(
-                'version = "{}"'.format(PRODUCT_VERSION),
+                'version = "{}"'.format(RELEASE_VERSION),
                 'version = "unsupported"',
                 1,
             ),

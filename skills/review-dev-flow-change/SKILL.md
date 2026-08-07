@@ -1,13 +1,13 @@
 ---
 name: review-dev-flow-change
-description: Independently review one 0.3.0 task's complete roll-forward task-owned slice and its direct or indirect effects across one to eight repositories, returning bounded structured causal findings bound to the plan, manifest, guidance, reviewer, and snapshot. Use for an independent-review assurance obligation or read-only pre-handoff review.
+description: Independently review one 0.4.0 task's complete roll-forward task-owned slice and its direct or indirect effects across one to eight repositories, returning bounded structured causal findings bound to the plan, manifest, guidance, reviewer, and snapshot. Use for an independent-review assurance obligation or read-only pre-handoff review.
 ---
 
 # Review Dev Flow Change
 
 Review the complete roll-forward task-owned slice and its direct or indirect
 effects. Emit at most 64 structured causal findings using
-`dev-flow-review-finding/0.3.0`. Each finding binds the contract, plan, manifest,
+`dev-flow-review-finding/0.4.0`. Each finding binds the contract, plan, manifest,
 review scope, guidance, reviewer, and workspace digests and classifies causality
 as `introduced`, `affected`, `pre-existing`, `out-of-scope`, or `unknown`.
 `affected` requires a bounded source-confirmed causal path from at least one
@@ -22,7 +22,7 @@ artifacts, Git state, controller state, task records, or evidence.
 
 ## Build the exact review snapshot
 
-Collect from the 0.3.0 projection and full read-only task view:
+Collect from the 0.4.0 projection and full read-only task view:
 
 - task/workflow/node ID, effective contract revision and digest;
 - repository-set ID and complete canonical member inventory, plus the current
@@ -128,7 +128,7 @@ Return one JSON-compatible object:
 
 ```json
 {
-  "schema": "dev-flow-independent-review/0.3.0",
+  "schema": "dev-flow-independent-review/0.4.0",
   "status": "available",
   "verdict": "PASS",
   "assurance": "independent",

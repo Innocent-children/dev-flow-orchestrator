@@ -50,11 +50,11 @@ Every member worktree SHALL exist before task start and remain under user owners
 - **THEN** cancellation changes only controller state and leaves every member worktree untouched
 
 ### Requirement: Repository-set snapshots are bounded and all-or-none
-For every task, preflight and every repository-backed operation SHALL capture a `dev-flow-repository-set-snapshot/0.3.0` value containing the derived repository-set identity and one complete validated `dev-flow-workspace-snapshot/0.3.0` per member in canonical order. This model SHALL apply to repository sets of every supported size, including one member. Each member snapshot SHALL bind `HEAD`, branch, Git status, bounded worktree content, the complete relevant Git index entry set, and declared resources. Each repository observation SHALL contain at most 4,096 bounded snapshot paths and at most 12,288 raw index stage entries, and its index-enumeration command output SHALL contain at most 2 MiB. The existing 1 MiB output limit for every other Git command and every existing time, path-byte, index-entry-byte, per-file, total-content, action-payload, and text bound SHALL remain in force; no limit permits truncation.
+For every task, preflight and every repository-backed operation SHALL capture a `dev-flow-repository-set-snapshot/0.4.0` value containing the derived repository-set identity and one complete validated `dev-flow-workspace-snapshot/0.4.0` per member in canonical order. This model SHALL apply to repository sets of every supported size, including one member. Each member snapshot SHALL bind `HEAD`, branch, Git status, bounded worktree content, the complete relevant Git index entry set, and declared resources. Each repository observation SHALL contain at most 4,096 bounded snapshot paths and at most 12,288 raw index stage entries, and its index-enumeration command output SHALL contain at most 2 MiB. The existing 1 MiB output limit for every other Git command and every existing time, path-byte, index-entry-byte, per-file, total-content, action-payload, and text bound SHALL remain in force; no limit permits truncation.
 
 The aggregate digest SHALL cover the complete wrapper excluding its own digest. The controller SHALL capture and compare two complete observations with identical resource requests before mutation. If any member is missing, invalid, unstable, over budget, truncated, changes between observations, or no longer matches persisted identity, the operation SHALL fail without appending a record or retaining partial evidence. Successful preflight SHALL seal this snapshot as the immutable ownership origin for the complete repository set. Every accepted later contract revision SHALL capture a complete aggregate `revision-source` as an interval anchor, but it SHALL NOT replace the preflight origin or erase still-material task ownership.
 
-Every current snapshot and embedded repository value SHALL use the exact `0.3.0` schema required at its position. A bare member snapshot or another explicit non-`0.3.0` current input SHALL be rejected. The `0.3.0` runtime SHALL NOT discover, enumerate, read, load, replay, migrate, translate, repair, rewrite, or delete retained `0.2.0` namespace bytes.
+Every current snapshot and embedded repository value SHALL use the exact `0.4.0` schema required at its position. A bare member snapshot or another explicit non-`0.4.0` current input SHALL be rejected. The `0.4.0` runtime SHALL NOT discover, enumerate, read, load, replay, migrate, translate, repair, rewrite, or delete retained `0.2.0` namespace bytes.
 
 #### Scenario: Repository-set preflight commits
 - **WHEN** both complete observations match for every member
@@ -85,12 +85,12 @@ Every current snapshot and embedded repository value SHALL use the exact `0.3.0`
 - **THEN** complete repository-set capture fails without truncation, partial member evidence, or a task mutation
 
 #### Scenario: Non-current snapshot is supplied
-- **WHEN** apply or current-namespace replay encounters a bare member snapshot or another explicit non-`0.3.0` snapshot schema
+- **WHEN** apply or current-namespace replay encounters a bare member snapshot or another explicit non-`0.4.0` snapshot schema
 - **THEN** validation rejects the current input without loading it as authority, translation, migration, repair, fallback, or a new record
 
 #### Scenario: Retained prior-version namespace exists
 - **WHEN** retained `0.2.0` task or snapshot bytes remain in the prior-version namespace
-- **THEN** the `0.3.0` runtime does not discover, enumerate, read, load, replay, migrate, translate, repair, rewrite, or delete those bytes
+- **THEN** the `0.4.0` runtime does not discover, enumerate, read, load, replay, migrate, translate, repair, rewrite, or delete those bytes
 
 ### Requirement: One Codex executes one current action across the complete set
 Every repository-set task SHALL retain one task state machine, one lock, one revision sequence, one assurance plan, and exactly one projected current action for one Codex executor. Current action bindings SHALL bind the complete aggregate workspace observation, current canonical roll-forward task-change-manifest digest, assurance-plan digest, declared inputs, and any projected obligation; the manifest digest SHALL transitively bind its immutable preflight origin, applicable revision anchors, and ownership lineage. A source-producing action MAY claim changes in one or more members, but its successor SHALL observe every member and SHALL record one aggregate source plus one complete controller-derived task manifest. Context and assurance actions SHALL reject apply-time change to their bound task-owned slice, governing inputs, or required member observation. Ambient drift in any member SHALL be detected and reported separately and SHALL block repository-dependent assurance until it is restored or exactly adopted through an authorized contract revision. Apply SHALL use one revision compare-and-swap and append at most one task record.
@@ -134,7 +134,7 @@ A contract revision's complete aggregate revision source SHALL anchor only subse
 - **THEN** the earlier apply loses revision compare-and-swap and writes no per-member partial result
 
 ### Requirement: Repository-set verification is structured and complete
-Every `verification.record` SHALL identify one current assurance-plan obligation and SHALL use `dev-flow-verification-coverage/0.3.0`. Coverage SHALL contain the obligation ID, exact effective criterion results, required repository results, an optional required integration result, commands or manual evidence, the task-change-manifest digest, impact-closure digest, and evidence limitations. Repository results SHALL exactly cover the member IDs required by that obligation; an integration result SHALL be present exactly when the obligation requires integration. Every result SHALL contain a non-empty bounded command or declared manual-evidence reference and a truthful status. One assurance execution SHALL contain at most 64 canonical evidence items, subject also to the existing shared 64 KiB action-payload and 8 KiB per-text limits; a 65th item or another existing payload or text violation SHALL reject the complete execution without truncation or a partial record. Assurance success SHALL require the obligation's criteria to be proven or covered by a current valid waiver. Members and integration outside the obligation SHALL be represented in the assurance plan and Dossier as not required with an explainable rule basis rather than fabricated passing results.
+Every `verification.record` SHALL identify one current assurance-plan obligation and SHALL use `dev-flow-verification-coverage/0.4.0`. Coverage SHALL contain the obligation ID, exact effective criterion results, required repository results, an optional required integration result, commands or manual evidence, the task-change-manifest digest, impact-closure digest, and evidence limitations. Repository results SHALL exactly cover the member IDs required by that obligation; an integration result SHALL be present exactly when the obligation requires integration. Every result SHALL contain a non-empty bounded command or declared manual-evidence reference and a truthful status. One assurance execution SHALL contain at most 64 canonical evidence items, subject also to the existing shared 64 KiB action-payload and 8 KiB per-text limits; a 65th item or another existing payload or text violation SHALL reject the complete execution without truncation or a partial record. Assurance success SHALL require the obligation's criteria to be proven or covered by a current valid waiver. Members and integration outside the obligation SHALL be represented in the assurance plan and Dossier as not required with an explainable rule basis rather than fabricated passing results.
 
 A read-only controller derivation that reuses current evidence SHALL consume no action or execution unit. A separately persisted evidence-reuse decision, waiver, finding disposition, or prerequisite refresh SHALL consume exactly one total-action unit and no verification, review, or source-rework execution unit.
 
@@ -185,7 +185,7 @@ A read-only controller derivation that reuses current evidence SHALL consume no 
 ### Requirement: Recovery and completion preserve exact membership
 New task admission SHALL acquire the controller-data-directory membership lock and derive each cross-task lease identity from the member's canonical worktree root plus its worktree-specific Git administrative directory. Either component matching a member of another valid non-terminal current task SHALL reject the entire new repository set. A Git common directory SHALL remain same-task topology evidence rather than cross-task lease identity: distinct linked worktrees with different canonical roots and worktree-specific Git directories MAY be leased concurrently by different tasks even when they share one common directory, while two members of the same task that share one common directory SHALL still be rejected.
 
-Before any new task is admitted, every entry in the current `0.3.0` inventory SHALL be validated sufficiently to establish immutable membership and controller-confirmed terminal state. Any corrupt or unreadable current entry SHALL make the complete lease inventory unavailable and all new admissions SHALL fail closed. The controller SHALL preserve the corrupt bytes, keep stored-ledger corruption diagnostics readable, and SHALL NOT infer a terminal state or lease release. This inventory check SHALL NOT inspect retained `0.2.0` namespace bytes.
+Before any new task is admitted, every entry in the current `0.4.0` inventory SHALL be validated sufficiently to establish immutable membership and controller-confirmed terminal state. Any corrupt or unreadable current entry SHALL make the complete lease inventory unavailable and all new admissions SHALL fail closed. The controller SHALL preserve the corrupt bytes, keep stored-ledger corruption diagnostics readable, and SHALL NOT infer a terminal state or lease release. This inventory check SHALL NOT inspect retained `0.2.0` namespace bytes.
 
 Every repository-dependent projection, apply, contract revision, cancellation, and non-cancelled finalization SHALL validate all persisted canonical member roots, worktree-specific Git administrative directories, same-task Git-common topology, and active-task leases. A missing or moved root, canonical-root or worktree-specific-directory mismatch, newly duplicated same-task Git-common directory, overlapping root, or conflicting active owner SHALL block repository-dependent progress with member-specific diagnostics and SHALL NOT substitute another worktree. Pure stored-ledger inspection and stored diagnostics SHALL remain available when capture fails. Lease release SHALL be inferred only from a valid controller-confirmed `DONE`, `INCOMPLETE`, or `CANCELLED` task state, never from timeout, absence, capture failure, or corruption.
 
@@ -220,11 +220,11 @@ Successful completion SHALL require a current canonical roll-forward task-change
 - **THEN** admission rejects the complete new task and identifies the owning task and member without writing partial state
 
 #### Scenario: Current inventory contains a corrupt task
-- **WHEN** any current `0.3.0` inventory entry cannot prove its immutable membership and controller-confirmed terminal state
+- **WHEN** any current `0.4.0` inventory entry cannot prove its immutable membership and controller-confirmed terminal state
 - **THEN** every new task admission fails closed, the corrupt bytes and stored diagnostics remain readable, and no terminal state or lease release is inferred
 
 #### Scenario: Prior-version inventory bytes remain
-- **WHEN** retained `0.2.0` namespace bytes coexist with a healthy current `0.3.0` inventory
+- **WHEN** retained `0.2.0` namespace bytes coexist with a healthy current `0.4.0` inventory
 - **THEN** current admission does not inspect those prior-version bytes and derives leases only from validated current entries
 
 #### Scenario: Cancellation cannot capture one member
@@ -250,3 +250,35 @@ Successful completion SHALL require a current canonical roll-forward task-change
 #### Scenario: An absolute ceiling is overrun
 - **WHEN** replay derives consumption beyond a per-obligation, aggregate, or effective-contract total-action ceiling
 - **THEN** successful finalization rejects `DONE` and the Delivery Dossier exposes the overrun and affected current obligations
+
+### Requirement: Windows exact-set membership uses the canonical host path rule
+
+On documented Windows x64 client systems, repository admission SHALL canonicalize every supplied local worktree root through the native Windows runtime path rule before deriving repository IDs, sorting members, checking duplicate roots, checking ancestor/descendant overlap, comparing controller-data separation, or acquiring active membership leases.
+
+This Windows rule SHALL preserve the existing one-to-eight-member, order-insensitive, immutable exact-set model and SHALL add no platform-specific fields to `TaskState.repositories`.
+
+#### Scenario: Caller order and Windows spelling differ
+
+- **WHEN** two starts supply the same distinct Windows worktrees in different caller orders and use equivalent drive-case or separator spellings
+- **THEN** both derive the same canonical member order and repository-set identity
+
+#### Scenario: Windows members overlap
+
+- **WHEN** one canonical Windows worktree root equals or contains another member root or the controller data root
+- **THEN** task creation rejects the complete set before state is written
+
+### Requirement: Windows aggregate capture retains all-or-none repository evidence
+
+Repository-backed operations for Windows members SHALL capture the same current repository-set wrapper and one validated member snapshot per canonical task member. The controller SHALL retain its two complete aggregate capture passes and SHALL compare normalized Windows root, worktree Git directory, and common Git directory identities against immutable membership.
+
+A failure or change in any Windows member SHALL fail the complete repository-set operation without committing early-member evidence.
+
+#### Scenario: Two stable Windows members are captured
+
+- **WHEN** both complete passes produce equal valid snapshots for every member
+- **THEN** the controller accepts one canonical repository-set snapshot through the existing mutation path
+
+#### Scenario: A later Windows member fails
+
+- **WHEN** an earlier member is captured but a later member is missing, invalid, over budget, or unstable
+- **THEN** the controller appends no record and retains no partial member evidence

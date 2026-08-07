@@ -102,7 +102,7 @@ fi
   || fail "Python 3.9-3.14 is required."
 
 if [ "$(uname -s)" != "Darwin" ]; then
-  fail "Dev Flow Orchestrator 0.3.0 currently supports macOS."
+  fail "This Dev Flow installer supports macOS; use the documented PowerShell installer on Windows."
 fi
 
 if [ ! -e "$SOURCE_ROOT" ]; then

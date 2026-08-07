@@ -1,25 +1,25 @@
 # 架构
 
-## 0.3 任务胶囊与自适应保障
+## 0.4.0 兼容模型：任务胶囊与自适应保障
 
 不可变成员元组保存每个规范工作树根目录、工作树专属 Git 管理目录和 Git 公共目录。
-数据目录级准入锁从有效的非终态 0.3 状态推导活动租约。当前命名空间中存在损坏清单时
+数据目录级准入锁从有效的非终态 0.4.0 模型状态推导活动租约。当前命名空间中存在损坏清单时
 会阻止准入；保留的 0.2 命名空间不在发现范围内，运行时不会读取、修复、迁移或删除它。
 
 `capsule.py` 分离不可变预检基线、累计任务自有清单、精确所有权声明和环境漂移。
 `assurance.py` 是纯领域的封闭策略规划与预算权威，负责规范化分组义务、推导有限的
 逐义务及聚合上限，并选择一个可执行的未完成义务。`review.py` 校验稳定的因果发现并由
 控制器推导审查结果，不把 Agent 提交的结论当作权威。引擎把规划和执行持久化到密封的
-`dev-flow-record/0.3.0` 与 `dev-flow-artifact/0.3.0` 血缘中，复放其绑定，并通过
-`dev-flow-agent/0.3.0` 投影当前义务。
+`dev-flow-record/0.4.0` 与 `dev-flow-artifact/0.4.0` 血缘中，复放其绑定，并通过
+`dev-flow-agent/0.4.0` 投影当前义务。
 
-终态 `dev-flow-delivery-dossier/0.3.0` 包含预检起点、滚动清单、影响闭包、规划理由、
+终态 `dev-flow-delivery-dossier/0.4.0` 包含预检起点、滚动清单、影响闭包、规划理由、
 义务状态、预算、结构化审查状态、聚合快照新鲜度，以及可解释的 `DONE` 或 `INCOMPLETE`
 决定。
 
 [English](ARCHITECTURE.md)
 
-Dev Flow Orchestrator 0.3.0 是一个仅使用 Python 标准库的包，包含一个控制器状态变更边界、一个只追加的交付账本和声明式工作流定义。它支持在由用户预先准备的一到八个本地 Git 工作树组成的精确规范集合上执行一个任务，并始终只有一个当前动作和一个 Codex 执行器。
+当前 Dev Flow 发布使用兼容模型 0.4.0 和一个仅使用 Python 标准库的包，包含一个控制器状态变更边界、一个只追加的交付账本和声明式工作流定义。它支持在由用户预先准备的一到八个本地 Git 工作树组成的精确规范集合上执行一个任务，并始终只有一个当前动作和一个 Codex 执行器。
 
 ## 依赖方向
 
@@ -40,7 +40,7 @@ Web UI ──┘               │       └────> Workflow ─> Product
 
 ## 本地只读展示边界
 
-`web.py` 是现有 0.3.0 产品身份下仅使用标准库的 loopback 适配器。它只绑定
+`web.py` 是现有 0.4.0 产品身份下仅使用标准库的 loopback 适配器。它只绑定
 `127.0.0.1`，持有临时进程令牌，只提供固定的同源资源/API 路由，严格校验 Host 和
 Origin，拒绝跨站 Fetch Metadata 和不安全方法，并且不发出任何 CORS 许可。原生 HTML、
 CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测、service worker、cookie
@@ -61,10 +61,11 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 
 | 模块 | 所有者 |
 |---|---|
-| `product.py` | 0.3.0 任务/工作流/目录/记录/工件/投影的身份，六个官方工作流 ID，以及权威的 1–8 仓库拓扑能力 |
+| `_version.py` | 唯一的可分发 `RELEASE_VERSION`；仅发布版本升级不会改变任何持久化权威 |
+| `product.py` | 0.4.0 模型的任务/工作流/目录/记录/工件/投影身份，六个官方工作流 ID，以及权威的 1–8 仓库拓扑能力 |
 | `model.py` | 不可变的任务值和规范的仓库成员资格、规范 JSON、稳定错误、零修订初始化、收据 |
 | `snapshot.py` | 聚合仓库集快照和嵌套成员工作区快照验证、查找和摘要处理 |
-| `workflow.py` | `dev-flow-workflow/0.3.0` 验证，节点/工件/输入/重做/取消合同，图安全，所选定义身份 |
+| `workflow.py` | `dev-flow-workflow/0.4.0` 验证，节点/工件/输入/重做/取消合同，图安全，所选定义身份 |
 | `delivery.py` | 交付合同验证、摘要和封印、决策、动作绑定、输入解析、新鲜度、覆盖范围、档案生成 |
 | `engine.py` | 负载验证、动作规划、账本记录、保障路由、修订重放、转换验证、投影和任务视图 |
 | `workflows.py` | 官方目录解析和绝对自定义定义加载 |
@@ -83,17 +84,18 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 
 | 表面 | 当前身份边界 |
 |---|---|
-| 产品版本 | `0.3.0`，任务身份，数据命名空间 `0.3.0` 和精确拓扑权威 |
-| 工作流语言 | `dev-flow-workflow/0.3.0`，版本 `0.3.0` |
+| 可分发发布版本 | `RELEASE_VERSION`，由插件、包、lock 元数据和展示收据共享 |
+| 兼容模型 | `MODEL_VERSION` `0.4.0`，任务身份，数据命名空间 `0.4.0` 和精确拓扑权威 |
+| 工作流语言 | `dev-flow-workflow/0.4.0`，版本 `0.4.0` |
 | 所选工作流 | 选择器、模式和规范所选文档的摘要 |
 | 官方目录 | 排序后官方 ID 的摘要；目录身份与任务所选工作流是独立的 |
 | 记录、工件和绑定 | 每个值的当前规范模式和摘要封印 |
-| Agent 投影 | `dev-flow-agent/0.3.0`，带有一个 `repository_set` 和一个当前动作 |
-| 验证覆盖范围 | 精确 `schema: dev-flow-verification-coverage/0.3.0`，包含 `criteria`, `repositories`, 和 `integration` |
-| 仓库快照 | `dev-flow-repository-set-snapshot/0.3.0`，每个成员包含一个 `dev-flow-workspace-snapshot/0.3.0` |
-| 交付档案 | `dev-flow-delivery-dossier/0.3.0` |
+| Agent 投影 | `dev-flow-agent/0.4.0`，带有一个 `repository_set` 和一个当前动作 |
+| 验证覆盖范围 | 精确 `schema: dev-flow-verification-coverage/0.4.0`，包含 `criteria`, `repositories`, 和 `integration` |
+| 仓库快照 | `dev-flow-repository-set-snapshot/0.4.0`，每个成员包含一个 `dev-flow-workspace-snapshot/0.4.0` |
+| 交付档案 | `dev-flow-delivery-dossier/0.4.0` |
 
-0.3.0 Hook 和控制器使用 `<PLUGIN_DATA>/0.3.0` 来存储当前任务状态。
+0.4.0 Hook 和控制器使用 `<PLUGIN_DATA>/0.4.0` 来存储当前任务状态。
 
 ## 仓库集边界
 
@@ -104,11 +106,11 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 
 ## 交付合同和账本
 
-任务创建以原子方式写入修订版零状态，包含不可变的原始 `dev-flow-delivery-contract/0.3.0` 和一个空记录元组。显式合同恰好包含：
+任务创建以原子方式写入修订版零状态，包含不可变的原始 `dev-flow-delivery-contract/0.4.0` 和一个空记录元组。显式合同恰好包含：
 
 ```json
 {
-  "schema": "dev-flow-delivery-contract/0.3.0",
+  "schema": "dev-flow-delivery-contract/0.4.0",
   "revision": 1,
   "summary": "交付请求的行为",
   "acceptance_criteria": [
@@ -122,7 +124,7 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 }
 ```
 
-仅要求启动推导出有界最小修订版一合同。每次后续成功的变异恰好追加一个密封的 `dev-flow-record/0.3.0`；类型化输出使用密封的 `dev-flow-artifact/0.3.0` 描述符。每次变异精确增加任务修订一次，保留：
+仅要求启动推导出有界最小修订版一合同。每次后续成功的变异恰好追加一个密封的 `dev-flow-record/0.4.0`；类型化输出使用密封的 `dev-flow-artifact/0.4.0` 描述符。每次变异精确增加任务修订一次，保留：
 
 ```text
 任务修订 == 记录数量
@@ -136,9 +138,9 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 
 ## 工作流定义
 
-官方定义使用 `dev-flow-workflow/0.3.0`，版本为 `0.3.0`。目录包括 `bugfix`、`feature`、`full`、`investigation`、`lite` 和 `refactor`。自定义工作流通过绝对 JSON/YAML 路径选择，并通过与官方定义相同的 0.3.0 工作流验证和选定身份计算。
+官方定义使用 `dev-flow-workflow/0.4.0`，版本为 `0.4.0`。目录包括 `bugfix`、`feature`、`full`、`investigation`、`lite` 和 `refactor`。自定义工作流通过绝对 JSON/YAML 路径选择，并通过与官方定义相同的 0.4.0 工作流验证和选定身份计算。
 
-一个 `dev-flow-workflow/0.3.0` 文档声明 `entry`、`revision_target`、`nodes` 和一个非空、唯一的 `stages` 列表共享的 `cancel` 操作。只有当前节点出现在该列表中时才可取消。官方工作流列出正常多数非终止阶段并省略每个 `delivery.finalize` 节点。每个非终止节点有一个正常目标。仅 `verification.record` 和 `review.record` 可添加有限失败路径和耗尽路径。
+一个 `dev-flow-workflow/0.4.0` 文档声明 `entry`、`revision_target`、`nodes` 和一个非空、唯一的 `stages` 列表共享的 `cancel` 操作。只有当前节点出现在该列表中时才可取消。官方工作流列出正常多数非终止阶段并省略每个 `delivery.finalize` 节点。每个非终止节点有一个正常目标。仅 `verification.record` 和 `review.record` 可添加有限失败路径和耗尽路径。
 
 ### 节点合同
 
@@ -148,12 +150,12 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 | `handler` | `preflight`、`artifact.record`、`verification.record`、`review.record` 或 `delivery.finalize` |
 | `target` | 正常 `{node, status}` 转换 |
 | `payload` | 精确所需的字段到类型映射；未知或缺失字段失败 |
-| `artifact` | 0.3.0 工作流动作节点所需 `{type, workspace, inputs}` 声明 |
+| `artifact` | 0.4.0 工作流动作节点所需 `{type, workspace, inputs}` 声明 |
 | `rework` | 仅保障的 `{failure, max_attempts, exhausted}` 合同 |
 | `finalize` | 在 `delivery.finalize` 节点上为 `success` 或 `incomplete` |
 | `driver` | 不透明的能力元数据，包括可选回退和生成的艺术品 |
 | `effect` | 预检使用 `git.inspect-repository`；其他地方为 `none` |
-| `writes` | 如果存在，必须等于处理程序派生的 0.3.0 记录写集 |
+| `writes` | 如果存在，必须等于处理程序派生的 0.4.0 记录写集 |
 | `terminal` | `true` 定义无动作汇 |
 
 顶层 `cancel.stages` 列表只能包含声明的非终止节点 ID。其共享操作使用 `artifact.record`、精确的 `reason: string` 载荷和 `CANCELLED` 终止目标。
@@ -162,7 +164,7 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 
 ### 艺术品血统
 
-每个 `dev-flow-workflow/0.3.0` 艺术品声明一个工作区角色：
+每个 `dev-flow-workflow/0.4.0` 艺术品声明一个工作区角色：
 
 - `context`：只读分析，不能授权工作树更改；
 - `produces-source`：精确地固定一个 `source-predecessor`，然后原子记录后续快照；
@@ -178,7 +180,7 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 
 ### 仓库资源和新鲜度
 
-每个基于仓库的观察使用 `dev-flow-repository-set-snapshot/0.3.0`。它包装每个规范仓库的一个完整验证 `dev-flow-workspace-snapshot/0.3.0`；其聚合摘要覆盖集 ID、有序 ID 和完整的嵌套快照。一个成员集包含一个嵌套成员并使用相同的封装器。两步捕获必须作为一个整体稳定，否则变异不记录任何内容。
+每个基于仓库的观察使用 `dev-flow-repository-set-snapshot/0.4.0`。它包装每个规范仓库的一个完整验证 `dev-flow-workspace-snapshot/0.4.0`；其聚合摘要覆盖集 ID、有序 ID 和完整的嵌套快照。一个成员集包含一个嵌套成员并使用相同的封装器。两步捕获必须作为一个整体稳定，否则变异不记录任何内容。
 
 源生成计划载荷可声明相对于仓库的资源。每个项目需要 `repository_id`：
 
@@ -186,20 +188,20 @@ CSS 和 JavaScript 资源不需要构建步骤，不使用外部资源、遥测�
 {
   "items": [
     {"repository_id": "repo-api", "path": "openspec/changes/example/proposal.md", "role": "governing", "normalizer": "none"},
-    {"repository_id": "repo-api", "path": "openspec/changes/example/tasks.md", "role": "governing", "normalizer": "openspec-tasks/0.3.0"},
+    {"repository_id": "repo-api", "path": "openspec/changes/example/tasks.md", "role": "governing", "normalizer": "openspec-tasks/0.4.0"},
     {"repository_id": "repo-docs", "path": "openspec/changes/example/tasks.md", "role": "reported", "normalizer": "none"}
   ]
 }
 ```
 
-资源身份是 `(repository_id, path, role, normalizer)`。未知成员 ID、绝对或逃逸路径、跨根解析和重复作用域键失败；不同成员中的等效相对路径保持独立。`governing` 摘要参与艺术品新鲜度，即使对于 Git 清洁文件也如此。`reported` 摘要保留来源。`openspec-tasks/0.3.0` 仅标准化 Markdown 任务复选框标记；文本、排序和测试义务仍为治理字节。
+资源身份是 `(repository_id, path, role, normalizer)`。未知成员 ID、绝对或逃逸路径、跨根解析和重复作用域键失败；不同成员中的等效相对路径保持独立。`governing` 摘要参与艺术品新鲜度，即使对于 Git 清洁文件也如此。`reported` 摘要保留来源。`openspec-tasks/0.4.0` 仅标准化 Markdown 任务复选框标记；文本、排序和测试义务仍为治理字节。
 
 新鲜度源自不可变历史加上当前安全任务快照。对于仓库集，任何成员中的漂移保守地使聚合源、验证、审查和档案证据陈旧。当前核心不重用未更改成员的保障。合同变更、缺失或替换输入、更改治理资源、更新源生成器、工作区漂移和被取代的艺术品类型产生明确陈旧原因。陈旧证据仍可见，但不包括在当前覆盖率和成功最终确定中。
 
 ## 动作绑定和状态变更边界
 
 `next` 在工作开始前解析输入并发出一个密封的
-`dev-flow-action-binding/0.3.0`，其中包含：
+`dev-flow-action-binding/0.4.0`，其中包含：
 
 - 任务 ID 和任务修订；
 - 操作和节点 ID；
@@ -222,24 +224,24 @@ next → 固定操作绑定 → 执行一个操作 → 使用绑定进行应用
 
 验证记录 `passed`、非空命令、摘要以及每个当前标准的覆盖情况（作为 `proven` 或 `unverified`）。当前标准豁免派生出 `waived`。成功覆盖仅包含已证明或已豁免的标准。
 
-覆盖始终使用 `dev-flow-verification-coverage/0.3.0` 合同，具有精确的 `schema`、`criteria`、`repositories` 和 `integration` 字段。
+覆盖始终使用 `dev-flow-verification-coverage/0.4.0` 合同，具有精确的 `schema`、`criteria`、`repositories` 和 `integration` 字段。
 仓库映射完全覆盖规范成员 ID；每个成员和集成结果仅包含非空的 `command` 和布尔值 `passed`。顶层命令等于集成命令，顶层 `passed` 等于所有成员和集成结果的合取。命令成功但存在未验证、未豁免的标准是良好结构化的失败保障尝试，并消耗有限的返工路径。
 
 审查记录结果（`approved`、`changes-requested` 或 `unavailable`）和保障（`independent` 或 `self`）。独立批准成功。不可用审查仅在对该审查节点具有精确当前保障豁免时才成功。其他结果遵循有限返工或耗尽路径。尝试按节点 ID 和有效合同摘要计数，因此合同修订为其新作用域启动完整的声明预算。
 
 `delivery.finalize` 在纯领域层内生成权威的
-`dev-flow-delivery-dossier/0.3.0` 内容。它包含集合身份、规范成员基线/最终摘要、变更成员诊断、范围资源、所有验证和审查尝试、当前结构化验证，以及聚合新鲜度。成功的最终化需要完整集合的新鲜通过证据、完整当前覆盖情况，以及任何声明的审查输入包含独立批准或精确豁免。耗尽路径生成一个聚合 `INCOMPLETE` 档案，其中包含未解决的成员/集成详情、覆盖情况和保留的失败保障。
+`dev-flow-delivery-dossier/0.4.0` 内容。它包含集合身份、规范成员基线/最终摘要、变更成员诊断、范围资源、所有验证和审查尝试、当前结构化验证，以及聚合新鲜度。成功的最终化需要完整集合的新鲜通过证据、完整当前覆盖情况，以及任何声明的审查输入包含独立批准或精确豁免。耗尽路径生成一个聚合 `INCOMPLETE` 档案，其中包含未解决的成员/集成详情、覆盖情况和保留的失败保障。
 
 ## Agent 投影和任务视图
 
-`next` 返回紧凑的 `dev-flow-agent/0.3.0` JSON，每个集合大小有一个 `repository_set` 和一个当前操作（此处缩写）：
+`next` 返回紧凑的 `dev-flow-agent/0.4.0` JSON，每个集合大小有一个 `repository_set` 和一个当前操作（此处缩写）：
 
 ```json
 {
-  "schema": "dev-flow-agent/0.3.0",
+  "schema": "dev-flow-agent/0.4.0",
   "task_id": "task-example",
   "revision": 3,
-  "workflow": {"id": "lite", "version": "0.3.0", "schema": "dev-flow-workflow/0.3.0"},
+  "workflow": {"id": "lite", "version": "0.4.0", "schema": "dev-flow-workflow/0.4.0"},
   "status": "VERIFYING",
   "current_node": "verify",
   "contract": {"revision": 1, "digest": "<sha256>", "summary": "...", "criterion_ids": ["C1"]},
@@ -256,7 +258,7 @@ next → 固定操作绑定 → 执行一个操作 → 使用绑定进行应用
     "action_id": "verification.record",
     "payload": {"passed": "boolean", "command": "string", "coverage": "object", "summary": "string"},
     "inputs": [],
-    "binding": {"schema": "dev-flow-action-binding/0.3.0", "digest": "<sha256>"},
+    "binding": {"schema": "dev-flow-action-binding/0.4.0", "digest": "<sha256>"},
     "retry_budget": {"attempts_used": 0, "max_attempts": 2, "remaining": 2},
     "verification_coverage": {"fields": ["criteria", "repositories", "integration"]}
   },
@@ -273,14 +275,14 @@ next → 固定操作绑定 → 执行一个操作 → 使用绑定进行应用
 
 ```text
 <PLUGIN_DATA>/
-  0.3.0/
+  0.4.0/
     tasks/<task-id>/state.json
     locks/<task-id>.lock
 ```
 
 私有目录和文件使用仅本地账户权限。状态路径不能与目标仓库重叠。符号链接和格式错误的状态失败关闭；写入使用任务锁和原子替换。
 
-`scripts/dev_flow_python_launcher` 选择支持的解释器并运行固定的 CLI 或 Hook 引导。Hook 注册 `SessionStart`、`UserPromptSubmit` 和 `PreToolUse`，注入确切安装的 0.3.0 定位器和新鲜投影，并保护对插件数据根目录的直接写入。Hook 内部错误失败开放且从不修改任务状态。
+`scripts/dev_flow_python_launcher` 选择支持的解释器并运行固定的 CLI 或 Hook 引导。Hook 注册 `SessionStart`、`UserPromptSubmit` 和 `PreToolUse`，注入确切安装的 0.4.0 定位器和新鲜投影，并保护对插件数据根目录的直接写入。Hook 内部错误失败开放且从不修改任务状态。
 
 ## 原生主机集成
 

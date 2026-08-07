@@ -20,7 +20,7 @@ from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     DELIVERY_DOSSIER_SCHEMA,
     DRIVER_RESULT_SCHEMA,
-    PRODUCT_VERSION,
+    MODEL_VERSION,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     TASK_CHANGE_CLAIMS_SCHEMA,
     WORKFLOW_SCHEMA,
@@ -114,7 +114,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(started["command"], "start")
         task_id = started["task"]["task_id"]
         repository_id = started["task"]["repositories"][0]["id"]
-        self.assertEqual(started["task"]["workflow"]["version"], PRODUCT_VERSION)
+        self.assertEqual(started["task"]["workflow"]["version"], MODEL_VERSION)
 
         shown = self.invoke_success("show", task_id)
         self.assertEqual(shown["task"]["task_id"], task_id)
@@ -299,7 +299,7 @@ class CliTests(unittest.TestCase):
             started["task"]["workflow"]["schema"],
             WORKFLOW_SCHEMA,
         )
-        self.assertEqual(started["task"]["workflow"]["version"], PRODUCT_VERSION)
+        self.assertEqual(started["task"]["workflow"]["version"], MODEL_VERSION)
 
     def test_missing_task_error_is_machine_readable(self) -> None:
         completed, value = self.invoke_json("show", "missing-task-id")

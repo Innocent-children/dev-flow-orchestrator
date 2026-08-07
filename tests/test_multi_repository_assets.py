@@ -20,7 +20,8 @@ from dev_flow_orchestrator.product import (
     DELIVERY_DOSSIER_SCHEMA,
     MAX_REPOSITORY_COUNT,
     MIN_REPOSITORY_COUNT,
-    PRODUCT_VERSION,
+    MODEL_VERSION,
+    RELEASE_VERSION,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     REPOSITORY_TOPOLOGY_CAPABILITIES,
     VERIFICATION_COVERAGE_SCHEMA,
@@ -31,21 +32,21 @@ from dev_flow_orchestrator.product import (
 
 
 WORKFLOW_FILE_SHA256 = {
-    "bugfix": "a37d350c93714f13aea435606289c06aa86a8c870f299e1b404f75c2a47c7fff",
-    "feature": "df5b167a43acc335c3ca8271134e61f2fb3eee111a49aaab1f4ea94ae5e58bd8",
-    "full": "839419b10374436b0d80e67506605de70e152c9a8603a1848c5b7c2733f0439c",
-    "investigation": "41167f2ad5cadf5c8642f8395a9edff7ab50a1fb3bd1d75d384e7bc72d809ab2",
-    "lite": "fbd2301db9657401d82477183f86205c728717b1e926948d5ee99d69a7a1340e",
-    "refactor": "9c2671f275436b96e2ea1d02406ac03529d71c5f2701b67653baca41e89335e4",
+    "bugfix": "ba43c9ba8f7c0e6b3a41a9a3652e0719336f4add2edd179f863c46ba6c4cfd07",
+    "feature": "a6aa3392339a2ab7ca00856007505f788e32156b4421cd1cfa4ae3f3247978a3",
+    "full": "2a7c2fc0b1b5b5f16fb1278d5a5ea54344af2ffd50602beade0f3c4a8f71247d",
+    "investigation": "c5ac8836b8a4f3b12388e13ebe97fef48597be85953facb800401e6aa40929c9",
+    "lite": "4e660f93efcb55ff4160b6785736ea60d4093b5e493a08a2c1b892589e2ee710",
+    "refactor": "592a13b18bdef3c86e83e4673902dd0ed3225d2e65e2490bfeefdb7cec3e12e9",
 }
 
 WORKFLOW_IDENTITIES = {
-    "bugfix": "d1583ecd304c774763e0d94bcbbe97cc0e42f0d039a1673e7d57ff8736f98a59",
-    "feature": "79344f74b3224edb92bd32db445ccbd9f8282d774e3ae6e5337e95c0467584c9",
-    "full": "12df22c2d06d1bb5c9995fa33bdcb1b51fdbaa28f24ace0cff3631acda45326d",
-    "investigation": "ecbddeac51c0e22644341a4604f931a40f8931db9c58992211ec4d9e7f58458a",
-    "lite": "69650330281720d4d09caa69e73a7547e83bb812334c0d33e0b4d4677f31faa3",
-    "refactor": "16867fe93f084897b98347a4b6b83e8ada9e4eb172b97a9e3fefb9791476057c",
+    "bugfix": "6f59684625ede85360b140466a40826f9259baf354e48e2664b87e0200986ebb",
+    "feature": "14e79f4415e207821c5a792ee20a5088574b332643bde80e9650aaa3615ed5a3",
+    "full": "0aaea7aa7e6143937bd8483d4d624c7f958e969f7adad908361bb178758bab72",
+    "investigation": "fcf4daca20ca8497c1cd4435de70eac51ae89ae8642597cecd1a2e6e7ff36a07",
+    "lite": "8fa8964df433e36b99585f819e47d303476beb8ff1fc1d2957a44a2e67820a3d",
+    "refactor": "0acbed9ef928f505cf5c598d863f533ead30053d8b184da86c19b318bee4a6a4",
 }
 
 CURRENT_MODEL_ASSETS = (
@@ -79,7 +80,7 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
 
     def test_topology_authority_and_manifest_describe_the_same_product(self) -> None:
         self.assertEqual((MIN_REPOSITORY_COUNT, MAX_REPOSITORY_COUNT), (1, 8))
-        self.assertEqual(PRODUCT_VERSION, "0.3.0")
+        self.assertEqual(MODEL_VERSION, "0.4.0")
         self.assertEqual(WORKFLOW_SCHEMA, product_schema("workflow"))
         self.assertEqual(AGENT_PROTOCOL_SCHEMA, product_schema("agent"))
         self.assertEqual(
@@ -312,7 +313,7 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
         manifest_version = json.loads(
             _read(".codex-plugin/plugin.json")
         )["version"]
-        self.assertEqual(manifest_version, PRODUCT_VERSION)
+        self.assertEqual(manifest_version, RELEASE_VERSION)
         for relative in ("pyproject.toml", "uv.lock"):
             with self.subTest(relative=relative):
                 path = ROOT / relative

@@ -54,7 +54,7 @@ class UninstallerBehaviorTests(unittest.TestCase):
             json.dumps(
                 {
                     "name": "dev-flow-orchestrator",
-                    "version": "0.3.0",
+                    "version": "0.4.0",
                     "description": "test candidate",
                 }
             ),

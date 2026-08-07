@@ -1,4 +1,4 @@
-"""Authoritative product version, identities, and official workflow catalog."""
+"""Authoritative model identities and official workflow catalog."""
 
 from __future__ import annotations
 
@@ -7,8 +7,12 @@ import json
 from types import MappingProxyType
 from typing import Tuple
 
+from ._version import RELEASE_VERSION
 
-PRODUCT_VERSION = "0.3.0"
+
+# Changes only when persisted state or a protocol becomes incompatible. Release
+# patches use RELEASE_VERSION and leave this compatibility authority unchanged.
+MODEL_VERSION = "0.4.0"
 WORKFLOW_IDS: Tuple[str, ...] = (
     "bugfix",
     "feature",
@@ -17,15 +21,15 @@ WORKFLOW_IDS: Tuple[str, ...] = (
     "lite",
     "refactor",
 )
-PLUGIN_DATA_NAMESPACE = PRODUCT_VERSION
-OPENSPEC_TASKS_NORMALIZER = "openspec-tasks/{}".format(PRODUCT_VERSION)
+PLUGIN_DATA_NAMESPACE = MODEL_VERSION
+OPENSPEC_TASKS_NORMALIZER = "openspec-tasks/{}".format(MODEL_VERSION)
 
 
 def product_schema(kind: str) -> str:
-    """Return one typed identifier under the sole product version."""
+    """Return one typed identifier under the compatibility model version."""
     if not isinstance(kind, str) or not kind:
         raise ValueError("product schema kind must not be empty")
-    return "dev-flow-{}/{}".format(kind, PRODUCT_VERSION)
+    return "dev-flow-{}/{}".format(kind, MODEL_VERSION)
 
 
 def product_domain(kind: str) -> bytes:
@@ -67,7 +71,7 @@ BUDGET_STATE_SCHEMA = product_schema("budget-state")
 MIN_REPOSITORY_COUNT = 1
 MAX_REPOSITORY_COUNT = 8
 
-# Normative 0.3.0 collection and payload authorities.  Runtime modules import
+# Normative 0.4.0 collection and payload authorities.  Runtime modules import
 # these values instead of carrying locally divergent limits.
 MAX_SNAPSHOT_PATHS = 4_096
 MAX_INDEX_STAGE_ENTRIES = 12_288
@@ -134,7 +138,7 @@ def product_document() -> dict:
     """
     return {
         "plugin": "dev-flow-orchestrator",
-        "version": PRODUCT_VERSION,
+        "version": MODEL_VERSION,
         "schemas": {
             "task": TASK_IDENTITY,
             "record": RECORD_SCHEMA,

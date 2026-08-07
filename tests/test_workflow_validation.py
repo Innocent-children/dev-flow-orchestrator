@@ -12,7 +12,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
 from dev_flow_orchestrator.model import DevFlowError
-from dev_flow_orchestrator.product import ASSURANCE_POLICY_SCHEMA, PRODUCT_VERSION, WORKFLOW_IDS
+from dev_flow_orchestrator.product import ASSURANCE_POLICY_SCHEMA, MODEL_VERSION, WORKFLOW_IDS
 from dev_flow_orchestrator.workflow import (
     SCHEMA,
     validate_definition_document,
@@ -25,7 +25,7 @@ def workflow_document() -> dict:
     return {
         "schema": SCHEMA,
         "id": "bounded-delivery",
-        "version": PRODUCT_VERSION,
+        "version": MODEL_VERSION,
         "assurance": {"policy": ASSURANCE_POLICY_SCHEMA, "profile": "lite"},
         "entry": "preflight",
         "revision_target": "implement",
@@ -161,7 +161,7 @@ class WorkflowContractTests(unittest.TestCase):
         )
 
         self.assertEqual(definition.schema, SCHEMA)
-        self.assertEqual(definition.version, PRODUCT_VERSION)
+        self.assertEqual(definition.version, MODEL_VERSION)
         self.assertEqual(definition.revision_target, "implement")
         self.assertEqual(
             definition.nodes["implement"].artifact.inputs[0].edge_kind,
@@ -344,7 +344,7 @@ class OfficialWorkflowPortfolioTests(unittest.TestCase):
             with self.subTest(workflow=workflow_id):
                 definition = load_definition(workflow_id)
                 self.assertEqual(definition.schema, SCHEMA)
-                self.assertEqual(definition.version, PRODUCT_VERSION)
+                self.assertEqual(definition.version, MODEL_VERSION)
                 outcomes = {
                     node.finalize_outcome
                     for node in definition.nodes.values()

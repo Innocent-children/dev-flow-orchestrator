@@ -98,7 +98,7 @@ elif args == ["plugin", "add", "dev-flow-orchestrator@personal"]:
     if os.environ.get("DEV_FLOW_CODEX_ADD_EXIT") != "0":
         sys.exit(int(os.environ["DEV_FLOW_CODEX_ADD_EXIT"]))
     open(os.environ["DEV_FLOW_CODEX_LOG"], "a").write("add\\n")
-    open(state, "w").write("0.3.0")
+    open(state, "w").write("0.4.0")
 else:
     sys.exit(2)
 """,

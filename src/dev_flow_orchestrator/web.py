@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .controller import Controller
 from .model import DevFlowError
-from .product import PRODUCT_IDENTITY, PRODUCT_VERSION
+from .product import PRODUCT_IDENTITY, RELEASE_VERSION
 
 
 SERVER_HOST = "127.0.0.1"
@@ -57,7 +57,7 @@ def _json_bytes(value: Mapping[str, object]) -> bytes:
 def _error(code: str, message: str) -> dict:
     return {
         "ok": False,
-        "version": PRODUCT_VERSION,
+        "version": RELEASE_VERSION,
         "product_identity": PRODUCT_IDENTITY,
         "view": "error",
         "observed_at": _utc_now(),
@@ -486,7 +486,7 @@ def startup_receipt(server: BoundedThreadingHTTPServer) -> dict:
     return {
         "ok": True,
         "command": "web",
-        "version": PRODUCT_VERSION,
+        "version": RELEASE_VERSION,
         "product_identity": PRODUCT_IDENTITY,
         "host": SERVER_HOST,
         "port": server.server_port,

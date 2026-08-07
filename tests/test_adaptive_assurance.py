@@ -136,7 +136,7 @@ class AdaptiveAssuranceTests(unittest.TestCase):
         first = projected["obligation"]
         execution = validate_assurance_execution(
             {
-                "schema": "dev-flow-assurance-execution/0.3.0",
+                "schema": "dev-flow-assurance-execution/0.4.0",
                 "plan_digest": value["digest"],
                 "obligation_id": first["obligation_id"],
                 "obligation_fingerprint": first["fingerprint"],
@@ -251,7 +251,7 @@ class CausalReviewTests(unittest.TestCase):
 
     def finding(self, relation: str, blocking: bool, *, path="src/a.py", causal=False):
         body = {
-            "schema": "dev-flow-review-finding/0.3.0",
+            "schema": "dev-flow-review-finding/0.4.0",
             "severity": "high",
             "blocking": blocking,
             "causal_relation": relation,
@@ -338,7 +338,7 @@ class CausalReviewTests(unittest.TestCase):
 
     def test_all_dispositions_are_exactly_bound_and_authorized(self) -> None:
         base = {
-            "schema": "dev-flow-finding-disposition/0.3.0",
+            "schema": "dev-flow-finding-disposition/0.4.0",
             "task_id": "task-adaptive",
             "contract_digest": CONTRACT_DIGEST,
             "plan_digest": self.plan["digest"],
@@ -354,7 +354,7 @@ class CausalReviewTests(unittest.TestCase):
                     **base,
                     "kind": kind,
                     "next_contract": (
-                        {"schema": "dev-flow-delivery-contract/0.3.0"}
+                        {"schema": "dev-flow-delivery-contract/0.4.0"}
                         if kind == "expand-contract"
                         else None
                     ),

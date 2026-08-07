@@ -143,7 +143,7 @@ class InstallerBehaviorTests(unittest.TestCase):
             "    printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
             "    exit_code=\"${DEV_FLOW_CODEX_ADD_EXIT:-0}\"\n"
             "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
-            "    printf '%s\\n' \"${DEV_FLOW_PACKAGE_VERSION:-0.3.0}\" > \"$DEV_FLOW_CODEX_STATE\"\n"
+            "    printf '%s\\n' \"${DEV_FLOW_PACKAGE_VERSION:-0.4.0}\" > \"$DEV_FLOW_CODEX_STATE\"\n"
             "    ;;\n"
             "  *)\n"
             "    exit 2\n"
@@ -179,7 +179,7 @@ class InstallerBehaviorTests(unittest.TestCase):
                 "DEV_FLOW_CODEX_STATE": str(self.codex_state),
                 "DEV_FLOW_CODEX_ADD_EXIT": "0",
                 "DEV_FLOW_CODEX_REMOVE_EXIT": "0",
-                "DEV_FLOW_PACKAGE_VERSION": "0.3.0",
+                "DEV_FLOW_PACKAGE_VERSION": "0.4.0",
                 "CODEX_HOME": str(self.test_root / ".codex"),
                 "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_CONFIG_NOSYSTEM": "1",
@@ -362,11 +362,11 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertIn("DEV FLOW ORCHESTRATOR", result.stdout)
         self.assertIn("// SYSTEM ONLINE", result.stdout)
         self.assertIn("CONTROL PLANE READY", result.stdout)
-        self.assertIn("VERSION 0.3.0", result.stdout)
+        self.assertIn("VERSION 0.4.0", result.stdout)
         self.assertIn("INSTALLATION RECEIPT", result.stdout)
         self.assertIn("dev-flow-orchestrator@personal", result.stdout)
         self.assertIn("ACTION     installed", result.stdout)
-        self.assertIn("INSTALLED  0.3.0", result.stdout)
+        self.assertIn("INSTALLED  0.4.0", result.stdout)
         self.assertIn(str(self.source_root), result.stdout)
         self.assertIn(str(self.marketplace.parent), result.stdout)
         self.assertIn(str(self.test_root / ".codex"), result.stdout)
@@ -412,11 +412,11 @@ class InstallerBehaviorTests(unittest.TestCase):
         )
         self.assertIn("ACTION     upgraded", result.stdout)
         self.assertIn("PREVIOUS   0.2.0", result.stdout)
-        self.assertIn("INSTALLED  0.3.0", result.stdout)
-        self.assertEqual(self.codex_state.read_text(encoding="utf-8"), "0.3.0\n")
+        self.assertIn("INSTALLED  0.4.0", result.stdout)
+        self.assertEqual(self.codex_state.read_text(encoding="utf-8"), "0.4.0\n")
 
     def test_current_installed_plugin_is_repaired_automatically(self) -> None:
-        self.set_installed_version("0.3.0")
+        self.set_installed_version("0.4.0")
 
         result = self.install_successfully()
 
@@ -428,11 +428,11 @@ class InstallerBehaviorTests(unittest.TestCase):
             ],
         )
         self.assertIn("ACTION     repaired", result.stdout)
-        self.assertIn("PREVIOUS   0.3.0", result.stdout)
-        self.assertIn("INSTALLED  0.3.0", result.stdout)
+        self.assertIn("PREVIOUS   0.4.0", result.stdout)
+        self.assertIn("INSTALLED  0.4.0", result.stdout)
 
     def test_remove_failure_preserves_installed_plugin_and_stops(self) -> None:
-        self.set_installed_version("0.3.0")
+        self.set_installed_version("0.4.0")
 
         result = self.run_installer({"DEV_FLOW_CODEX_REMOVE_EXIT": "19"})
 
@@ -442,7 +442,7 @@ class InstallerBehaviorTests(unittest.TestCase):
             self.activation_calls(),
             ["plugin remove dev-flow-orchestrator@personal"],
         )
-        self.assertEqual(self.codex_state.read_text(encoding="utf-8"), "0.3.0\n")
+        self.assertEqual(self.codex_state.read_text(encoding="utf-8"), "0.4.0\n")
 
     def test_existing_install_fast_forwards_to_fetched_main(self) -> None:
         self.install_successfully()

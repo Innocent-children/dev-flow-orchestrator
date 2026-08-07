@@ -1,7 +1,7 @@
 interface:
   display_name: "Analyze Change Impact"
-  short_description: "Map exact repository-set 0.3.0 impact with evidence"
-  default_prompt: "Use $analyze-change-impact to produce a bounded source-confirmed 0.3.0 impact closure for the exact repository set."
+  short_description: "Map exact repository-set 0.4.0 impact with evidence"
+  default_prompt: "Use $analyze-change-impact to produce a bounded source-confirmed 0.4.0 impact closure for the exact repository set."
 dependencies:
   tools:
     - type: "mcp"

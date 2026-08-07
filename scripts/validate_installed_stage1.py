@@ -23,11 +23,12 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 
-PRODUCT_VERSION = "0.3.0"
+MODEL_VERSION = "0.4.0"
+SEMANTIC_VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 
 
 def _product_schema(kind: str) -> str:
-    return "dev-flow-{}/{}".format(kind, PRODUCT_VERSION)
+    return "dev-flow-{}/{}".format(kind, MODEL_VERSION)
 
 
 EVIDENCE_SCHEMA = _product_schema("installed-evidence")
@@ -40,7 +41,7 @@ DELIVERY_DOSSIER_SCHEMA = _product_schema("delivery-dossier")
 WORKFLOW_SCHEMA = _product_schema("workflow")
 TREE_SNAPSHOT_SCHEMA = _product_schema("tree-snapshot")
 TASK_CHANGE_CLAIMS_SCHEMA = _product_schema("task-change-claims")
-OPENSPEC_TASKS_NORMALIZER = "openspec-tasks/{}".format(PRODUCT_VERSION)
+OPENSPEC_TASKS_NORMALIZER = "openspec-tasks/{}".format(MODEL_VERSION)
 OFFICIAL_WORKFLOWS = (
     "bugfix",
     "feature",
@@ -412,7 +413,8 @@ def _command_result_summary(value: object) -> object:
             "context_kind": (
                 "current-task"
                 if isinstance(context, str)
-                and "Current Dev Flow {} task".format(PRODUCT_VERSION) in context
+                and "Current Dev Flow " in context
+                and " task" in context
                 else "availability"
             ),
         }
@@ -810,6 +812,15 @@ class Stage1Acceptance:
         self.plugin_root = plugin_root
         self.scratch = scratch
         self.evidence = evidence
+        manifest = _read_json_object(
+            plugin_root / ".codex-plugin" / "plugin.json", "plugin manifest"
+        )
+        self.release_version = manifest.get("version")
+        _require(
+            isinstance(self.release_version, str)
+            and SEMANTIC_VERSION.fullmatch(self.release_version) is not None,
+            "installed manifest release version is invalid",
+        )
         self.launcher = plugin_root / "scripts" / "dev_flow_python_launcher"
         self.cli_handler = plugin_root / "scripts" / "dev_flow.py"
         environment = dict(os.environ)
@@ -1503,7 +1514,7 @@ class Stage1Acceptance:
             _require(
                 isinstance(workflow_view, Mapping)
                 and workflow_view.get("id") == workflow
-                and workflow_view.get("version") == PRODUCT_VERSION,
+                and workflow_view.get("version") == MODEL_VERSION,
                 "{} did not start the installed current workflow".format(task_id),
             )
             self._record_task(task_id)
@@ -1538,14 +1549,14 @@ class Stage1Acceptance:
             self.recorder,
             self.launcher,
             self.cli_handler,
-            plugin_data / PRODUCT_VERSION,
+            plugin_data / MODEL_VERSION,
             primary,
         )
         secondary_controller = InstalledController(
             self.recorder,
             self.launcher,
             self.cli_handler,
-            plugin_data / PRODUCT_VERSION,
+            plugin_data / MODEL_VERSION,
             secondary,
         )
         started, start_process = primary_controller.start_repositories(
@@ -1627,7 +1638,7 @@ class Stage1Acceptance:
         )
         _require(
             isinstance(context, str)
-            and "Current Dev Flow {} task".format(PRODUCT_VERSION) in context
+            and "Current Dev Flow {} task".format(self.release_version) in context
             and task_id in context
             and "projection=" in context,
             "installed Hook did not discover the exact-set task from its secondary member",
@@ -1838,7 +1849,7 @@ class Stage1Acceptance:
         _require(
             isinstance(workflow, Mapping)
             and workflow.get("id") == "lite"
-            and workflow.get("version") == PRODUCT_VERSION
+            and workflow.get("version") == MODEL_VERSION
             and len(repository_ids) == 2
             and len(set(repository_ids)) == 2,
             "exact-set lite start did not persist the installed membership",
@@ -2630,8 +2641,8 @@ class Stage1Acceptance:
         )
         version = manifest.get("version")
         _require(
-            version == PRODUCT_VERSION,
-            "installed manifest does not use the expected product version",
+            version == self.release_version,
+            "installed manifest release version changed during validation",
         )
         _require(
             manifest.get("name") == "dev-flow-orchestrator"
@@ -2649,7 +2660,7 @@ class Stage1Acceptance:
                 is not None
                 and re.search(
                     r'(?m)^version:\s*"{}"\s*$'.format(
-                        re.escape(PRODUCT_VERSION)
+                        re.escape(MODEL_VERSION)
                     ),
                     document,
                 )
@@ -2888,7 +2899,7 @@ class Stage1Acceptance:
             self.recorder,
             self.launcher,
             self.cli_handler,
-            plugin_data / PRODUCT_VERSION,
+            plugin_data / MODEL_VERSION,
             repository,
         )
         _, start_process = controller.start_repositories(
@@ -2924,11 +2935,11 @@ class Stage1Acceptance:
         context = specific.get("additionalContext") if isinstance(specific, Mapping) else None
         _require(
             isinstance(context, str)
-            and "Current Dev Flow {} task".format(PRODUCT_VERSION) in context
+            and "Current Dev Flow {} task".format(self.release_version) in context
             and task_id in context
             and "locator=" in context
             and "projection=" in context
-            and str((plugin_data / PRODUCT_VERSION).resolve()) in context,
+            and str((plugin_data / MODEL_VERSION).resolve()) in context,
             "installed Hook bootstrap did not inject the current task and locator",
         )
         locator_text = context.split(" locator=", 1)[1].split(" projection=", 1)[0]
@@ -2978,7 +2989,7 @@ class Stage1Acceptance:
             "preflight_next_process": preflight_next_process,
             "cancel_process": cancel_process,
             "show_process": show_process,
-            "plugin_data_namespace": PRODUCT_VERSION,
+            "plugin_data_namespace": MODEL_VERSION,
             "session_start_context": {
                 "locator": self.recorder._display(locator_text),
                 "projection": self.recorder._display_value(

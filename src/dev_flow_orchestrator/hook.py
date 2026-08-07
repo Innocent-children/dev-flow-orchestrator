@@ -14,7 +14,7 @@ from typing import Mapping, Optional, Sequence
 
 from ._platform.paths import canonical_data_root, path_contains
 from .controller import Controller
-from .product import PLUGIN_DATA_NAMESPACE, PRODUCT_VERSION
+from .product import PLUGIN_DATA_NAMESPACE, RELEASE_VERSION
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -77,7 +77,7 @@ def _context(
     diagnostics = controller.inventory_diagnostics()
     tasks = controller.tasks_for_path(cwd)
     locator = _controller_command(config)
-    product_name = "Dev Flow {}".format(PRODUCT_VERSION)
+    product_name = "Dev Flow {}".format(RELEASE_VERSION)
     if diagnostics:
         return (
             product_name

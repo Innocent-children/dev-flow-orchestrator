@@ -16,7 +16,7 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.model import DevFlowError
-from dev_flow_orchestrator.product import PRODUCT_IDENTITY, PRODUCT_VERSION
+from dev_flow_orchestrator.product import MODEL_VERSION, PRODUCT_IDENTITY, RELEASE_VERSION
 from dev_flow_orchestrator.web_views import live_task_view
 from support import RepositoryTestCase, make_repository
 
@@ -25,9 +25,9 @@ class WebReadModelTests(RepositoryTestCase):
     def test_metadata_uses_the_current_product_identity(self) -> None:
         metadata = self.controller.inspect_product()
 
-        self.assertEqual(metadata["version"], PRODUCT_VERSION)
+        self.assertEqual(metadata["version"], RELEASE_VERSION)
         self.assertEqual(metadata["product_identity"], PRODUCT_IDENTITY)
-        self.assertEqual(metadata["result"]["version"], PRODUCT_VERSION)
+        self.assertEqual(metadata["result"]["version"], RELEASE_VERSION)
         self.assertNotIn("api_version", metadata)
 
     def test_inventory_is_filtered_paged_and_repository_independent(self) -> None:
@@ -53,7 +53,7 @@ class WebReadModelTests(RepositoryTestCase):
         )
         self.assertEqual(page["result"]["page"]["total"], 1)
         self.assertEqual(page["result"]["filters"]["q"], "beta")
-        self.assertEqual(page["result"]["tasks"][0]["workflow_version"], PRODUCT_VERSION)
+        self.assertEqual(page["result"]["tasks"][0]["workflow_version"], MODEL_VERSION)
         self.assertEqual(page["result"]["tasks"][0]["health"], "not-evaluated")
         self.assertNotIn(str(second_repository), json.dumps(page))
         self.assertNotIn("original_contract", json.dumps(page))

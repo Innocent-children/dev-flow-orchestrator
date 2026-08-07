@@ -310,7 +310,7 @@ def derive_review_result(
     if claimed_outcome is not None and claimed_outcome != outcome:
         raise _error("REVIEW_OUTCOME_CONTRADICTORY", "submitted review outcome contradicts controller derivation", claimed=claimed_outcome, derived=outcome)
     base = {
-        "schema": "dev-flow-independent-review/0.3.0",
+        "schema": "dev-flow-independent-review/0.4.0",
         "plan_digest": plan.get("digest"),
         "obligation_id": review_obligation.get("obligation_id"),
         "reviewer_available": reviewer_available,

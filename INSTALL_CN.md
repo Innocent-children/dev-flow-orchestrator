@@ -1,20 +1,20 @@
 # 安装 Dev Flow Orchestrator
 
-Dev Flow 0.3.0 是一次干净的协议切换。已安装控制器必须使用精确的
-`<PLUGIN_DATA>/0.3.0` 目录。可以为操作者参考保留 `<PLUGIN_DATA>/0.2.0` 字节，但
-0.3 运行时不会发现、加载、迁移、修复或修改它们；显式提供的 0.2 schema 或状态不受支持。
+Dev Flow 兼容模型 0.4.0 是一次干净的协议切换。已安装控制器必须使用精确的
+`<PLUGIN_DATA>/0.4.0` 目录。可以为操作者参考保留 `<PLUGIN_DATA>/0.2.0` 字节，但
+0.4.0 模型运行时不会发现、加载、迁移、修复或修改它们；显式提供的 0.2 schema 或状态不受支持。
 
 启动任务前由用户自行准备每个 Git 工作树。准入为每个规范根目录和工作树专属 Git
 管理目录创建一个活动租约；不同任务的不同 linked worktree 可以共享 Git 公共目录。
-源码动作期间提交精确的 `dev-flow-task-change-claims/0.3.0`。执行
+源码动作期间提交精确的 `dev-flow-task-change-claims/0.4.0`。执行
 `assurance.execute` 时只遵循 `current_obligation` 及其证据契约，不得重建 binding、
 plan ID、finding、计数器或审查结论。
 
 [English](INSTALL.md)
 
-本指南从本地 Codex 市场安装 Dev Flow Orchestrator 0.3.0，并验证已安装的启动器、Hook、技能和控制器路径。
+本指南从本地 Codex 市场安装当前 Dev Flow Orchestrator 发布，并验证已安装的启动器、Hook、技能和控制器路径。
 
-安装后的 0.3.0 核心会在由用户预先准备的一到八个 Git 工作树组成的精确规范集合上运行一个本地任务，并始终将一个当前动作投影给一个 Codex 执行器。它不会创建或切换分支/工作树、发布 Git 更改、协调并行 Agent、调用外部 CI/PR/Release 系统，也不会复用未变更仓库成员的部分保障。
+安装后的核心使用兼容模型 0.4.0，在由用户预先准备的一到八个 Git 工作树组成的精确规范集合上运行一个本地任务，并始终将一个当前动作投影给一个 Codex 执行器。它不会创建或切换分支/工作树、发布 Git 更改、协调并行 Agent、调用外部 CI/PR/Release 系统，也不会复用未变更仓库成员的部分保障。
 
 ## 快速安装
 
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 
 ## 启动本地只读 Web UI
 
-已安装的 0.3.0 插件已经包含 Web UI；无需单独安装，也没有单独版本。使用包含待检查
+已安装的 0.4.0 插件已经包含 Web UI；无需单独安装，也没有单独版本。使用包含待检查
 任务的同一个控制器数据根目录：
 
 ```sh
@@ -126,7 +126,7 @@ cp \
 python3 -m json.tool "$HOME/.agents/plugins/marketplace.json"
 ```
 
-## 3. 安装 0.3.0
+## 3. 安装 0.4.0
 
 ```sh
 codex plugin list
@@ -140,7 +140,9 @@ codex plugin list
 
 ## 4. 替换安装
 
-Codex 安装了一个不可变的缓存快照。因此，包、运行时协议和产品文档携带相同的声明产品版本；此源目前使用 `0.3.0`，没有单独的仅缓存版本。
+Codex 安装一个不可变的缓存快照。插件、Python 包和 lock 元数据共享一个
+`RELEASE_VERSION`；运行时协议与持久化任务使用独立治理的 `MODEL_VERSION` `0.4.0`。
+仅发布补丁不会改变状态命名空间、schema、工作流身份或活动任务。
 
 1. 获取完整的已审查候选版本。
 2. 将市场源树替换为一个候选版本。
@@ -158,11 +160,11 @@ Codex 安装了一个不可变的缓存快照。因此，包、运行时协议�
 
 5. 启动一个新的 Codex 任务并验证已安装的版本和 Hook 源。
 
-替换安装操作基于当前的 0.3.0 产品模型和状态命名空间。在替换已安装快照之前，完成或明确取消活动任务。
+替换安装操作基于当前的 0.4.0 产品模型和状态命名空间。在替换已安装快照之前，完成或明确取消活动任务。
 
 ## 5. 数据目录和控制器定位器
 
-任务状态必须保留在任务中的每个目标仓库之外。Hook 注入一个完整的定位器，其中包含已安装的 Python 启动器、已安装的 CLI 和确切的 `<PLUGIN_DATA>/0.3.0` 状态目录：
+任务状态必须保留在任务中的每个目标仓库之外。Hook 注入一个完整的定位器，其中包含已安装的 Python 启动器、已安装的 CLI 和确切的 `<PLUGIN_DATA>/0.4.0` 状态目录：
 
 ```text
 <ctl> = <exact Hook-injected locator>
@@ -170,11 +172,11 @@ Codex 安装了一个不可变的缓存快照。因此，包、运行时协议�
 
 对已安装任务使用该定位器不变。不要重新构造其路径或附加另一个 `--data-dir`。
 
-对于单独的直接 CLI 冒烟测试，选择目标仓库外的一个明确数据目录。这里的 `--data-dir` 表示确切目录，不会附加 `0.3.0`：
+对于单独的直接 CLI 冒烟测试，选择目标仓库外的一个明确数据目录。这里的 `--data-dir` 表示确切目录，不会附加 `0.4.0`：
 
 ```sh
 SOURCE_ROOT="$HOME/plugins/dev-flow-orchestrator"
-DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
+DATA_DIR="/absolute/path/to/independent-dev-flow-0.4.0-state"
 
 "$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
   "$SOURCE_ROOT/scripts/dev_flow.py" \
@@ -183,7 +185,7 @@ DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
 
 对该任务的每个命令使用相同的精确目录。控制器使用私有目录/文件、任务锁、修订比较和交换、确定性重放以及原子替换。直接状态编辑、符号链接状态路径、格式错误的记录和数据/仓库树重叠会失败关闭。
 
-## 6. 验证 0.3.0 CLI 合约
+## 6. 验证 0.4.0 CLI 合约
 
 在一次性初始化的 Git 仓库中创建一个任务：
 
@@ -205,7 +207,7 @@ DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
   --data-dir "$DATA_DIR" next <task-id>
 ```
 
-第一个 0.3.0 操作是 `task.preflight`。每个 `apply`（包括 preflight）都需要精确返回的对象作为 `projection.action.binding`。复制新的绑定为严格 JSON；不要重建或重用它：
+第一个 0.4.0 操作是 `task.preflight`。每个 `apply`（包括 preflight）都需要精确返回的对象作为 `projection.action.binding`。复制新的绑定为严格 JSON；不要重建或重用它：
 
 ```sh
 "$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
@@ -234,7 +236,7 @@ DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
   "$SOURCE_ROOT/scripts/dev_flow.py" \
   --data-dir "$DATA_DIR" apply <task-id> \
   --action verification.record \
-  --payload-json '{"passed":true,"command":"git -C /absolute/path/to/disposable-repository status --short","coverage":{"schema":"dev-flow-verification-coverage/0.3.0","criteria":{"requirement":"proven"},"repositories":{"<repository-id>":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"integration":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"summary":"member and integration checks passed"}' \
+  --payload-json '{"passed":true,"command":"git -C /absolute/path/to/disposable-repository status --short","coverage":{"schema":"dev-flow-verification-coverage/0.4.0","criteria":{"requirement":"proven"},"repositories":{"<repository-id>":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"integration":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"summary":"member and integration checks passed"}' \
   --binding-json '<fresh verification binding JSON>'
 ```
 
@@ -257,7 +259,7 @@ DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
   --data-dir "$DATA_DIR" show <task-id>
 ```
 
-上面的一个参数 `--repo` 路径创建了一个单成员精确仓库集。它使用 `dev-flow-agent/0.3.0`，一个聚合仓库集快照，`dev-flow-verification-coverage/0.3.0`，作用域资源和 `dev-flow-delivery-dossier/0.3.0`，就像所有更大的集合一样。
+上面的一个参数 `--repo` 路径创建了一个单成员精确仓库集。它使用 `dev-flow-agent/0.4.0`，一个聚合仓库集快照，`dev-flow-verification-coverage/0.4.0`，作用域资源和 `dev-flow-delivery-dossier/0.4.0`，就像所有更大的集合一样。
 
 为了对较大的集合进行烟雾测试，准备两个到八个初始化的、非裸的本地 Git 工作树根目录并重复 `--repo`：
 
@@ -272,18 +274,18 @@ DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
   --requirement "Repository-set installation smoke"
 ```
 
-准入规范并排序精确集合，并拒绝重复或重叠的根目录、共享 Git 公共目录、非工作树根目录和数据目录重叠。调用者顺序没有意义，且启动后成员关系是不可变的。保存返回的成员 ID。`dev-flow-agent/0.3.0` 投影中的 `repository_set` 携带聚合快照摘要，并且每次 apply 仍使用其单个新鲜操作绑定。
+准入规范并排序精确集合，并拒绝重复或重叠的根目录、共享 Git 公共目录、非工作树根目录和数据目录重叠。调用者顺序没有意义，且启动后成员关系是不可变的。保存返回的成员 ID。`dev-flow-agent/0.4.0` 投影中的 `repository_set` 携带聚合快照摘要，并且每次 apply 仍使用其单个新鲜操作绑定。
 
 在 `verification.record` 处，覆盖精确标准和成员集合以及一个集成结果。顶层命令必须等于 `integration.command`，顶层 `passed` 必须等于每个成员和集成结果的合取：
 
 ```sh
 <ctl> apply <task-id> \
   --action verification.record \
-  --payload-json '{"passed":true,"command":"./verify-integration.sh","coverage":{"schema":"dev-flow-verification-coverage/0.3.0","criteria":{"requirement":"proven"},"repositories":{"<api-repository-id>":{"command":"./verify-api.sh","passed":true},"<client-repository-id>":{"command":"./verify-client.sh","passed":true}},"integration":{"command":"./verify-integration.sh","passed":true}},"summary":"all member and integration checks passed"}' \
+  --payload-json '{"passed":true,"command":"./verify-integration.sh","coverage":{"schema":"dev-flow-verification-coverage/0.4.0","criteria":{"requirement":"proven"},"repositories":{"<api-repository-id>":{"command":"./verify-api.sh","passed":true},"<client-repository-id>":{"command":"./verify-client.sh","passed":true}},"integration":{"command":"./verify-integration.sh","passed":true}},"summary":"all member and integration checks passed"}' \
   --binding-json '<fresh verification binding JSON>'
 ```
 
-完成生成一个聚合 `dev-flow-delivery-dossier/0.3.0`。它包括规范清单、每个成员基线/最终摘要、变更成员诊断、作用域资源、验证尝试、当前成员/集成证明和聚合新鲜度。在任务达到终端状态之前，对任何成员的更改会使当前聚合绑定和保证失效；获取一个新操作并重新运行完整集合所需的确保。任务为终端后不会重新打开：后续成员漂移只会使现有档案过时，进一步交付工作需要一个新的任务。
+完成生成一个聚合 `dev-flow-delivery-dossier/0.4.0`。它包括规范清单、每个成员基线/最终摘要、变更成员诊断、作用域资源、验证尝试、当前成员/集成证明和聚合新鲜度。在任务达到终端状态之前，对任何成员的更改会使当前聚合绑定和保证失效；获取一个新操作并重新运行完整集合所需的确保。任务为终端后不会重新打开：后续成员漂移只会使现有档案过时，进一步交付工作需要一个新的任务。
 
 ## 7. 从明确的合同开始
 
@@ -296,7 +298,7 @@ DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
   --workflow feature \
   --repo /absolute/path/to/repository \
   --requirement "Deliver observable behavior" \
-  --contract-json '{"schema":"dev-flow-delivery-contract/0.3.0","revision":1,"summary":"Deliver observable behavior","acceptance_criteria":[{"id":"C1","statement":"The behavior is observable"}],"scope":["implementation and focused verification"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}'
+  --contract-json '{"schema":"dev-flow-delivery-contract/0.4.0","revision":1,"summary":"Deliver observable behavior","acceptance_criteria":[{"id":"C1","statement":"The behavior is observable"}],"scope":["implementation and focused verification"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}'
 ```
 
 该对象具有完全记录的字段，正数修订版本 `1`，至少一个唯一标识的标准，并且文本/列表内容有限。省略该对象将使用从需求推导出的最小合同。在此命令中重复 `--repo` 以将相同的显式合同绑定到更大的精确仓库集；工作流选择并不意味着仓库数量。
@@ -309,7 +311,7 @@ DATA_DIR="/absolute/path/to/independent-dev-flow-0.3.0-state"
 
 ```sh
 <ctl> revise-contract <task-id> \
-  --contract-json '{"schema":"dev-flow-delivery-contract/0.3.0","revision":2,"summary":"Revised scope","acceptance_criteria":[{"id":"C1","statement":"Revised observable condition"}],"scope":["revised work"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}' \
+  --contract-json '{"schema":"dev-flow-delivery-contract/0.4.0","revision":2,"summary":"Revised scope","acceptance_criteria":[{"id":"C1","statement":"Revised observable condition"}],"scope":["revised work"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}' \
   --reason 'accepted scope correction' \
   --actor-label 'operator'
 ```
@@ -349,11 +351,11 @@ Hook 匹配仅证明当前路径属于活动任务声明的仓库集中。它并
 1. 在任意成员中启动一个新的 Codex 任务，该成员属于一个已初始化的精确仓库集，包括较大集合中的次要成员。不选择模糊的活动任务匹配。
 2. 打开 `/hooks`；确认源是已安装的不可变快照并信任该定义。
 3. 调用 `$follow-dev-flow` 并启动正式工作流。
-4. 确认注入的上下文名称为 Dev Flow 0.3.0，包括已安装的启动器和 CLI，选择 `<PLUGIN_DATA>/0.3.0`，并以每个方向的精确 `repository_set` 投射 `dev-flow-agent/0.3.0`。
+4. 确认注入的上下文名称为 Dev Flow 0.4.0，包括已安装的启动器和 CLI，选择 `<PLUGIN_DATA>/0.4.0`，并以每个方向的精确 `repository_set` 投射 `dev-flow-agent/0.4.0`。
 5. 确认 `$follow-dev-flow` 在每次应用时传递确切的当前操作绑定，并使用 `show` 检查终端交付档案。
 6. 确认针对插件数据根目录的常见 shell/edit 尝试被拒绝，而正常的仓库工作保持可用。
 
-已安装发布证据涵盖了所有六个正式工作流，并记录了安装的快照身份、任务 ID、仓库基线、可选驱动状态、验证/审查路径、合同修订恢复、有限耗尽和 Dossier 0.3.0 结果。任何依赖于真实新 Codex 任务加载 Hook 或 Skill 的条件，在验证环境无法观察到时仍需手动进行安装 pickup 检查。
+已安装发布证据涵盖了所有六个正式工作流，并记录了安装的快照身份、任务 ID、仓库基线、可选驱动状态、验证/审查路径、合同修订恢复、有限耗尽和 Dossier 0.4.0 结果。任何依赖于真实新 Codex 任务加载 Hook 或 Skill 的条件，在验证环境无法观察到时仍需手动进行安装 pickup 检查。
 
 捆绑的 `scripts/validate_installed_stage1.py` 运行器将其生成的驱动有效载荷标记为控制器合同模拟。一个已验证的发布门将该已安装控制器证据与从实际 OpenSpec、代码库内存和独立审查执行中捕获的 `--external-evidence` 结合起来。仅运行控制器矩阵报告 `execution_ok: true` 并保持发布门处于 `unverified` 状态。
 
@@ -391,7 +393,7 @@ Hook 匹配仅证明当前路径属于活动任务声明的仓库集中。它并
 : 所选工作流模式、选择器或规范定义与任务的固定身份不同。恢复在任务创建时使用的精确定义或启动新任务。
 
 `STATE_INVALID`
-: 存储的 0.3.0 状态未能通过模式、封印、身份、账本或重放验证。保留它用于诊断，不要编辑它。确认每个命令都使用了任务的确切控制器定位器和数据目录。
+: 存储的 0.4.0 状态未能通过模式、封印、身份、账本或重放验证。保留它用于诊断，不要编辑它。确认每个命令都使用了任务的确切控制器定位器和数据目录。
 
 Codex 显示沙盒或权限提示
 : 这是主机拥有的权限。控制器既不抑制也不自动确认主机权限提示。
@@ -423,7 +425,7 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 codex plugin remove dev-flow-orchestrator@personal
 ```
 
-自动或手动移除都不会删除外部任务数据。数据删除仍是独立的操作。除非明确意图删除且已评估可恢复性，否则保留活动的 0.3.0 任务。
+自动或手动移除都不会删除外部任务数据。数据删除仍是独立的操作。除非明确意图删除且已评估可恢复性，否则保留活动的 0.4.0 任务。
 
 ## Windows 集成预览
 

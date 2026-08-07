@@ -23,7 +23,7 @@ TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
-from dev_flow_orchestrator.product import PRODUCT_IDENTITY, PRODUCT_VERSION
+from dev_flow_orchestrator.product import PRODUCT_IDENTITY, RELEASE_VERSION
 from dev_flow_orchestrator.model import DevFlowError
 from dev_flow_orchestrator.web import (
     LIVE_CAPTURE_SLOT,
@@ -76,7 +76,7 @@ class WebServerTests(RepositoryTestCase):
 
         self.assertEqual(receipt["host"], "127.0.0.1")
         self.assertGreater(receipt["port"], 0)
-        self.assertEqual(receipt["version"], PRODUCT_VERSION)
+        self.assertEqual(receipt["version"], RELEASE_VERSION)
         self.assertEqual(receipt["product_identity"], PRODUCT_IDENTITY)
         self.assertEqual(
             receipt["url"],

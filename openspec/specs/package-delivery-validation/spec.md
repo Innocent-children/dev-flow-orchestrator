@@ -26,7 +26,7 @@ The installation smoke procedure SHALL record passing test evidence only after t
 - **THEN** the smoke procedure does not record passing evidence
 
 ### Requirement: Public skill guidance matches the current product
-The packaged `follow-dev-flow` Skill and agent metadata SHALL describe product version 0.3.0 and one exact set of one to eight user-prepared local Git worktrees. Guidance SHALL explain official workflow selection; repeatable repository selection; active leases over canonical roots and worktree-specific Git administrative directories; one task and one current action for one Codex executor; structured contracts; the closed `dev-flow-assurance-policy/0.3.0` profile matrix and risk triggers; the immutable preflight ownership origin and roll-forward manifests; contract-revision interval anchors and exact drift adoption; ambient-drift handling; canonical assurance plans and obligations; structured causal review findings, `triage-required`, and impact-gap planning reentry; absolute recorded-attempt and total-action budgets; optional-driver fallback; explicit decisions; and Delivery Dossier completion. It SHALL explain that distinct linked worktrees sharing a Git common directory can support separate active tasks while one repository set rejects duplicate common-directory members. It SHALL keep branch/worktree creation and removal, Git publication, parallel Agent execution, and external CI/PR/release effects outside controller authority.
+The packaged `follow-dev-flow` Skill and agent metadata SHALL describe compatibility model `0.4.0` and one exact set of one to eight user-prepared local Git worktrees. Guidance SHALL explain official workflow selection; repeatable repository selection; active leases over canonical roots and worktree-specific Git administrative directories; one task and one current action for one Codex executor; structured contracts; the closed `dev-flow-assurance-policy/0.4.0` profile matrix and risk triggers; the immutable preflight ownership origin and roll-forward manifests; contract-revision interval anchors and exact drift adoption; ambient-drift handling; canonical assurance plans and obligations; structured causal review findings, `triage-required`, and impact-gap planning reentry; absolute recorded-attempt and total-action budgets; optional-driver fallback; explicit decisions; and Delivery Dossier completion. It SHALL explain that distinct linked worktrees sharing a Git common directory can support separate active tasks while one repository set rejects duplicate common-directory members. It SHALL keep branch/worktree creation and removal, Git publication, parallel Agent execution, and external CI/PR/release effects outside controller authority.
 
 The Skill SHALL run only the current projected assurance obligation and the smallest command or manual check declared by that obligation. It SHALL NOT run undeclared retries outside the projected allowance, reuse stale or intersecting evidence, convert an adjacent observation into a blocking causal finding, claim ambient drift as task-owned without complete ownership claims, or present a non-required check as completed assurance. Only source-confirmed impact MAY support focused assurance; degraded, partial, unknown, stale, unavailable, or unconfirmed impact SHALL select the conservative assurance path and record the reason. A blocking unknown-causality finding SHALL keep review in bounded causal triage and SHALL NOT be presented as approval or sent directly to source rework. A proven affected relation outside the current closure SHALL invalidate the plan and reenter impact analysis and planning under the same contract; guidance SHALL request contract revision only when accepted scope or criteria must change.
 
@@ -75,7 +75,7 @@ The repository-mismatch cancellation handshake SHALL remain explicit. After the 
 ### Requirement: Candidate validation proves supported repository topology
 The candidate package SHALL expose authoritative current capability definitions for repository topology, active member leases, task change ownership, assurance planning, finding governance, and absolute recorded-attempt budgets. Validation SHALL cover runtime, CLI, Hook, Skills, official workflows, custom workflow validation, installed journeys, strict version-boundary rejection, and public documentation. Evidence SHALL include one-member and larger exact sets, secondary-member resume, pre-existing dirty baselines, staged/unstaged/untracked task changes, ambient drift, explicitly scoped resources, selective evidence reuse, structured findings and dispositions, obligation exhaustion, and aggregate Dossier generation.
 
-Candidate validation SHALL prove that every official workflow embeds the exact closed `dev-flow-assurance-policy/0.3.0`; uses only the trigger IDs `security`, `authorization`, `persistence-replay`, `path-safety`, `concurrency`, `cross-repository-contract`, `installer`, and `protocol`; and normalizes every non-source-confirmed, degraded, partial, stale, unavailable, unconfirmed, or unknown impact result to conservative every-member, declared-or-applicable-integration, and independent-review assurance plus profile- or criterion-required documentation and manual evidence. It SHALL reject custom policies that remove a base-profile obligation, weaken a risk or unknown result, raise an allowance or product maximum, or introduce a free-form trigger. It SHALL validate canonical grouping as at most one repository check per required member, one integration check per distinct evidence contract over the sorted required boundaries, and at most one documentation, manual-evidence, and independent-review obligation per plan.
+Candidate validation SHALL prove that every official workflow embeds the exact closed `dev-flow-assurance-policy/0.4.0`; uses only the trigger IDs `security`, `authorization`, `persistence-replay`, `path-safety`, `concurrency`, `cross-repository-contract`, `installer`, and `protocol`; and normalizes every non-source-confirmed, degraded, partial, stale, unavailable, unconfirmed, or unknown impact result to conservative every-member, declared-or-applicable-integration, and independent-review assurance plus profile- or criterion-required documentation and manual evidence. It SHALL reject custom policies that remove a base-profile obligation, weaken a risk or unknown result, raise an allowance or product maximum, or introduce a free-form trigger. It SHALL validate canonical grouping as at most one repository check per required member, one integration check per distinct evidence contract over the sorted required boundaries, and at most one documentation, manual-evidence, and independent-review obligation per plan.
 
 Candidate validation SHALL derive rather than accept class budgets. With `V` required non-review obligations, `R` required independent-review obligations, `A = 2` for every profile except `full`, `A = 3` for `full`, and `U` equal to the sum of `max(allowance - 1, 0)` for each source-rework-capable obligation in the initial plan's conservative canonical budget-reservation set, it SHALL prove these ceilings:
 
@@ -93,7 +93,9 @@ Installed-package evidence SHALL execute both a source-confirmed focused journey
 
 Boundary validation SHALL exercise both the exact maximum and the first excess value for 4,096 snapshot paths per repository, 12,288 Git index stage entries per repository, 2 MiB of Git index command output per repository capture, 128 ownership claims per source action, 4,096 current roll-forward manifest entries per task, 128 impact entries, 64 plan obligations, 64 findings per review execution, 64 evidence items per assurance execution, 256 actions per effective contract, the shared 64 KiB action payload, and the shared 8 KiB per-text limit. Exact maximums SHALL remain admissible when every other rule holds. First-excess values SHALL fail atomically without truncation or partial mutation, except that a 129-entry impact closure SHALL record bounded overflow, normalize to unknown, and select conservative assurance rather than submit a truncated focused closure.
 
-Candidate validation SHALL require exact version 0.3.0 in plugin manifest, package metadata, lock file, runtime authority, workflow and assurance-policy documents, schema identifiers, Hook and Skill guidance, installed evidence, and current English and Chinese public documentation. Unsupported generation-coded or component-specific identities SHALL be rejected from executable current assets. Runtime action validation SHALL require the complete 0.3.0 schema family for driver results, snapshots, task change manifests, assurance plans, verification coverage, independent review, review findings, action bindings, projections, records, and Dossiers. Any supplied missing, mixed, or non-0.3 identity SHALL fail closed during initial application and replay without conversion or partial recording. Discovery and admission tests SHALL prove that the 0.3 runtime never enumerates, discovers, reads, replays, migrates, translates, repairs, or deletes retained 0.2 namespace bytes.
+Candidate validation SHALL require plugin manifest, Python package metadata, and lock metadata to equal the single `RELEASE_VERSION` source. It SHALL independently require exact `MODEL_VERSION` `0.4.0` in workflow and assurance-policy documents, schema identifiers, Hook and Skill protocol guidance, installed evidence, and persisted-model documentation. Unsupported generation-coded or component-specific identities SHALL be rejected from executable current assets. Runtime action validation SHALL require the complete `0.4.0` schema family for driver results, snapshots, task change manifests, assurance plans, verification coverage, independent review, review findings, action bindings, projections, records, and Dossiers. Any supplied missing, mixed, or non-`0.4.0` model identity SHALL fail closed during initial application and replay without conversion or partial recording. Discovery and admission tests SHALL prove that the `0.4.0` model runtime never enumerates, discovers, reads, replays, migrates, translates, repairs, or deletes retained `0.2.0` namespace bytes.
+
+The candidate SHALL include a standard-library release-bump command that validates semantic versions, updates only the release authority and derived manifest/package/lock metadata, leaves `MODEL_VERSION` and all protocol-bearing files unchanged, and fails closed on missing, duplicate, or inconsistent version fields.
 
 #### Scenario: Runtime and capability definition drift
 - **WHEN** the candidate advertises task-scoped adaptive assurance but any runtime, CLI, workflow, Hook, Skill, Dossier, or installed journey retains fixed aggregate-only behavior
@@ -116,12 +118,16 @@ Candidate validation SHALL require exact version 0.3.0 in plugin manifest, packa
 - **THEN** action validation fails without recording a partial result
 
 #### Scenario: Non-current value is supplied
-- **WHEN** a caller supplies a 0.2.0 or otherwise non-0.3 workflow, policy, task, record, snapshot, artifact, action value, or binding to a current input boundary
-- **THEN** the 0.3 runtime rejects the value as unsupported without compatibility parsing, replay, migration, translation, repair, fallback, or partial mutation
+- **WHEN** a caller supplies a `0.2.0` or otherwise non-`0.4.0` workflow, policy, task, record, snapshot, artifact, action value, or binding to a current input boundary
+- **THEN** the `0.4.0` model runtime rejects the value as unsupported without compatibility parsing, replay, migration, translation, repair, fallback, or partial mutation
 
 #### Scenario: Retained prior-namespace bytes exist
-- **WHEN** retained 0.2 namespace bytes are present beside the installed 0.3 data namespace
+- **WHEN** retained `0.2.0` namespace bytes are present beside the installed `0.4.0` data namespace
 - **THEN** discovery, admission, replay, and package validation leave those bytes unchanged and never enumerate, discover, read, migrate, translate, repair, or delete them
+
+#### Scenario: Patch release is prepared
+- **WHEN** an operator runs the release-bump command with a valid patch version and no compatibility-model change is declared
+- **THEN** only the release authority, plugin manifest, Python package metadata, and lock metadata change, while schemas, namespaces, workflow documents, identities, Skills, and protocol documentation remain byte-for-byte unchanged
 
 #### Scenario: Unsupported workspace or delivery authority is claimed
 - **WHEN** candidate assets claim automatic branch/worktree creation or deletion, parallel repository executors, or external CI/PR/release orchestration
@@ -188,7 +194,7 @@ Candidate validation SHALL require exact version 0.3.0 in plugin manifest, packa
 - **THEN** the installed route requires an authorized complete contract revision, while a relation already covered by the contract reenters planning without revision
 
 #### Scenario: Installed current inventory is corrupt
-- **WHEN** installed task admission encounters a 0.3 namespace entry whose immutable membership or controller-confirmed terminal state cannot be validated
+- **WHEN** installed task admission encounters a model `0.4.0` namespace entry whose immutable membership or controller-confirmed terminal state cannot be validated
 - **THEN** admission fails closed for the current inventory, preserves the corrupt bytes, reports bounded diagnostics, creates no task or partial lease, and does not infer that any member was released
 
 #### Scenario: Installed linked worktrees run as separate active tasks
@@ -248,23 +254,23 @@ Candidate validation SHALL require exact version 0.3.0 in plugin manifest, packa
 - **THEN** snapshot identity changes and stale review or verification binding is rejected
 
 ### Requirement: Candidate and installed validation prove the local read-only Web UI
-The candidate package SHALL require the local Web UI server module, read-model module, CLI bootstrap, HTML, CSS, and JavaScript assets and SHALL include them in current-product version scanning, installed asset inventory, and immutable installed-snapshot digests. It SHALL prove that plugin manifest, Python package metadata, lock file, runtime authority, startup receipt, HTTP views, page display, installed evidence, and every English and Simplified Chinese public document identify the same `dev-flow-orchestrator` version `0.3.0`. It SHALL reject an independent Web UI version, package, plugin, marketplace entry, application or MCP declaration, data namespace, persisted schema authority, release gate, third-party runtime import, Node runtime or build requirement, remote browser resource, telemetry endpoint, write capability, or non-loopback server claim.
+The candidate package SHALL require the local Web UI server module, read-model module, CLI bootstrap, HTML, CSS, and JavaScript assets and SHALL include them in release-metadata validation, installed asset inventory, and immutable installed-snapshot digests. It SHALL prove that plugin manifest, Python package metadata, lock file, runtime release authority, startup receipt, HTTP views, page display, and installed evidence identify the same `dev-flow-orchestrator` `RELEASE_VERSION`, while task views retain `MODEL_VERSION` and the model `PRODUCT_IDENTITY`. It SHALL reject an independent Web UI version, package, plugin, marketplace entry, application or MCP declaration, data namespace, persisted schema authority, release gate, third-party runtime import, Node runtime or build requirement, remote browser resource, telemetry endpoint, write capability, or non-loopback server claim.
 
 Focused validation SHALL cover the physically non-mutating inspection store, CLI contract, server lifecycle, token authority, exact Host, Origin and fetch-metadata checks, absent CORS authority, fixed routes and assets, method denial, traversal denial, response bounds and security headers, deterministic inventory filtering and pagination, corrupt-entry isolation, stored detail with zero Git calls, explicit live detail using one aggregate observation, global live-capture exclusion and `429`, capture cancellation, snapshot-unavailable and stale-view behavior, why-next, recovery brief, timeline projection, disclosure minimization, output encoding, responsive browser states, and the complete no-mutation boundary. Candidate tests SHALL prove that Web UI observation and invalid requests do not create or acquire controller locks, create data directories, normalize permissions, or change task bytes, records, revisions, timestamps, repository `HEAD`, index or worktree identities, installed assets, marketplace state, or prior-version bytes.
 
-The installed `dev-flow-installed-evidence/0.3.0` suite SHALL contain one `local-read-only-web-ui` journey from the immutable installed candidate. It SHALL create representative active and terminal tasks, start the installed server on an ephemeral loopback port, verify the startup receipt and asset digests, fetch the bootstrap, metadata, authenticated inventory, stored detail, and explicit live detail with the standard-library HTTP client, exercise missing and incorrect authority, hostile Host, Origin and fetch metadata, unsafe methods, invalid task IDs and traversal, missing-member diagnostics, concurrent live capture, capture termination, task refresh after an external controller mutation, and clean foreground shutdown. It SHALL record before-and-after directory, lock, mode, task, repository, installed-snapshot, and prior-namespace identities proving that the Web UI itself made no change.
+The installed `dev-flow-installed-evidence/0.4.0` suite SHALL contain one `local-read-only-web-ui` journey from the immutable installed candidate. It SHALL create representative active and terminal tasks, start the installed server on an ephemeral loopback port, verify the startup receipt and asset digests, fetch the bootstrap, metadata, authenticated inventory, stored detail, and explicit live detail with the standard-library HTTP client, exercise missing and incorrect authority, hostile Host, Origin and fetch metadata, unsafe methods, invalid task IDs and traversal, missing-member diagnostics, concurrent live capture, capture termination, task refresh after an external controller mutation, and clean foreground shutdown. It SHALL record before-and-after directory, lock, mode, task, repository, installed-snapshot, and prior-namespace identities proving that the Web UI itself made no change.
 
 Installed browser evidence SHALL render empty, multi-task, selected active, blocked or unavailable, terminal, timeline, recovery, diagnostic, and adversarial-text states at desktop and narrow viewport widths. It SHALL verify keyboard access, visible focus, safe text rendering, security-policy compliance, absence of external requests and console errors, and the visible read-only and current-product identities. If the release environment cannot observe a real browser, installed evidence SHALL mark browser rendering `manual-unverified`; HTTP success alone SHALL NOT be reported as complete Web UI release evidence.
 
-Public documentation validation SHALL require the English source and complete Simplified Chinese counterpart for `README`, `ROADMAP`, `ARCHITECTURE`, `CONTRIBUTING`, and `INSTALL`. It SHALL verify matching commands, routes, product version, loopback and access model, read-only authority, task views, runtime-dependency boundary, support status, language-switch links, and installed validation limits. The roadmap SHALL mark only the delivered local read-only cockpit slice and SHALL keep the remaining interactive-workbench capabilities at their actual planned status.
+Public documentation validation SHALL require the English source and complete Simplified Chinese counterpart for `README`, `ROADMAP`, `ARCHITECTURE`, `CONTRIBUTING`, and `INSTALL`. It SHALL verify matching commands, routes, release/model version boundaries, loopback and access model, read-only authority, task views, runtime-dependency boundary, support status, language-switch links, and installed validation limits. The roadmap SHALL mark only the delivered local read-only cockpit slice and SHALL keep the remaining interactive-workbench capabilities at their actual planned status.
 
 #### Scenario: Candidate Web UI assets are inspected
 - **WHEN** candidate validation scans required files, runtime imports, browser assets, manifests, metadata, lock data, version literals, network references, and capability declarations
-- **THEN** every required asset is present under the single 0.3.0 plugin, runtime dependencies remain standard-library-only, browser assets require no build or remote resource, and every independent version, package, namespace, write, remote, app, or MCP claim fails validation
+- **THEN** every required asset is present under the single 0.4.0 plugin, runtime dependencies remain standard-library-only, browser assets require no build or remote resource, and every independent version, package, namespace, write, remote, app, or MCP claim fails validation
 
 #### Scenario: Installed authorized journey succeeds
 - **WHEN** the installed server receives an exact-host same-origin request with its process token for representative task inventory and detail
-- **THEN** the installed views match controller state and current projection summaries, report product version `0.3.0`, and record no task or repository mutation
+- **THEN** the installed views match controller state and current projection summaries, report the installed `RELEASE_VERSION` with the current model identity, and record no task or repository mutation
 
 #### Scenario: Installed hostile requests are denied
 - **WHEN** the installed server receives missing or incorrect authority, a hostile Host or Origin, an unsafe method, an invalid task ID, a traversal target, or a non-allowlisted route
@@ -286,3 +292,104 @@ Public documentation validation SHALL require the English source and complete Si
 - **WHEN** a public English or Simplified Chinese document omits or changes the Web UI command, version, loopback, read-only, support-status, validation-limit, or language-switch contract relative to its counterpart
 - **THEN** candidate documentation validation fails
 
+### Requirement: Focused validation covers the native Windows runtime without duplicating the full product matrix
+
+The candidate SHALL include a focused Windows CI job that imports the runtime and executes the platform path, storage, process, snapshot, and core-controller tests required by `native-windows-runtime`. The job MAY use GitHub's maintained Windows runner as implementation test infrastructure without adding Windows Server to the public support claim.
+
+The existing macOS focused job SHALL remain the complete product regression gate. Windows validation SHALL NOT duplicate every workflow, assurance profile, installed journey, documentation assertion, Python version, and boundary maximum solely for platform parity.
+
+#### Scenario: Windows runtime candidate passes
+
+- **WHEN** Windows import, path, lock, state replacement, bounded process, representative snapshot, and core-journey tests pass and the existing macOS focused job passes
+- **THEN** the candidate satisfies this change's automated platform gate
+
+#### Scenario: Windows imports POSIX-only storage
+
+- **WHEN** importing the candidate on Windows attempts to import `fcntl` or execute another unavailable POSIX-only primitive
+- **THEN** the Windows job fails before the candidate can be accepted
+
+#### Scenario: Core platform change alters persisted authority
+
+- **WHEN** the candidate changes current persisted field sets, Schema identifiers, `MODEL_VERSION`, workflow definitions, or replay rules without a separately declared compatibility-model change
+- **THEN** candidate validation fails this change's scope gate
+
+### Requirement: Client smoke evidence remains proportional to the delivered runtime slice
+
+Before downstream Hook and installer work treats the runtime as available, validation SHALL record one native Windows 11 x64 client smoke covering the core controller lifecycle. A Windows 10 22H2 x64 smoke SHOULD be recorded when that host is available.
+
+The evidence SHALL identify the OS build, Python version, Git version, repository path characteristics, commands or test entry point, and outcome. It is not required to certify Windows Server, ARM64, WSL, network storage, every supported Python version, or extreme filesystem behavior.
+
+#### Scenario: Windows 11 client smoke succeeds
+
+- **WHEN** the scoped core lifecycle completes on a native Windows 11 x64 client using an ordinary local repository
+- **THEN** the evidence is sufficient for subsequent Hook and lifecycle changes to depend on this runtime
+
+#### Scenario: A smoke defect is found
+
+- **WHEN** the supported client smoke exposes a reproducible path, lock, process, or snapshot defect
+- **THEN** the defect is fixed with one targeted regression test before the runtime is treated as ready
+
+### Requirement: Candidate validation includes Windows product-integration assets proportionally
+
+The candidate package SHALL require the Windows Hook command, `.cmd` Python launcher, PowerShell installer, PowerShell uninstaller, and focused Windows integration tests as current-product assets. It SHALL validate that every packaged command Hook retains its existing `command` and provides a non-empty `commandWindows`, that public bootstraps select the correct launcher, and that no Windows-specific product identity, Schema, namespace, workflow, package, or Web UI version is introduced.
+
+Host-neutral validation SHALL inspect all static assets. Host-executed validation SHALL run POSIX lifecycle behavior on macOS and Windows launcher, Hook, lifecycle, Web UI, and installed-smoke behavior on Windows. The existing macOS focused job SHALL remain the broad product regression gate; Windows automation SHALL NOT duplicate every shared workflow, assurance profile, installed journey, Python minor, and boundary maximum.
+
+#### Scenario: Complete Windows integration candidate is inspected
+
+- **WHEN** package validation scans Hook configuration, launchers, lifecycle scripts, tests, manifests, runtime imports, and public documents
+- **THEN** all required assets are present, paired host commands are valid, and all surfaces identify the same whole product
+
+#### Scenario: Windows Hook override is missing
+
+- **WHEN** one packaged command Hook lacks `commandWindows` or points to a missing launcher or handler
+- **THEN** candidate validation fails before installation
+
+#### Scenario: Platform test scope expands into a duplicated product matrix
+
+- **WHEN** the candidate requires Windows to rerun every platform-neutral workflow and assurance permutation without a Windows-specific failure hypothesis
+- **THEN** review reduces the matrix to platform adapters, one vertical installed journey, and one multi-repository smoke while preserving the main product suite
+
+### Requirement: Installed Windows evidence proves the complete user path
+
+The installed evidence SHALL contain one native Windows vertical journey from the immutable installed plugin snapshot. It SHALL cover verified source selection, personal marketplace registration, plugin activation, real Hook bootstrap execution, one representative Controller task through current assurance and Delivery Dossier completion, local read-only Web UI inspection, plugin removal, marketplace cleanup, and preserved task data.
+
+A second shorter journey SHALL prove an exact two-repository task can be discovered and resumed from the non-first member and can obtain one current aggregate repository-set observation. Optional external drivers MAY report their existing available, degraded, or unavailable states and SHALL NOT become separate Windows installation requirements.
+
+#### Scenario: Installed Windows vertical journey succeeds
+
+- **WHEN** the candidate is installed on a supported Windows x64 client or equivalent installed test environment and its representative task completes
+- **THEN** Hook, Controller, workflow, assurance, Dossier, Web UI, and lifecycle outputs all bind the same installed product snapshot
+
+#### Scenario: Multi-repository recovery succeeds
+
+- **WHEN** the installed Hook starts from the second member of an active two-repository task
+- **THEN** it restores that task and the Controller derives the current aggregate evidence without substituting membership
+
+#### Scenario: Uninstall follows the journey
+
+- **WHEN** the installed journey invokes the Windows uninstaller after plugin use
+- **THEN** plugin and marketplace installation assets are removed as authorized while Controller task data remains present
+
+### Requirement: Public Windows support claims match tested consumer-client evidence
+
+Before documentation labels native Windows support as delivered, release evidence SHALL include one complete Windows 11 x64 client install-to-uninstall journey. A Windows 10 22H2 x64 smoke SHALL cover installation, Hook launch, task resume, Web UI startup, and uninstallation before that client version is included in the public support claim. Evidence SHALL identify OS build, PowerShell, Python, Git, and Codex versions and the actual result.
+
+GitHub-hosted Windows Server automation MAY satisfy continuous implementation checks but SHALL NOT by itself establish Windows Server support or replace consumer-client evidence. Every reproducible supported-client defect found during release validation SHALL receive one targeted regression test.
+
+English and Simplified Chinese README, INSTALL, ARCHITECTURE, ROADMAP, and CONTRIBUTING documents SHALL agree on supported Windows clients, x64 and Python requirements, PowerShell commands, Hook trust, ordinary local repository scope, unsupported environments, Web UI behavior, validation limits, and no historical or cross-operating-system migration promise.
+
+#### Scenario: Windows 11 client evidence passes
+
+- **WHEN** the complete installed journey passes on a documented Windows 11 x64 client
+- **THEN** the release may claim native Windows support within the stated boundary
+
+#### Scenario: Only hosted Server automation exists
+
+- **WHEN** CI passes on `windows-latest` but no supported consumer-client journey has been recorded
+- **THEN** the candidate remains an implementation preview and public documentation does not claim completed client support
+
+#### Scenario: Bilingual support guidance drifts
+
+- **WHEN** English or Simplified Chinese guidance disagrees on a Windows command, supported host, Hook trust step, unsupported path, Web UI behavior, or validation limit
+- **THEN** candidate documentation validation fails

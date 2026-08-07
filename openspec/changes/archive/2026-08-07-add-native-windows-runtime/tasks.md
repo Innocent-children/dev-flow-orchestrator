@@ -45,5 +45,5 @@
 - [x] 7.1 Add one Windows single-repository journey covering start, preflight projection/application, next projection, inspection, controller path discovery, and cancellation.
 - [x] 7.2 Add one two-repository admission/snapshot smoke proving canonical order and all-or-none failure when one member is unavailable.
 - [x] 7.3 Add a focused Windows Python 3.12 CI job for import, path, storage, process, snapshot, and core-journey tests; retain the existing macOS job as the complete product regression gate.
-- [ ] 7.4 Run and record one Windows 11 x64 client smoke, run a shorter Windows 10 22H2 x64 smoke when available, and add a targeted regression test for every defect found.
+- [x] 7.4 Run and record one Windows 11 x64 client smoke, run a shorter Windows 10 22H2 x64 smoke when available, and add a targeted regression test for every defect found.
 - [x] 7.5 Run `openspec validate add-native-windows-runtime --type change --strict` and review the final diff for scope leakage into Hook, installer, Web UI, versioning, persisted fields, workflow, assurance, or Dossier code.

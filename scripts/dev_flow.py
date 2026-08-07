@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed public bootstrap for the Dev Flow 0.3.0 CLI."""
+"""Fixed public bootstrap for the current Dev Flow CLI."""
 
 from pathlib import Path
 import sys

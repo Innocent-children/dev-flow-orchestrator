@@ -74,7 +74,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 if outcome == "changes-requested":
                     slice_item = obligation["task_change_slice"][0]
                     body = {
-                        "schema": "dev-flow-review-finding/0.3.0",
+                        "schema": "dev-flow-review-finding/0.4.0",
                         "severity": "high",
                         "blocking": True,
                         "causal_relation": "introduced",

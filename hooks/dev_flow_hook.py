@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed public bootstrap for the Dev Flow 0.3.0 Hook."""
+"""Fixed public bootstrap for the current Dev Flow Hook."""
 
 from pathlib import Path
 import os
