@@ -26,6 +26,10 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 
 该脚本检查 macOS、Git、Python 3.9–3.14 和 Codex CLI；克隆或快进 `$HOME/plugins/dev-flow-orchestrator`；验证完整候选版本；保留其他个人市场条目，同时替换任何 Dev Flow 条目；在插件未安装时完成安装、存在旧版本时完成升级，或通过重新安装修复当前版本；并打印包含执行类型、版本、本次涉及目录和第一个提示的安装收据。如果您不想将远程脚本直接传递给 `sh`，请在运行前查看 [`scripts/install.sh`](scripts/install.sh)。
 
+安装器会在 `~/.local/bin` 创建带所有权标记的 `dev-flow` 启动器，拒绝覆盖该路径上的
+非 Dev Flow 文件，并要求该目录已在 `PATH` 中。需要其他可写且已在 `PATH` 中的目录时，
+可设置 `DEV_FLOW_BIN_DIR`。卸载器只删除包含精确 Dev Flow 所有权标记的启动器。
+
 标准输出连接交互式终端时，成功收据会使用霓虹终端配色。重定向输出、`TERM=dumb` 或设置 `NO_COLOR` 时，同一收据会自动改为不含 ANSI 颜色代码的纯文本。
 
 安装程序将 `main` 视为其不可配置的权威源引用。全新安装会显式选择 `main`。现有源只有在其来源与配置的仓库 URL 匹配、附加分支为干净的 `main`，且当前提交等于或可以快进到获取的 `main` 提交时才会继续。快进拒绝覆盖与传入 `main` 冲突的被忽略本地路径，但保留无关的被忽略内容。它拒绝其他分支、分离 HEAD、报告的本地更改、本地领先历史、分歧或非 Git 路径（不切换、重置、储藏、清理或覆盖签出）。
@@ -34,17 +38,17 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 
 ## 启动本地只读 Web UI
 
-已安装的 0.4.1 插件已经包含 Web UI；无需单独安装，也没有单独版本。使用包含待检查
-任务的同一个控制器数据根目录：
+已安装的 0.4.1 插件已经包含 Web UI；无需单独安装，也没有单独版本。安装后的启动器会
+自动选择 Codex 插件数据中当前兼容性模型对应的目录：
 
 ```sh
-dev-flow --data-dir <控制器数据根目录> web start
+dev-flow web start
 ```
 
 命令会启动受管后台进程并打印一条严格 JSON 收据。打开收据中的 `url`：它使用数字地址
 `127.0.0.1`、默认临时端口和 fragment 中的进程本地令牌。若要指定固定本地端口，可在
-`start` 或 `restart` 后添加 `--port <端口>`。使用同一精确数据根目录执行 `web status`、
-`web open`、`web restart` 和 `web stop` 进行管理；`open` 只重新输出完整启动 URL，不会
+`start` 或 `restart` 后添加 `--port <端口>`。使用 `dev-flow web status`、
+`dev-flow web open`、`dev-flow web restart` 和 `dev-flow web stop` 进行管理；`open` 只重新输出完整启动 URL，不会
 自动打开浏览器。原有 `web` 形式继续作为可用 Ctrl-C 停止的前台模式。产品刻意不提供
 host、代理、远程访问或长期凭据选项。
 
@@ -411,8 +415,9 @@ Codex 显示沙盒或权限提示
 curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
 ```
 
-它会移除已安装的 Codex 插件、personal marketplace 中的 `dev-flow-orchestrator` 条目和
-安装器管理的源码 checkout。只有源码具有预期插件身份、origin、已附着的 `main`，并且
+它会移除自有的 PATH 启动器、已安装的 Codex 插件、personal marketplace 中的
+`dev-flow-orchestrator` 条目和安装器管理的源码 checkout。只有源码具有预期插件身份、
+origin、已附着的 `main`，并且
 不存在 Git 报告的改动、ignored 路径或仅存在于本地的提交时，才允许删除源码。任何预检
 失败都会在移除插件或修改 marketplace 之前停止。使用 `--keep-source` 可以移除插件和
 marketplace 条目，同时保留包含本地工作的源码 checkout：

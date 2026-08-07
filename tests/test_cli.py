@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -16,6 +17,7 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
 from support import make_repository
+from dev_flow_orchestrator.cli import _resolve_data_dir
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     DELIVERY_DOSSIER_SCHEMA,
@@ -56,6 +58,65 @@ class CliTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_data_directory_defaults_to_codex_plugin_namespace(self) -> None:
+        codex_root = self.root / "codex-home"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(ROOT / "scripts" / "dev_flow.py"),
+                "web",
+                "status",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "CODEX_HOME": str(codex_root),
+                "PYTHONPATH": str(SRC),
+            },
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["status"], "stopped")
+        self.assertFalse(codex_root.exists())
+
+    def test_data_directory_resolution_precedence_is_explicit_plugin_then_codex(self) -> None:
+        explicit = self.root / "explicit"
+        plugin_data = self.root / "plugin-data"
+        codex_root = self.root / "codex-root"
+
+        with mock.patch.dict(
+            os.environ,
+            {"PLUGIN_DATA": str(plugin_data), "CODEX_HOME": str(codex_root)},
+            clear=False,
+        ):
+            self.assertEqual(_resolve_data_dir(str(explicit)), str(explicit.resolve()))
+            self.assertEqual(
+                _resolve_data_dir(None),
+                str((plugin_data / MODEL_VERSION).resolve()),
+            )
+        with mock.patch.dict(
+            os.environ,
+            {"CODEX_HOME": str(codex_root)},
+            clear=False,
+        ):
+            os.environ.pop("PLUGIN_DATA", None)
+            self.assertEqual(
+                _resolve_data_dir(None),
+                str(
+                    (
+                        codex_root
+                        / "plugins"
+                        / "data"
+                        / "dev-flow-orchestrator-personal"
+                        / MODEL_VERSION
+                    ).resolve()
+                ),
+            )
 
     def invoke_json(self, *arguments: str):
         completed = run_cli(self.data_dir, *arguments)

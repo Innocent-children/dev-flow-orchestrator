@@ -41,6 +41,12 @@ receipt with the action, versions, touched directories, and first prompt. Review
 [`scripts/install.sh`](scripts/install.sh) before running it if you do not want
 to pipe a remote script directly to `sh`.
 
+The installer creates an owned `dev-flow` launcher in `~/.local/bin`, refuses
+to replace a foreign file at that path, and requires the directory to be on
+`PATH`. Set `DEV_FLOW_BIN_DIR` to another writable directory already on `PATH`
+when needed. The uninstaller removes only a launcher carrying the exact Dev
+Flow ownership marker.
+
 The success receipt uses a neon terminal palette on interactive standard
 output. Redirected output, `TERM=dumb`, or `NO_COLOR` automatically emits the
 same receipt without ANSI color codes.
@@ -64,18 +70,19 @@ acceptance checks.
 ## Launch the local read-only Web UI
 
 The installed 0.4.1 plugin includes the Web UI; there is no separate WebUI
-installation or version. Use the same controller data root that contains the
-tasks you want to inspect:
+installation or version. The installed launcher automatically selects the
+current compatibility-model directory under Codex plugin data:
 
 ```sh
-dev-flow --data-dir <controller-data-root> web start
+dev-flow web start
 ```
 
 The command starts a managed background process and prints one strict JSON
 receipt. Open its `url`, which uses numeric `127.0.0.1`, an ephemeral port by
 default, and a process-local token in the fragment. Add `--port <port>` to
-`start` or `restart` to request a fixed local port. Use `web status`, `web open`,
-`web restart`, and `web stop` with the same exact data root to manage it. `open`
+`start` or `restart` to request a fixed local port. Use `dev-flow web status`,
+`dev-flow web open`, `dev-flow web restart`, and `dev-flow web stop` to manage
+it. `open`
 prints a fresh complete launch URL but does not launch a browser. The legacy
 `web` form remains a foreground mode stopped with Ctrl-C. There is deliberately
 no host, proxy, remote-access, or long-lived credential option.
@@ -562,8 +569,9 @@ uninstaller:
 curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
 ```
 
-It removes the installed Codex plugin, the `dev-flow-orchestrator` entry from
-the personal marketplace, and the installer-managed source checkout. Source
+It removes the owned PATH launcher, installed Codex plugin, the
+`dev-flow-orchestrator` entry from the personal marketplace, and the
+installer-managed source checkout. Source
 removal is admitted only when the checkout has the expected plugin identity,
 origin, attached `main`, no reported changes, no ignored paths, and no commits
 that exist only locally. Any failed preflight stops before plugin removal or

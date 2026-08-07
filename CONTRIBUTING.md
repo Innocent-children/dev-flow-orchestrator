@@ -69,6 +69,14 @@ written, instance-bound, and removable on shutdown. A stop operation must
 verify the PID together with the random instance identity and an authenticated
 loopback response before signaling; never treat a PID alone as authority.
 
+The macOS installer owns only `<DEV_FLOW_BIN_DIR>/dev-flow` and defaults that
+directory to `~/.local/bin`. Keep collision handling fail-closed, write the
+launcher atomically, and let uninstall remove it only after verifying the exact
+ownership marker. Installed CLI invocations may omit `--data-dir`; resolution
+must prefer `PLUGIN_DATA`, otherwise use `CODEX_HOME` (or `~/.codex`) plus the
+personal-plugin data directory and `PLUGIN_DATA_NAMESPACE`. Explicit
+`--data-dir` remains authoritative for development and recovery.
+
 Keep stored inventory and detail requests physically read-only: no task locks,
 directories, permission normalization, caches, Git calls, or repair behavior.
 Keep live observation explicit, selected-task-only, single-slot, cancellable,

@@ -6,7 +6,10 @@ REPOSITORY_REF="main"
 SOURCE_ROOT="${DEV_FLOW_SOURCE_ROOT:-$HOME/plugins/dev-flow-orchestrator}"
 MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace.json}"
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
+BIN_DIR="${DEV_FLOW_BIN_DIR:-$HOME/.local/bin}"
+LAUNCHER_PATH="$BIN_DIR/dev-flow"
 PLUGIN_ID="dev-flow-orchestrator@personal"
+LAUNCHER_MARKER="# dev-flow-orchestrator managed launcher"
 
 NEON_CYAN=""
 NEON_BLUE=""
@@ -35,6 +38,24 @@ fail() {
   printf 'Dev Flow installation failed: %s\n' "$1" >&2
   exit 1
 }
+
+case ":$PATH:" in
+  *":$BIN_DIR:"*)
+    ;;
+  *)
+    fail "$BIN_DIR is not on PATH; add it to PATH or set DEV_FLOW_BIN_DIR to a writable PATH directory."
+    ;;
+esac
+
+if [ -L "$BIN_DIR" ] || { [ -e "$BIN_DIR" ] && [ ! -d "$BIN_DIR" ]; }; then
+  fail "$BIN_DIR must be a regular directory, not a symbolic link or special file."
+fi
+if [ -e "$LAUNCHER_PATH" ] || [ -L "$LAUNCHER_PATH" ]; then
+  [ ! -L "$LAUNCHER_PATH" ] && [ -f "$LAUNCHER_PATH" ] \
+    || fail "$LAUNCHER_PATH is not a regular installer-managed launcher."
+  grep -Fqx "$LAUNCHER_MARKER" "$LAUNCHER_PATH" \
+    || fail "$LAUNCHER_PATH already exists and is not owned by Dev Flow."
+fi
 
 verify_and_update_source() {
   EXISTING_REMOTE="$(git -C "$SOURCE_ROOT" remote get-url origin 2>/dev/null || true)"
@@ -259,6 +280,51 @@ if ! codex plugin add "$PLUGIN_ID"; then
   exit 1
 fi
 
+printf 'Installing the dev-flow PATH launcher...\n'
+mkdir -p "$BIN_DIR"
+DEV_FLOW_BIN_DIR="$BIN_DIR" \
+DEV_FLOW_SOURCE_ROOT="$SOURCE_ROOT" \
+DEV_FLOW_LAUNCHER_MARKER="$LAUNCHER_MARKER" \
+"$PYTHON" -I -S -c '
+import os
+from pathlib import Path
+import shlex
+import tempfile
+
+bin_dir = Path(os.environ["DEV_FLOW_BIN_DIR"]).expanduser().resolve()
+source_root = Path(os.environ["DEV_FLOW_SOURCE_ROOT"]).expanduser().resolve()
+target = bin_dir / "dev-flow"
+marker = os.environ["DEV_FLOW_LAUNCHER_MARKER"]
+launcher = source_root / "scripts" / "dev_flow_python_launcher"
+handler = source_root / "scripts" / "dev_flow.py"
+if not launcher.is_file() or not handler.is_file():
+    raise SystemExit("validated Dev Flow launcher sources are unavailable")
+payload = "\n".join((
+    "#!/bin/sh",
+    marker,
+    "set -eu",
+    "exec {} {} \"$@\"".format(
+        shlex.quote(str(launcher)),
+        shlex.quote(str(handler)),
+    ),
+    "",
+)).encode("utf-8")
+descriptor, temporary_name = tempfile.mkstemp(prefix=".dev-flow.", dir=str(bin_dir))
+temporary = Path(temporary_name)
+try:
+    with os.fdopen(descriptor, "wb", closefd=True) as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(temporary, 0o755)
+    os.replace(str(temporary), str(target))
+finally:
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+' || fail "Cannot install the dev-flow launcher at $LAUNCHER_PATH."
+
 case "$INSTALL_ACTION" in
   installed)
     ACTION_COLOR="$NEON_GREEN"
@@ -307,6 +373,8 @@ printf '%s├─%s %sSOURCE%s       %s\n' \
 printf '%s├─%s %sMARKETPLACE%s  %s\n' \
   "$NEON_BLUE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" \
   "$(dirname "$MARKETPLACE_FILE")"
+printf '%s├─%s %sCOMMAND%s      %s\n' \
+  "$NEON_BLUE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$LAUNCHER_PATH"
 printf '%s╰─%s %sCODEX STATE%s  %s\n' \
   "$NEON_BLUE" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$CODEX_ROOT"
 
@@ -316,3 +384,4 @@ printf '  %s1.%s Start a new Codex task and review the installed Hook in /hooks.
 printf '  %s2.%s Launch with this prompt:\n\n' "$NEON_CYAN" "$COLOR_RESET"
 printf '%s%s  Use $follow-dev-flow to start a lite task in this repository for: <your requirement>%s\n' \
   "$TEXT_BOLD" "$BRIGHT_WHITE" "$COLOR_RESET"
+printf '\n  Web UI: dev-flow web start\n'

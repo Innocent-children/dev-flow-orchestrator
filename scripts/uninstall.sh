@@ -7,7 +7,10 @@ REPOSITORY_REF="main"
 SOURCE_ROOT="${DEV_FLOW_SOURCE_ROOT:-$HOME/plugins/dev-flow-orchestrator}"
 MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace.json}"
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
+BIN_DIR="${DEV_FLOW_BIN_DIR:-$HOME/.local/bin}"
+LAUNCHER_PATH="$BIN_DIR/dev-flow"
 PLUGIN_ID="dev-flow-orchestrator@personal"
+LAUNCHER_MARKER="# dev-flow-orchestrator managed launcher"
 REMOVE_SOURCE=1
 
 usage() {
@@ -48,6 +51,15 @@ elif command -v python >/dev/null 2>&1; then
   PYTHON=python
 else
   fail "Python 3.9-3.14 is required."
+fi
+
+LAUNCHER_STATE="already absent"
+if [ -e "$LAUNCHER_PATH" ] || [ -L "$LAUNCHER_PATH" ]; then
+  [ ! -L "$LAUNCHER_PATH" ] && [ -f "$LAUNCHER_PATH" ] \
+    || fail "$LAUNCHER_PATH is not a regular installer-managed launcher."
+  grep -Fqx "$LAUNCHER_MARKER" "$LAUNCHER_PATH" \
+    || fail "$LAUNCHER_PATH exists but is not owned by Dev Flow; preserve it and remove it manually."
+  LAUNCHER_STATE="present"
 fi
 
 "$PYTHON" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info[:2] <= (3, 14) else 1)' \
@@ -227,6 +239,15 @@ if [ "$PLUGIN_STATE" = "installed" ]; then
   PLUGIN_ACTION="removed"
 fi
 
+LAUNCHER_ACTION="already absent"
+if [ "$LAUNCHER_STATE" = "present" ]; then
+  printf 'Removing the dev-flow PATH launcher...\n'
+  rm -f -- "$LAUNCHER_PATH"
+  [ ! -e "$LAUNCHER_PATH" ] && [ ! -L "$LAUNCHER_PATH" ] \
+    || fail "Could not remove $LAUNCHER_PATH."
+  LAUNCHER_ACTION="removed"
+fi
+
 MARKETPLACE_ACTION="already absent"
 if [ "$MARKETPLACE_STATE" = "present" ]; then
   DEV_FLOW_MARKETPLACE_FILE="$MARKETPLACE_FILE" "$PYTHON" -I -S -c '
@@ -281,6 +302,8 @@ printf '%s│%s  %sPLUGIN%s       %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$PLUGIN_ACTION"
 printf '%s│%s  %sMARKETPLACE%s  %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$MARKETPLACE_ACTION"
+printf '%s│%s  %sCOMMAND%s      %s\n' \
+  "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$LAUNCHER_ACTION"
 printf '%s│%s  %sSOURCE%s       %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$SOURCE_ACTION"
 printf '%s╰─%s\n' "$NEON_CYAN" "$COLOR_RESET"

@@ -78,11 +78,11 @@ the same installed product. It has no separate WebUI version, package, plugin,
 state namespace, or compatibility line. Start a managed background process:
 
 ```sh
-dev-flow --data-dir <controller-data-root> web start
-dev-flow --data-dir <controller-data-root> web status
-dev-flow --data-dir <controller-data-root> web open
-dev-flow --data-dir <controller-data-root> web restart
-dev-flow --data-dir <controller-data-root> web stop
+dev-flow web start
+dev-flow web status
+dev-flow web open
+dev-flow web restart
+dev-flow web stop
 ```
 
 `start` binds only numeric `127.0.0.1`, selects an ephemeral port by default,
@@ -96,6 +96,9 @@ The original `web` command remains available as a foreground compatibility mode.
 into browser memory, and removed from the visible URL. The server does not open
 a browser, enable CORS, load remote resources, emit telemetry, or persist
 browser selections or credentials beyond the lifetime of the managed process.
+The installed launcher resolves `<CODEX_HOME>/plugins/data/dev-flow-orchestrator-personal/0.4.0`
+automatically. Direct development and recovery commands may still pass an exact
+`--data-dir` explicitly.
 
 Task inventory and ordinary detail are derived only from persisted model 0.4.0 state,
 so they remain immediate when a repository is unavailable and do not run Git.
@@ -114,10 +117,13 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 ```
 
 The installer checks the host, clones or updates the source, validates the
-package, safely merges the personal marketplace entry, installs a missing
+package, installs an owned `dev-flow` launcher in `~/.local/bin`, safely merges
+the personal marketplace entry, installs a missing
 plugin, upgrades an older installation, or repairs the current version by
 reinstalling it. It then prints an installation receipt with the action,
-versions, touched directories, and a first prompt. It treats `main` as the
+versions, touched directories, and a first prompt. `~/.local/bin` must already
+be on `PATH`; set `DEV_FLOW_BIN_DIR` to another writable directory already on
+`PATH` when needed. It treats `main` as the
 authoritative source ref:
 fresh installs select it explicitly, while an existing source must have the
 expected origin, a clean attached `main`, and history that can only fast-forward
@@ -246,7 +252,7 @@ Finish or cancel active Dev Flow tasks, then run:
 curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
 ```
 
-The uninstaller removes the Codex plugin, its personal marketplace entry, and
+The uninstaller removes the owned PATH launcher, Codex plugin, its personal marketplace entry, and
 the clean installer-managed source checkout. It refuses to delete a source
 checkout with local changes, ignored paths, local-only commits, an unexpected
 origin, or a different branch. External Dev Flow task data is always preserved.

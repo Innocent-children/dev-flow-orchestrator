@@ -1561,7 +1561,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         "README.md": (
             "[简体中文](README_CN.md)",
             "Local read-only Web UI",
-            "dev-flow --data-dir",
+            "dev-flow web start",
             "127.0.0.1",
             "no separate WebUI version",
             "Observe live",
@@ -1569,7 +1569,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         "README_CN.md": (
             "[English](README.md)",
             "本地只读 Web UI",
-            "dev-flow --data-dir",
+            "dev-flow web start",
             "127.0.0.1",
             "独立的 WebUI 版本",
             "Observe live",
@@ -1617,14 +1617,14 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         "INSTALL.md": (
             "[简体中文](INSTALL_CN.md)",
             "Launch the local read-only Web UI",
-            "dev-flow --data-dir",
+            "dev-flow web start",
             "127.0.0.1",
             "Observe live",
         ),
         "INSTALL_CN.md": (
             "[English](INSTALL.md)",
             "启动本地只读 Web UI",
-            "dev-flow --data-dir",
+            "dev-flow web start",
             "127.0.0.1",
             "Observe live",
         ),
@@ -2078,6 +2078,32 @@ def _validate_current_candidate(root: Path) -> dict:
     )
     _validate_manifest(root, manifest, errors)
     _validate_package_versions(root, manifest, errors)
+    installer = root / "scripts" / "install.sh"
+    uninstaller = root / "scripts" / "uninstall.sh"
+    if installer.is_file():
+        _require_tokens(
+            installer.read_text(encoding="utf-8"),
+            (
+                'DEV_FLOW_BIN_DIR:-$HOME/.local/bin',
+                '# dev-flow-orchestrator managed launcher',
+                'os.replace(str(temporary), str(target))',
+                'dev-flow web start',
+            ),
+            errors,
+            "macOS installer does not install the owned PATH launcher",
+        )
+    if uninstaller.is_file():
+        _require_tokens(
+            uninstaller.read_text(encoding="utf-8"),
+            (
+                'DEV_FLOW_BIN_DIR:-$HOME/.local/bin',
+                '# dev-flow-orchestrator managed launcher',
+                'grep -Fqx "$LAUNCHER_MARKER"',
+                'rm -f -- "$LAUNCHER_PATH"',
+            ),
+            errors,
+            "macOS uninstaller does not preserve PATH launcher ownership",
+        )
     _validate_local_read_only_web_ui(root, errors)
     _validate_windows_product_integration(root, errors)
     _validate_repository_topology(root, errors)

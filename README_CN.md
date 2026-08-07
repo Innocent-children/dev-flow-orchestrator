@@ -67,11 +67,11 @@ Dev Flow 会把它转化成一条可恢复路径：
 进程：
 
 ```sh
-dev-flow --data-dir <控制器数据根目录> web start
-dev-flow --data-dir <控制器数据根目录> web status
-dev-flow --data-dir <控制器数据根目录> web open
-dev-flow --data-dir <控制器数据根目录> web restart
-dev-flow --data-dir <控制器数据根目录> web stop
+dev-flow web start
+dev-flow web status
+dev-flow web open
+dev-flow web restart
+dev-flow web stop
 ```
 
 `start` 只绑定数字地址 `127.0.0.1`，默认选择临时端口，并打印一条包含浏览器 URL 的
@@ -81,6 +81,9 @@ PID、随机实例身份、产品身份、端口及 token 鉴权回环响应同�
 命令继续作为前台兼容模式。256 位进程本地访问令牌位于 URL fragment 中，浏览器将它
 读入内存后从可见 URL 移除。服务器不会自动打开浏览器、启用 CORS、加载远程资源、发送
 遥测，也不会在受管进程生命周期之外持久化浏览器选择或凭据。
+安装后的启动器会自动解析
+`<CODEX_HOME>/plugins/data/dev-flow-orchestrator-personal/0.4.0`。直接开发和恢复命令
+仍可显式传入精确的 `--data-dir`。
 
 任务清单和普通详情只从已持久化的 0.4.0 模型状态推导，因此仓库不可用时仍可立即查看，
 且不会运行 Git。只有在需要当前动作就绪度或仓库健康时，才对选中的任务使用
@@ -96,9 +99,11 @@ PID、随机实例身份、产品身份、端口及 token 鉴权回环响应同�
 curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/install.sh | sh
 ```
 
-安装器会检查环境、克隆或更新源码、校验软件包、安全合并 personal marketplace 条目、
+安装器会检查环境、克隆或更新源码、校验软件包、在 `~/.local/bin` 安装自有的
+`dev-flow` 启动器、安全合并 personal marketplace 条目、
 在插件未安装时完成安装、存在旧版本时完成升级，或通过重新安装修复当前版本。随后输出
-包含执行类型、版本、本次涉及目录和第一条 Prompt 的安装收据。安装器以 `main` 为权威
+包含执行类型、版本、本次涉及目录和第一条 Prompt 的安装收据。`~/.local/bin` 必须已在
+`PATH` 中；需要使用其他可写且已在 `PATH` 中的目录时可设置 `DEV_FLOW_BIN_DIR`。安装器以 `main` 为权威
 源码 ref：首次安装会显式选择
 `main`；已有源码必须具有预期的 origin、干净且已附着的 `main`，并且只能快进到本次
 抓取的提交。其他分支、本地超前或分叉历史以及 Git 报告的本地改动都会停止安装，安装器
@@ -208,8 +213,9 @@ Codex 任务，打开 `/hooks`，检查并信任已安装的 Hook 定义。替�
 curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
 ```
 
-卸载器会移除 Codex 插件、personal marketplace 中的对应条目和安装器管理的干净源码
-checkout。如果源码存在本地改动、ignored 路径、仅本地提交、非预期 origin 或不同分支，
+卸载器会移除自有的 PATH 启动器、Codex 插件、personal marketplace 中的对应条目和
+安装器管理的干净源码 checkout。如果源码存在本地改动、ignored 路径、仅本地提交、
+非预期 origin 或不同分支，
 卸载器会拒绝删除。外部 Dev Flow 任务数据始终保留。如需保留源码 checkout，请传入
 `--keep-source`：
 

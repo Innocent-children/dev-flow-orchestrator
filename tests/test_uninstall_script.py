@@ -131,6 +131,7 @@ class UninstallerBehaviorTests(unittest.TestCase):
                 "DEV_FLOW_CODEX_STATE": str(self.codex_state),
                 "DEV_FLOW_CODEX_LOG": str(self.codex_log),
                 "DEV_FLOW_CODEX_REMOVE_EXIT": "0",
+                "DEV_FLOW_BIN_DIR": str(fake_bin),
                 "CODEX_HOME": str(self.codex_root),
                 "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_CONFIG_NOSYSTEM": "1",
@@ -195,6 +196,12 @@ class UninstallerBehaviorTests(unittest.TestCase):
         task_data = self.codex_root / "plugins" / "data" / "task.json"
         task_data.parent.mkdir(parents=True)
         task_data.write_text("preserve me\n", encoding="utf-8")
+        launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow"
+        launcher.write_text(
+            "#!/bin/sh\n# dev-flow-orchestrator managed launcher\nexit 0\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
 
         result = self.run_uninstaller()
 
@@ -214,9 +221,25 @@ class UninstallerBehaviorTests(unittest.TestCase):
         ]
         self.assertEqual([item["name"] for item in plugins], ["other-plugin"])
         self.assertEqual(task_data.read_text(encoding="utf-8"), "preserve me\n")
+        self.assertFalse(launcher.exists())
         self.assertIn("// SYSTEM OFFLINE", result.stdout)
         self.assertIn("UNINSTALL RECEIPT", result.stdout)
         self.assertIn("External Dev Flow task data", result.stdout)
+
+    def test_unowned_launcher_is_preserved_and_blocks_uninstall(self) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow"
+        launcher.write_text("#!/bin/sh\necho user-owned\n", encoding="utf-8")
+        launcher.chmod(0o755)
+
+        result = self.run_uninstaller()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is not owned by Dev Flow", result.stderr)
+        self.assertTrue(self.codex_state.exists())
+        self.assertEqual(launcher.read_text(encoding="utf-8"), "#!/bin/sh\necho user-owned\n")
+        self.assertEqual(self.activation_calls(), [])
 
     def test_keep_source_allows_local_work_and_preserves_checkout(self) -> None:
         self.write_marketplace()
