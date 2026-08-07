@@ -50,6 +50,16 @@ class GitSnapshotTests(RepositoryTestCase):
         executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
         return directory
 
+    def test_eol_entries_preserve_attributes_containing_spaces(self) -> None:
+        entries = GitClient._eol_entries(
+            b"i/lf    w/lf    attr/text eol=lf\tREADME.md\x00"
+        )
+
+        self.assertEqual(
+            entries,
+            {"README.md": ("i/lf", "w/lf", "attr/text eol=lf")},
+        )
+
     def test_snapshot_is_the_current_git_evidence_boundary(self) -> None:
         self.assertFalse(hasattr(GitClient, "inspect"))
         snapshot = GitClient.snapshot(str(self.repository))

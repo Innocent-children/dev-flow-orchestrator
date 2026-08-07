@@ -303,7 +303,7 @@ class GitClient:
         result = {}
         for encoded in raw.split(b"\x00")[:-1]:
             fields, separator, encoded_path = encoded.partition(b"\t")
-            parts = fields.split()
+            parts = fields.split(maxsplit=2)
             if not separator or len(parts) != 3:
                 raise _error("GIT_OUTPUT_INVALID", "Git EOL entry is malformed")
             try:
