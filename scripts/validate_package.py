@@ -1918,9 +1918,11 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
             'commands.add_parser("web")',
             'web.add_argument("--port", type=int, default=0)',
             "run_web(arguments.data_dir, port=arguments.port)",
+            "manage_web(",
+            'choices=("foreground", "start", "status", "open", "stop", "restart", "_serve")',
         ),
         errors,
-        "CLI does not expose the integrated foreground Web UI",
+        "CLI does not expose the integrated foreground and managed Web UI",
     )
     asset_paths = tuple(
         assets / name for name in ("index.html", "app.js", "styles.css")
@@ -1972,13 +1974,18 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
         "http",
         "importlib",
         "json",
+        "os",
+        "pathlib",
         "select",
         "secrets",
         "signal",
         "socket",
         "socketserver",
+        "stat",
+        "subprocess",
         "sys",
         "threading",
+        "time",
         "typing",
         "urllib",
     }

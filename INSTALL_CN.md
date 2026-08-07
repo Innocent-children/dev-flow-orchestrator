@@ -34,20 +34,22 @@ curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestr
 
 ## 启动本地只读 Web UI
 
-已安装的 0.4.0 插件已经包含 Web UI；无需单独安装，也没有单独版本。使用包含待检查
+已安装的 0.4.1 插件已经包含 Web UI；无需单独安装，也没有单独版本。使用包含待检查
 任务的同一个控制器数据根目录：
 
 ```sh
-dev-flow --data-dir <控制器数据根目录> web
+dev-flow --data-dir <控制器数据根目录> web start
 ```
 
-命令会保持前台运行并打印一条严格 JSON 收据。打开收据中的 `url`：它使用数字地址
-`127.0.0.1`、默认临时端口和 fragment 中的进程本地令牌。若要为当前进程指定固定
-本地端口，可添加 `--port <端口>`。产品刻意不提供 host、守护进程、代理、自动打开
-浏览器、远程访问或持久化凭据选项。
+命令会启动受管后台进程并打印一条严格 JSON 收据。打开收据中的 `url`：它使用数字地址
+`127.0.0.1`、默认临时端口和 fragment 中的进程本地令牌。若要指定固定本地端口，可在
+`start` 或 `restart` 后添加 `--port <端口>`。使用同一精确数据根目录执行 `web status`、
+`web open`、`web restart` 和 `web stop` 进行管理；`open` 只重新输出完整启动 URL，不会
+自动打开浏览器。原有 `web` 形式继续作为可用 Ctrl-C 停止的前台模式。产品刻意不提供
+host、代理、远程访问或长期凭据选项。
 
 初始清单和存储任务详情不会调用 Git。只有在需要当前仓库健康和动作就绪度时才选择
-**Observe live**。使用 Ctrl-C 停止服务器；关闭会取消任何活动的实时捕获。该访问机制
+**Observe live**。停止或重启服务器会取消任何活动的实时捕获。该访问机制
 是本地 capability 安全，而不是多用户认证：不得分享启动 URL、通过代理暴露端口，或
 削弱 Host、Origin、Fetch Metadata、CSP、bearer token、no-CORS 和 loopback 检查。
 
@@ -444,8 +446,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 安装不会建立 Hook 信任。请启动新的 Codex 会话，打开 `/hooks`，检查精确的已安装 Hook
 定义及源码并予以信任。Hook guard 很有用，但不是完整的 PowerShell 或操作系统强制边界。
 
-在注入的 Controller locator 后追加 `web --port 0`，即可启动现有的前台本地只读 Web UI。
-它只绑定数字地址 `127.0.0.1`，使用 fragment token 权限，并且不修改任务或仓库。
+在注入的 Controller locator 后追加 `web start --port 0`，即可启动受管的本地只读 Web UI。
+使用同一 locator 执行 `web open`、`web status`、`web restart` 或 `web stop`。它只绑定
+数字地址 `127.0.0.1`，使用 fragment token 权限，并且不修改任务或仓库。
 
 卸载时始终保留外部 Controller 任务数据：
 

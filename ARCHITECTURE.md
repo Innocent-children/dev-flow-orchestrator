@@ -97,7 +97,7 @@ commands, absolute paths, or raw internal errors.
 | `controller.py` | Application coordination and every post-creation state mutation |
 | `cli.py` | Strict argv/JSON interface and one JSON response per command |
 | `hook.py` | Active-task lookup, exact locator injection, and fail-open data-path guardrails |
-| `web.py` | Authenticated loopback server, fixed routes, security policy, foreground lifecycle, and live-capture admission |
+| `web.py` | Authenticated loopback server, fixed routes, security policy, foreground and managed-process lifecycles, and live-capture admission |
 | `web_views.py` | Bounded inventory, stored detail, live detail, timeline, Dossier, and recovery projections |
 
 ## Current product identities

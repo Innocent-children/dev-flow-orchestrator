@@ -57,13 +57,19 @@ executor, one projected action, and one controller-owned append-only ledger.
 
 ## Web UI contribution boundary
 
-The local Web UI is part of `dev-flow-orchestrator` 0.4.0. Do not introduce a
+The local Web UI is part of `dev-flow-orchestrator` 0.4.1. Do not introduce a
 WebUI-specific version, package, plugin, marketplace entry, app or MCP server,
 data namespace, persisted schema, dependency set, build pipeline, or release
 gate. Presentation changes must leave `product_document()` and
 `PRODUCT_IDENTITY` unchanged.
 
-Keep stored inventory and detail physically read-only: no task locks,
+Managed-process control records are transient capability state under the exact
+controller data root, not task/model state. Keep them private, atomically
+written, instance-bound, and removable on shutdown. A stop operation must
+verify the PID together with the random instance identity and an authenticated
+loopback response before signaling; never treat a PID alone as authority.
+
+Keep stored inventory and detail requests physically read-only: no task locks,
 directories, permission normalization, caches, Git calls, or repair behavior.
 Keep live observation explicit, selected-task-only, single-slot, cancellable,
 and based on one aggregate snapshot reused for all projections. New responses

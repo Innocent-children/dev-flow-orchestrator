@@ -9,7 +9,7 @@ from typing import Mapping, Optional, Sequence
 
 from .controller import Controller
 from .model import DevFlowError, strict_json_loads
-from .web import run_web
+from .web import manage_web, run_web, run_web_worker
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
@@ -79,7 +79,14 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("list")
     web = commands.add_parser("web")
+    web.add_argument(
+        "web_action",
+        nargs="?",
+        default="foreground",
+        choices=("foreground", "start", "status", "open", "stop", "restart", "_serve"),
+    )
     web.add_argument("--port", type=int, default=0)
+    web.add_argument("--instance-id", help=argparse.SUPPRESS)
     return parser
 
 
@@ -200,9 +207,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         arguments = _parser().parse_args(argv)
         if arguments.command == "web":
-            return run_web(arguments.data_dir, port=arguments.port)
-        result = _dispatch(arguments)
-        exit_code = 0
+            if arguments.web_action == "foreground":
+                return run_web(arguments.data_dir, port=arguments.port)
+            if arguments.web_action == "_serve":
+                return run_web_worker(
+                    arguments.data_dir,
+                    port=arguments.port,
+                    instance_id=arguments.instance_id,
+                )
+            result = manage_web(
+                arguments.data_dir,
+                action=arguments.web_action,
+                port=arguments.port,
+            )
+            exit_code = 0
+        else:
+            result = _dispatch(arguments)
+            exit_code = 0
     except DevFlowError as exc:
         result = exc.as_dict()
         exit_code = 2

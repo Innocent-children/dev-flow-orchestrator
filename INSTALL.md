@@ -63,24 +63,26 @@ acceptance checks.
 
 ## Launch the local read-only Web UI
 
-The installed 0.4.0 plugin includes the Web UI; there is no separate WebUI
+The installed 0.4.1 plugin includes the Web UI; there is no separate WebUI
 installation or version. Use the same controller data root that contains the
 tasks you want to inspect:
 
 ```sh
-dev-flow --data-dir <controller-data-root> web
+dev-flow --data-dir <controller-data-root> web start
 ```
 
-The command remains in the foreground and prints one strict JSON receipt. Open
-the receipt's `url`, which uses numeric `127.0.0.1`, an ephemeral port by
-default, and a process-local token in the fragment. To request a stable local
-port for the current process, add `--port <port>`. There is deliberately no
-host, daemon, proxy, browser-opening, remote-access, or credential-persistence
-option.
+The command starts a managed background process and prints one strict JSON
+receipt. Open its `url`, which uses numeric `127.0.0.1`, an ephemeral port by
+default, and a process-local token in the fragment. Add `--port <port>` to
+`start` or `restart` to request a fixed local port. Use `web status`, `web open`,
+`web restart`, and `web stop` with the same exact data root to manage it. `open`
+prints a fresh complete launch URL but does not launch a browser. The legacy
+`web` form remains a foreground mode stopped with Ctrl-C. There is deliberately
+no host, proxy, remote-access, or long-lived credential option.
 
 The initial list and stored task detail do not invoke Git. Select **Observe
 live** only when current repository health and action readiness are required.
-Stop the server with Ctrl-C; shutdown cancels any active live capture. Access is
+Stopping or restarting the server cancels any active live capture. Access is
 local capability security rather than multi-user authentication: do not share
 the startup URL, expose the port through a proxy, or weaken the Host, Origin,
 Fetch Metadata, CSP, bearer-token, no-CORS, or loopback checks.
@@ -603,9 +605,10 @@ Installation does not establish Hook trust. Start a new Codex session, open
 The Hook guard is useful but is not complete PowerShell or operating-system
 enforcement.
 
-Launch the existing foreground local read-only Web UI with the injected
-Controller locator followed by `web --port 0`. It binds numeric `127.0.0.1`,
-uses fragment token authority, and does not mutate tasks or repositories.
+Launch the managed local read-only Web UI with the injected Controller locator
+followed by `web start --port 0`. Use the same locator with `web open`, `web
+status`, `web restart`, or `web stop`. It binds numeric `127.0.0.1`, uses
+fragment token authority, and does not mutate tasks or repositories.
 
 Uninstall while preserving external Controller task data:
 

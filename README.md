@@ -75,18 +75,27 @@ Use $follow-dev-flow to resume task <task-id>.
 
 The current Dev Flow release includes a local task cockpit as another presentation surface of
 the same installed product. It has no separate WebUI version, package, plugin,
-state namespace, or compatibility line. Start it explicitly in the foreground:
+state namespace, or compatibility line. Start a managed background process:
 
 ```sh
-dev-flow --data-dir <controller-data-root> web
+dev-flow --data-dir <controller-data-root> web start
+dev-flow --data-dir <controller-data-root> web status
+dev-flow --data-dir <controller-data-root> web open
+dev-flow --data-dir <controller-data-root> web restart
+dev-flow --data-dir <controller-data-root> web stop
 ```
 
-The command binds only numeric `127.0.0.1`, selects an ephemeral port by
-default, and prints one JSON startup receipt containing a browser URL. The
+`start` binds only numeric `127.0.0.1`, selects an ephemeral port by default,
+and prints one JSON startup receipt containing a browser URL. `open` prints the
+complete URL again without launching a browser, which restores launch authority
+after a page refresh. `status`, `restart`, and `stop` manage only the process
+whose PID, random instance identity, product identity, port, and token-authenticated
+loopback response match the private runtime receipt for that exact data root.
+The original `web` command remains available as a foreground compatibility mode. The
 256-bit process-local access token is carried in the URL fragment, consumed
 into browser memory, and removed from the visible URL. The server does not open
-a browser, daemonize, enable CORS, load remote resources, emit telemetry, or
-persist browser selections or credentials.
+a browser, enable CORS, load remote resources, emit telemetry, or persist
+browser selections or credentials beyond the lifetime of the managed process.
 
 Task inventory and ordinary detail are derived only from persisted model 0.4.0 state,
 so they remain immediate when a repository is unavailable and do not run Git.

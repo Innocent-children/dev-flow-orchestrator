@@ -3,21 +3,32 @@
 from __future__ import annotations
 
 import datetime as dt
+import http.client
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib import resources
 import json
+import os
+from pathlib import Path
 import select
 import secrets
 import signal
 import socket
 import socketserver
+import stat
+import subprocess
 import sys
 import threading
+import time
 from typing import Mapping, Optional, Sequence, TextIO
 from urllib.parse import parse_qs, urlsplit
 
 from .controller import Controller
+from ._platform.storage import (
+    atomic_write_bytes,
+    ensure_private_directory,
+    exclusive_file_lock,
+)
 from .model import DevFlowError
 from .product import PRODUCT_IDENTITY, RELEASE_VERSION
 
@@ -28,6 +39,12 @@ MAX_REQUEST_TARGET_BYTES = 4096
 LIVE_RETRY_SECONDS = 1
 LIVE_CAPTURE_SLOT = threading.Lock()
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+WEB_RUNTIME_SCHEMA = "dev-flow-web-runtime"
+WEB_RUNTIME_DIRECTORY = "web-runtime"
+WEB_RUNTIME_STATE = "state.json"
+WEB_RUNTIME_LOCK = "control.lock"
+WEB_RUNTIME_LOG = "server.log"
+WEB_START_TIMEOUT_SECONDS = 5.0
 
 
 class _CancellationSignal:
@@ -494,11 +511,14 @@ def startup_receipt(server: BoundedThreadingHTTPServer) -> dict:
     }
 
 
-def run_web(data_dir: str, *, port: int = 0, stream: TextIO = sys.stdout) -> int:
-    server = create_server(data_dir, port=port)
-    receipt = startup_receipt(server)
-    stream.write(_json_bytes(receipt).decode("utf-8") + "\n")
-    stream.flush()
+def _serve_server(
+    server: BoundedThreadingHTTPServer,
+    *,
+    stream: Optional[TextIO] = None,
+) -> int:
+    if stream is not None:
+        stream.write(_json_bytes(startup_receipt(server)).decode("utf-8") + "\n")
+        stream.flush()
     previous = {}
 
     def stop(signum: int, frame: object) -> None:
@@ -521,3 +541,274 @@ def run_web(data_dir: str, *, port: int = 0, stream: TextIO = sys.stdout) -> int
             signal.signal(signum, handler)
         server.token = ""
     return 0
+
+
+def run_web(data_dir: str, *, port: int = 0, stream: TextIO = sys.stdout) -> int:
+    return _serve_server(create_server(data_dir, port=port), stream=stream)
+
+
+def _runtime_paths(data_dir: str) -> tuple:
+    root = Path(data_dir).expanduser().resolve() / WEB_RUNTIME_DIRECTORY
+    return root, root / WEB_RUNTIME_STATE, root / WEB_RUNTIME_LOCK, root / WEB_RUNTIME_LOG
+
+
+def _read_runtime_state(path: Path) -> Optional[dict]:
+    if not path.exists():
+        return None
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise DevFlowError("WEB_RUNTIME_UNSAFE", "Web UI runtime state is not a regular file")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except DevFlowError:
+        raise
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise DevFlowError("WEB_RUNTIME_INVALID", "Web UI runtime state is invalid") from exc
+    required = ("schema", "instance_id", "pid", "status", "started_at")
+    if not isinstance(value, dict) or any(key not in value for key in required):
+        raise DevFlowError("WEB_RUNTIME_INVALID", "Web UI runtime state is incomplete")
+    if (
+        value["schema"] != WEB_RUNTIME_SCHEMA
+        or not isinstance(value["instance_id"], str)
+        or len(value["instance_id"]) < 24
+        or isinstance(value["pid"], bool)
+        or not isinstance(value["pid"], int)
+        or value["pid"] <= 0
+        or value["status"] not in ("starting", "running")
+        or not isinstance(value["started_at"], str)
+    ):
+        raise DevFlowError("WEB_RUNTIME_INVALID", "Web UI runtime state has an unsupported identity")
+    if value["status"] == "running":
+        if (
+            value.get("host") != SERVER_HOST
+            or isinstance(value.get("port"), bool)
+            or not isinstance(value.get("port"), int)
+            or not 0 < value["port"] <= 65535
+            or not isinstance(value.get("token"), str)
+            or len(value["token"]) < 32
+            or value.get("url")
+            != "http://{}:{}/#token={}".format(
+                SERVER_HOST,
+                value["port"],
+                value["token"],
+            )
+        ):
+            raise DevFlowError("WEB_RUNTIME_INVALID", "Web UI running state is invalid")
+    return value
+
+
+def _write_runtime_state(path: Path, value: Mapping[str, object]) -> None:
+    atomic_write_bytes(path, _json_bytes(value) + b"\n")
+
+
+def _remove_runtime_state(path: Path, instance_id: Optional[str] = None) -> None:
+    state = _read_runtime_state(path)
+    if state is None or (instance_id is not None and state["instance_id"] != instance_id):
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise DevFlowError("WEB_RUNTIME_WRITE_FAILED", "Web UI runtime state could not be removed") from exc
+
+
+def _probe_runtime(state: Mapping[str, object]) -> bool:
+    if state.get("status") != "running":
+        return False
+    port = state.get("port")
+    token = state.get("token")
+    if not isinstance(port, int) or not isinstance(token, str):
+        return False
+    connection = http.client.HTTPConnection(SERVER_HOST, port, timeout=0.4)
+    try:
+        connection.request("GET", "/api/meta", headers={"Authorization": "Bearer " + token})
+        response = connection.getresponse()
+        payload = response.read()
+        if response.status != HTTPStatus.OK:
+            return False
+        body = json.loads(payload.decode("utf-8"))
+        return body.get("product_identity") == PRODUCT_IDENTITY
+    except (OSError, UnicodeError, ValueError):
+        return False
+    finally:
+        connection.close()
+
+
+def _runtime_view(state: Optional[Mapping[str, object]], *, action: str) -> dict:
+    running = state is not None and _probe_runtime(state)
+    result = {
+        "ok": True,
+        "command": "web",
+        "action": action,
+        "status": "running" if running else "stopped",
+        "version": RELEASE_VERSION,
+        "product_identity": PRODUCT_IDENTITY,
+    }
+    if running:
+        for key in ("pid", "host", "port", "url", "started_at"):
+            result[key] = state[key]
+    return result
+
+
+def _child_command(data_dir: str, port: int, instance_id: str) -> list:
+    entry = Path(sys.argv[0]).resolve()
+    if entry.name == "dev_flow.py":
+        prefix = [sys.executable, str(entry)]
+    else:
+        prefix = [sys.executable, "-m", "dev_flow_orchestrator.cli"]
+    return prefix + [
+        "--data-dir", str(Path(data_dir).expanduser().resolve()),
+        "web", "_serve", "--port", str(port), "--instance-id", instance_id,
+    ]
+
+
+def _open_runtime_log(path: Path) -> object:
+    if path.is_symlink():
+        raise DevFlowError("WEB_RUNTIME_UNSAFE", "Web UI runtime log is not a regular file")
+    flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    if os.name == "nt":
+        flags |= os.O_BINARY
+    try:
+        descriptor = os.open(str(path), flags, 0o600)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode) or path.is_symlink():
+            os.close(descriptor)
+            raise DevFlowError("WEB_RUNTIME_UNSAFE", "Web UI runtime log is not a regular file")
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        return os.fdopen(descriptor, "ab", buffering=0)
+    except DevFlowError:
+        raise
+    except OSError as exc:
+        raise DevFlowError("WEB_RUNTIME_WRITE_FAILED", "Web UI runtime log could not be opened") from exc
+
+
+def _start_web(data_dir: str, port: int) -> dict:
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+        raise DevFlowError("WEB_PORT_INVALID", "--port must be between 0 and 65535")
+    root, state_path, lock_path, log_path = _runtime_paths(data_dir)
+    ensure_private_directory(root)
+    instance_id = secrets.token_urlsafe(24)
+    with exclusive_file_lock(lock_path):
+        current = _read_runtime_state(state_path)
+        if current is not None and _probe_runtime(current):
+            result = _runtime_view(current, action="start")
+            result["already_running"] = True
+            return result
+        _remove_runtime_state(state_path)
+        with _open_runtime_log(log_path) as log:
+            kwargs = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": log,
+                "stderr": log,
+                "close_fds": True,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+                )
+            else:
+                kwargs["start_new_session"] = True
+            process = subprocess.Popen(_child_command(data_dir, port, instance_id), **kwargs)
+        _write_runtime_state(state_path, {
+            "schema": WEB_RUNTIME_SCHEMA,
+            "instance_id": instance_id,
+            "pid": process.pid,
+            "status": "starting",
+            "started_at": _utc_now(),
+        })
+    deadline = time.monotonic() + WEB_START_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+        state = _read_runtime_state(state_path)
+        if state is not None and state.get("instance_id") == instance_id and _probe_runtime(state):
+            return _runtime_view(state, action="start")
+        if process.poll() is not None:
+            break
+    with exclusive_file_lock(lock_path):
+        _remove_runtime_state(state_path, instance_id)
+    raise DevFlowError(
+        "WEB_START_FAILED",
+        "managed Web UI did not become ready",
+        details={"log": str(log_path)},
+    )
+
+
+def _stop_web(data_dir: str) -> dict:
+    root, state_path, lock_path, _ = _runtime_paths(data_dir)
+    if not root.exists():
+        return _runtime_view(None, action="stop")
+    with exclusive_file_lock(lock_path):
+        state = _read_runtime_state(state_path)
+        if state is None or not _probe_runtime(state):
+            _remove_runtime_state(state_path)
+            return _runtime_view(None, action="stop")
+        pid = state["pid"]
+        instance_id = state["instance_id"]
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            _remove_runtime_state(state_path, instance_id)
+            return _runtime_view(None, action="stop")
+        except OSError as exc:
+            raise DevFlowError("WEB_STOP_FAILED", "managed Web UI could not be stopped") from exc
+    deadline = time.monotonic() + WEB_START_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        current = _read_runtime_state(state_path)
+        if current is None or current.get("instance_id") != instance_id or not _probe_runtime(current):
+            with exclusive_file_lock(lock_path):
+                _remove_runtime_state(state_path, instance_id)
+            return _runtime_view(None, action="stop")
+        time.sleep(0.05)
+    raise DevFlowError("WEB_STOP_TIMEOUT", "managed Web UI did not stop in time")
+
+
+def manage_web(data_dir: str, *, action: str, port: int = 0) -> dict:
+    if action == "start":
+        return _start_web(data_dir, port)
+    if action == "stop":
+        return _stop_web(data_dir)
+    if action == "restart":
+        _stop_web(data_dir)
+        result = _start_web(data_dir, port)
+        result["action"] = "restart"
+        return result
+    root, state_path, _, _ = _runtime_paths(data_dir)
+    state = _read_runtime_state(state_path) if root.exists() else None
+    if state is not None and not _probe_runtime(state):
+        state = None
+    result = _runtime_view(state, action=action)
+    if action == "open" and state is None:
+        raise DevFlowError("WEB_NOT_RUNNING", "managed Web UI is not running")
+    if action not in ("status", "open"):
+        raise DevFlowError("ACTION_UNSUPPORTED", "Web UI action is not implemented")
+    return result
+
+
+def run_web_worker(data_dir: str, *, port: int, instance_id: Optional[str]) -> int:
+    if not isinstance(instance_id, str) or len(instance_id) < 24:
+        raise DevFlowError("WEB_RUNTIME_INVALID", "managed Web UI instance identity is invalid")
+    root, state_path, lock_path, _ = _runtime_paths(data_dir)
+    ensure_private_directory(root)
+    server = create_server(data_dir, port=port)
+    receipt = startup_receipt(server)
+    state = {
+        "schema": WEB_RUNTIME_SCHEMA,
+        "instance_id": instance_id,
+        "pid": os.getpid(),
+        "status": "running",
+        "started_at": _utc_now(),
+        **{key: receipt[key] for key in ("host", "port", "url")},
+        "token": server.token,
+    }
+    with exclusive_file_lock(lock_path):
+        reserved = _read_runtime_state(state_path)
+        if reserved is None or reserved.get("instance_id") != instance_id:
+            server.server_close()
+            raise DevFlowError("WEB_RUNTIME_CONFLICT", "managed Web UI start reservation was lost")
+        _write_runtime_state(state_path, state)
+    try:
+        return _serve_server(server)
+    finally:
+        server.server_close()
+        with exclusive_file_lock(lock_path):
+            _remove_runtime_state(state_path, instance_id)

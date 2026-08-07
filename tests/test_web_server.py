@@ -520,6 +520,54 @@ class WebServerTests(RepositoryTestCase):
             if process.stderr is not None:
                 process.stderr.close()
 
+    def test_cli_managed_web_start_status_open_restart_and_stop(self) -> None:
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = str(SRC)
+        command = [
+            sys.executable,
+            "-m",
+            "dev_flow_orchestrator.cli",
+            "--data-dir",
+            self.data_dir,
+            "web",
+        ]
+
+        def invoke(action: str) -> dict:
+            completed = subprocess.run(
+                command + [action],
+                cwd=str(SRC.parent),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+                timeout=10,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+            return json.loads(completed.stdout)
+
+        try:
+            started = invoke("start")
+            self.assertEqual(started["status"], "running")
+            self.assertIn("#token=", started["url"])
+
+            repeated = invoke("start")
+            self.assertTrue(repeated["already_running"])
+            self.assertEqual(repeated["pid"], started["pid"])
+
+            status = invoke("status")
+            self.assertEqual(status["pid"], started["pid"])
+            opened = invoke("open")
+            self.assertEqual(opened["url"], started["url"])
+
+            restarted = invoke("restart")
+            self.assertEqual(restarted["status"], "running")
+            self.assertNotEqual(restarted["pid"], started["pid"])
+        finally:
+            stopped = invoke("stop")
+            self.assertEqual(stopped["status"], "stopped")
+        self.assertEqual(invoke("status")["status"], "stopped")
+
 
 if __name__ == "__main__":
     unittest.main()
