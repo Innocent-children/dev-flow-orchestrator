@@ -1,4 +1,4 @@
-"""Focused exact-set controller, CLI, and Hook coverage for the current product."""
+"""Focused exact-set Controller and CLI coverage for the current product."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.git_client import GitClient
-from dev_flow_orchestrator.hook import HookConfig, handle
 from dev_flow_orchestrator.model import DevFlowError, json_value
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
@@ -132,13 +131,6 @@ class MultiRepositoryControllerTests(unittest.TestCase):
             },
             "summary": "Repository-set verification passed",
         }
-
-    def hook_config(self) -> HookConfig:
-        return HookConfig(
-            ("dev-flow-launcher", "dev-flow.py"),
-            self.data_dir,
-            self.data_dir,
-        )
 
     def test_repeated_cli_repo_and_one_member_python_call_share_one_model(self) -> None:
         completed = subprocess.run(
@@ -339,14 +331,6 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         nested.mkdir()
         matches = self.controller.tasks_for_path(str(nested))
         self.assertEqual([item.task_id for item in matches], [state.task_id])
-        output = handle(
-            {"hook_event_name": "SessionStart", "cwd": str(nested)},
-            config=self.hook_config(),
-        )
-        self.assertIsNotNone(output)
-        context = output["hookSpecificOutput"]["additionalContext"]
-        self.assertIn(state.task_id, context)
-        self.assertIn(AGENT_PROTOCOL_SCHEMA, context)
 
     def test_every_cardinality_uses_two_complete_capture_passes(self) -> None:
         one_member_git = CountingGitClient()
@@ -580,13 +564,6 @@ class MultiRepositoryControllerTests(unittest.TestCase):
             shown_task["snapshot_error"]["details"]["repository_id"],
             unavailable_view["snapshot_error"]["details"]["repository_id"],
         )
-        self.assertIsNone(
-            handle(
-                {"hook_event_name": "SessionStart", "cwd": str(self.first)},
-                config=self.hook_config(),
-            )
-        )
-
         unavailable.rename(self.second)
         cancelled = self.controller.cancel(state.task_id, reason="Stop atomically")
         self.assertEqual(cancelled["receipt"]["status"], "CANCELLED")

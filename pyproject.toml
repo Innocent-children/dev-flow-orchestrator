@@ -1,8 +1,23 @@
 [project]
 name = "dev-flow-orchestrator"
-version = "0.4.2"
-requires-python = ">=3.9,<3.15"
-dependencies = []
+version = "0.5.0"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "mcp>=2,<3",
+]
+
+[project.scripts]
+dev-flow-mcp = "dev_flow_orchestrator.mcp.runtime:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dev_flow_orchestrator"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"workflows" = "dev_flow_orchestrator/workflow_assets"
 
 [dependency-groups]
 dev = [

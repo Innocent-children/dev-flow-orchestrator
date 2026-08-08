@@ -1,240 +1,168 @@
-# Contributing
+# Contributing to Dev Flow Orchestrator
 
-For compatibility-model 0.4.0 changes, test the smallest causally affected layer first: index-exact
-snapshot behavior, capsule/lease rules, assurance policy and budgets, causal
-review, workflow dispatch, controller replay, then package and installed
-journeys. Do not add open-ended policy knobs or fixed unconditional verification
-and review loops. Every official or custom `dev-flow-workflow/0.4.0` must name
-the closed `dev-flow-assurance-policy/0.4.0`, preserve conservative unknown
-impact behavior, finite retry authority, complete criterion/change coverage,
-and deterministic incomplete finalization.
+[Simplified Chinese](CONTRIBUTING_CN.md)
 
-Runtime code remains Python-standard-library-only. New product bounds must be
-declared in `product.py`, enforced atomically by the runtime, asserted by package
-validation, and tested at the exact limit and plus one. Review tests must keep
-pre-existing and out-of-scope observations visible without scheduling unrelated
-task rework.
+## Scope and authority
 
-[简体中文](CONTRIBUTING_CN.md)
+Keep changes minimal and attributable to the accepted requirement. The
+Controller is the only state-transition writer. MCP, CLI, and Web adapters may
+submit commands or inspect state but must not duplicate Engine, Store,
+repository, binding, assurance, review, or delivery authority.
 
-Contributions preserve the 0.4.0 product contract: one task over an exact
-canonical set of one to eight user-prepared local Git worktrees, one Codex
-executor, one projected action, and one controller-owned append-only ledger.
+Do not add automatic branch/worktree management, Git publication, parallel
+executors, external CI/PR/release dispatch, raw-state tools, or a generic command
+surface. Do not weaken canonical paths, repository identity, exact membership,
+locks, atomic writes, revision CAS, snapshot stability, bindings, acceptance
+criteria, or final Dossier requirements.
 
-## Product and authority boundaries
+## Environment
 
-- Start with the user journey and supported product matrix. Workflow depth,
-  repository topology, workspace strategy, and execution topology are
-  independent dimensions.
-- Keep current policy in one authoritative source and derive catalog,
-  validation, tests, Skills, and documentation from it.
-- Keep task state outside target repositories. The controller is the sole
-  state-transition writer; Hook, CLI, Skills, and optional drivers submit to
-  that boundary.
-- Treat `TaskState.repositories` as immutable membership authority. Admission,
-  snapshotting, mutation, replay, freshness, recovery, and finalization must
-  cover the complete canonical set atomically; never default to one member,
-  drop an unavailable member, or reconstruct caller order.
-- Keep repository inspection bounded and read-only. Do not add implicit
-  stash, reset, clean, checkout, commit, rebase, merge, push, force-push, or
-  deletion behavior.
-- Do not couple repository topology to workflow depth, managed branch/worktree
-  effects, Git publication, parallel agents, or external CI/PR/release effects.
-  The current core performs none of those and does not reuse partial assurance
-  from unchanged members.
-- Preserve action-binding, contract, input-lineage, resource, source-
-  predecessor, snapshot, and revision CAS checks across every mutation path.
-- Treat codebase-memory as discovery evidence. For each `repository_id`, use
-  distinct baseline and current-workspace project IDs, never share graph IDs
-  across members or generations, select by workflow phase, and confirm material
-  conclusions in the named repository source.
-- Ask OpenSpec for current JSON status and instructions. Repository-backed
-  planning is source-producing and binds concrete governing/reported
-  resources; no fixed phase sequence belongs in runtime code.
-- Keep driver execution outside the engine. Optional-driver fallbacks record
-  degraded or unavailable assurance and retain the same terminal conditions.
-- Runtime code uses only the Python standard library.
-
-## Web UI contribution boundary
-
-The local Web UI is part of `dev-flow-orchestrator` 0.4.1. Do not introduce a
-WebUI-specific version, package, plugin, marketplace entry, app or MCP server,
-data namespace, persisted schema, dependency set, build pipeline, or release
-gate. Presentation changes must leave `product_document()` and
-`PRODUCT_IDENTITY` unchanged.
-
-Managed-process control records are transient capability state under the exact
-controller data root, not task/model state. Keep them private, atomically
-written, instance-bound, and removable on shutdown. A stop operation must
-verify the PID together with the random instance identity and an authenticated
-loopback response before signaling; never treat a PID alone as authority.
-
-The macOS installer owns only `<DEV_FLOW_BIN_DIR>/dev-flow` and otherwise
-selects the first writable absolute directory already on `PATH`. Keep collision
-handling fail-closed, write the
-launcher atomically, and let uninstall remove it only after verifying the exact
-ownership marker. Installed CLI invocations may omit `--data-dir`; resolution
-must prefer `PLUGIN_DATA`, otherwise use `CODEX_HOME` (or `~/.codex`) plus the
-personal-plugin data directory and `PLUGIN_DATA_NAMESPACE`. Explicit
-`--data-dir` remains authoritative for development and recovery.
-
-Keep stored inventory and detail requests physically read-only: no task locks,
-directories, permission normalization, caches, Git calls, or repair behavior.
-Keep live observation explicit, selected-task-only, single-slot, cancellable,
-and based on one aggregate snapshot reused for all projections. New responses
-must use allowlisted fields and must not expose raw state, records, bindings,
-snapshot entries, commands, absolute paths, or raw exceptions.
-
-Browser changes must remain native HTML/CSS/JavaScript with safe text rendering,
-keyboard access, visible focus, responsive layouts, no background polling, no
-external requests, and no persistent browser storage. Extend focused tests in
-`test_read_only_inspection.py`, `test_web_read_models.py`,
-`test_web_server.py`, and `test_web_ui_product_identity.py`; then run package
-and installed-artifact validation. A missing real browser must be recorded as
-`manual-unverified`, never inferred from HTTP-only evidence.
-
-## Module ownership
-
-- `product.py`: 0.4.0 identity vocabulary, official workflow catalog, and the
-  authoritative repository-topology capability.
-- `model.py`: immutable task values and canonical repository membership,
-  strict JSON, errors, and receipts.
-- `snapshot.py`: aggregate repository-set snapshots and nested member
-  workspace snapshots, validation, lookup, and digests.
-- `workflow.py`: `dev-flow-workflow/0.4.0` contracts, stage-scoped cancellation, graph
-  validation, and selected-definition identity.
-- `delivery.py`: contracts, decisions, seals, bindings, resources, freshness,
-  coverage, and dossiers.
-- `engine.py`: replay, mutation plans, assurance routing, records, projections,
-  and task views.
-- `store.py`: path safety, locks, revision CAS, and atomic persistence.
-- `git_client.py`: bounded content-sensitive read-only snapshots.
-- `controller.py`: application coordination and all state mutations.
-- `cli.py` and `hook.py`: wire interfaces; neither owns workflow policy.
-
-Keep these dependencies explicit. Avoid global execution order, string-based
-late binding, overlapping service layers, or filesystem/process access in the
-pure domain modules.
-
-## Current workflow and identity changes
-
-Official workflows are `lite`, `feature`, `bugfix`, `investigation`,
-`refactor`, and `full`. `dev-flow-workflow/0.4.0` nodes declare typed artifacts, workspace
-roles, inputs, finite assurance rework, exhausted dossier paths, and optional-
-driver degraded/unavailable metadata. Every workflow declares a shared cancel
-action with explicit `cancel.stages`; official definitions cover the normal
-majority of non-terminal stages and exclude all `delivery.finalize` nodes.
-
-`PRODUCT_IDENTITY` is the authority for the current task, record, artifact,
-action-binding, repository-set snapshot, nested workspace snapshot,
-workflow, agent, verification-coverage, Delivery-Dossier, data
-namespace, and one-to-eight topology. Selected-workflow identity binds only the
-selector, schema, and canonical document. Any change to these current
-authorities must update the corresponding product contract and focused proof.
-
-Repository topology is selected independently of the official workflow. Every
-cardinality uses `dev-flow-agent/0.4.0`, an exact
-`dev-flow-repository-set-snapshot/0.4.0`, required `repository_id` resources,
-structured `criteria`/`repositories`/`integration` verification, aggregate
-freshness/review, and Delivery Dossier 0.4.0.
-
-## Release and compatibility versions
-
-Use the standard-library release command for an ordinary release bump:
+Runtime and development dependencies are managed by the project-level `uv`
+environment. Never install them into system or user Python.
 
 ```sh
-python3 -I -S scripts/bump_version.py 0.4.1
+uv sync --locked
+uv run python --version
 ```
 
-`src/dev_flow_orchestrator/_version.py` is the single `RELEASE_VERSION`
-source. The command updates only that authority plus derived plugin,
-`pyproject.toml`, and `uv.lock` metadata. Validate existing metadata without
-writing through `python3 -I -S scripts/bump_version.py --check`.
+Supported runtime metadata is `>=3.10,<3.15`. Managed installed runtimes require
+64-bit Python. Core runtime modules must remain standard-library only; only
+`src/dev_flow_orchestrator/mcp/` may import the MCP SDK, Pydantic, or their
+framework dependencies.
 
-Do not change `MODEL_VERSION`, the controller data namespace, schemas,
-workflow documents, workflow identities, or `PRODUCT_IDENTITY` for a
-release-only patch. Change the compatibility model only when persisted fields,
-protocol semantics, topology authority, or replay rules actually become
-incompatible, and declare that larger cut explicitly.
+## Tests
 
-## Validation
-
-Run only the smallest test modules or individual cases that directly cover the
-changed behavior. Full unittest discovery is prohibited, including release or
-milestone requests. On this macOS host, leave native Windows and Linux checks
-explicitly unverified.
-
-Typical focused commands are:
+During iteration, run the smallest useful focused test:
 
 ```sh
-python3 -I -S tests/test_workflow_validation.py -v
-python3 -I -S tests/test_yaml_subset.py -v
-python3 -I -S tests/test_package.py -v
-python3 -I -S tests/test_install_script.py -v
-python3 -I -S tests/test_multi_repository_assets.py -v
-python3 -I -S tests/test_delivery_runtime.py -v
-python3 -I -S tests/test_controller_contracts.py -v
-python3 -I -S tests/test_store_integrity.py -v
-python3 -I -S tests/test_stale_mutations.py -v
-python3 -I -S tests/test_cli.py -v
-python3 -I -S tests/test_hook.py -v
-python3 -I -S tests/test_git_snapshot.py -v
-python3 -I -S tests/test_read_only_inspection.py -v
-python3 -I -S tests/test_web_read_models.py -v
-python3 -I -S tests/test_web_server.py -v
-python3 -I -S tests/test_web_ui_product_identity.py -v
-python3 -I -S tests/test_multi_repository_core.py -v
-python3 -I -S tests/test_multi_repository_controller.py -v
-python3 -I -S tests/test_multi_repository_delivery.py -v
-python3 -I -S tests/test_installed_journeys.py -v
-python3 -I -S scripts/validate_package.py
-python3 -m json.tool .codex-plugin/plugin.json
+uv run python tests/test_mcp_runtime.py -v
+uv run python tests/test_package.py -v
 ```
 
-Choose only the applicable commands from the 0.4.0 focused CI matrix. Validate
-the active OpenSpec change with its current CLI instructions.
-
-Validate every bundled Skill after editing it:
+Full unittest discovery is allowed. It is the canonical complete source
+regression command:
 
 ```sh
-python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/analyze-change-impact
-python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/follow-dev-flow
-python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/review-dev-flow-change
-python3 /Users/innocent-children/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
+uv run python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-The bundled validators require a development interpreter with PyYAML; this is
-not a plugin runtime dependency.
+The former repository rule prohibiting full unittest discovery is abolished.
+Do not replace complete discovery with a hand-maintained partial module list in
+release evidence. Focused suites remain useful for fast feedback.
+The checked-in CI matrix runs that complete discovery on macOS and native Windows
+for every supported Python minor from 3.10 through 3.14; a green subset is not a
+substitute for the complete release matrix.
 
-Release evidence distinguishes source-checkout checks from installed behavior.
-An installed acceptance pass identifies the immutable installed snapshot and
-covers the six official workflows, Hook/Skill pickup, structured/minimal
-starts, binding-required apply, contract revision recovery, decisions and
-waivers, optional-driver available/degraded paths, bounded assurance success
-and exhaustion, one-member and larger exact-set admission through the same
-protocol, any-member Hook pickup, member-loss recovery, structured
-member/integration verification, and aggregate dossier inspection. Conditions
-that require a real new Codex task remain marked
-manual or unverified when the environment cannot observe them.
+Run package and OpenSpec validation when relevant:
 
-Before handoff:
+```sh
+uv run python scripts/validate_package.py
+openspec validate dev-flow-orchestrator-mcp --strict
+```
 
-- inspect the complete tracked and untracked diff;
-- run whitespace/error checks for changed files;
-- confirm English and Chinese product claims have the same scope and strength;
-- perform one independent read-only review against the exact current aggregate
-  repository-set snapshot;
-- report every skipped or manual check precisely.
+The same installed STDIO launcher is compatible with the
+[official MCP Inspector](https://github.com/modelcontextprotocol/inspector).
+Use `--` so `--stdio` is passed to Dev Flow rather than parsed as an Inspector
+option:
 
-## Windows integration contributions
+```sh
+npx @modelcontextprotocol/inspector -- dev-flow-mcp --stdio
+npx @modelcontextprotocol/inspector --cli --method tools/list -- dev-flow-mcp --stdio
+```
 
-Keep Windows work at the existing platform seams. Do not create Windows-only
-workflows, schemas, state fields, versions, namespaces, Web UI paths, or
-migration logic. Preserve every POSIX Hook command while pairing it with
-`commandWindows`; keep PowerShell 5.1 compatibility and literal-path handling.
+The automated protocol gate remains `tests/test_mcp_runtime.py`, which uses the
+official Python client directly and does not require Node.js.
 
-Run the macOS focused suite as the broad product gate. Windows automation should
-cover launcher, Hook rendering/guards, lifecycle authority, Web UI integration,
-one installed journey, and one two-repository recovery smoke—not duplicate the
-complete platform-neutral matrix. Record consumer-client OS build, PowerShell,
-Python, Git, Codex, and actual outcomes separately from hosted Server CI.
+Never claim a platform or matrix passed unless it actually ran. Native Windows
+evidence must come from native Windows x64, not macOS, Wine, WSL, or a skipped
+test. Record skips, unavailable hosts, and stale evidence explicitly.
+
+## MCP changes
+
+The stable catalog has exactly eleven tools. A tool change must include:
+
+- a stable snake-case name and description at most 512 UTF-8 bytes;
+- a closed input model with explicit required fields, enums, count/byte limits,
+  and unknown-field rejection;
+- a per-tool output schema inside the common result envelope;
+- correct read-only, destructive, idempotent, closed-world, and task-support
+  annotations;
+- direct Controller mapping without domain-rule duplication;
+- domain, protocol, unexpected-error, result-bound, concurrency, cancellation,
+  and real official client/STDIO tests as applicable;
+- package-validation and installed-journey coverage.
+
+Do not print to stdout anywhere in the server import/start/run/shutdown path;
+stdout is protocol-only. Diagnostics use bounded stderr records with request
+IDs and no arguments, environment values, contracts, bindings, repository
+contents, secrets, or task-data paths.
+
+Preserve these context budgets:
+
+- server instructions: 4 KiB;
+- first primary sequence: 512 bytes;
+- tool description: 512 bytes;
+- tools list: 32 KiB;
+- text summary: 4 KiB;
+- current-action guidance: 8 KiB;
+- compact current action: 128 KiB.
+- structured result: 512 KiB;
+- inventory or discovery page: 256 KiB, with 2 KiB per item;
+- default stderr event: 4 KiB.
+
+Reject first-excess input or output instead of truncating bindings, repository
+membership, required evidence, or guidance authority.
+
+## Guidance changes
+
+Every official action node/handler must map to one safe catalog entry or the
+closed generic fallback. Guidance is derived from the authoritative current
+projection and includes only the applicable objective, must-read fields,
+allowed effects, required evidence, payload notes, driver, stale recovery,
+completion rule, and canonical guidance digest.
+
+Do not tell a model to inspect package source, adapter source, CLI source,
+removed Skills/Hooks, raw Store files, or the Controller data root. Impact
+guidance must separate baseline/current codebase-memory projects and confirm
+graph findings against source. Governing OpenSpec guidance must carry concrete
+status, path/digest, source stage, and fallback. Review guidance must preserve
+the bound review package and guidance digest.
+
+## Installation and platform changes
+
+Candidate validation runs before candidate runtime code. The managed runtime
+must remain outside verified source and task data, use the exact lock, install a
+wheel, pass MCP smoke checks, and write a matching receipt before activation.
+Failed builds must preserve the previous runtime and launcher.
+
+POSIX scripts target macOS. PowerShell scripts retain PowerShell 5.1
+compatibility, literal-path handling, x64 checks, fast-forward-only source
+authority, marker-validated removal, and no POSIX dependency. Pair lifecycle
+behavior across platforms without copying platform-specific mechanisms.
+
+Installed journeys must use the real PATH launcher and official MCP client over
+STDIO; the server process must not import test helpers. Cover one-member and
+multi-member flows, restart/resume, 0.4.x data compatibility, governance,
+review/rework, assurance exhaustion, terminal Dossiers, duplicate registration,
+failed build/activation rollback, and uninstall preservation.
+
+## Public documentation
+
+`README.md`, `ROADMAP.md`, `ARCHITECTURE.md`, `CONTRIBUTING.md`, and `INSTALL.md`
+are English sources. Update the English file first, then completely translate
+and synchronize the corresponding `_CN.md` file. Product scope, constraints,
+commands, paths, versions, links, and language switches must match.
+
+Do not describe MCP annotations as enforcement, removed Hook behavior as
+present, unverified platforms as verified, or OpenSpec/task checkboxes as proof
+of product correctness.
+
+## Git and review
+
+Preserve unrelated user changes. Do not stash, reset, clean, switch, rebase,
+merge, commit, push, publish, or modify external state unless the user explicitly
+authorizes that exact action.
+
+For code review requests, complete a read-only review and report all findings
+before making any fix. Stop after the review until the user explicitly selects
+and authorizes repairs.

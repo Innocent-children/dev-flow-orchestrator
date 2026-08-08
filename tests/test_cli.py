@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 import unittest
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -17,7 +16,8 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
 from support import make_repository
-from dev_flow_orchestrator.cli import _resolve_data_dir
+from dev_flow_orchestrator.runtime_paths import resolve_data_dir
+from dev_flow_orchestrator.store import TaskStore
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     DELIVERY_DOSSIER_SCHEMA,
@@ -84,39 +84,123 @@ class CliTests(unittest.TestCase):
         self.assertEqual(json.loads(completed.stdout)["status"], "stopped")
         self.assertFalse(codex_root.exists())
 
-    def test_data_directory_resolution_precedence_is_explicit_plugin_then_codex(self) -> None:
+    def test_data_directory_resolution_precedence_is_explicit_override_plugin_then_codex(self) -> None:
         explicit = self.root / "explicit"
+        override = self.root / "override"
         plugin_data = self.root / "plugin-data"
         codex_root = self.root / "codex-root"
+        complete = {
+            "DEV_FLOW_DATA_DIR": str(override),
+            "PLUGIN_DATA": str(plugin_data),
+            "CODEX_HOME": str(codex_root),
+        }
+        self.assertEqual(
+            resolve_data_dir(str(explicit), environment=complete),
+            str(explicit.resolve()),
+        )
+        self.assertEqual(
+            resolve_data_dir(None, environment=complete),
+            str(override.resolve()),
+        )
+        self.assertEqual(
+            resolve_data_dir(
+                None,
+                environment={
+                    "PLUGIN_DATA": str(plugin_data),
+                    "CODEX_HOME": str(codex_root),
+                },
+            ),
+            str(plugin_data.resolve()),
+        )
+        self.assertEqual(
+            resolve_data_dir(None, environment={"CODEX_HOME": str(codex_root)}),
+            str(
+                (
+                    codex_root
+                    / "plugins"
+                    / "data"
+                    / "dev-flow-orchestrator-personal"
+                ).resolve()
+            ),
+        )
 
-        with mock.patch.dict(
-            os.environ,
-            {"PLUGIN_DATA": str(plugin_data), "CODEX_HOME": str(codex_root)},
-            clear=False,
-        ):
-            self.assertEqual(_resolve_data_dir(str(explicit)), str(explicit.resolve()))
-            self.assertEqual(
-                _resolve_data_dir(None),
-                str((plugin_data / MODEL_VERSION).resolve()),
-            )
-        with mock.patch.dict(
-            os.environ,
-            {"CODEX_HOME": str(codex_root)},
-            clear=False,
-        ):
-            os.environ.pop("PLUGIN_DATA", None)
-            self.assertEqual(
-                _resolve_data_dir(None),
-                str(
-                    (
-                        codex_root
-                        / "plugins"
-                        / "data"
-                        / "dev-flow-orchestrator-personal"
-                        / MODEL_VERSION
-                    ).resolve()
-                ),
-            )
+    def test_default_and_plugin_roots_read_current_tasks_without_mutation(self) -> None:
+        plugin_data = self.root / "plugin-data"
+        codex_root = self.root / "codex-home"
+        default_data = (
+            codex_root
+            / "plugins"
+            / "data"
+            / "dev-flow-orchestrator-personal"
+        )
+        cases = (
+            (
+                "plugin",
+                plugin_data,
+                {"PLUGIN_DATA": str(plugin_data), "CODEX_HOME": str(codex_root)},
+            ),
+            ("default", default_data, {"CODEX_HOME": str(codex_root)}),
+        )
+
+        for label, expected_base, environment in cases:
+            with self.subTest(source=label):
+                task_id = "task-{}-data-root".format(label)
+                completed = run_cli(
+                    str(expected_base),
+                    "start",
+                    "--requirement",
+                    "{} data root discovery".format(label),
+                    "--workflow",
+                    "lite",
+                    "--repo",
+                    str(self.repository),
+                    "--task-id",
+                    task_id,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+                state_path = (
+                    expected_base
+                    / MODEL_VERSION
+                    / "tasks"
+                    / task_id
+                    / "state.json"
+                )
+                current_bytes = state_path.read_bytes()
+                self.assertIn(b'"version":"0.4.0"', current_bytes)
+
+                def snapshot() -> tuple:
+                    return tuple(
+                        (
+                            str(path.relative_to(expected_base)),
+                            path.read_bytes() if path.is_file() else None,
+                        )
+                        for path in sorted(expected_base.rglob("*"))
+                    )
+
+                before = snapshot()
+                store = TaskStore(resolve_data_dir(None, environment=environment))
+                self.assertEqual(store.root, expected_base.resolve())
+                self.assertEqual(
+                    store.tasks_root,
+                    expected_base.resolve() / MODEL_VERSION / "tasks",
+                )
+                self.assertFalse(
+                    (expected_base / MODEL_VERSION / MODEL_VERSION).exists()
+                )
+
+                entries, diagnostics = store.inspect_inventory()
+                state, definition = store.inspect_with_definition(task_id)
+
+                self.assertEqual(diagnostics, ())
+                self.assertEqual(
+                    tuple(item.task_id for item, _ in entries),
+                    (task_id,),
+                )
+                self.assertEqual(state.task_id, task_id)
+                self.assertEqual(definition.workflow_id, "lite")
+                self.assertEqual(state_path.read_bytes(), current_bytes)
+                self.assertEqual(snapshot(), before)
 
     def invoke_json(self, *arguments: str):
         completed = run_cli(self.data_dir, *arguments)

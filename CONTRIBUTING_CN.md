@@ -1,164 +1,101 @@
-# 贡献指南
-
-针对兼容模型 0.4.0 变更，应先验证最小因果影响层：索引精确快照、胶囊与租约、保障策略与预算、
-因果审查、工作流调度、控制器复放，最后再验证候选包和安装后旅程。不得增加开放式策略
-旋钮或固定的无条件全量验证/审查循环。每个官方或自定义 `dev-flow-workflow/0.4.0`
-必须引用封闭的 `dev-flow-assurance-policy/0.4.0`，保留未知影响的保守处理、有限重试权限、
-完整的验收标准/变更覆盖和确定性的未完成收尾。
-
-运行时代码仍只能使用 Python 标准库。新增产品上限必须在 `product.py` 声明，由运行时
-原子执行、由包校验器断言，并覆盖精确上限与超一测试。审查测试必须保留既有和范围外
-观察，但不得因此安排与当前任务无关的返工。
+# 为 Dev Flow Orchestrator 贡献代码
 
 [English](CONTRIBUTING.md)
 
-贡献保留 0.4.0 产品契约：一个任务跨越精确的、由一到八个用户准备的本地 Git 工作树，一个 Codex 执行器，一个投影操作，以及一个控制器拥有的只追加账本。
+## 范围与权威
 
-## 产品和权限边界
+改动应保持为已接受需求所需的最小范围，并可追溯。Controller 是唯一的状态转换写入者。MCP、CLI 和 Web 适配器可以提交命令或检查状态，但不得复制 Engine、Store、仓库、binding、assurance、review 或 delivery 的权威逻辑。
 
-- 从用户旅程和支持的产品矩阵开始。工作流深度、仓库拓扑、工作区策略和执行拓扑是独立维度。
-- 将当前策略保持在一个权威来源中，并从中推导目录、验证、测试、技能和文档。
-- 将任务状态保留在目标仓库之外。控制器是唯一的状态转换写入者；Hook、CLI、技能和可选驱动程序提交到该边界。
-- 将 `TaskState.repositories` 视为不可变的成员关系权威。准入、快照、状态变更、重放、新鲜度、恢复和最终交付必须以原子方式覆盖完整的规范集合；绝不能默认只有一个成员、丢弃不可用成员或重构调用方顺序。
-- 保持仓库检查有限且只读。不要添加隐式的 stash、reset、clean、checkout、commit、rebase、merge、push、强制 push 或删除行为。
-- 不要将仓库拓扑与工作流深度、管理分支/工作树效果、Git 发布、并行代理或外部 CI/PR/发布效果耦合。当前核心不执行这些操作，也不重用未更改成员的部分保障。
-- 在每条状态变更路径上保留动作绑定、契约、输入血缘、资源、源前驱、快照和修订 CAS 检查。
-- 将代码库内存视为发现证据。对于每个 `repository_id`，使用不同的基线和当前工作区项目 ID，从不跨成员或代际共享图 ID，按工作流阶段选择，并在命名仓库源中确认材料结论。
-- 向 OpenSpec 请求当前 JSON 状态和指令。基于仓库的规划是源生成的并绑定具体的治理/报告资源；运行时代码中不应有固定的阶段顺序。
-- 将驱动程序执行保持在引擎之外。可选驱动程序回退记录降级或不可用的保障，并保留相同的终止条件。
-- 运行时代码仅使用 Python 标准库。
+不得增加自动分支/工作树管理、Git 发布、并行执行器、外部 CI/PR/Release 调度、原始状态工具或通用命令面。不得削弱规范路径、仓库身份、精确成员集合、锁、原子写入、修订 CAS、快照稳定性、binding、验收标准或最终 Delivery Dossier 要求。
 
-## Web UI 贡献边界
+## 环境
 
-本地 Web UI 是 `dev-flow-orchestrator` 0.4.1 的组成部分。不得引入 WebUI 专属版本、
-包、插件、市场条目、App 或 MCP 服务器、数据命名空间、持久化 schema、依赖集、构建
-流水线或独立发布门。展示层变更必须保持 `product_document()` 和
-`PRODUCT_IDENTITY` 不变。
-
-受管进程控制记录是位于精确控制器数据根目录下的临时 capability 状态，不属于任务或
-模型状态。它必须保持私有、原子写入、绑定进程实例，并在关闭时可删除。停止操作必须在
-发出信号前同时验证 PID、随机实例身份和经过鉴权的 loopback 响应；不得仅把 PID 当作
-权限依据。
-
-macOS 安装器只拥有 `<DEV_FLOW_BIN_DIR>/dev-flow`；未显式指定时，它选择 `PATH` 中第一个
-可写的绝对目录。路径冲突必须关闭失败，启动器必须原子写入；卸载时只有在验证精确所有权
-标记后才可删除。
-已安装 CLI 调用可以省略 `--data-dir`：解析时必须优先使用 `PLUGIN_DATA`，否则使用
-`CODEX_HOME`（或 `~/.codex`）、personal 插件数据目录及 `PLUGIN_DATA_NAMESPACE`。
-开发和恢复场景中显式 `--data-dir` 仍具有最高优先级。
-
-存储清单和详情请求必须在物理层面只读：不得获取任务锁、创建目录、规范化权限、写缓存、
-调用 Git 或尝试修复。实时观察必须显式触发、只针对选中任务、使用单一捕获槽、支持
-取消，并基于一个供所有投影复用的聚合快照。新响应必须使用字段白名单，不得暴露原始
-状态、记录、binding、快照条目、命令、绝对路径或原始异常。
-
-浏览器变更必须继续使用原生 HTML/CSS/JavaScript 和安全文本渲染，支持键盘操作、可见
-焦点和响应式布局，不得后台轮询、请求外部资源或使用持久浏览器存储。扩展
-`test_read_only_inspection.py`、`test_web_read_models.py`、
-`test_web_server.py` 和 `test_web_ui_product_identity.py` 的聚焦测试，然后运行候选包
-和安装产物验证。缺少真实浏览器时必须记录为 `manual-unverified`，不得从纯 HTTP
-证据推断浏览器正确性。
-
-## 模块所有权
-
-- `product.py`：0.4.0 身份词汇表、官方工作流目录和权威的仓库拓扑能力。
-- `model.py`：不可变任务值和规范仓库成员资格、严格 JSON、错误和收据。
-- `snapshot.py`：聚合仓库集快照和嵌套成员工作区快照、验证、查找和摘要。
-- `workflow.py`：`dev-flow-workflow/0.4.0` 契约、阶段范围取消、图验证和选定定义身份。
-- `delivery.py`：契约、决策、密封、绑定、资源、新鲜度、覆盖和档案。
-- `engine.py`：重放、突变计划、保障路由、记录、投影和任务视图。
-- `store.py`：路径安全、锁、修订 CAS 和原子持久性。
-- `git_client.py`：有限内容敏感的只读快照。
-- `controller.py`：应用程序协调和所有状态变更。
-- `cli.py` 和 `hook.py`：协议接口；两者都不拥有工作流策略。
-
-保持这些依赖显式。避免全局执行顺序、基于字符串的后期绑定、重叠的服务层或纯领域模块中的文件系统/进程访问。
-
-## 当前工作流和身份变更
-
-官方工作流是 `lite`、`feature`、`bugfix`、`investigation`、`refactor` 和 `full`。`dev-flow-workflow/0.4.0` 节点声明类型化工件、工作区角色、输入、有限保障重做、耗尽的档案路径和可选驱动程序降级/不可用元数据。每个工作流声明一个共享取消操作，带有显式的 `cancel.stages`；官方定义涵盖正常多数非终止阶段并排除所有 `delivery.finalize` 节点。
-
-`PRODUCT_IDENTITY` 是当前任务、记录、工件、动作绑定、仓库集快照、嵌套工作区快照、工作流、代理、验证覆盖、交付档案、数据命名空间和一到八个拓扑的权威。选定工作流身份仅绑定选择器、模式和规范文档。对这些当前权威的任何更改都必须更新相应的契约和集中证明。
-
-仓库拓扑独立于官方工作流选择。每个基数使用 `dev-flow-agent/0.4.0`，精确的 `dev-flow-repository-set-snapshot/0.4.0`，必需的 `repository_id` 资源、结构化的 `criteria`/`repositories`/`integration` 验证、聚合新鲜度/审查和交付档案 0.4.0。
-
-## 发布版本与兼容模型
-
-普通发布升级使用标准库命令：
+运行时和开发依赖由项目级 `uv` 环境管理，绝不能安装到系统或用户 Python。
 
 ```sh
-python3 -I -S scripts/bump_version.py 0.4.1
+uv sync --locked
+uv run python --version
 ```
 
-`src/dev_flow_orchestrator/_version.py` 是唯一的 `RELEASE_VERSION` 来源。
-该命令只更新此权威以及派生的插件、`pyproject.toml` 和 `uv.lock` 元数据。
-使用 `python3 -I -S scripts/bump_version.py --check` 可以只校验现有元数据而不写入。
+支持的运行时元数据为 `>=3.10,<3.15`。托管安装运行时要求 64 位 Python。核心运行时模块必须只使用标准库；只有 `src/dev_flow_orchestrator/mcp/` 可以导入 MCP SDK、Pydantic 或其框架依赖。
 
-仅发布补丁不得修改 `MODEL_VERSION`、控制器数据命名空间、schema、工作流文档、
-工作流身份或 `PRODUCT_IDENTITY`。只有持久化字段、协议语义、拓扑权威或重放规则
-真正不兼容时才升级兼容模型，并显式声明这个更大的切换。
+## 测试
 
-## 验证
-
-只运行直接覆盖更改行为的最小测试模块或单个案例。禁止完整 unittest 发现，包括发布或里程碑请求。在该 macOS 主机上，显式未验证原生 Windows 和 Linux 检查。
-
-典型的聚焦命令如下：
+迭代时运行最小且有用的聚焦测试：
 
 ```sh
-python3 -I -S tests/test_workflow_validation.py -v
-python3 -I -S tests/test_yaml_subset.py -v
-python3 -I -S tests/test_package.py -v
-python3 -I -S tests/test_install_script.py -v
-python3 -I -S tests/test_multi_repository_assets.py -v
-python3 -I -S tests/test_delivery_runtime.py -v
-python3 -I -S tests/test_controller_contracts.py -v
-python3 -I -S tests/test_store_integrity.py -v
-python3 -I -S tests/test_stale_mutations.py -v
-python3 -I -S tests/test_cli.py -v
-python3 -I -S tests/test_hook.py -v
-python3 -I -S tests/test_git_snapshot.py -v
-python3 -I -S tests/test_read_only_inspection.py -v
-python3 -I -S tests/test_web_read_models.py -v
-python3 -I -S tests/test_web_server.py -v
-python3 -I -S tests/test_web_ui_product_identity.py -v
-python3 -I -S tests/test_multi_repository_core.py -v
-python3 -I -S tests/test_multi_repository_controller.py -v
-python3 -I -S tests/test_multi_repository_delivery.py -v
-python3 -I -S tests/test_installed_journeys.py -v
-python3 -I -S scripts/validate_package.py
-python3 -m json.tool .codex-plugin/plugin.json
+uv run python tests/test_mcp_runtime.py -v
+uv run python tests/test_package.py -v
 ```
 
-仅从 0.4.0 聚焦 CI 矩阵中选择适用命令。使用当前 CLI 指令验证活动的 OpenSpec 变更。
-
-编辑后验证每个捆绑技能：
+允许完整 unittest discovery。它是规范的完整源码回归命令：
 
 ```sh
-python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/analyze-change-impact
-python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/follow-dev-flow
-python3 /Users/innocent-children/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/review-dev-flow-change
-python3 /Users/innocent-children/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py .
+uv run python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-捆绑验证器需要带有 PyYAML 的开发解释器；这不是插件运行时依赖。
+仓库原先禁止完整 unittest discovery 的规则已经废止。发布证据不得以手工维护的部分模块列表替代完整 discovery。聚焦测试仍适合快速反馈。
+仓库内 CI 矩阵会在 macOS 和原生 Windows 上，对支持的 Python 3.10 至 3.14 每个次版本运行完整 discovery；部分绿色结果不能替代完整发布矩阵。
 
-发布证据区分源检出检查和安装行为。已安装的验收通过识别不可变的安装快照并涵盖六个官方工作流、Hook/技能拾取、结构化/最小启动、绑定所需应用、契约修订恢复、决策和豁免、可选驱动程序可用/降级路径、有限保障成功和耗尽、单成员和更大精确集准入通过同一协议、任何成员 Hook 拾取、成员丢失恢复、结构化成员/集成验证和聚合档案检查。需要真实新 Codex 任务的条件在环境无法观察到时仍标记为手动或未验证。
+相关改动还应运行包和 OpenSpec 校验：
 
-在移交前：
+```sh
+uv run python scripts/validate_package.py
+openspec validate dev-flow-orchestrator-mcp --strict
+```
 
-- 检查完整的跟踪和未跟踪差异；
-- 运行更改文件的空白/错误检查；
-- 确认英文和中文产品声明具有相同的范围和强度；
-- 针对精确当前聚合仓库集快照进行一次独立的只读审查；
-- 准确报告每个跳过的或手动检查。
+同一已安装 STDIO launcher 可与
+[官方 MCP Inspector](https://github.com/modelcontextprotocol/inspector) 兼容。
+使用 `--`，确保 `--stdio` 传给 Dev Flow，而不是被 Inspector 当作自身选项解析：
 
-## Windows 集成贡献
+```sh
+npx @modelcontextprotocol/inspector -- dev-flow-mcp --stdio
+npx @modelcontextprotocol/inspector --cli --method tools/list -- dev-flow-mcp --stdio
+```
 
-Windows 工作应保留在现有平台 seam。不得创建 Windows 专属工作流、schema、状态字段、
-版本、命名空间、Web UI 路径或迁移逻辑。为 `commandWindows` 配对时保留每个 POSIX Hook
-命令；保持 PowerShell 5.1 兼容性和 literal-path 处理。
+自动化协议门禁仍为 `tests/test_mcp_runtime.py`；它直接使用官方 Python
+客户端，不需要 Node.js。
 
-macOS 聚焦套件仍是广泛产品门禁。Windows 自动化应覆盖启动器、Hook 渲染/guard、
-生命周期权限、Web UI 集成、一个安装后旅程和一个双仓库恢复 smoke，而不是复制完整的
-平台无关矩阵。消费级客户端的 OS build、PowerShell、Python、Git、Codex 及实际结果应
-与托管 Server CI 分开记录。
+没有实际运行的平台或矩阵不得宣称通过。原生 Windows 证据必须来自原生 Windows x64，而不是 macOS、Wine、WSL 或跳过的测试。必须明确记录跳过项、不可用主机和过期证据。
+
+## MCP 改动
+
+稳定目录恰好包含十一个工具。工具改动必须包含：
+
+- 稳定的 snake-case 名称，以及不超过 512 UTF-8 字节的描述；
+- 闭合输入模型，明确必填字段、枚举、数量/字节限制并拒绝未知字段；
+- 公共结果信封内的逐工具输出 schema；
+- 正确的只读、破坏性、幂等、闭世界和 task-support 注解；
+- 直接映射 Controller，不复制领域规则；
+- 适用的领域、协议、意外错误、结果边界、并发、取消以及真实官方客户端/STDIO 测试；
+- 包校验和已安装旅程覆盖。
+
+服务器导入、启动、运行和关闭路径不得向 stdout 打印任何内容；stdout 仅用于协议。诊断使用有界 stderr 记录和请求 ID，不得包含参数、环境值、合同、binding、仓库内容、秘密或任务数据路径。
+
+保持以下上下文预算：服务器 instructions 4 KiB；首个主流程 512 字节；工具描述 512 字节；工具列表 32 KiB；文本摘要 4 KiB；当前动作 guidance 8 KiB；紧凑当前动作 128 KiB；结构化结果 512 KiB；inventory 或 discovery 页面 256 KiB 且每项 2 KiB；默认 stderr 事件 4 KiB。输入或输出首次超限时应拒绝，不得截断 binding、仓库成员、必需证据或 guidance 权威内容。
+
+## Guidance 改动
+
+每个正式动作节点/处理器必须映射到一个安全目录条目，或闭合的通用 fallback。Guidance 从权威当前 projection 派生，只包含适用的目标、必须读取的字段、允许的影响、必需证据、payload 说明、driver、过期恢复、完成规则和规范 guidance digest。
+
+不得让模型检查包源码、适配器源码、CLI 源码、已移除的 Skills/Hooks、原始 Store 文件或 Controller 数据根目录。影响分析 guidance 必须区分 baseline/current codebase-memory 项目，并对照源码确认图谱结论。治理 OpenSpec guidance 必须携带具体状态、路径/digest、来源阶段和 fallback。Review guidance 必须保留已绑定的 review package 和 guidance digest。
+
+## 安装与平台改动
+
+候选内容校验必须先于候选运行时代码执行。托管运行时必须位于已验证源码和任务数据之外，使用精确 lock，安装 wheel，通过 MCP smoke 检查，并在激活前写入匹配 receipt。构建失败必须保留先前运行时和 launcher。
+
+POSIX 脚本面向 macOS。PowerShell 脚本必须保持 PowerShell 5.1 兼容、literal path 处理、x64 检查、仅 fast-forward 的源码权威、marker 校验删除，并且不依赖 POSIX 工具。跨平台生命周期行为应成对维护，但不得照搬平台专属机制。
+
+已安装旅程必须通过 STDIO 使用真实 PATH launcher 和官方 MCP 客户端；服务器进程不得导入测试辅助代码。覆盖单成员与多成员流程、重启/恢复、0.4.x 数据兼容、治理、review/rework、assurance 耗尽、终态 Dossier、重复注册、构建/激活失败回滚和卸载保留。
+
+## 公共文档
+
+`README.md`、`ROADMAP.md`、`ARCHITECTURE.md`、`CONTRIBUTING.md` 和 `INSTALL.md` 是英文源文档。先更新英文文件，再完整翻译并同步对应 `_CN.md` 文件。产品范围、约束、命令、路径、版本、链接和语言切换必须一致。
+
+不得把 MCP annotations 描述为强制机制，不得把已移除的 Hook 行为描述为仍然存在，不得把未验证的平台描述为已验证，也不得把 OpenSpec/任务勾选当作产品正确性的证据。
+
+## Git 与审查
+
+保留无关的用户改动。除非用户明确授权具体操作，否则不得 stash、reset、clean、switch、rebase、merge、commit、push、publish 或修改外部状态。
+
+对于代码审查请求，必须先完成只读审查并报告全部发现，再进行任何修复。审查后停止，直到用户明确选择并授权修复。

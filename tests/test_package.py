@@ -63,52 +63,64 @@ class PackageValidationTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertEqual(validate(self.candidate)["errors"], [])
 
-    def test_shipped_candidate_excludes_host_local_tooling_metadata(self) -> None:
-        (self.candidate / "pyproject.toml").unlink()
-        (self.candidate / "uv.lock").unlink()
-        self.assertEqual(validate(self.candidate)["errors"], [])
+    def test_candidate_requires_project_metadata_and_exact_dependency_lock(self) -> None:
+        for relative in ("pyproject.toml", "uv.lock"):
+            path = self.candidate / relative
+            preserved = path.read_bytes()
+            path.unlink()
+            self.assert_error_contains(validate(self.candidate), "missing " + relative)
+            path.write_bytes(preserved)
 
-    def test_missing_hook_bootstrap_is_reported(self) -> None:
-        (self.candidate / "hooks" / "dev_flow_hook.py").unlink()
+    def test_missing_mcp_runtime_builder_is_reported(self) -> None:
+        (self.candidate / "scripts" / "manage_runtime.py").unlink()
         result = validate(self.candidate)
         self.assertFalse(result["ok"])
-        self.assertIn("missing hooks/dev_flow_hook.py", result["errors"])
-
-    def test_missing_windows_launcher_is_reported(self) -> None:
-        (self.candidate / "scripts" / "dev_flow_python_launcher.cmd").unlink()
-        result = validate(self.candidate)
         self.assertIn(
-            "missing scripts/dev_flow_python_launcher.cmd",
+            "pre-import candidate is missing scripts/manage_runtime.py",
             result["errors"],
         )
 
-    def test_hook_requires_paired_windows_command(self) -> None:
-        path = self.candidate / "hooks" / "hooks.json"
-        document = json.loads(path.read_text(encoding="utf-8"))
-        del document["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"]
-        path.write_text(json.dumps(document), encoding="utf-8")
-        self.assert_error_contains(
-            validate(self.candidate),
-            "Hook event 'SessionStart' lacks the packaged Windows launcher",
+    def test_preimport_gate_rejects_incomplete_mcp_before_candidate_execution(self) -> None:
+        marker = self.candidate / "candidate-imported.marker"
+        product = self.candidate / "src/dev_flow_orchestrator/product.py"
+        product.write_text(
+            product.read_text(encoding="utf-8")
+            + "\n__import__('pathlib').Path({}).write_text('executed')\n".format(
+                repr(str(marker))
+            ),
+            encoding="utf-8",
         )
+        (self.candidate / "src/dev_flow_orchestrator/mcp/server.py").unlink()
+        result = validate(self.candidate)
+        self.assert_error_contains(result, "missing src/dev_flow_orchestrator/mcp/server.py")
+        self.assertFalse(marker.exists(), result)
+
+    def test_legacy_hook_or_skill_reintroduction_is_rejected(self) -> None:
+        for relative in ("hooks/hooks.json", "skills/follow-dev-flow/SKILL.md"):
+            path = self.candidate / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("legacy\n", encoding="utf-8")
+            self.assert_error_contains(validate(self.candidate), "predecessor path remains:")
+            path.unlink()
 
     @unittest.skipIf(os.name == "nt", "POSIX executable bits are not a Windows contract")
     def test_non_executable_launcher_is_reported(self) -> None:
-        launcher = self.candidate / "scripts" / "dev_flow_python_launcher"
-        launcher.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        result = validate(self.candidate)
-        self.assertFalse(result["ok"])
-        self.assertIn(
-            "scripts/dev_flow_python_launcher is not executable",
-            result["errors"],
-        )
+        for relative in (
+            "scripts/dev_flow_python_launcher",
+            "scripts/dev_flow_mcp_launcher",
+        ):
+            launcher = self.candidate / relative
+            original_mode = launcher.stat().st_mode
+            launcher.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            result = validate(self.candidate)
+            self.assertFalse(result["ok"])
+            self.assertIn(relative + " is not executable", result["errors"])
+            launcher.chmod(original_mode)
 
-    def test_hook_bootstrap_is_release_neutral(self) -> None:
-        hook = self.candidate / "hooks" / "dev_flow_hook.py"
-        current = hook.read_text(encoding="utf-8")
-        self.assertIn("current Dev Flow Hook", current)
-        self.assertNotIn(MODEL_VERSION, current)
-        self.assertNotIn(RELEASE_VERSION, current)
+    def test_mcp_interface_identity_is_release_neutral(self) -> None:
+        identity = (self.candidate / "src/dev_flow_orchestrator/mcp/identity.py").read_text(encoding="utf-8")
+        self.assertIn("MCP_INTERFACE_SCHEMA", identity)
+        self.assertNotIn(RELEASE_VERSION, identity)
 
     def test_missing_canonical_chinese_readme_is_reported(self) -> None:
         (self.candidate / "README_CN.md").unlink()
@@ -138,12 +150,12 @@ class PackageValidationTests(unittest.TestCase):
         readme = self.candidate / "README_CN.md"
         current = readme.read_text(encoding="utf-8")
         readme.write_text(
-            current.replace("本地只读 Web UI", "本地任务界面"),
+            current.replace("只读 Web UI", "任务界面"),
             encoding="utf-8",
         )
         self.assert_error_contains(
             validate(self.candidate),
-            "README_CN.md is missing the integrated read-only Web UI boundary",
+            "README_CN.md is missing synchronized MCP-first product guidance",
         )
 
     def test_roadmap_must_keep_read_only_slice_scope(self) -> None:
@@ -151,26 +163,26 @@ class PackageValidationTests(unittest.TestCase):
         current = roadmap.read_text(encoding="utf-8")
         roadmap.write_text(
             current.replace(
-                "first read-only slice delivered",
-                "interactive workbench delivered",
+                "full unittest discovery",
+                "partial module list",
             ),
             encoding="utf-8",
         )
         self.assert_error_contains(
             validate(self.candidate),
-            "ROADMAP.md is missing the integrated read-only Web UI boundary",
+            "ROADMAP.md is missing synchronized MCP-first product guidance",
         )
 
     def test_roadmap_rejects_full_horizon_two_delivery_claim(self) -> None:
         roadmap = self.candidate / "ROADMAP.md"
         roadmap.write_text(
             roadmap.read_text(encoding="utf-8")
-            + "\nHorizon 2 is fully delivered.\n",
+            .replace("native Windows", "cross-platform", 1),
             encoding="utf-8",
         )
         self.assert_error_contains(
             validate(self.candidate),
-            "ROADMAP.md claims that all of Horizon 2 is delivered",
+            "ROADMAP.md is missing the bounded Windows integration guidance",
         )
 
     def test_docs_reject_web_ui_mutation_authority(self) -> None:
@@ -196,16 +208,15 @@ class PackageValidationTests(unittest.TestCase):
             "web.py imports non-standard runtime dependency flask",
         )
 
-    def test_installed_evidence_must_include_web_ui_journey(self) -> None:
+    def test_installed_evidence_must_include_mcp_read_journey(self) -> None:
         runner = self.candidate / "scripts/validate_installed_stage1.py"
         current = runner.read_text(encoding="utf-8")
-        runner.write_text(
-            current.replace("self.web_ui_journey()", "# Web UI journey omitted", 1),
-            encoding="utf-8",
-        )
+        changed = current.replace('"read_smoke": True', '"read_smoke": False')
+        self.assertNotEqual(changed, current)
+        runner.write_text(changed, encoding="utf-8")
         self.assert_error_contains(
             validate(self.candidate),
-            "installed evidence does not preserve the Web UI observation boundary",
+            "installed evidence does not preserve the MCP STDIO observation boundary",
         )
 
     def test_foreign_candidate_uses_its_own_workflow(self) -> None:
@@ -331,7 +342,7 @@ class PackageValidationTests(unittest.TestCase):
         result = validate(self.candidate)
         self.assert_error_contains(
             result,
-            "plugin manifest contains unsupported field(s): hooks",
+            "pre-import plugin manifest is invalid",
         )
 
     def test_lock_version_must_match_manifest_version(self) -> None:
@@ -346,7 +357,7 @@ class PackageValidationTests(unittest.TestCase):
             encoding="utf-8",
         )
         result = validate(self.candidate)
-        self.assert_error_contains(result, "manifest and uv.lock versions differ")
+        self.assert_error_contains(result, "pre-import exact dependency lock is invalid")
 
     def test_snapshot_pure_module_rejects_os_io(self) -> None:
         snapshot = (
@@ -363,135 +374,125 @@ class PackageValidationTests(unittest.TestCase):
             "snapshot.py uses forbidden infrastructure API os.stat",
         )
 
-    def test_impact_skill_common_driver_envelope_is_valid(self) -> None:
-        result = validate(self.candidate)
-        impact_errors = [
-            error
-            for error in result["errors"]
-            if error.startswith("analyze-change-impact Skill")
-        ]
-        self.assertEqual(impact_errors, [])
+    def test_mcp_guidance_catalog_covers_execution_classes(self) -> None:
+        guidance = (self.candidate / "src/dev_flow_orchestrator/mcp/guidance.py").read_text(encoding="utf-8")
+        for entry in (
+            "preflight", "impact", "planning", "implementation", "investigation",
+            "documentation", "rework", "assurance", "finalize", "cancel", "generic",
+        ):
+            self.assertIn('"{}":'.format(entry), guidance)
+        self.assertIn("current and baseline codebase-memory projects separate", guidance)
+        self.assertIn("Delivery Dossier", guidance)
 
-    def test_impact_skill_requires_common_driver_envelope_fields(self) -> None:
-        skill = self.candidate / "skills" / "analyze-change-impact" / "SKILL.md"
-        current = skill.read_text(encoding="utf-8")
-        changed = current.replace('  "tool": "codebase-memory",\n', "", 1)
-        self.assertNotEqual(changed, current)
-        skill.write_text(changed, encoding="utf-8")
-        result = validate(self.candidate)
-        self.assert_error_contains(
-            result,
-            "analyze-change-impact Skill has no valid common driver_result envelope",
-        )
-
-    def test_impact_skill_requires_tool_report_inside_details(self) -> None:
-        skill = self.candidate / "skills" / "analyze-change-impact" / "SKILL.md"
-        current = skill.read_text(encoding="utf-8")
+    def test_mcp_guidance_rejects_positive_package_source_reading(self) -> None:
+        guidance = self.candidate / "src/dev_flow_orchestrator/mcp/guidance.py"
+        current = guidance.read_text(encoding="utf-8")
         changed = current.replace(
-            '    "schema": "{}",\n'.format(IMPACT_REPORT_SCHEMA),
-            '    "schema": "dev-flow-impact-report/unsupported",\n',
+            "Do not read or edit Controller task-state files",
+            "Read Controller state files",
             1,
         )
         self.assertNotEqual(changed, current)
-        skill.write_text(changed, encoding="utf-8")
-        result = validate(self.candidate)
+        guidance.write_text(changed, encoding="utf-8")
         self.assert_error_contains(
-            result,
-            "analyze-change-impact Skill does not place a complete impact report "
-            "in driver_result.details",
+            validate(self.candidate),
+            "MCP guidance tells the model to read removed or raw runtime authority",
         )
 
-    def test_impact_skill_requires_details_placement_guidance(self) -> None:
-        skill = self.candidate / "skills" / "analyze-change-impact" / "SKILL.md"
-        current = skill.read_text(encoding="utf-8")
-        changed = current.replace("driver_result.details", "driver_result payload")
+    def test_mcp_guidance_catalog_omission_is_reported(self) -> None:
+        guidance = self.candidate / "src/dev_flow_orchestrator/mcp/guidance.py"
+        current = guidance.read_text(encoding="utf-8")
+        changed = current.replace('    "impact": {', '    "impact-removed": {', 1)
         self.assertNotEqual(changed, current)
-        skill.write_text(changed, encoding="utf-8")
-        result = validate(self.candidate)
+        guidance.write_text(changed, encoding="utf-8")
         self.assert_error_contains(
-            result,
-            "analyze-change-impact Skill does not explain "
-            "driver_result.details placement",
+            validate(self.candidate),
+            "MCP guidance action catalog is not closed and complete",
         )
 
-    def test_main_skill_requires_delivery_dossier_guidance(self) -> None:
-        skill = self.candidate / "skills" / "follow-dev-flow" / "SKILL.md"
-        current = skill.read_text(encoding="utf-8")
-        self.assertIn("Delivery Dossier", current)
-        skill.write_text(
-            current.replace("Delivery Dossier", "delivery summary"),
+    def test_mcp_metadata_annotations_and_first_excess_budgets_are_validated(self) -> None:
+        tools = self.candidate / "src/dev_flow_orchestrator/mcp/tools.py"
+        original_tools = tools.read_text(encoding="utf-8")
+        changed = original_tools.replace(
+            "READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)",
+            "READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)",
+            1,
+        )
+        self.assertNotEqual(changed, original_tools)
+        tools.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "MCP descriptions, annotations, or task-support metadata are invalid",
+        )
+        tools.write_text(original_tools, encoding="utf-8")
+
+        results = self.candidate / "src/dev_flow_orchestrator/mcp/results.py"
+        original_results = results.read_text(encoding="utf-8")
+        changed = original_results.replace(
+            "MAX_TEXT_SUMMARY_BYTES = 4 * 1024",
+            "MAX_TEXT_SUMMARY_BYTES = 4 * 1024 + 1",
+            1,
+        )
+        self.assertNotEqual(changed, original_results)
+        results.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "MCP context budget authority is invalid: src/dev_flow_orchestrator/mcp/results.py",
+        )
+
+    def test_openspec_traceability_requires_every_requirement_and_scenario(self) -> None:
+        manifest_path = self.candidate / "openspec/changes/dev-flow-orchestrator-mcp/traceability.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        removed = manifest["entries"].pop()
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
-        result = validate(self.candidate)
-        self.assert_error_contains(
-            result,
-            "follow-dev-flow Skill is missing current-version delivery guidance",
-        )
-
-    def test_main_skill_requires_mismatch_authorization_guidance(self) -> None:
-        skill = self.candidate / "skills" / "follow-dev-flow" / "SKILL.md"
-        current = skill.read_text(encoding="utf-8")
-        mismatch_authorization = (
-            "request\n"
-            "   explicit user authorization and stop for the decision."
-        )
-        self.assertEqual(current.count(mismatch_authorization), 1)
-        changed = current.replace(
-            mismatch_authorization,
-            "continue without an operator decision.",
-            1,
-        )
-        self.assertNotEqual(changed, current)
-        skill.write_text(changed, encoding="utf-8")
         self.assert_error_contains(
             validate(self.candidate),
-            "follow-dev-flow Skill does not close confirmed repository mismatches",
+            "OpenSpec traceability is missing: " + removed["id"],
         )
 
-    def test_main_skill_requires_mismatch_terminal_verification(self) -> None:
-        skill = self.candidate / "skills" / "follow-dev-flow" / "SKILL.md"
-        current = skill.read_text(encoding="utf-8")
-        changed = current.replace("`status: CANCELLED`", "`status: stopped`")
-        self.assertNotEqual(changed, current)
-        skill.write_text(changed, encoding="utf-8")
+    def test_openspec_traceability_rejects_missing_test_symbol(self) -> None:
+        manifest_path = self.candidate / "openspec/changes/dev-flow-orchestrator-mcp/traceability.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["entries"][0]["tests"] = [
+            "tests/test_package.py::PackageValidationTests.test_does_not_exist"
+        ]
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
         self.assert_error_contains(
             validate(self.candidate),
-            "follow-dev-flow Skill does not close confirmed repository mismatches",
+            "traceability references a missing test:",
         )
 
-    def test_main_skill_requires_mismatch_no_git_mutation_boundary(self) -> None:
-        skill = self.candidate / "skills" / "follow-dev-flow" / "SKILL.md"
-        current = skill.read_text(encoding="utf-8")
-        changed = current.replace(
-            "stash, reset, clean, checkout",
-            "stash or checkout",
+    def test_stable_mcp_tool_requires_traceable_protocol_coverage(self) -> None:
+        manifest_path = self.candidate / "openspec/changes/dev-flow-orchestrator-mcp/traceability.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        unrelated = (
+            "tests/test_bump_version.py::"
+            "BumpVersionTests.test_patch_release_changes_only_four_metadata_files"
         )
-        self.assertNotEqual(changed, current)
-        skill.write_text(changed, encoding="utf-8")
+        for entry in manifest["entries"]:
+            if entry["id"].startswith("mcp-controller-tools::"):
+                entry["tests"] = [unrelated]
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
         self.assert_error_contains(
             validate(self.candidate),
-            "follow-dev-flow Skill does not close confirmed repository mismatches",
+            "stable MCP tool lacks traceable test coverage: dev_flow_server_info",
         )
 
-    def test_one_repository_only_main_skill_agent_guidance_is_reported(self) -> None:
-        metadata = (
-            self.candidate
-            / "skills"
-            / "follow-dev-flow"
-            / "agents"
-            / "openai.yaml"
-        )
-        current = metadata.read_text(encoding="utf-8")
-        changed = current.replace(
-            "在一至八个精确仓库工作树中",
-            "在当前一个 Git 仓库中",
-        )
-        self.assertNotEqual(changed, current)
-        metadata.write_text(changed, encoding="utf-8")
-        self.assert_error_contains(
-            validate(self.candidate),
-            "follow-dev-flow agent metadata does not use the current exact-set version",
-        )
+    def test_manifest_uses_only_the_mcp_server_catalog(self) -> None:
+        manifest = json.loads((self.candidate / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["mcpServers"], "./.mcp.json")
+        self.assertNotIn("skills", manifest)
+        self.assertFalse((self.candidate / "hooks").exists())
+        self.assertFalse((self.candidate / "skills").exists())
 
     def test_repository_topology_authority_is_validated(self) -> None:
         product = self.candidate / "src" / "dev_flow_orchestrator" / "product.py"
@@ -520,30 +521,28 @@ class PackageValidationTests(unittest.TestCase):
         runner = self.candidate / "scripts" / "validate_installed_stage1.py"
         current = runner.read_text(encoding="utf-8")
         changed = current.replace(
-            "exact-set-secondary-resume-drift-resources-dossier",
-            "one-repository-only",
-            1,
+            "dev_flow_find_tasks_for_path",
+            "dev_flow_find_one_repository",
         )
         self.assertNotEqual(changed, current)
         runner.write_text(changed, encoding="utf-8")
         self.assert_error_contains(
             validate(self.candidate),
-            "installed validation does not prove the exact-set journeys",
+            "installed validation does not exercise the real MCP exact-set journey",
         )
 
     def test_installed_validator_must_include_exact_set_lite_journey(self) -> None:
         runner = self.candidate / "scripts" / "validate_installed_stage1.py"
         current = runner.read_text(encoding="utf-8")
         changed = current.replace(
-            "exact-set-lite-success-dossier",
-            "one-repository-lite-only",
-            1,
+            "dev_flow_get_next_action",
+            "dev_flow_get_partial_action",
         )
         self.assertNotEqual(changed, current)
         runner.write_text(changed, encoding="utf-8")
         self.assert_error_contains(
             validate(self.candidate),
-            "installed validation does not prove the exact-set journeys",
+            "installed validation does not exercise the real MCP exact-set journey",
         )
 
     def test_positive_later_stage_claim_is_not_hidden_by_existing_negation(self) -> None:
@@ -584,8 +583,7 @@ class PackageValidationTests(unittest.TestCase):
             ("src/dev_flow_orchestrator/git_client.py", generation_marker),
             ("tests/test_yaml_subset.py", generation_marker),
             (".github/workflows/focused.yml", generation_marker),
-            ("skills/review-dev-flow-change/SKILL.md", component_marker),
-            ("hooks/dev_flow_hook.py", component_marker),
+            ("src/dev_flow_orchestrator/mcp/guidance.py", component_marker),
             ("scripts/validate_installed_stage1.py", generation_marker),
             ("README.md", component_marker),
             ("workflows/lite.yaml", component_marker),
@@ -667,25 +665,14 @@ class PackageValidationTests(unittest.TestCase):
         )
         self.assertEqual(validate(self.candidate)["errors"], [])
 
-    def test_main_skill_default_prompt_invokes_skill(self) -> None:
-        metadata = (
-            self.candidate
-            / "skills"
-            / "follow-dev-flow"
-            / "agents"
-            / "openai.yaml"
-        )
-        metadata.write_text(
-            metadata.read_text(encoding="utf-8").replace(
-                "$follow-dev-flow", "follow-dev-flow"
-            ),
-            encoding="utf-8",
-        )
-        result = validate(self.candidate)
-        self.assertFalse(result["ok"])
-        self.assertIn(
-            "follow-dev-flow default_prompt does not invoke $follow-dev-flow",
-            result["errors"],
+    def test_mcp_registration_command_is_exact(self) -> None:
+        registration = self.candidate / ".mcp.json"
+        document = json.loads(registration.read_text(encoding="utf-8"))
+        document["mcpServers"]["dev-flow"]["args"] = ["--http"]
+        registration.write_text(json.dumps(document), encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "pre-import MCP registration is invalid",
         )
 
 

@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 import re
 import threading
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Callable, Iterable, Mapping, Optional, Sequence
 import uuid
 
 from . import workflows
@@ -104,6 +104,14 @@ class Controller:
     ) -> None:
         self.store = TaskStore(data_dir)
         self.git = git_client or GitClient()
+
+    @staticmethod
+    def _cancellation_checkpoint(
+        cancellation_check: Optional[Callable[[], None]],
+    ) -> None:
+        """Run an adapter-provided cancellation check before persistence."""
+        if cancellation_check is not None:
+            cancellation_check()
 
     def _member_error(
         self,
@@ -505,6 +513,7 @@ class Controller:
         repositories: Iterable[str],
         task_id: Optional[str] = None,
         contract: Optional[Mapping[str, object]] = None,
+        cancellation_check: Optional[Callable[[], None]] = None,
     ) -> TaskState:
         if not isinstance(requirement, str) or not requirement.strip():
             raise DevFlowError(
@@ -534,6 +543,7 @@ class Controller:
                 repositories=repository_records,
                 timestamp=_utc_now(),
             )
+            self._cancellation_checkpoint(cancellation_check)
             return self.store.create_admitted(state)
 
     def show(self, task_id: str) -> TaskState:
@@ -659,6 +669,7 @@ class Controller:
         payload: Optional[Mapping[str, object]] = None,
         *,
         binding: object,
+        cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
         """Commit one workflow action using the exact binding emitted by next."""
         state, definition = self.store.load_with_definition(task_id)
@@ -676,6 +687,7 @@ class Controller:
                 ),
             )
             snapshot = self._snapshot(state, additional_resources=requested)
+            self._cancellation_checkpoint(cancellation_check)
             committed = self.store.update(
                 task_id,
                 expected_revision,
@@ -713,11 +725,13 @@ class Controller:
         ownership_claims: Optional[Mapping[str, object]] = None,
         reason: str,
         actor_label: str,
+        cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
         state, definition = self.store.load_with_definition(task_id)
         # A revision starts a new contract lineage, so old-contract governing
         # resources are intentionally absent from this new source baseline.
         snapshot = self._snapshot(state, include_current_resources=False)
+        self._cancellation_checkpoint(cancellation_check)
         try:
             committed = self.store.update(
                 task_id,
@@ -753,9 +767,11 @@ class Controller:
         task_id: str,
         *,
         decision: Mapping[str, object],
+        cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
         state, definition = self.store.load_with_definition(task_id)
         snapshot = self._snapshot(state)
+        self._cancellation_checkpoint(cancellation_check)
         try:
             committed = self.store.update(
                 task_id,
@@ -788,6 +804,7 @@ class Controller:
         *,
         disposition: Mapping[str, object],
         actor_authorized: bool,
+        cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
         state, definition = self.store.load_with_definition(task_id)
         expands_contract = isinstance(disposition.get("next_contract"), Mapping)
@@ -795,6 +812,7 @@ class Controller:
             state,
             include_current_resources=not expands_contract,
         )
+        self._cancellation_checkpoint(cancellation_check)
         try:
             committed = self.store.update(
                 task_id,
@@ -823,7 +841,13 @@ class Controller:
             "projection": agent_projection(committed, definition, snapshot),
         }
 
-    def cancel(self, task_id: str, *, reason: str) -> dict:
+    def cancel(
+        self,
+        task_id: str,
+        *,
+        reason: str,
+        cancellation_check: Optional[Callable[[], None]] = None,
+    ) -> dict:
         state, definition = self.store.load_with_definition(task_id)
         if is_terminal_state(state, definition):
             raise DevFlowError("ACTION_NOT_AVAILABLE", "task is already finished")
@@ -850,6 +874,7 @@ class Controller:
             cancel.action_id,
             {"reason": reason},
             binding=binding,
+            cancellation_check=cancellation_check,
         )
 
     def tasks_for_path(self, path: str) -> tuple:

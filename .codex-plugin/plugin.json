@@ -1,6 +1,6 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Keep Codex development tasks resumable, verifiable, and aligned across one to eight local Git repositories.",
   "author": {
     "name": "Innocent-children",
@@ -16,7 +16,7 @@
     "developer-workflow",
     "multi-repository"
   ],
-  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Dev Flow Orchestrator",
     "shortDescription": "Keep Codex tasks resumable and verifiable",

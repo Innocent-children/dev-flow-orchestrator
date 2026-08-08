@@ -43,6 +43,7 @@ from .assurance import (
     validate_assurance_execution,
 )
 from .review import derive_review_result, validate_disposition, validate_finding
+from .review_guidance import INDEPENDENT_REVIEW_GUIDANCE_DIGEST
 from .model import (
     DevFlowError,
     MutationPlan,
@@ -1790,11 +1791,7 @@ def _adaptive_execution(
             "obligation_fingerprint": obligation["fingerprint"],
             "task_change_slice": obligation["task_change_slice"],
         })).hexdigest()
-        guidance_digest = hashlib.sha256(
-            canonical_json_bytes(
-                {} if contract.driver is None else contract.driver
-            )
-        ).hexdigest()
+        guidance_digest = INDEPENDENT_REVIEW_GUIDANCE_DIGEST
         expected_review_bindings = {
             "review_scope_digest": scope_digest,
             "guidance_digest": guidance_digest,
@@ -3001,9 +2998,7 @@ def agent_projection(
                         "obligation_fingerprint": selected["obligation"]["fingerprint"],
                         "task_change_slice": selected["obligation"]["task_change_slice"],
                     })).hexdigest(),
-                    "guidance_digest": hashlib.sha256(canonical_json_bytes(
-                        {} if node.driver is None else node.driver
-                    )).hexdigest(),
+                    "guidance_digest": INDEPENDENT_REVIEW_GUIDANCE_DIGEST,
                     "workspace_digest": snapshot["digest"],
                     "manifest_digest": adaptive["manifest"]["digest"],
                     "contract_digest": adaptive["plan"]["contract_digest"],

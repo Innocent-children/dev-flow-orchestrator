@@ -1,13 +1,9 @@
-"""Host-neutral checks for the native Windows product integration assets."""
+"""Host-neutral static checks; these are not native Windows execution evidence."""
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
-import subprocess
-import sys
-import tempfile
+import os
 import unittest
 
 
@@ -15,107 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WindowsProductSupportTests(unittest.TestCase):
-    @unittest.skipUnless(sys.platform == "win32", "requires native cmd.exe")
-    def test_windows_launcher_preserves_arguments_flags_and_exit_code(self) -> None:
-        launcher = ROOT / "scripts" / "dev_flow_python_launcher.cmd"
-        with tempfile.TemporaryDirectory(prefix="dev flow 雪 ") as temporary:
-            handler = Path(temporary) / "handler with spaces.py"
-            handler.write_text(
-                "import json,sys\n"
-                "print(json.dumps({'argv': sys.argv[1:], "
-                "'utf8': sys.flags.utf8_mode, 'isolated': sys.flags.isolated, "
-                "'no_site': sys.flags.no_site, "
-                "'no_bytecode': sys.dont_write_bytecode}))\n"
-                "raise SystemExit(int(sys.argv[1]))\n",
-                encoding="utf-8",
-            )
-            environment = {**os.environ, "DEV_FLOW_PYTHON": sys.executable}
-            result = subprocess.run(
-                [str(launcher), str(handler), "7", "a value", "雪", "bang!value"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                env=environment,
-                check=False,
-            )
-
-        self.assertEqual(result.returncode, 7, result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertEqual(payload["argv"], ["7", "a value", "雪", "bang!value"])
-        self.assertEqual(payload["utf8"], 1)
-        self.assertEqual(payload["isolated"], 1)
-        self.assertEqual(payload["no_site"], 1)
-        self.assertTrue(payload["no_bytecode"])
-
-    @unittest.skipUnless(sys.platform == "win32", "requires native cmd.exe")
-    def test_invalid_python_override_falls_back_to_supported_launcher(self) -> None:
-        environment = {
-            **os.environ,
-            "DEV_FLOW_PYTHON": str(ROOT / "missing python.exe"),
-        }
-        result = subprocess.run(
-            [
-                str(ROOT / "scripts" / "dev_flow_python_launcher.cmd"),
-                str(ROOT / "scripts" / "dev_flow.py"),
-                "--help",
-            ],
-            capture_output=True,
-            text=True,
-            env=environment,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("usage: dev-flow", result.stdout)
-
-    @unittest.skipUnless(sys.platform == "win32", "requires native cmd.exe")
-    def test_missing_python_returns_bounded_diagnostic(self) -> None:
-        with tempfile.TemporaryDirectory() as empty_path:
-            environment = {
-                **os.environ,
-                "DEV_FLOW_PYTHON": str(ROOT / "missing python.exe"),
-                "PATH": empty_path,
-            }
-            result = subprocess.run(
-                [
-                    str(ROOT / "scripts" / "dev_flow_python_launcher.cmd"),
-                    str(ROOT / "scripts" / "dev_flow.py"),
-                    "--help",
-                ],
-                capture_output=True,
-                text=True,
-                env=environment,
-                check=False,
-            )
-        self.assertEqual(result.returncode, 127)
-        self.assertIn("supported 64-bit Python 3.9-3.14 was not found", result.stderr)
-
-    def test_every_command_hook_has_one_windows_override(self) -> None:
-        document = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-        for event, groups in document["hooks"].items():
-            for group in groups:
-                for hook in group["hooks"]:
-                    with self.subTest(event=event):
-                        self.assertEqual(hook["type"], "command")
-                        self.assertIn("dev_flow_python_launcher", hook["command"])
-                        self.assertEqual(
-                            hook["commandWindows"],
-                            '"%PLUGIN_ROOT%\\scripts\\dev_flow_python_launcher.cmd" '
-                            '"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.py"',
-                        )
-
-    def test_windows_launcher_is_bounded_and_isolated(self) -> None:
-        launcher = (ROOT / "scripts" / "dev_flow_python_launcher.cmd").read_text(encoding="utf-8")
-        for token in (
-            "DisableDelayedExpansion",
-            "DEV_FLOW_PYTHON",
-            "py.exe -3",
-            "python.exe",
-            "python3.exe",
-            "struct.calcsize('P') == 8",
-            "-X utf8 -I -S",
-            "exit /b 127",
+    def test_legacy_hook_launcher_and_assets_are_absent(self) -> None:
+        for relative in (
+            "scripts/dev_flow_python_launcher.cmd",
+            "hooks/hooks.json",
+            "hooks/dev_flow_hook.py",
         ):
-            self.assertIn(token, launcher)
+            self.assertFalse((ROOT / relative).exists(), relative)
 
     def test_powershell_lifecycle_preserves_authority_boundaries(self) -> None:
         install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
@@ -129,8 +31,9 @@ class WindowsProductSupportTests(unittest.TestCase):
             "ConvertFrom-Json",
             "[IO.File]::Replace",
             "codex plugin add",
-            "/hooks",
-            "does not establish Hook trust",
+            "scripts\\manage_runtime.py",
+            "dev-flow-mcp.cmd",
+            "managed MCP runtime",
         ):
             self.assertIn(token, install)
         for token in (
@@ -141,17 +44,140 @@ class WindowsProductSupportTests(unittest.TestCase):
             "codex plugin remove",
             "TASK DATA",
             "preserved",
+            ".dev-flow-managed-runtime",
+            "dev-flow-mcp.cmd",
         ):
             self.assertIn(token, uninstall)
+
+    def test_windows_installer_builds_native_managed_launcher(self) -> None:
+        install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        for token in (
+            "[Environment]::Is64BitProcess",
+            "venv\\Scripts\\python.exe",
+            "DEV_FLOW_RUNTIME_HOME",
+            "DEV_FLOW_BIN_DIR",
+            "MCP",
+            "scripts\\dev_flow_mcp_launcher.cmd",
+            "__DEV_FLOW_RUNTIME_PYTHON__",
+            "[regex]::Matches",
+            ".Replace('%', '%%')",
+        ):
+            self.assertIn(token, install)
+        launcher_template = (
+            ROOT / "scripts" / "dev_flow_mcp_launcher.cmd"
+        ).read_text(encoding="utf-8")
+        self.assertIn("-I -m dev_flow_orchestrator.mcp %*", launcher_template)
+        self.assertNotIn("dev_flow_python_launcher.cmd", install)
+        self.assertNotIn("hooks\\", install.casefold())
+
+    def test_native_launcher_templates_have_one_bounded_placeholder(self) -> None:
+        posix = ROOT / "scripts" / "dev_flow_mcp_launcher"
+        windows = ROOT / "scripts" / "dev_flow_mcp_launcher.cmd"
+        posix_text = posix.read_text(encoding="utf-8")
+        windows_text = windows.read_text(encoding="utf-8")
+        placeholder = "__DEV_FLOW_RUNTIME_PYTHON__"
+        self.assertEqual(posix_text.count(placeholder), 1)
+        self.assertEqual(windows_text.count(placeholder), 1)
+        self.assertTrue(posix_text.startswith("#!/bin/sh\n"))
+        self.assertIn('"$@"', posix_text)
+        self.assertTrue(windows_text.startswith("@echo off\n"))
+        self.assertIn("%*", windows_text)
+        self.assertNotIn("/bin/sh", windows_text)
+        runtime_path = r"C:\Program Files\Dev Flow 雪\O'Brien\100%\python.exe"
+        generated = windows_text.replace(placeholder, runtime_path.replace("%", "%%"))
+        self.assertIn(
+            "\"C:\\Program Files\\Dev Flow 雪\\O'Brien\\100%%\\python.exe\"",
+            generated,
+        )
+        self.assertNotIn(placeholder, generated)
+        if os.name != "nt":
+            self.assertTrue(posix.stat().st_mode & 0o100)
+
+    def test_windows_receipt_duplicate_and_rollback_checks_are_present(self) -> None:
+        install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        uninstall = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
+        for token in (
+            "Test-OwnedMcpRegistration",
+            "duplicate Dev Flow entries",
+            "Previous plugin activation was restored",
+            "runtime_identity",
+            "activation_action",
+            "validate_installed_stage1.py",
+        ):
+            self.assertIn(token, install + "\n" + uninstall)
+        self.assertIn("executable_sha256", uninstall)
+        self.assertIn("Standalone Dev Flow MCP registration(s)", uninstall)
+        self.assertIn("launcher/runtime selected for removal", uninstall)
+
+    def test_windows_installer_distinguishes_bundled_and_standalone_mcp(self) -> None:
+        install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        for token in (
+            "Test-McpRegistrationEnabled",
+            "Test-BundledMcpRegistration",
+            "Get-ExplicitOwnedMcpRegistrationNames",
+            "$PluginBundledActive",
+            "$CanonicalBundled.Count -eq 1",
+            "$PostCanonicalBundled.Count -ne 1",
+            "$PostOwnedRegistrations.Count -ne 1",
+            "Join-Path $CodexRoot 'config.toml'",
+            "'dev-flow'",
+            "'stdio'",
+            "'dev-flow-mcp'",
+            "'--stdio'",
+        ):
+            self.assertIn(token, install)
+        self.assertLess(
+            install.index("$PluginJson = Capture-Checked"),
+            install.index("$McpListJson = Capture-Checked"),
+        )
+        self.assertEqual(install.count("@('mcp', 'list', '--json')"), 1)
+        self.assertEqual(install.count("& codex mcp list --json"), 1)
+
+    def test_windows_uninstaller_distinguishes_bundled_and_standalone_mcp(
+        self,
+    ) -> None:
+        uninstall = (ROOT / "scripts" / "uninstall.ps1").read_text(
+            encoding="utf-8"
+        )
+        for token in (
+            "Test-McpRegistrationEnabled",
+            "Test-BundledMcpRegistration",
+            "Get-ExplicitOwnedMcpRegistrationNames",
+            "$PluginBundledActive",
+            "$CanonicalBundled.Count -ne 1",
+            "$OwnedRegistrations.Count -ne 1",
+            "Join-Path $CodexRoot 'config.toml'",
+            "$Installed[0].PSObject.Properties['enabled']",
+            "$InstalledProperty.Value -is [bool]",
+            "$EnabledProperty.Value -is [bool]",
+            "$ArgsProperty.Value -is [Array]",
+            "$Arguments[0] -ceq '--stdio'",
+            "$PluginIdProperty.Value -ceq $PluginId",
+            "'dev-flow'",
+            "'stdio'",
+            "'dev-flow-mcp'",
+            "'--stdio'",
+        ):
+            self.assertIn(token, uninstall)
+        self.assertLess(
+            uninstall.index("$PluginJson = Capture-Checked"),
+            uninstall.index("$McpListJson = Capture-Checked"),
+        )
+        self.assertEqual(
+            uninstall.count(
+                "@('plugin', 'list', '--marketplace', 'personal', '--json')"
+            ),
+            1,
+        )
+        self.assertEqual(uninstall.count("@('mcp', 'list', '--json')"), 1)
+
+    def test_this_suite_is_explicitly_static_not_native_evidence(self) -> None:
+        self.assertIn("not native Windows execution evidence", __doc__ or "")
 
     def test_windows_support_does_not_fork_product_identity(self) -> None:
         combined = "\n".join(
             (ROOT / relative).read_text(encoding="utf-8")
-            for relative in (
-                "scripts/install.ps1",
-                "scripts/uninstall.ps1",
-                "scripts/dev_flow_python_launcher.cmd",
-            )
+            for relative in ("scripts/install.ps1", "scripts/uninstall.ps1")
         )
         self.assertNotIn("windows-product-version", combined.casefold())
         self.assertNotIn("windows workflow", combined.casefold())

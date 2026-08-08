@@ -58,12 +58,9 @@ CURRENT_MODEL_ASSETS = (
     "CONTRIBUTING.md",
     "ROADMAP.md",
     "ROADMAP_CN.md",
-    "skills/follow-dev-flow/SKILL.md",
-    "skills/follow-dev-flow/agents/openai.yaml",
-    "skills/analyze-change-impact/SKILL.md",
-    "skills/analyze-change-impact/agents/openai.yaml",
-    "skills/review-dev-flow-change/SKILL.md",
-    "skills/review-dev-flow-change/agents/openai.yaml",
+    ".mcp.json",
+    "src/dev_flow_orchestrator/mcp/identity.py",
+    "src/dev_flow_orchestrator/mcp/guidance.py",
 )
 
 
@@ -150,50 +147,36 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
     def test_english_and_chinese_readmes_cover_the_exact_set_journey(self) -> None:
         english = _read("README.md")
         chinese = _read("README_CN.md")
-        self.assertGreaterEqual(english.count("--repo"), 3)
-        self.assertGreaterEqual(chinese.count("--repo"), 3)
         self.assert_contains_all(
             english,
             (
                 "one to eight",
-                "one immutable repository set",
-                "one current action",
-                "one Codex executor",
-                "user-prepared repository roots",
+                "user-prepared Git worktrees",
+                "exact repository set",
+                "immutable canonical repository array",
+                "secondary member",
+                "dev_flow_start_task",
+                "dev_flow_get_next_action",
+                "unchanged binding",
                 WORKFLOW_SCHEMA,
                 AGENT_PROTOCOL_SCHEMA,
-                REPOSITORY_SET_SNAPSHOT_SCHEMA,
-                VERIFICATION_COVERAGE_SCHEMA,
-                DELIVERY_DOSSIER_SCHEMA,
-                "repository_id",
-                "criteria",
-                "repositories",
-                "integration",
-                "cancel.stages",
-                "exclude every `delivery.finalize` stage",
-                "restore that exact root",
+                "Delivery Dossier",
             ),
         )
         self.assert_contains_all(
             chinese,
             (
-                "一至八个",
-                "一个不可变仓库集合",
-                "一个当前动作",
-                "一个 Codex",
-                "用户提前准备",
+                "一个至八个",
+                "用户预先准备",
+                "精确仓库集合",
+                "不可变的规范仓库数组",
+                "第二成员",
+                "dev_flow_start_task",
+                "dev_flow_get_next_action",
+                "精确 binding",
                 WORKFLOW_SCHEMA,
                 AGENT_PROTOCOL_SCHEMA,
-                REPOSITORY_SET_SNAPSHOT_SCHEMA,
-                VERIFICATION_COVERAGE_SCHEMA,
-                DELIVERY_DOSSIER_SCHEMA,
-                "repository_id",
-                "criteria",
-                "repositories",
-                "integration",
-                "cancel.stages",
-                "排除所有 `delivery.finalize` 阶段",
-                "恢复同一精确根目录",
+                "Delivery Dossier",
             ),
         )
 
@@ -221,79 +204,30 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
                     self.assertIn("--branch main", command)
                     self.assertIn("--single-branch", command)
 
-    def test_packaged_skills_cover_member_scope_and_aggregate_assurance(self) -> None:
-        follow = _read("skills/follow-dev-flow/SKILL.md")
-        impact = _read("skills/analyze-change-impact/SKILL.md")
-        review = _read("skills/review-dev-flow-change/SKILL.md")
-        self.assertGreaterEqual(follow.count("--repo"), 3)
-        self.assert_contains_all(
-            follow,
+    def test_mcp_guidance_covers_member_scope_and_aggregate_assurance(self) -> None:
+        guidance = "\n".join(
             (
-                "exact set of one to eight user-prepared",
-                "one current action",
-                "one Codex",
-                WORKFLOW_SCHEMA,
-                AGENT_PROTOCOL_SCHEMA,
-                "repository_id",
-                '"assurance_result"',
-                '"obligation_id"',
-                '"evidence"',
-                "slice-aware",
-                DELIVERY_DOSSIER_SCHEMA,
-                "cancel.stages",
-                "Delivery finalizers never expose cancellation",
-            ),
+                _read("src/dev_flow_orchestrator/mcp/guidance.py"),
+                _read("src/dev_flow_orchestrator/review_guidance.py"),
+            )
         )
         self.assert_contains_all(
-            impact,
+            guidance,
             (
-                "immutable declared members",
-                "For every `repository_id`",
-                "Never reuse one project ID across generations or repository members",
-                "cross-repository",
-                "details.repositories",
-                "same envelope when the exact set has one member",
-                "silently omitted",
+                "exact repository set",
+                "current and baseline codebase-memory projects separate",
+                "current assurance obligation",
+                "bound review package",
+                "Delivery Dossier",
+                "Do not blindly retry a mutation",
             ),
         )
-        self.assert_contains_all(
-            review,
-            (
-                "complete canonical member inventory",
-                "aggregate `workspace_snapshot_digest`",
-                "Never share a graph project across members",
-                "structured causal findings",
-                "unchanged when the exact set has one member",
-                "pre-existing",
-                "out-of-scope",
-            ),
-        )
-
-    def test_skill_agent_metadata_invokes_each_skill_and_retains_dependencies(self) -> None:
-        for skill_name in (
-            "follow-dev-flow",
-            "analyze-change-impact",
-            "review-dev-flow-change",
-        ):
-            with self.subTest(skill=skill_name):
-                document = _read("skills/{}/agents/openai.yaml".format(skill_name))
-                self.assertIn("${}".format(skill_name), document)
-                self.assertIn('value: "codebase-memory-mcp"', document)
-                self.assertIn("allow_implicit_invocation:", document)
-                match = re.search(
-                    r'^  short_description: "([^"]+)"$',
-                    document,
-                    flags=re.MULTILINE,
-                )
-                self.assertIsNotNone(match)
-                description = match.group(1)
-                self.assertGreaterEqual(len(description), 25)
-                self.assertLessEqual(len(description), 64)
+        self.assertFalse((ROOT / "skills").exists())
+        self.assertFalse((ROOT / "hooks").exists())
 
     def test_public_assets_contain_only_the_current_product_model(self) -> None:
         forbidden_fragments = (
             "adapter_identity",
-            "rollback",
             "singleton",
         )
         forbidden_version_patterns = (
@@ -319,10 +253,13 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
                 path = ROOT / relative
                 if not path.is_file():
                     continue
-                version_match = re.search(
-                    r'(?m)^version = "([^"]+)"$',
-                    path.read_text(encoding="utf-8"),
+                document = path.read_text(encoding="utf-8")
+                pattern = (
+                    r'(?ms)^name = "dev-flow-orchestrator"\nversion = "([^"]+)"$'
+                    if relative == "uv.lock"
+                    else r'(?m)^version = "([^"]+)"$'
                 )
+                version_match = re.search(pattern, document)
                 self.assertIsNotNone(version_match)
                 self.assertEqual(version_match.group(1), manifest_version)
 

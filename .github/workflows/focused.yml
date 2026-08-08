@@ -5,6 +5,25 @@ on:
   pull_request:
 
 jobs:
+  supported-source-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Complete supported source regression
+        run: uv run python -m unittest discover -s tests -p "test_*.py"
+      - name: Candidate package validation
+        run: uv run python scripts/validate_package.py
+
   windows-runtime:
     runs-on: windows-latest
     steps:
@@ -12,22 +31,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
       - name: Native Windows import, path, storage, process, and snapshot
         run: python -I -S tests/test_native_windows_runtime.py -v
       - name: Native Windows core controller journey
         run: python -I -S tests/test_cli.py -v
-      - name: Native Windows product integration assets and Hook behavior
-        run: python -I -S tests/test_windows_product_support.py -v
+      - name: Native Windows MCP product integration assets
+        run: uv run python tests/test_windows_product_support.py -v
       - name: Native Windows lifecycle
         run: python -I -S tests/test_windows_lifecycle.py -v
-      - name: Native Windows Hook behavior
-        run: python -I -S tests/test_hook.py -v
       - name: Native Windows Web UI behavior
         run: |
           python -I -S tests/test_web_read_models.py -v
           python -I -S tests/test_web_server.py -v
       - name: Candidate package validator
-        run: python -I -S scripts/validate_package.py
+        run: uv run python scripts/validate_package.py
 
   focused:
     runs-on: macos-latest
@@ -36,28 +55,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
       - name: Candidate package validator
-        run: python3 -I -S scripts/validate_package.py
+        run: uv run python scripts/validate_package.py
       - name: Installer source and activation boundaries
-        run: python3 -I -S tests/test_install_script.py -v
+        run: uv run python tests/test_install_script.py -v
       - name: Workflow language, parser, and package contracts
         run: |
-          python3 -I -S tests/test_workflow_validation.py -v
-          python3 -I -S tests/test_yaml_subset.py -v
-          python3 -I -S tests/test_package.py -v
-          python3 -I -S tests/test_multi_repository_assets.py -v
+          uv run python tests/test_workflow_validation.py -v
+          uv run python tests/test_yaml_subset.py -v
+          uv run python tests/test_package.py -v
+          uv run python tests/test_multi_repository_assets.py -v
       - name: Controller, repository set, and state integrity
         run: |
-          python3 -I -S tests/test_delivery_runtime.py -v
-          python3 -I -S tests/test_controller_contracts.py -v
-          python3 -I -S tests/test_store_integrity.py -v
-          python3 -I -S tests/test_stale_mutations.py -v
-          python3 -I -S tests/test_cli.py -v
-          python3 -I -S tests/test_hook.py -v
-          python3 -I -S tests/test_multi_repository_core.py -v
-          python3 -I -S tests/test_multi_repository_controller.py -v
-          python3 -I -S tests/test_multi_repository_delivery.py -v
+          uv run python tests/test_delivery_runtime.py -v
+          uv run python tests/test_controller_contracts.py -v
+          uv run python tests/test_store_integrity.py -v
+          uv run python tests/test_stale_mutations.py -v
+          uv run python tests/test_cli.py -v
+          uv run python tests/test_multi_repository_core.py -v
+          uv run python tests/test_multi_repository_controller.py -v
+          uv run python tests/test_multi_repository_delivery.py -v
       - name: Workspace and installed-evidence gates
         run: |
-          python3 -I -S tests/test_git_snapshot.py -v
-          python3 -I -S tests/test_installed_journeys.py -v
+          uv run python tests/test_git_snapshot.py -v
+          uv run python tests/test_mcp_runtime.py -v
+          uv run python tests/test_installed_journeys.py -v

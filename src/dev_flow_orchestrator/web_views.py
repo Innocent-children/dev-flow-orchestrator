@@ -407,7 +407,7 @@ def _recovery_brief(
         else []
     )
     return {
-        "prompt": "$follow-dev-flow task_id={}".format(state.task_id),
+        "prompt": "Call dev_flow_get_next_action with task_id={}".format(state.task_id),
         "task_id": state.task_id,
         "revision": state.revision,
         "requirement": _bounded_text(state.requirement),

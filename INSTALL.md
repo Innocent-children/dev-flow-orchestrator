@@ -1,632 +1,227 @@
 # Install Dev Flow Orchestrator
 
-Dev Flow compatibility model 0.4.0 is a clean protocol cut. Configure the installed controller with
-the exact `<PLUGIN_DATA>/0.4.0` directory. Retained `<PLUGIN_DATA>/0.2.0` bytes
-may remain for operator reference, but the model 0.4.0 runtime does not discover, load,
-migrate, repair, or mutate them. Explicit 0.2 schemas or state are unsupported.
+[Simplified Chinese](INSTALL_CN.md)
 
-Prepare every Git worktree yourself before starting a task. Admission creates
-one active lease for each canonical root and worktree-specific Git directory;
-distinct linked worktrees may share a common Git directory across distinct
-tasks. During source actions, submit exact `dev-flow-task-change-claims/0.4.0`.
-During `assurance.execute`, follow only `current_obligation` and its evidence
-contract. Do not reconstruct bindings, plan IDs, findings, counters, or review
-outcomes.
+This guide installs release `0.5.0` with its local MCP-first interface. The
+persisted model and task-data namespace remain `0.4.0`.
 
-[简体中文](INSTALL_CN.md)
+## 1. Choose one registration mode
 
-This guide installs the current Dev Flow Orchestrator release from a local Codex marketplace and
-verifies the installed launcher, Hook, Skill, and controller path.
+Use exactly one of these modes:
 
-The installed core uses compatibility model 0.4.0 and runs one local task over an exact canonical set of one to
-eight user-prepared Git worktrees. It always projects one current action to one
-Codex executor. It does not create or switch branches/worktrees,
-publish Git changes, coordinate parallel agents, call external CI/PR/release
-systems, or reuse partial assurance from unchanged repository members.
+- **Bundled mode**: the recommended Codex plugin installation. The manifest
+  references the root `.mcp.json`.
+- **Standalone mode**: register the same `dev-flow-mcp --stdio` PATH launcher
+  directly in a compatible MCP host.
 
-## Quick install
+The installer fails when an enabled standalone registration named `dev-flow`
+already exists, because enabling bundled and standalone mode together would
+expose duplicate tools. It never edits unrelated MCP or plugin policy.
 
-On a supported macOS host, install from the public repository with one command:
+## 2. Requirements
+
+Bundled macOS installation requires:
+
+- macOS;
+- Git;
+- `uv`;
+- Codex with plugin and MCP server support;
+- a writable absolute directory already on `PATH`;
+- 64-bit CPython 3.10, 3.11, 3.12, 3.13, or 3.14.
+
+Windows preview installation requires Windows 10 22H2 x64 or Windows 11 x64,
+Git for Windows, `uv`, Codex, 64-bit CPython 3.10–3.14, and Windows PowerShell
+5.1 or PowerShell 7. Native Windows evidence is required before treating a
+release candidate as verified on Windows. Windows Server and POSIX compatibility
+layers are outside the supported client claim.
+
+## 3. Bundled installation on macOS
+
+One-line install:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/install.sh | sh
 ```
 
-The script checks macOS, Git, Python 3.9–3.14, and the Codex CLI; clones or
-fast-forwards `$HOME/plugins/dev-flow-orchestrator`; validates the complete
-candidate; preserves other personal marketplace entries while replacing any
-Dev Flow entry; installs a missing plugin, upgrades an older installation, or
-repairs the current version by reinstalling it; and prints an installation
-receipt with the action, versions, touched directories, and first prompt. Review
-[`scripts/install.sh`](scripts/install.sh) before running it if you do not want
-to pipe a remote script directly to `sh`.
-
-The installer selects the first writable absolute directory already on `PATH`
-and creates an owned `dev-flow` launcher there, so the command is immediately
-available without editing shell startup files. It refuses to replace a foreign
-file at that path. Set `DEV_FLOW_BIN_DIR` to choose a specific writable `PATH`
-directory. The uninstaller uses the same selection rule and removes only a
-launcher carrying the exact Dev Flow ownership marker.
-
-The success receipt uses a neon terminal palette on interactive standard
-output. Redirected output, `TERM=dumb`, or `NO_COLOR` automatically emits the
-same receipt without ANSI color codes.
-
-The installer treats `main` as its non-configurable authoritative source ref.
-A fresh install selects `main` explicitly. An existing source proceeds only
-when its origin matches the configured repository URL, its attached branch is
-clean `main`, and its current commit is equal to or can fast-forward to the
-fetched `main` commit. The fast-forward refuses to overwrite an ignored local
-path that collides with incoming `main`, but preserves unrelated ignored
-content. It refuses another branch, detached HEAD, reported local changes,
-local-ahead history, divergence, or a non-Git path without switching,
-resetting, stashing, cleaning, or overwriting the checkout.
-
-The one-command installer automatically removes and reinstalls an existing
-plugin. If Codex refuses removal because Dev Flow tasks are active, finish or
-explicitly cancel those tasks and rerun the same command. The remaining
-sections document the same process manually and provide the full installed
-acceptance checks.
-
-## Launch the local read-only Web UI
-
-The installed 0.4.1 plugin includes the Web UI; there is no separate WebUI
-installation or version. The installed launcher automatically selects the
-current compatibility-model directory under Codex plugin data:
+Reviewed local install:
 
 ```sh
-dev-flow web start
-```
-
-The command starts a managed background process and prints one strict JSON
-receipt. Open its `url`, which uses numeric `127.0.0.1`, an ephemeral port by
-default, and a process-local token in the fragment. Add `--port <port>` to
-`start` or `restart` to request a fixed local port. Use `dev-flow web status`,
-`dev-flow web open`, `dev-flow web restart`, and `dev-flow web stop` to manage
-it. `open`
-prints a fresh complete launch URL but does not launch a browser. The legacy
-`web` form remains a foreground mode stopped with Ctrl-C. There is deliberately
-no host, proxy, remote-access, or long-lived credential option.
-
-The initial list and stored task detail do not invoke Git. Select **Observe
-live** only when current repository health and action readiness are required.
-Stopping or restarting the server cancels any active live capture. Access is
-local capability security rather than multi-user authentication: do not share
-the startup URL, expose the port through a proxy, or weaken the Host, Origin,
-Fetch Metadata, CSP, bearer-token, no-CORS, or loopback checks.
-
-## 1. Requirements
-
-Supported for this release:
-
-- macOS;
-- Git;
-- Python 3.9–3.14;
-- Codex with the `codex plugin` command and `SessionStart`,
-  `UserPromptSubmit`, and `PreToolUse` Hook support.
-
-Check the host:
-
-```sh
-sw_vers
-git --version
-python3 --version
-codex plugin --help
-```
-
-Runtime code uses only Python's standard library. Do not install a Python or
-Node dependency set for this plugin. OpenSpec, codebase-memory, and an
-independent reviewer are optional workflow capabilities and have explicit
-fallback behavior.
-
-## 2. Put the source in a personal marketplace
-
-These examples use `$HOME/plugins/dev-flow-orchestrator` as the marketplace
-source:
-
-```text
-$HOME/
-├── .agents/plugins/marketplace.json
-└── plugins/dev-flow-orchestrator/
-```
-
-Clone over SSH:
-
-```sh
-mkdir -p "$HOME/plugins"
-git clone --branch main --single-branch \
-  git@github.com:Innocent-children/dev-flow-orchestrator.git \
-  "$HOME/plugins/dev-flow-orchestrator"
-```
-
-HTTPS alternative:
-
-```sh
-mkdir -p "$HOME/plugins"
 git clone --branch main --single-branch \
   https://github.com/Innocent-children/dev-flow-orchestrator.git \
   "$HOME/plugins/dev-flow-orchestrator"
+sh "$HOME/plugins/dev-flow-orchestrator/scripts/install.sh"
 ```
 
-A reviewed local candidate may be placed at the same path. Keep it as one
-complete candidate tree so package identity, workflows, Skills, Hook, source,
-and documentation come from the same snapshot.
-
-Validate the candidate:
+Useful explicit locations:
 
 ```sh
-cd "$HOME/plugins/dev-flow-orchestrator"
-python3 -I -S scripts/validate_package.py
-python3 -m json.tool .codex-plugin/plugin.json
+DEV_FLOW_SOURCE_ROOT="$HOME/plugins/dev-flow-orchestrator" \
+DEV_FLOW_RUNTIME_HOME="$HOME/.local/share/dev-flow-orchestrator/runtime" \
+DEV_FLOW_BIN_DIR="$HOME/.local/bin" \
+sh scripts/install.sh
 ```
 
-The manifest name is `dev-flow-orchestrator`, and candidate validation covers
-the catalog entries for `lite`, `feature`, `bugfix`, `investigation`,
-`refactor`, and `full`.
+`DEV_FLOW_BIN_DIR` must already be on `PATH`. The installer will not change
+shell profiles or unrelated configuration.
 
-For a new personal marketplace:
+## 4. What the installer does
+
+In order, the installer:
+
+1. verifies the expected origin, attached `main`, clean checkout, ignored-path
+   safety, and fast-forward-only update;
+2. validates candidate content before executing candidate runtime code;
+3. checks for a duplicate enabled standalone `dev-flow` registration;
+4. locates supported 64-bit Python and requires `uv`;
+5. exports and installs the exact `uv.lock` runtime into a temporary virtual
+   environment outside source and task data;
+6. builds and installs the project wheel, then checks import, initialization,
+   instructions, the exact eleven-tool catalog, and a read call;
+7. writes a runtime receipt with release, source commit, Python identity,
+   architecture, lock digest, launcher identity, and activation timestamp;
+8. atomically publishes the versioned runtime and `dev-flow-mcp` launcher;
+9. preserves unrelated marketplace entries and activates the plugin.
+
+A failed runtime build never replaces the previous versioned runtime or
+launcher. A runtime version is reused only when its receipt still matches the
+verified source commit, dependency lock, launcher, and interpreter digest.
+
+The default managed runtime is:
+
+- macOS: `~/.local/share/dev-flow-orchestrator/runtime`
+- Windows: `%LOCALAPPDATA%\dev-flow-orchestrator\runtime`
+
+Task data remains under the Codex plugin data root in the `0.4.0` namespace and
+is disjoint from the runtime.
+
+## 5. Verify bundled activation
+
+Confirm that the command is on `PATH`:
 
 ```sh
-mkdir -p "$HOME/.agents/plugins"
-cp \
-  "$HOME/plugins/dev-flow-orchestrator/templates/personal-marketplace.example.json" \
-  "$HOME/.agents/plugins/marketplace.json"
+command -v dev-flow-mcp
+dev-flow-mcp --http
 ```
 
-If `~/.agents/plugins/marketplace.json` already exists, preserve it and merge
-the object from `templates/marketplace-entry.json` into its `plugins` array.
-Keep exactly one entry named `dev-flow-orchestrator`.
+The second command must fail with `MCP_RUNTIME_UNAVAILABLE` and must not open
+a listening socket. In Codex, inspect the enabled plugin and confirm one
+`dev-flow` server. Ask Codex to call `dev_flow_server_info`; it should report
+release `0.5.0`, model `0.4.0`, STDIO transport, six workflows, and catalog
+digests. Then list tools and confirm exactly eleven `dev_flow_*` tools.
+
+The server is a long-lived STDIO protocol process, so do not run
+`dev-flow-mcp --stdio` directly in an interactive terminal unless using an MCP
+client or inspector.
+
+## 6. Standalone registration
+
+Install or build the managed runtime and PATH launcher first, but do not enable
+the bundled plugin. Register the same command:
 
 ```sh
-python3 -m json.tool "$HOME/.agents/plugins/marketplace.json"
+codex mcp add dev-flow -- dev-flow-mcp --stdio
+codex mcp list --json
 ```
 
-## 3. Install 0.4.0
+Remove it before switching to bundled mode:
 
 ```sh
-codex plugin list
-codex plugin add dev-flow-orchestrator@personal
-codex plugin list
+codex mcp remove dev-flow
 ```
 
-The result contains exactly one enabled `dev-flow-orchestrator@personal`.
+Other MCP hosts may connect at the protocol level. The first complete delivery
+claim covers Codex hosts that provide the required local repository executor
+behavior; other hosts are protocol-compatible but outside that support claim.
 
-Start a new Codex task. Open `/hooks`, confirm that the Hook source is the
-installed plugin snapshot, review the current definition, and trust it. Verify
-that `SessionStart`, `UserPromptSubmit`, and `PreToolUse` are enabled. A
-source-checkout test cannot establish installed Hook or Skill pickup.
+## 7. Windows preview
 
-## 4. Replace an installation
-
-Codex installs an immutable cached snapshot. Plugin, Python package, and lock
-metadata carry one `RELEASE_VERSION`; runtime protocols and persisted tasks use
-the independently governed `MODEL_VERSION` `0.4.0`. A release-only patch does
-not change the state namespace, schemas, workflow identities, or active tasks.
-
-1. Obtain the complete reviewed candidate.
-2. Replace the marketplace source tree as one candidate.
-3. Remove the installed snapshot:
-
-   ```sh
-   codex plugin remove dev-flow-orchestrator@personal
-   ```
-
-4. Install the candidate:
-
-   ```sh
-   codex plugin add dev-flow-orchestrator@personal
-   ```
-
-5. Start a new Codex task and verify the installed version and Hook source.
-
-Replacement installs operate on the current 0.4.0 product model and state
-namespace. Finish or explicitly cancel active tasks before replacing the
-installed snapshot.
-
-## 5. Data directory and controller locator
-
-Task state must remain outside every target repository in the task. The Hook
-injects one complete locator containing the installed Python launcher,
-installed CLI, and exact `<PLUGIN_DATA>/0.4.0` state directory:
-
-```text
-<ctl> = <exact Hook-injected locator>
-```
-
-Use that locator unchanged for installed tasks. Do not reconstruct its paths or
-append another `--data-dir`.
-
-For a separate direct-CLI smoke, choose an explicit data directory outside the
-target repository. Here `--data-dir` means the exact directory and does not
-append `0.4.0`:
-
-```sh
-SOURCE_ROOT="$HOME/plugins/dev-flow-orchestrator"
-DATA_DIR="/absolute/path/to/independent-dev-flow-0.4.0-state"
-
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" --help
-```
-
-Use the same exact directory for every command on that task. The controller
-uses private directories/files, a task lock, revision compare-and-swap,
-deterministic replay, and atomic replacement. Direct state edits, symlinked
-state paths, malformed records, and data/repository tree overlap fail closed.
-
-## 6. Verify the 0.4.0 CLI contract
-
-Create a task in a disposable initialized Git repository:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" \
-  start \
-  --workflow lite \
-  --repo /absolute/path/to/disposable-repository \
-  --requirement "Installation smoke"
-```
-
-The response contains revision-zero task state with a minimal contract. Save
-its `task_id`, then request the projection:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" next <task-id>
-```
-
-The first 0.4.0 action is `task.preflight`. Every `apply`, including preflight,
-requires the exact object returned as `projection.action.binding`. Copy the
-fresh binding as strict JSON; do not reconstruct or reuse it:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" apply <task-id> \
-  --action task.preflight \
-  --payload-json '{}' \
-  --binding-json '<projection.action.binding JSON>'
-```
-
-Use the fresh projection returned by each apply for the next action:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" apply <task-id> \
-  --action implementation.record \
-  --payload-json '{"summary":"installation smoke implementation"}' \
-  --binding-json '<fresh implementation binding JSON>'
-```
-
-Run the command that proves the smoke requirement. Record `passed: true` only
-after it exits successfully. The minimal contract criterion ID is
-`requirement`:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" apply <task-id> \
-  --action verification.record \
-  --payload-json '{"passed":true,"command":"git -C /absolute/path/to/disposable-repository status --short","coverage":{"schema":"dev-flow-verification-coverage/0.4.0","criteria":{"requirement":"proven"},"repositories":{"<repository-id>":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"integration":{"command":"git -C /absolute/path/to/disposable-repository status --short","passed":true}},"summary":"member and integration checks passed"}' \
-  --binding-json '<fresh verification binding JSON>'
-```
-
-Finalize from its fresh projection:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" apply <task-id> \
-  --action delivery.finalize.success \
-  --payload-json '{"summary":"installation smoke completed","remaining_risks":{},"handoff":"inspect the generated dossier"}' \
-  --binding-json '<fresh finalization binding JSON>'
-```
-
-The final projection reports `done: true`, status `DONE`, and a compact
-dossier summary. Inspect the full ledger and dossier artifact:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" show <task-id>
-```
-
-The one-argument `--repo` path above creates a one-member exact repository set.
-It uses `dev-flow-agent/0.4.0`, an aggregate repository-set snapshot,
-`dev-flow-verification-coverage/0.4.0`, scoped resources, and
-`dev-flow-delivery-dossier/0.4.0`, exactly like every larger set.
-
-To smoke-test a larger set, prepare two to eight initialized,
-non-bare local Git worktree roots and repeat `--repo`:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" \
-  start \
-  --workflow lite \
-  --repo /absolute/path/to/disposable-api \
-  --repo /absolute/path/to/disposable-client \
-  --requirement "Repository-set installation smoke"
-```
-
-Admission canonicalizes and sorts the exact set and rejects duplicate or
-overlapping roots, shared Git common directories, non-worktree roots, and
-data-directory overlap. Caller order has no meaning, and membership is
-immutable after start. Save the returned member IDs. The
-`dev-flow-agent/0.4.0` projection's `repository_set` carries the aggregate
-snapshot digest, and every apply still uses its single fresh action binding.
-
-At `verification.record`, cover the exact criterion and member sets plus one
-integration result. The top-level command must equal `integration.command`,
-and top-level `passed` must equal the conjunction of every member and
-integration result:
-
-```sh
-<ctl> apply <task-id> \
-  --action verification.record \
-  --payload-json '{"passed":true,"command":"./verify-integration.sh","coverage":{"schema":"dev-flow-verification-coverage/0.4.0","criteria":{"requirement":"proven"},"repositories":{"<api-repository-id>":{"command":"./verify-api.sh","passed":true},"<client-repository-id>":{"command":"./verify-client.sh","passed":true}},"integration":{"command":"./verify-integration.sh","passed":true}},"summary":"all member and integration checks passed"}' \
-  --binding-json '<fresh verification binding JSON>'
-```
-
-Finalization produces one aggregate `dev-flow-delivery-dossier/0.4.0`. It includes
-the canonical inventory, per-member baseline/final summaries, changed-member
-diagnostics, scoped resources, verification attempts, current
-member/integration proof, and aggregate freshness. Before the task reaches a
-terminal state, a change to any
-member invalidates the current aggregate binding and assurance; obtain a fresh
-action and rerun the required assurance for the complete set. After the task
-is terminal, it does not reopen: later member drift only makes the existing
-Dossier stale, and further delivery work requires a new task.
-
-## 7. Start with an explicit contract
-
-Normal `feature`, `bugfix`, `investigation`, `refactor`, and `full` tasks use a
-structured initial contract:
-
-```sh
-"$SOURCE_ROOT/scripts/dev_flow_python_launcher" \
-  "$SOURCE_ROOT/scripts/dev_flow.py" \
-  --data-dir "$DATA_DIR" start \
-  --workflow feature \
-  --repo /absolute/path/to/repository \
-  --requirement "Deliver observable behavior" \
-  --contract-json '{"schema":"dev-flow-delivery-contract/0.4.0","revision":1,"summary":"Deliver observable behavior","acceptance_criteria":[{"id":"C1","statement":"The behavior is observable"}],"scope":["implementation and focused verification"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}'
-```
-
-The object has exactly the documented fields, positive revision `1`, at least
-one uniquely identified criterion, and bounded text/list content. Omitting the
-object uses the requirement-derived minimal contract. Repeat `--repo` on this
-command to bind the same explicit contract to a larger exact repository set;
-workflow choice does not imply repository count.
-
-When a planning action declares repository-backed resources, every item has
-exactly its returned `repository_id`, relative `path`, `role`, and
-`normalizer`. Unknown or omitted IDs, escaping paths, cross-root resolution,
-and duplicate scoped keys are rejected.
-
-## 8. Revise scope or record a waiver
-
-Contract revision is available after preflight. Supply the complete next
-contract revision, reason, and actor label:
-
-```sh
-<ctl> revise-contract <task-id> \
-  --contract-json '{"schema":"dev-flow-delivery-contract/0.4.0","revision":2,"summary":"Revised scope","acceptance_criteria":[{"id":"C1","statement":"Revised observable condition"}],"scope":["revised work"],"constraints":[],"risks":[],"non_goals":[],"open_questions":[]}' \
-  --reason 'accepted scope correction' \
-  --actor-label 'operator'
-```
-
-The controller captures one aggregate `revision-source` snapshot covering
-every member for the new contract and reenters the workflow's declared impact
-or implementation node. Revision cannot change repository membership.
-
-Record a criterion waiver only as an explicit decision:
-
-```sh
-<ctl> decide <task-id> \
-  --decision-json '{"id":"waive-C1-r1","kind":"criterion-waiver","subject":"C1","outcome":"waived","rationale":"accepted bounded exception","actor_label":"operator"}'
-```
-
-For unavailable independent review, `kind` is `assurance-waiver`, `subject` is
-the exact review node ID (official workflows use `review`), and `outcome` is
-`waived`. Decision IDs are unique for the task, and a `(kind, subject)` pair is
-accepted once per contract digest. A later contract revision makes earlier
-waivers historical.
-
-Cancel only on explicit user instruction and only when the current node is in
-the selected workflow's `cancel.stages` declaration:
-
-```sh
-<ctl> cancel <task-id> --reason 'operator requested cancellation'
-```
-
-The six official workflows declare cancellation at a strict majority of their
-normal nonterminal stages. Delivery finalizers never expose cancellation.
-
-### Recover a task started with the wrong repository set
-
-A Hook match proves only that the current path belongs to an active task's
-declared repository set. It does not prove that the repositories can satisfy
-the accepted requirement. When `$follow-dev-flow` confirms a semantic mismatch
-from the effective contract and source, it must:
-
-1. stop the projected workflow action without changing a member;
-2. identify the exact task and mismatch, state that the task remains active,
-   and request explicit cancellation authority unless the current request
-   already supplies it for that task;
-3. after authorization, call `<ctl> cancel` for the exact task; and
-4. report completion only after the projection contains `done: true`,
-   `status: CANCELLED`, and `current_node: cancelled`.
-
-Without authorization, or when cancellation is unavailable or cannot capture
-the complete repository set, the task remains active. Restore the declared
-member, complete a required finalizer, or take the reported operator action;
-do not replace immutable membership or start an implicit replacement task.
-
-## 9. Verify installed Hook and Skill pickup
-
-1. Start a new Codex task inside any member of a disposable initialized
-   exact repository set, including a secondary member in a larger set. An
-   ambiguous active-task match is not selected.
-2. Open `/hooks`; confirm the source is the installed immutable snapshot and
-   trust the definition.
-3. Invoke `$follow-dev-flow` and start an official workflow.
-4. Confirm the injected context names Dev Flow 0.4.0, includes the installed
-   launcher and CLI, selects `<PLUGIN_DATA>/0.4.0`, and projects
-   `dev-flow-agent/0.4.0` with the exact `repository_set` for every cardinality.
-5. Confirm `$follow-dev-flow` passes the exact current action binding on every
-   apply and inspects the terminal dossier with `show`.
-6. Confirm common shell/edit attempts that target the plugin data root are
-   denied while normal repository work remains available.
-
-Installed release evidence covers all six official workflows and records the
-installed snapshot identity, task IDs, repository baselines, optional-driver
-status, verification/review paths, contract-revision recovery, bounded
-exhaustion, and Dossier 0.4.0 outcomes. Any condition that depends on a real new
-Codex task loading a Hook or Skill remains a manual
-installed pickup check when the validation environment cannot observe it.
-
-The bundled `scripts/validate_installed_stage1.py` runner labels its generated
-driver payloads as controller-contract simulations. A verified release gate
-combines that installed controller evidence with `--external-evidence` captured
-from actual OpenSpec, codebase-memory, and independent-review executions.
-Running the controller matrix alone reports
-`execution_ok: true` and keeps the release gate `unverified`.
-
-## 10. Troubleshooting
-
-`Python handler does not exist`
-: The marketplace source or installed snapshot is incomplete. Confirm that
-  `scripts/dev_flow.py` and `scripts/dev_flow_python_launcher` exist together.
-
-`Python 3.9-3.14 was not found`
-: Install a supported Python or set `DEV_FLOW_PYTHON` to a verified absolute
-  interpreter path.
-
-`ARGUMENT_INVALID` mentioning `--data-dir`
-: Place the required global `--data-dir` before the subcommand. Installed
-  tasks use the complete Hook locator.
-
-`ACTION_BINDING_INVALID` or `ACTION_BINDING_STALE`
-: Obtain a fresh `next` projection and submit its complete binding. Never
-  synthesize, trim, or reuse a binding.
-
-`REVISION_CONFLICT`
-: Another mutation advanced the task. Read `error.details.projection`, then
-  run `next` and reassess the newly projected action.
-
-`WORKSPACE_CHANGED`
-: A context or verifying action observed a different worktree than its bound
-  starting aggregate snapshot. Restore the intended snapshot or
-  obtain a fresh action; source changes belong only to a declared
-  source-producing action.
-
-`REPOSITORY_IDENTITY_MISMATCH`, `REPOSITORY_INVALID`,
-`REPOSITORY_GIT_IDENTITY_DUPLICATE`, or `REPOSITORY_OVERLAP`
-: A persisted member is missing or moved, no longer its exact canonical Git
-  worktree root, or now conflicts with another member. Repository-dependent
-  progress records no partial evidence. Restore every member at its exact
-  persisted root, resolve the identity conflict, and request a fresh
-  projection. Use `show` for read-only stored-ledger diagnosis.
-
-`ARTIFACT_INPUT_MISSING` or `RESOURCE_BINDING_MISSING`
-: A required current artifact or declared repository resource cannot be
-  resolved. Inspect `show`, freshness reasons, and current resource paths;
-  produce a replacement upstream artifact when required.
-
-`DELIVERY_NOT_READY`
-: Successful finalization lacks fresh passing verification, complete coverage,
-  or the required independent review/waiver. Follow the projected rework or
-  decision path.
-
-`WORKFLOW_IDENTITY_MISMATCH`
-: The selected workflow schema, selector, or canonical definition differs from
-  the task's pinned identity. Restore the exact definition used at task
-  creation or start a new task.
-
-`STATE_INVALID`
-: Stored 0.4.0 state failed schema, seal, identity, ledger, or replay validation.
-  Preserve it for diagnosis and do not edit it. Confirm that every command
-  used the task's exact controller locator and data directory.
-
-Codex shows a sandbox or permission prompt
-: This is host-owned authority. The controller neither suppresses nor
-  auto-confirms host permission prompts.
-
-Multiple plugin rows
-: Remove duplicate installations and install exactly one
-  `dev-flow-orchestrator@personal`.
-
-## 11. Remove
-
-Finish or explicitly cancel active Dev Flow tasks, then run the one-command
-uninstaller:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh
-```
-
-It removes the owned PATH launcher, installed Codex plugin, the
-`dev-flow-orchestrator` entry from the personal marketplace, and the
-installer-managed source checkout. Source
-removal is admitted only when the checkout has the expected plugin identity,
-origin, attached `main`, no reported changes, no ignored paths, and no commits
-that exist only locally. Any failed preflight stops before plugin removal or
-marketplace mutation. Use `--keep-source` to remove the plugin and marketplace
-entry while preserving the checkout, including local work:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/uninstall.sh | sh -s -- --keep-source
-```
-
-The equivalent plugin-only manual command is:
-
-```sh
-codex plugin remove dev-flow-orchestrator@personal
-```
-
-Neither automated nor manual removal deletes external task data. Data deletion
-remains a separate operator action. Preserve active 0.4.0 tasks unless the exact
-deletion scope is intentional and recoverability has been assessed.
-
-## Windows integration preview
-
-On a Windows 10 22H2 x64 or Windows 11 x64 client with 64-bit CPython 3.9–3.14,
-Git for Windows, Codex plugin/Hook support, and Windows PowerShell 5.1 or
-PowerShell 7, inspect the checkout and run:
+Run from a normal native PowerShell session:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+git clone --branch main --single-branch `
+  https://github.com/Innocent-children/dev-flow-orchestrator.git `
+  "$HOME\plugins\dev-flow-orchestrator"
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$HOME\plugins\dev-flow-orchestrator\scripts\install.ps1"
 ```
 
-The installer treats `main` as authoritative. It accepts only the expected
-origin, a clean attached `main`, and an equal or fast-forward-only fetched
-commit. It never switches, resets, stashes, cleans, or merges divergent work.
-It validates the candidate before atomically updating the personal marketplace
-and installing, repairing, or upgrading the plugin.
+The installer uses literal paths, validates an x64 process and interpreter,
+builds `venv\Scripts\python.exe`, and creates an owned `dev-flow-mcp.cmd` in a
+writable absolute PATH directory. It does not use POSIX tooling.
 
-Installation does not establish Hook trust. Start a new Codex session, open
-`/hooks`, inspect the exact installed Hook definition and source, and trust it.
-The Hook guard is useful but is not complete PowerShell or operating-system
-enforcement.
+## 8. Approvals and residual boundary
 
-Launch the managed local read-only Web UI with the injected Controller locator
-followed by `web start --port 0`. Use the same locator with `web open`, `web
-status`, `web restart`, or `web stop`. It binds numeric `127.0.0.1`, uses
-fragment token authority, and does not mutate tasks or repositories.
+MCP annotations are descriptive, not enforcement. Keep user authority over
+every approval. When supported by the host, approve read tools separately and
+scope mutation approval to the `dev-flow` server, the exact tool, and the
+current task. Do not grant generic shell or blanket mutation approval.
 
-Uninstall while preserving external Controller task data:
+Release `0.5.0` removes the legacy fail-open Hook and its pre-tool data-directory
+guard. The remaining protection comes from Controller validation, Store locks,
+revision CAS, exact bindings, repository permissions, host approvals, and user
+review. Do not describe tool annotations as a replacement security boundary.
+
+## 9. Repair and upgrade
+
+Rerun the same installer. It accepts only a clean authoritative checkout,
+fetches `refs/heads/main`, and performs a fast-forward-only update. It never
+stashes, resets, cleans, rebases, switches branches, or overwrites ignored
+collisions. Local changes, local-only commits, a detached/unexpected branch,
+unexpected origin, or divergence stop before activation.
+
+The managed runtime is content-addressed by release, source commit, and lock
+digest. Previous validated runtime directories are retained so a failed build
+does not destroy the last usable runtime. Plugin activation errors are reported
+with explicit rerun recovery and are never presented as success.
+
+## 10. Uninstall
+
+macOS:
+
+```sh
+sh "$HOME/plugins/dev-flow-orchestrator/scripts/uninstall.sh"
+```
+
+Preserve the source checkout:
+
+```sh
+sh "$HOME/plugins/dev-flow-orchestrator/scripts/uninstall.sh" --keep-source
+```
+
+Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1 -KeepSource
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$HOME\plugins\dev-flow-orchestrator\scripts\uninstall.ps1"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$HOME\plugins\dev-flow-orchestrator\scripts\uninstall.ps1" -KeepSource
 ```
 
-Windows ARM64, 32-bit Python, Windows Server, WSL execution, UNC/SMB/NAS and
-mapped network repositories, `\\wsl$`, historical task migration, and
-cross-operating-system task transfer are unsupported. Client support remains a
-preview until Windows 11 and Windows 10 22H2 release evidence is recorded.
+The uninstallers remove only the Dev Flow plugin entry, owned launcher, and a
+marker-validated managed runtime. They fail closed on ownership uncertainty.
+Task data and unrelated MCP/plugin configuration are preserved. Source deletion
+requires the expected manifest, official origin, attached `main`, clean and
+ignored-clean worktree, and no local-only commits.
+
+## 11. Troubleshooting
+
+- `Python ... required`: set `DEV_FLOW_PYTHON` to a verified 64-bit CPython
+  3.10–3.14 executable.
+- `uv is required`: install `uv` and rerun; dependencies are never installed
+  into system or user Python.
+- `PATH has no writable absolute directory`: set `DEV_FLOW_BIN_DIR` to a safe
+  directory already on `PATH`.
+- `standalone ... conflicts`: disable or remove the enabled standalone
+  `dev-flow` registration, or choose standalone mode and do not enable the
+  plugin.
+- `MCP_RUNTIME_UNAVAILABLE` for a transport option: use local `--stdio`; remote transports are not
+  implemented.
+- uncertain mutation completion: call `dev_flow_get_task` and
+  `dev_flow_get_next_action`; never blindly replay the mutation.
+- stored task is visible but next action fails: restore every immutable member
+  worktree at its canonical path and retry the read.
+
+The read-only Web UI remains available at `127.0.0.1` through
+`dev-flow web start`; it is not an MCP health substitute and has no mutation
+authority.

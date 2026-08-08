@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,63 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_VERSION = json.loads(
+    (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+)["version"]
+CANONICAL_BUNDLED_MCP = [
+    {
+        "name": "dev-flow",
+        "enabled": True,
+        "disabled_reason": None,
+        "transport": {
+            "type": "stdio",
+            "command": "dev-flow-mcp",
+            "args": ["--stdio"],
+        },
+    }
+]
+CODEX_STUB = """import json
+import os
+import sys
+
+args = sys.argv[1:]
+state = os.environ["DEV_FLOW_CODEX_STATE"]
+if args[:3] == ["plugin", "list", "--marketplace"]:
+    installed = []
+    if os.path.exists(state):
+        with open(state, encoding="utf-8") as stream:
+            version = stream.read().strip()
+        enabled = os.environ.get("DEV_FLOW_CODEX_ENABLED_JSON", "true") == "true"
+        installed.append(
+            {
+                "pluginId": "dev-flow-orchestrator@personal",
+                "version": version,
+                "installed": True,
+                "enabled": enabled,
+            }
+        )
+    print(json.dumps({"installed": installed}))
+elif args == ["mcp", "list", "--json"]:
+    if os.path.exists(state):
+        payload = os.environ["DEV_FLOW_ACTIVE_MCP_LIST_JSON"]
+    else:
+        payload = os.environ.get("DEV_FLOW_MCP_LIST_JSON", "[]")
+    print(json.dumps(json.loads(payload)))
+elif args == ["plugin", "remove", "dev-flow-orchestrator@personal"]:
+    with open(os.environ["DEV_FLOW_CODEX_LOG"], "a", encoding="utf-8") as stream:
+        stream.write("remove\\n")
+    if os.path.exists(state):
+        os.unlink(state)
+elif args == ["plugin", "add", "dev-flow-orchestrator@personal"]:
+    if os.environ.get("DEV_FLOW_CODEX_ADD_EXIT") != "0":
+        sys.exit(int(os.environ["DEV_FLOW_CODEX_ADD_EXIT"]))
+    with open(os.environ["DEV_FLOW_CODEX_LOG"], "a", encoding="utf-8") as stream:
+        stream.write("add\\n")
+    with open(state, "w", encoding="utf-8") as stream:
+        stream.write(os.environ["DEV_FLOW_PACKAGE_VERSION"])
+else:
+    sys.exit(2)
+"""
 
 
 def git(*arguments: str, cwd: Path | None = None) -> str:
@@ -78,32 +136,7 @@ class WindowsLifecycleTests(unittest.TestCase):
             '@echo off\r\n"%DEV_FLOW_PYTHON%" "%~dp0codex_stub.py" %*\r\n',
             encoding="ascii",
         )
-        (fake_bin / "codex_stub.py").write_text(
-            """import json
-import os
-import sys
-
-args = sys.argv[1:]
-state = os.environ["DEV_FLOW_CODEX_STATE"]
-if args[:3] == ["plugin", "list", "--marketplace"]:
-    installed = []
-    if os.path.exists(state):
-        installed.append({"pluginId": "dev-flow-orchestrator@personal", "version": open(state).read(), "installed": True})
-    print(json.dumps({"installed": installed}))
-elif args == ["plugin", "remove", "dev-flow-orchestrator@personal"]:
-    open(os.environ["DEV_FLOW_CODEX_LOG"], "a").write("remove\\n")
-    if os.path.exists(state):
-        os.unlink(state)
-elif args == ["plugin", "add", "dev-flow-orchestrator@personal"]:
-    if os.environ.get("DEV_FLOW_CODEX_ADD_EXIT") != "0":
-        sys.exit(int(os.environ["DEV_FLOW_CODEX_ADD_EXIT"]))
-    open(os.environ["DEV_FLOW_CODEX_LOG"], "a").write("add\\n")
-    open(state, "w").write("0.4.0")
-else:
-    sys.exit(2)
-""",
-            encoding="utf-8",
-        )
+        (fake_bin / "codex_stub.py").write_text(CODEX_STUB, encoding="utf-8")
         self.environment = {
             **os.environ,
             "DEV_FLOW_REPOSITORY_URL": self.remote.as_uri(),
@@ -113,6 +146,9 @@ else:
             "DEV_FLOW_CODEX_STATE": str(self.state),
             "DEV_FLOW_CODEX_LOG": str(self.log),
             "DEV_FLOW_CODEX_ADD_EXIT": "0",
+            "DEV_FLOW_CODEX_ENABLED_JSON": "true",
+            "DEV_FLOW_PACKAGE_VERSION": PACKAGE_VERSION,
+            "DEV_FLOW_ACTIVE_MCP_LIST_JSON": json.dumps(CANONICAL_BUNDLED_MCP),
             "CODEX_HOME": str(self.root / ".codex"),
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -323,6 +359,45 @@ else:
 
     def test_uninstaller_refuses_local_only_commit(self) -> None:
         self.assert_unsafe_uninstall_preserves_source("local-commit")
+
+
+class WindowsLifecycleFixtureStaticTests(unittest.TestCase):
+    def test_fake_codex_supports_current_plugin_and_mcp_protocol(self) -> None:
+        compile(CODEX_STUB, "codex_stub.py", "exec")
+        for token in (
+            '"enabled": enabled',
+            'args == ["mcp", "list", "--json"]',
+            "DEV_FLOW_CODEX_ENABLED_JSON",
+            "DEV_FLOW_ACTIVE_MCP_LIST_JSON",
+            "DEV_FLOW_MCP_LIST_JSON",
+            "DEV_FLOW_PACKAGE_VERSION",
+        ):
+            self.assertIn(token, CODEX_STUB)
+        setup_source = inspect.getsource(WindowsLifecycleTests.setUp)
+        self.assertIn('"DEV_FLOW_CODEX_ENABLED_JSON": "true"', setup_source)
+        self.assertIn(
+            '"DEV_FLOW_ACTIVE_MCP_LIST_JSON": json.dumps(CANONICAL_BUNDLED_MCP)',
+            setup_source,
+        )
+
+    def test_active_mcp_fixture_matches_canonical_bundled_registration(self) -> None:
+        self.assertEqual(
+            CANONICAL_BUNDLED_MCP,
+            [
+                {
+                    "name": "dev-flow",
+                    "enabled": True,
+                    "disabled_reason": None,
+                    "transport": {
+                        "type": "stdio",
+                        "command": "dev-flow-mcp",
+                        "args": ["--stdio"],
+                    },
+                }
+            ],
+        )
+        self.assertIsInstance(PACKAGE_VERSION, str)
+        self.assertTrue(PACKAGE_VERSION)
 
 
 if __name__ == "__main__":

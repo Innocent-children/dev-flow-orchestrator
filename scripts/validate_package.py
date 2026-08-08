@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,186 @@ from typing import Mapping, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# This deliberately runs before any candidate package module is imported.  The
+# installer invokes this validator from an untrusted-to-execute candidate, so
+# the MCP delivery surface must first be present, UTF-8 readable, and contained
+# by the verified checkout.  Deeper semantic validation follows after imports.
+_PREIMPORT_REQUIRED = (
+    ".mcp.json",
+    ".codex-plugin/plugin.json",
+    "pyproject.toml",
+    "uv.lock",
+    "scripts/dev_flow_mcp.py",
+    "scripts/dev_flow_mcp_launcher",
+    "scripts/dev_flow_mcp_launcher.cmd",
+    "scripts/dev_flow_python_launcher",
+    "scripts/manage_runtime.py",
+    "scripts/validate_installed_stage1.py",
+    "src/dev_flow_orchestrator/_version.py",
+    "src/dev_flow_orchestrator/review_guidance.py",
+    "src/dev_flow_orchestrator/runtime_paths.py",
+    "src/dev_flow_orchestrator/runtime_receipt.py",
+    "src/dev_flow_orchestrator/mcp/__init__.py",
+    "src/dev_flow_orchestrator/mcp/application.py",
+    "src/dev_flow_orchestrator/mcp/catalog.py",
+    "src/dev_flow_orchestrator/mcp/concurrency.py",
+    "src/dev_flow_orchestrator/mcp/guidance.py",
+    "src/dev_flow_orchestrator/mcp/identity.py",
+    "src/dev_flow_orchestrator/mcp/logging.py",
+    "src/dev_flow_orchestrator/mcp/projection.py",
+    "src/dev_flow_orchestrator/mcp/results.py",
+    "src/dev_flow_orchestrator/mcp/runtime.py",
+    "src/dev_flow_orchestrator/mcp/schemas.py",
+    "src/dev_flow_orchestrator/mcp/server.py",
+    "src/dev_flow_orchestrator/mcp/tools.py",
+    "tests/test_installed_journeys.py",
+    "tests/test_managed_runtime.py",
+    "tests/test_mcp_guidance.py",
+    "tests/test_mcp_runtime.py",
+    "tests/test_native_windows_runtime.py",
+)
+
+
+def _preimport_candidate_errors(root: Path) -> list[str]:
+    errors: list[str] = []
+    try:
+        resolved_root = root.resolve(strict=True)
+    except OSError as exc:
+        return ["candidate root cannot be resolved: {}".format(exc)]
+    documents: dict[str, str] = {}
+    for relative in _PREIMPORT_REQUIRED:
+        path = root / relative
+        if not path.is_file():
+            errors.append("pre-import candidate is missing " + relative)
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(resolved_root)
+        except (OSError, ValueError):
+            errors.append("pre-import candidate asset escapes root: " + relative)
+            continue
+        if path.is_symlink():
+            errors.append("pre-import candidate asset must not be a symlink: " + relative)
+            continue
+        try:
+            documents[relative] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(
+                "pre-import candidate asset is not readable UTF-8: {}: {}".format(
+                    relative, exc
+                )
+            )
+
+    version_match = re.search(
+        r'^RELEASE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"$',
+        documents.get("src/dev_flow_orchestrator/_version.py", ""),
+        re.MULTILINE,
+    )
+    release_version = version_match.group(1) if version_match is not None else None
+    if release_version is None:
+        errors.append("pre-import release authority is invalid")
+
+    try:
+        registration = json.loads(documents[".mcp.json"])
+    except (KeyError, ValueError):
+        registration = None
+    expected_registration = {
+        "mcpServers": {
+            "dev-flow": {"command": "dev-flow-mcp", "args": ["--stdio"]}
+        }
+    }
+    if registration != expected_registration:
+        errors.append("pre-import MCP registration is invalid")
+
+    try:
+        manifest = json.loads(documents[".codex-plugin/plugin.json"])
+    except (KeyError, ValueError):
+        manifest = None
+    if not (
+        isinstance(manifest, dict)
+        and manifest.get("version") == release_version
+        and manifest.get("mcpServers") == "./.mcp.json"
+        and "skills" not in manifest
+        and "hooks" not in manifest
+    ):
+        errors.append("pre-import plugin manifest is invalid")
+
+    pyproject = documents.get("pyproject.toml", "")
+    if not (
+        release_version is not None
+        and 'version = "{}"'.format(release_version) in pyproject
+        and 'requires-python = ">=3.10,<3.15"' in pyproject
+        and '"mcp>=2,<3"' in pyproject
+        and 'dev-flow-mcp = "dev_flow_orchestrator.mcp.runtime:main"' in pyproject
+        and '[tool.hatch.build.targets.wheel.force-include]' in pyproject
+        and '"workflows" = "dev_flow_orchestrator/workflow_assets"' in pyproject
+    ):
+        errors.append("pre-import Python metadata is invalid")
+    lock = documents.get("uv.lock", "")
+    if not (
+        'requires-python = ">=3.10, <3.15"' in lock
+        and re.search(
+            r'^name = "mcp"\nversion = "2\.[0-9.]+"$',
+            lock,
+            re.MULTILINE,
+        )
+        and release_version is not None
+        and re.search(
+            r'^name = "dev-flow-orchestrator"\nversion = "{}"$'.format(
+                re.escape(release_version)
+            ),
+            lock,
+            re.MULTILINE,
+        )
+    ):
+        errors.append("pre-import exact dependency lock is invalid")
+
+    required_source_tokens = {
+        "scripts/dev_flow_mcp.py": ("dev_flow_orchestrator.mcp.runtime",),
+        "scripts/dev_flow_mcp_launcher": (
+            "dev-flow-orchestrator managed MCP launcher",
+            "__DEV_FLOW_RUNTIME_PYTHON__",
+            "dev_flow_orchestrator.mcp",
+        ),
+        "scripts/dev_flow_mcp_launcher.cmd": (
+            "dev-flow-orchestrator managed MCP launcher",
+            "__DEV_FLOW_RUNTIME_PYTHON__",
+            "dev_flow_orchestrator.mcp",
+        ),
+        "scripts/manage_runtime.py": ("uv", "runtime_receipt"),
+        "src/dev_flow_orchestrator/mcp/guidance.py": (
+            "SERVER_INSTRUCTIONS",
+            "GUIDANCE_CATALOG",
+        ),
+        "src/dev_flow_orchestrator/mcp/server.py": ("MCPServer",),
+        "tests/test_mcp_runtime.py": ("unittest", "dev_flow_server_info"),
+    }
+    for relative, tokens in required_source_tokens.items():
+        source = documents.get(relative, "")
+        if not all(token in source for token in tokens):
+            errors.append("pre-import candidate source is incomplete: " + relative)
+    return errors
+
+
+_PREIMPORT_ERRORS = _preimport_candidate_errors(ROOT)
+if _PREIMPORT_ERRORS:
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "platform": "current-host",
+                "builtin_workflows": [],
+                "workflow_identities": [],
+                "errors": _PREIMPORT_ERRORS,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    raise SystemExit(1)
+
 sys.path.insert(0, str(ROOT / "src"))
 
 from dev_flow_orchestrator import workflows as workflows_loader  # noqa: E402
@@ -65,9 +246,9 @@ from dev_flow_orchestrator.workflow import (  # noqa: E402
 
 PUBLIC_BOOTSTRAPS = (
     "scripts/dev_flow.py",
-    "hooks/dev_flow_hook.py",
 )
 REQUIRED_STATIC = (
+    ".mcp.json",
     ".codex-plugin/plugin.json",
     "ARCHITECTURE.md",
     "ARCHITECTURE_CN.md",
@@ -76,18 +257,20 @@ REQUIRED_STATIC = (
     "INSTALL.md",
     "INSTALL_CN.md",
     "LICENSE",
+    "pyproject.toml",
     "README.md",
     "README_CN.md",
     "ROADMAP.md",
     "ROADMAP_CN.md",
-    "hooks/dev_flow_hook.py",
-    "hooks/hooks.json",
     "scripts/bump_version.py",
     "scripts/dev_flow.py",
+    "scripts/dev_flow_mcp.py",
+    "scripts/dev_flow_mcp_launcher",
+    "scripts/dev_flow_mcp_launcher.cmd",
     "scripts/dev_flow_python_launcher",
-    "scripts/dev_flow_python_launcher.cmd",
     "scripts/install.sh",
     "scripts/install.ps1",
+    "scripts/manage_runtime.py",
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
     "scripts/validate_installed_stage1.py",
@@ -95,12 +278,6 @@ REQUIRED_STATIC = (
     "docs/assets/demo.gif",
     "docs/assets/generate_demo.py",
     "docs/PROMOTION.md",
-    "skills/analyze-change-impact/SKILL.md",
-    "skills/analyze-change-impact/agents/openai.yaml",
-    "skills/follow-dev-flow/SKILL.md",
-    "skills/follow-dev-flow/agents/openai.yaml",
-    "skills/review-dev-flow-change/SKILL.md",
-    "skills/review-dev-flow-change/agents/openai.yaml",
     "src/dev_flow_orchestrator/__init__.py",
     "src/dev_flow_orchestrator/_version.py",
     "src/dev_flow_orchestrator/cli.py",
@@ -111,9 +288,24 @@ REQUIRED_STATIC = (
     "src/dev_flow_orchestrator/engine.py",
     "src/dev_flow_orchestrator/filesystem.py",
     "src/dev_flow_orchestrator/git_client.py",
-    "src/dev_flow_orchestrator/hook.py",
     "src/dev_flow_orchestrator/model.py",
+    "src/dev_flow_orchestrator/runtime_paths.py",
+    "src/dev_flow_orchestrator/runtime_receipt.py",
+    "src/dev_flow_orchestrator/mcp/__init__.py",
+    "src/dev_flow_orchestrator/mcp/application.py",
+    "src/dev_flow_orchestrator/mcp/catalog.py",
+    "src/dev_flow_orchestrator/mcp/concurrency.py",
+    "src/dev_flow_orchestrator/mcp/guidance.py",
+    "src/dev_flow_orchestrator/mcp/identity.py",
+    "src/dev_flow_orchestrator/mcp/logging.py",
+    "src/dev_flow_orchestrator/mcp/results.py",
+    "src/dev_flow_orchestrator/mcp/runtime.py",
+    "src/dev_flow_orchestrator/mcp/projection.py",
+    "src/dev_flow_orchestrator/mcp/schemas.py",
+    "src/dev_flow_orchestrator/mcp/server.py",
+    "src/dev_flow_orchestrator/mcp/tools.py",
     "src/dev_flow_orchestrator/product.py",
+    "src/dev_flow_orchestrator/review_guidance.py",
     "src/dev_flow_orchestrator/assurance.py",
     "src/dev_flow_orchestrator/review.py",
     "src/dev_flow_orchestrator/snapshot.py",
@@ -129,6 +321,11 @@ REQUIRED_STATIC = (
     "templates/marketplace-entry.json",
     "templates/personal-marketplace.example.json",
     "tests/test_install_script.py",
+    "tests/test_installed_journeys.py",
+    "tests/test_managed_runtime.py",
+    "tests/test_mcp_guidance.py",
+    "tests/test_mcp_runtime.py",
+    "tests/test_native_windows_runtime.py",
     "tests/test_windows_product_support.py",
     "tests/test_windows_lifecycle.py",
     "tests/test_uninstall_script.py",
@@ -136,14 +333,22 @@ REQUIRED_STATIC = (
     "tests/test_web_read_models.py",
     "tests/test_web_server.py",
     "tests/test_web_ui_product_identity.py",
+    "uv.lock",
+    "openspec/changes/dev-flow-orchestrator-mcp/TRACEABILITY.md",
+    "openspec/changes/dev-flow-orchestrator-mcp/traceability.json",
 )
 FORBIDDEN_PATHS = (
-    ".mcp.json",
+    "hooks",
+    "skills/analyze-change-impact",
+    "skills/follow-dev-flow",
+    "skills/review-dev-flow-change",
+    "src/dev_flow_orchestrator/hook.py",
+    "scripts/dev_flow_python_launcher.cmd",
+    "tests/test_hook.py",
     "src/dev_flow_orchestrator/authority.py",
     "src/dev_flow_orchestrator/journal.py",
     "src/dev_flow_orchestrator/repository_kernel.py",
     "src/dev_flow_orchestrator/mcp.py",
-    "scripts/dev_flow_mcp.py",
     "scripts/dev_flow_parts",
     "scripts/validate_greenfield_architecture.py",
     "scripts/candidate_identity.py",
@@ -165,6 +370,7 @@ PURE_MODULES = (
     "product",
     "snapshot",
     "review",
+    "review_guidance",
     "workflow",
     "engine",
 )
@@ -211,9 +417,6 @@ CURRENT_PRODUCT_CLAIM_TEXT = frozenset(
         "ARCHITECTURE_CN.md",
         "CONTRIBUTING.md",
         "CONTRIBUTING_CN.md",
-        "skills/analyze-change-impact/SKILL.md",
-        "skills/follow-dev-flow/SKILL.md",
-        "skills/review-dev-flow-change/SKILL.md",
     }
 )
 EXPECTED_MODEL_VERSION = "0.4.0"
@@ -261,6 +464,59 @@ EXTERNAL_VERSION_LITERALS = {
     ".github/workflows/focused.yml": (
         "actions/checkout@" + "v" + "4",
         "actions/setup-python@" + "v" + "5",
+        "astral-sh/setup-uv@" + "v" + "6",
+    ),
+    "src/dev_flow_orchestrator/mcp/identity.py": (
+        "dev-flow-mcp/1.0.0",
+        "dev-flow-mcp-result/1.0.0",
+        "dev-flow-mcp-action/1.0.0",
+        "dev-flow-mcp-guidance/1.0.0",
+        "dev-flow-runtime-receipt/1.0.0",
+        "dev-flow-mcp-installed-evidence/1.0.0",
+    ),
+    "src/dev_flow_orchestrator/mcp/runtime.py": (
+        "dev-flow-mcp/1.0.0",
+        "dev-flow-mcp-result/1.0.0",
+        "dev-flow-mcp-action/1.0.0",
+        "dev-flow-mcp-guidance/1.0.0",
+    ),
+    "src/dev_flow_orchestrator/mcp/projection.py": (
+        "dev-flow-mcp-action/1.0.0",
+    ),
+    "src/dev_flow_orchestrator/mcp/schemas.py": (
+        "dev-flow-mcp/1.0.0",
+        "dev-flow-mcp-result/1.0.0",
+        "dev-flow-mcp-action/1.0.0",
+        "dev-flow-mcp-guidance/1.0.0",
+    ),
+    "src/dev_flow_orchestrator/runtime_receipt.py": (
+        "dev-flow-runtime-receipt/1.0.0",
+    ),
+    "scripts/manage_runtime.py": (
+        "dev-flow-managed-runtime/1",
+    ),
+    "scripts/uninstall.sh": (
+        "dev-flow-managed-runtime/1",
+    ),
+    "scripts/uninstall.ps1": (
+        "dev-flow-managed-runtime/1",
+    ),
+    "scripts/validate_package.py": (
+        "dev-flow-mcp/1.0.0",
+        "dev-flow-mcp-result/1.0.0",
+        "dev-flow-mcp-action/1.0.0",
+        "dev-flow-mcp-guidance/1.0.0",
+        "dev-flow-runtime-receipt/1.0.0",
+        "dev-flow-managed-runtime/1",
+    ),
+    "tests/test_mcp_runtime.py": (
+        "dev-flow-mcp-action/1.0.0",
+        # Negative startup-self-check fixture; this is deliberately not a
+        # shipped interface identity.
+        "dev-flow-mcp/" + "2.0.0",
+    ),
+    "tests/test_uninstall_script.py": (
+        "dev-flow-managed-runtime/1",
     ),
 }
 MAIN_SKILL_AGENT = "skills/follow-dev-flow/agents/openai.yaml"
@@ -430,6 +686,19 @@ def _current_product_asset_paths(root: Path) -> tuple[Path, ...]:
 
 def _without_external_version_literals(relative: str, document: str) -> str:
     for literal in EXTERNAL_VERSION_LITERALS.get(relative, ()):
+        document = document.replace(literal, "<external-version>")
+    # MCP interface identities are transport contracts, not persisted product
+    # model schemas. They are deliberately release-neutral and may be named in
+    # architecture and operator documentation as well as identity.py.
+    for literal in (
+        "dev-flow-mcp/1.0.0",
+        "dev-flow-mcp-result/1.0.0",
+        "dev-flow-mcp-action/1.0.0",
+        "dev-flow-mcp-guidance/1.0.0",
+        "dev-flow-runtime-receipt/1.0.0",
+        "dev-flow-mcp-installed-evidence/1.0.0",
+        "dev-flow-openspec-traceability/1.0.0",
+    ):
         document = document.replace(literal, "<external-version>")
     return document
 
@@ -844,14 +1113,16 @@ def _validate_adaptive_assurance_authority(root: Path, errors: list[str]) -> Non
         _require_tokens(
             installed_runner.read_text(encoding="utf-8"),
             (
-                "exact-set-secondary-resume-drift-resources-dossier",
-                "exact-set-lite-success-dossier",
-                "AGENT_PROTOCOL_SCHEMA",
-                "DELIVERY_DOSSIER_SCHEMA",
-                "ACTION_BINDING_STALE",
+                "stdio_client(parameters)",
+                "ClientSession(read_stream, write_stream)",
+                "dev_flow_start_task",
+                "dev_flow_find_tasks_for_path",
+                "dev_flow_get_next_action",
+                "dev_flow_cancel_task",
+                "secondary_member_resume",
             ),
             errors,
-            "installed validation does not prove the exact-set journeys",
+            "installed validation does not exercise the real MCP exact-set journey",
         )
 
 
@@ -863,6 +1134,452 @@ def _markdown_section(document: str, heading: str) -> str:
     if end < 0:
         return document[start:]
     return document[start:end]
+
+
+def _traceability_spec_entries(root: Path, errors: list[str]) -> tuple[str, ...]:
+    specs_root = root / "openspec" / "changes" / "dev-flow-orchestrator-mcp" / "specs"
+    entries: list[str] = []
+    if not specs_root.is_dir():
+        errors.append("OpenSpec MCP capability specs are missing")
+        return ()
+    for path in sorted(specs_root.glob("*/spec.md")):
+        capability = path.parent.name
+        try:
+            document = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append("cannot read OpenSpec capability spec {}: {}".format(capability, exc))
+            continue
+        requirement: Optional[str] = None
+        for line in document.splitlines():
+            if line.startswith("### Requirement: "):
+                requirement = line[len("### Requirement: "):].strip()
+                entries.append("{}::requirement::{}".format(capability, requirement))
+            elif line.startswith("#### Scenario: "):
+                scenario = line[len("#### Scenario: "):].strip()
+                if requirement is None:
+                    errors.append(
+                        "OpenSpec scenario has no requirement in {}: {}".format(
+                            capability, scenario
+                        )
+                    )
+                    continue
+                entries.append(
+                    "{}::scenario::{}::{}".format(
+                        capability, requirement, scenario
+                    )
+                )
+    return tuple(entries)
+
+
+def _traceability_test_symbols(root: Path, relative: str, errors: list[str]) -> set[str]:
+    path = root / relative
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, UnicodeError, SyntaxError) as exc:
+        errors.append("cannot inspect traceability test {}: {}".format(relative, exc))
+        return set()
+    symbols: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+            symbols.add("{}::{}".format(relative, node.name))
+        elif isinstance(node, ast.ClassDef):
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name.startswith("test_"):
+                    symbols.add("{}::{}.{}".format(relative, node.name, child.name))
+    return symbols
+
+
+def _validate_openspec_traceability(root: Path, errors: list[str]) -> None:
+    change_root = root / "openspec" / "changes" / "dev-flow-orchestrator-mcp"
+    manifest_path = change_root / "traceability.json"
+    table_path = change_root / "TRACEABILITY.md"
+    manifest = _json_object(manifest_path, errors, "OpenSpec traceability manifest")
+    if not isinstance(manifest, dict):
+        return
+    _check(
+        set(manifest) == {"schema", "change", "entries"}
+        and manifest.get("schema") == "dev-flow-openspec-traceability/1.0.0"
+        and manifest.get("change") == "dev-flow-orchestrator-mcp"
+        and isinstance(manifest.get("entries"), list),
+        errors,
+        "OpenSpec traceability manifest identity or fields are invalid",
+    )
+    raw_entries = manifest.get("entries")
+    if not isinstance(raw_entries, list):
+        return
+    declared: dict[str, tuple[str, ...]] = {}
+    referenced_files: dict[str, set[str]] = {}
+    for entry in raw_entries:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"id", "tests"}
+            or not isinstance(entry.get("id"), str)
+            or not isinstance(entry.get("tests"), list)
+            or not entry["tests"]
+            or not all(isinstance(item, str) and item for item in entry["tests"])
+            or len(set(entry["tests"])) != len(entry["tests"])
+        ):
+            errors.append("OpenSpec traceability entry is invalid")
+            continue
+        entry_id = entry["id"]
+        if entry_id in declared:
+            errors.append("duplicate OpenSpec traceability id: " + entry_id)
+            continue
+        declared[entry_id] = tuple(entry["tests"])
+        for reference in entry["tests"]:
+            relative = reference.split("::", 1)[0]
+            referenced_files.setdefault(relative, set()).add(reference)
+
+    expected = _traceability_spec_entries(root, errors)
+    missing = sorted(set(expected) - set(declared))
+    extra = sorted(set(declared) - set(expected))
+    _check(not missing, errors, "OpenSpec traceability is missing: " + "; ".join(missing[:8]))
+    _check(not extra, errors, "OpenSpec traceability has stale entries: " + "; ".join(extra[:8]))
+
+    source_by_reference: dict[str, str] = {}
+    for relative, references in referenced_files.items():
+        if not re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", relative):
+            errors.append("traceability reference is outside the test suite: " + relative)
+            continue
+        symbols = _traceability_test_symbols(root, relative, errors)
+        for reference in sorted(references):
+            if reference not in symbols:
+                errors.append("traceability references a missing test: " + reference)
+                continue
+            try:
+                source_by_reference[reference] = (root / relative).read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                source_by_reference[reference] = ""
+
+    controller_prefix = "mcp-controller-tools::"
+    controller_references = {
+        reference
+        for entry_id, references in declared.items()
+        if entry_id.startswith(controller_prefix)
+        for reference in references
+    }
+    for tool_name in (
+        "dev_flow_server_info", "dev_flow_list_tasks", "dev_flow_find_tasks_for_path",
+        "dev_flow_get_task", "dev_flow_get_next_action", "dev_flow_start_task",
+        "dev_flow_apply_action", "dev_flow_revise_contract", "dev_flow_record_decision",
+        "dev_flow_dispose_finding", "dev_flow_cancel_task",
+    ):
+        _check(
+            any(tool_name in source_by_reference.get(reference, "") for reference in controller_references),
+            errors,
+            "stable MCP tool lacks traceable test coverage: " + tool_name,
+        )
+
+    canonical = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(canonical).hexdigest()
+    try:
+        table = table_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        errors.append("cannot read OpenSpec traceability table: {}".format(exc))
+        return
+    _check(
+        "Manifest SHA-256: `{}`".format(digest) in table,
+        errors,
+        "OpenSpec traceability table does not match its manifest",
+    )
+    for entry_id in declared:
+        _check(
+            table.count("`{}`".format(entry_id)) == 1,
+            errors,
+            "OpenSpec traceability table omits or duplicates: " + entry_id,
+        )
+
+
+def _static_int(node: ast.AST) -> Optional[int]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.BinOp):
+        left = _static_int(node.left)
+        right = _static_int(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+    return None
+
+
+def _static_int_assignments(source: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    tree = ast.parse(source)
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        value_node = node.value
+        if value_node is None:
+            continue
+        value = _static_int(value_node)
+        if value is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                values[target.id] = value
+    return values
+
+
+def _mcp_tool_declarations(source: str) -> tuple[tuple[str, str, str], ...]:
+    declarations: list[tuple[str, str, str]] = []
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if not (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Name)
+                and decorator.func.id == "register"
+                and len(decorator.args) == 3
+                and isinstance(decorator.args[2], ast.Name)
+            ):
+                continue
+            try:
+                name = ast.literal_eval(decorator.args[0])
+                description = ast.literal_eval(decorator.args[1])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(name, str) and isinstance(description, str):
+                declarations.append((name, description, decorator.args[2].id))
+    return tuple(sorted(declarations))
+
+
+def _mcp_annotation_declarations(source: str) -> dict[str, dict[str, bool]]:
+    values: dict[str, dict[str, bool]] = {}
+    tree = ast.parse(source)
+    for node in tree.body:
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "ToolAnnotations"
+        ):
+            continue
+        fields: dict[str, bool] = {}
+        for keyword in node.value.keywords:
+            if (
+                keyword.arg is not None
+                and isinstance(keyword.value, ast.Constant)
+                and isinstance(keyword.value.value, bool)
+            ):
+                fields[keyword.arg] = keyword.value.value
+        values[node.targets[0].id] = fields
+    return values
+
+
+def _validate_mcp_package(root: Path, errors: list[str]) -> None:
+    registration = _json_object(root / ".mcp.json", errors, ".mcp.json")
+    expected_registration = {
+        "mcpServers": {
+            "dev-flow": {"command": "dev-flow-mcp", "args": ["--stdio"]}
+        }
+    }
+    _check(
+        registration == expected_registration,
+        errors,
+        "root .mcp.json must declare exactly one dev-flow STDIO PATH launcher",
+    )
+    tools_path = root / "src/dev_flow_orchestrator/mcp/tools.py"
+    schemas_path = root / "src/dev_flow_orchestrator/mcp/schemas.py"
+    guidance_path = root / "src/dev_flow_orchestrator/mcp/guidance.py"
+    if not all(path.is_file() for path in (tools_path, schemas_path, guidance_path)):
+        return
+    tools_source = tools_path.read_text(encoding="utf-8")
+    schemas_source = schemas_path.read_text(encoding="utf-8")
+    guidance_source = guidance_path.read_text(encoding="utf-8")
+    declarations = _mcp_tool_declarations(tools_source)
+    names = tuple(item[0] for item in declarations)
+    expected_names = (
+        "dev_flow_apply_action", "dev_flow_cancel_task", "dev_flow_dispose_finding",
+        "dev_flow_find_tasks_for_path", "dev_flow_get_next_action", "dev_flow_get_task",
+        "dev_flow_list_tasks", "dev_flow_record_decision", "dev_flow_revise_contract",
+        "dev_flow_server_info", "dev_flow_start_task",
+    )
+    _check(names == expected_names, errors, "MCP stable tool catalog is not the exact eleven-tool interface")
+    expected_annotations = {
+        "dev_flow_server_info": "READ_ONLY",
+        "dev_flow_list_tasks": "READ_ONLY",
+        "dev_flow_find_tasks_for_path": "READ_ONLY",
+        "dev_flow_get_task": "READ_ONLY",
+        "dev_flow_get_next_action": "READ_ONLY",
+        "dev_flow_start_task": "MUTATION",
+        "dev_flow_apply_action": "MUTATION",
+        "dev_flow_revise_contract": "GOVERNANCE",
+        "dev_flow_record_decision": "GOVERNANCE",
+        "dev_flow_dispose_finding": "GOVERNANCE",
+        "dev_flow_cancel_task": "GOVERNANCE",
+    }
+    annotation_values = _mcp_annotation_declarations(tools_source)
+    expected_annotation_values = {
+        "READ_ONLY": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        "MUTATION": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+        "GOVERNANCE": {
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    }
+    _check(
+        len(declarations) == 11
+        and annotation_values == expected_annotation_values
+        and all(
+            expected_annotations.get(name) == annotation
+            and 0 < len(description.encode("utf-8")) <= 512
+            for name, description, annotation in declarations
+        )
+        and 'meta={"dev-flow/taskSupport": "forbidden"}' in tools_source
+        and "structured_output=False" in tools_source,
+        errors,
+        "MCP descriptions, annotations, or task-support metadata are invalid",
+    )
+    for name in expected_names:
+        _check(
+            '"{}": result_schema('.format(name) in schemas_source,
+            errors,
+            "MCP output schema is missing for " + name,
+        )
+    required_guidance = (
+        '"preflight":', '"impact":', '"planning":', '"implementation":',
+        '"investigation":', '"documentation":', '"rework":',
+        '"assurance":', '"finalize":', '"cancel":', '"generic":',
+        '"must_read"', '"allowed_effects"', '"required_evidence"',
+        '"payload_notes"', '"driver"', '"stale_recovery"',
+        '"completion_rule"', "current and baseline codebase-memory projects separate",
+        "Delivery Dossier",
+    )
+    _check(
+        all(token in guidance_source for token in required_guidance),
+        errors,
+        "MCP guidance catalog is incomplete",
+    )
+    positive_forbidden_read = re.compile(
+        r"(?<!not )\b(?:read|inspect|open|load)\s+(?:the\s+)?(?:"
+        r"skills/|hooks/|MCP (?:adapter )?source|CLI source|"
+        r"raw Store files?|Controller (?:data root|state files?))",
+        re.IGNORECASE,
+    )
+    _check(
+        positive_forbidden_read.search(guidance_source) is None,
+        errors,
+        "MCP guidance tells the model to read removed or raw runtime authority",
+    )
+    try:
+        from dev_flow_orchestrator.mcp.guidance import (  # noqa: PLC0415
+            GUIDANCE_CATALOG as runtime_catalog,
+            SERVER_INSTRUCTIONS as instructions,
+        )
+    except Exception as exc:  # the validator must report, never trust a traceback
+        errors.append(
+            "MCP guidance cannot be loaded after static preflight: {}".format(
+                type(exc).__name__
+            )
+        )
+    else:
+        action_entries = runtime_catalog.get("actions", {}) if isinstance(runtime_catalog, dict) else {}
+        _check(
+            isinstance(action_entries, dict)
+            and set(action_entries)
+            == {
+                "preflight", "impact", "planning", "implementation",
+                "investigation", "documentation", "rework", "assurance",
+                "finalize", "cancel", "generic",
+            },
+            errors,
+            "MCP guidance action catalog is not closed and complete",
+        )
+        _check(
+            isinstance(instructions, str)
+            and len(instructions.encode("utf-8")) <= 4 * 1024
+            and len(instructions[:512].encode("utf-8")) == 512
+            and "Controller is the only Dev Flow task-state writer" in instructions[:512]
+            and "dev_flow_find_tasks_for_path" in instructions[:512]
+            and "dev_flow_get_next_action" in instructions[:512]
+            and "dev_flow_apply_action" in instructions[:512],
+            errors,
+            "MCP server instructions exceed bounds or omit the primary sequence",
+        )
+
+    budget_sources = {
+        "src/dev_flow_orchestrator/mcp/identity.py": {
+            "MCP_AUTHORITY_PREFIX_MAX_BYTES": 512,
+            "MCP_SERVER_INSTRUCTIONS_MAX_BYTES": 4 * 1024,
+            "MCP_GUIDANCE_MAX_BYTES": 8 * 1024,
+            "MCP_CURRENT_ACTION_MAX_BYTES": 128 * 1024,
+        },
+        "src/dev_flow_orchestrator/mcp/application.py": {
+            "MAX_COMPACT_ACTION_BYTES": 128 * 1024,
+            "MAX_STRUCTURED_RESULT_BYTES": 512 * 1024,
+            "MAX_INVENTORY_PAGE_BYTES": 256 * 1024,
+            "MAX_TASK_SUMMARY_BYTES": 2 * 1024,
+        },
+        "src/dev_flow_orchestrator/mcp/results.py": {
+            "MAX_TEXT_SUMMARY_BYTES": 4 * 1024,
+        },
+        "src/dev_flow_orchestrator/mcp/logging.py": {
+            "MAX_DIAGNOSTIC_BYTES": 4 * 1024,
+        },
+        "src/dev_flow_orchestrator/mcp/concurrency.py": {
+            "MAX_PROCESS_OPERATIONS": 4,
+        },
+    }
+    for relative, expected in budget_sources.items():
+        path = root / relative
+        try:
+            actual = _static_int_assignments(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, SyntaxError):
+            actual = {}
+        _check(
+            all(actual.get(name) == value for name, value in expected.items()),
+            errors,
+            "MCP context budget authority is invalid: " + relative,
+        )
+
+    runtime_source = (root / "src/dev_flow_orchestrator/mcp/runtime.py").read_text(
+        encoding="utf-8"
+    )
+    server_source = (root / "src/dev_flow_orchestrator/mcp/server.py").read_text(
+        encoding="utf-8"
+    )
+    _check(
+        all(
+            repr(option) in runtime_source or '"{}"'.format(option) in runtime_source
+            for option in (
+                "--http", "--sse", "--host", "--port", "--token", "--oauth",
+            )
+        )
+        and '.run("stdio")' in runtime_source
+        and "resources=[]" in server_source
+        and '"prompts/list"' in server_source
+        and '"resources/list"' in server_source
+        and not re.search(r"\b(?:socket|uvicorn|http_server|sse_server)\b", server_source),
+        errors,
+        "MCP package exposes or fails to reject a non-STDIO capability",
+    )
 
 
 def _validate_manifest(
@@ -913,15 +1630,13 @@ def _validate_manifest(
         errors,
         "plugin author metadata is invalid",
     )
+    _check("skills" not in manifest, errors, "plugin manifest retains legacy Skills authority")
     _check(
-        manifest.get("skills") == "./skills/" and (root / "skills").is_dir(),
+        manifest.get("mcpServers") == "./.mcp.json"
+        and (root / ".mcp.json").is_file()
+        and "apps" not in manifest,
         errors,
-        "plugin skills path is invalid",
-    )
-    _check(
-        "mcpServers" not in manifest and "apps" not in manifest,
-        errors,
-        "plugin manifest declares a missing MCP or app companion",
+        "plugin manifest MCP companion is invalid",
     )
     interface = manifest.get("interface")
     allowed_interface = {
@@ -1031,12 +1746,9 @@ def _validate_package_versions(
             "manifest and pyproject versions differ",
         )
         _check(
-            re.search(
-                r"^dependencies\s*=\s*\[\s*\]\s*$", pyproject, re.MULTILINE
-            )
-            is not None,
+            '"mcp>=2,<3"' in pyproject,
             errors,
-            "runtime dependencies must remain empty",
+            "runtime dependencies must contain bounded MCP Python SDK major 2",
         )
     lock_path = root / "uv.lock"
     if lock_path.is_file():
@@ -1396,6 +2108,91 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
 
 
 def _validate_public_docs(root: Path, errors: list[str]) -> None:
+    current_documents = {
+        "README.md": (
+            "[Simplified Chinese](README_CN.md)",
+            "dev_flow_server_info",
+            "Read tools",
+            "read-only Web UI",
+            "dev-flow web start",
+        ),
+        "README_CN.md": (
+            "[English](README.md)",
+            "dev_flow_server_info",
+            "只读工具",
+            "只读 Web UI",
+            "dev-flow web start",
+        ),
+        "INSTALL.md": (
+            "[Simplified Chinese](INSTALL_CN.md)",
+            "dev-flow-mcp --stdio",
+            "install.ps1",
+            "uninstall.ps1",
+            "dev-flow web start",
+        ),
+        "INSTALL_CN.md": (
+            "[English](INSTALL.md)",
+            "dev-flow-mcp --stdio",
+            "scripts\\install.ps1",
+            "scripts\\uninstall.ps1",
+            "dev-flow web start",
+        ),
+        "ARCHITECTURE.md": (
+            "[Simplified Chinese](ARCHITECTURE_CN.md)",
+            "Controller is the only state-transition writer",
+            "STDIO",
+            "exactly five read tools and six mutation tools",
+            "read-only Web UI",
+        ),
+        "ARCHITECTURE_CN.md": (
+            "[English](ARCHITECTURE.md)",
+            "Controller 是唯一的状态转换写入者",
+            "STDIO",
+            "五个读取工具和六个 mutation 工具",
+            "只读 Web UI",
+        ),
+        "CONTRIBUTING.md": (
+            "[Simplified Chinese](CONTRIBUTING_CN.md)",
+            "Full unittest discovery is allowed",
+            "former repository rule prohibiting full unittest discovery is abolished",
+            "scripts/validate_package.py",
+        ),
+        "CONTRIBUTING_CN.md": (
+            "[English](CONTRIBUTING.md)",
+            "允许完整 unittest discovery",
+            "禁止完整 unittest discovery 的规则已经废止",
+            "scripts/validate_package.py",
+        ),
+        "ROADMAP.md": (
+            "[Simplified Chinese](ROADMAP_CN.md)",
+            "Release 0.5.0: MCP interface migration",
+            "full unittest discovery",
+            "native Windows",
+        ),
+        "ROADMAP_CN.md": (
+            "[English](ROADMAP.md)",
+            "0.5.0：MCP 接口迁移",
+            "完整 unittest discovery",
+            "原生 Windows",
+        ),
+    }
+    for relative, tokens in current_documents.items():
+        path = root / relative
+        if path.is_file():
+            document = re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
+            _require_tokens(
+                document,
+                tokens,
+                errors,
+                relative + " is missing synchronized MCP-first product guidance",
+            )
+            _check(
+                UNSUPPORTED_WEB_UI_CLAIM.search(document) is None,
+                errors,
+                relative + " claims unsupported Web UI mutation authority",
+            )
+    return
+
     catalog_tokens = tuple(WORKFLOW_IDS)
     english_path = root / "README.md"
     if english_path.is_file():
@@ -1818,12 +2615,6 @@ def _hook_locator_smoke(root: Path, errors: list[str]) -> None:
 
 def _validate_windows_product_integration(root: Path, errors: list[str]) -> None:
     required_tokens = {
-        "scripts/dev_flow_python_launcher.cmd": (
-            "DisableDelayedExpansion",
-            "DEV_FLOW_PYTHON",
-            "struct.calcsize('P') == 8",
-            "-X utf8 -I -S",
-        ),
         "scripts/install.ps1": (
             "Set-StrictMode -Version Latest",
             "refs/heads/$RepositoryRef",
@@ -1831,7 +2622,8 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
             "--no-overwrite-ignore",
             "scripts\\validate_package.py",
             "[IO.File]::Replace",
-            "/hooks",
+            "scripts\\manage_runtime.py",
+            "dev-flow-mcp.cmd",
         ),
         "scripts/uninstall.ps1": (
             "[switch]$KeepSource",
@@ -1839,6 +2631,7 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
             "--remotes=origin",
             "[IO.File]::Replace",
             "TASK DATA",
+            ".dev-flow-managed-runtime",
         ),
     }
     for relative, tokens in required_tokens.items():
@@ -1851,16 +2644,16 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
                 relative + " does not preserve the Windows integration boundary",
             )
     document_tokens = {
-        "README.md": ("Windows 10 22H2 x64", "Windows 11 x64", "/hooks", "preview"),
-        "README_CN.md": ("Windows 10 22H2 x64", "Windows 11 x64", "/hooks", "预览"),
+        "README.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "preview"),
+        "README_CN.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "预览"),
         "INSTALL.md": ("install.ps1", "uninstall.ps1", "-KeepSource", "127.0.0.1"),
         "INSTALL_CN.md": ("install.ps1", "uninstall.ps1", "-KeepSource", "127.0.0.1"),
-        "ARCHITECTURE.md": ("commandWindows", "PowerShell", "guardrail"),
-        "ARCHITECTURE_CN.md": ("commandWindows", "PowerShell", "guardrail"),
+        "ARCHITECTURE.md": ("dev-flow-mcp", "PowerShell", "x64"),
+        "ARCHITECTURE_CN.md": ("dev-flow-mcp", "PowerShell", "x64"),
         "ROADMAP.md": ("Windows 11 x64", "Windows 10 22H2 x64", "Server"),
-        "ROADMAP_CN.md": ("Windows 11 x64", "Windows 10 22H2 x64", "Server"),
-        "CONTRIBUTING.md": ("commandWindows", "PowerShell 5.1", "installed journey"),
-        "CONTRIBUTING_CN.md": ("commandWindows", "PowerShell 5.1", "安装后旅程"),
+        "ROADMAP_CN.md": ("Windows 11 x64", "Windows 10 22H2 x64", "Windows"),
+        "CONTRIBUTING.md": ("PowerShell 5.1", "real PATH launcher", "official MCP client"),
+        "CONTRIBUTING_CN.md": ("PowerShell 5.1", "真实 PATH launcher", "官方 MCP 客户端"),
     }
     for relative, tokens in document_tokens.items():
         path = root / relative
@@ -1907,7 +2700,7 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
             "PRODUCT_IDENTITY",
             '"not-evaluated"',
             '"task-live-detail"',
-            '"$follow-dev-flow task_id={}"',
+            '"Call dev_flow_get_next_action with task_id={}"',
         ),
         errors,
         "src/dev_flow_orchestrator/web_views.py is not the bounded read model",
@@ -1961,11 +2754,10 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
             "Web UI assets do not use safe local-only rendering",
         )
     _check(
-        not (root / ".mcp.json").exists()
-        and not (root / "web-ui").exists()
+        not (root / "web-ui").exists()
         and not (root / "package.json").exists(),
         errors,
-        "Web UI must not introduce an app, MCP server, or Node package",
+        "Web UI must not introduce an app or Node package",
     )
     allowed_runtime_imports = {
         "__future__",
@@ -2014,14 +2806,14 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
         _require_tokens(
             installed_path.read_text(encoding="utf-8"),
             (
-                "def web_ui_journey(self)",
-                "self.web_ui_journey()",
-                '"state_unchanged": True',
-                '"status": "manual-unverified"',
-                '"hostile-origin"',
+                "dev_flow_server_info",
+                "dev_flow_list_tasks",
+                '"read_smoke": True',
+                '"mutation_smoke": True',
+                '"installed plugin snapshot changed during acceptance"',
             ),
             errors,
-            "installed evidence does not preserve the Web UI observation boundary",
+            "installed evidence does not preserve the MCP STDIO observation boundary",
         )
 
 
@@ -2077,6 +2869,8 @@ def _validate_current_candidate(root: Path) -> dict:
         ".codex-plugin/plugin.json",
     )
     _validate_manifest(root, manifest, errors)
+    _validate_mcp_package(root, errors)
+    _validate_openspec_traceability(root, errors)
     _validate_package_versions(root, manifest, errors)
     installer = root / "scripts" / "install.sh"
     uninstaller = root / "scripts" / "uninstall.sh"
@@ -2117,14 +2911,19 @@ def _validate_current_candidate(root: Path) -> dict:
         errors,
         "product version, data namespace, or agent protocol is inconsistent",
     )
-    launcher = root / "scripts" / "dev_flow_python_launcher"
+    launchers = (
+        root / "scripts" / "dev_flow_python_launcher",
+        root / "scripts" / "dev_flow_mcp_launcher",
+    )
     if os.name != "nt":
-        _check(
-            launcher.is_file()
-            and bool(launcher.stat().st_mode & stat.S_IXUSR),
-            errors,
-            "scripts/dev_flow_python_launcher is not executable",
-        )
+        for launcher in launchers:
+            relative = launcher.relative_to(root).as_posix()
+            _check(
+                launcher.is_file()
+                and bool(launcher.stat().st_mode & stat.S_IXUSR),
+                errors,
+                relative + " is not executable",
+            )
     for relative in PUBLIC_BOOTSTRAPS:
         path = root / relative
         if not path.is_file():
@@ -2204,82 +3003,6 @@ def _validate_current_candidate(root: Path) -> dict:
         errors,
         "built-in workflow identities are not distinct",
     )
-    hooks = _json_object(root / "hooks" / "hooks.json", errors, "hooks/hooks.json")
-    serialized = json.dumps(hooks, ensure_ascii=False)
-    _check(
-        "$PLUGIN_ROOT/scripts/dev_flow_python_launcher" in serialized
-        and "$PLUGIN_ROOT/hooks/dev_flow_hook.py" in serialized,
-        errors,
-        "Hook does not launch the packaged bootstrap",
-    )
-    hook_groups = hooks.get("hooks") if isinstance(hooks, dict) else None
-    _check(
-        isinstance(hook_groups, dict)
-        and set(hook_groups) == {"SessionStart", "UserPromptSubmit", "PreToolUse"},
-        errors,
-        "Hook must register exactly SessionStart, UserPromptSubmit and PreToolUse",
-    )
-    expected_hook_command = (
-        '"$PLUGIN_ROOT/scripts/dev_flow_python_launcher" '
-        '"$PLUGIN_ROOT/hooks/dev_flow_hook.py"'
-    )
-    expected_windows_hook_command = (
-        '"%PLUGIN_ROOT%\\scripts\\dev_flow_python_launcher.cmd" '
-        '"%PLUGIN_ROOT%\\hooks\\dev_flow_hook.py"'
-    )
-    if isinstance(hook_groups, dict):
-        for event, groups in hook_groups.items():
-            if not isinstance(groups, list):
-                errors.append("Hook event {!r} must contain a list".format(event))
-                continue
-            for group in groups:
-                hook_entries = group.get("hooks") if isinstance(group, dict) else None
-                if not isinstance(hook_entries, list) or not hook_entries:
-                    errors.append("Hook event {!r} has no command".format(event))
-                    continue
-                for entry in hook_entries:
-                    _check(
-                        isinstance(entry, dict)
-                        and entry.get("type") == "command"
-                        and entry.get("command") == expected_hook_command,
-                        errors,
-                        "Hook event {!r} bypasses the packaged launcher".format(event),
-                    )
-                    _check(
-                        isinstance(entry, dict)
-                        and entry.get("commandWindows")
-                        == expected_windows_hook_command,
-                        errors,
-                        "Hook event {!r} lacks the packaged Windows launcher".format(
-                            event
-                        ),
-                    )
-        pre_tool_groups = hook_groups.get("PreToolUse")
-        matcher = (
-            pre_tool_groups[0].get("matcher")
-            if isinstance(pre_tool_groups, list)
-            and pre_tool_groups
-            and isinstance(pre_tool_groups[0], dict)
-            else ""
-        )
-        _check(
-            isinstance(matcher, str)
-            and "Bash" in matcher
-            and "apply_patch" in matcher,
-            errors,
-            "PreToolUse matcher must cover Bash and apply_patch",
-        )
-    hook_source_path = runtime_root / "hook.py"
-    if hook_source_path.is_file():
-        hook_source = hook_source_path.read_text(encoding="utf-8")
-        _check(
-            'os.environ.get("PLUGIN_DATA")' in hook_source
-            and "PLUGIN_DATA_NAMESPACE" in hook_source
-            and "RELEASE_VERSION" in hook_source
-            and "$follow-dev-flow" in hook_source,
-            errors,
-            "Hook does not honor the current PLUGIN_DATA and Skill guidance contract",
-        )
     marketplace_entry = _json_object(
         root / "templates" / "marketplace-entry.json",
         errors,
@@ -2326,10 +3049,7 @@ def _validate_current_candidate(root: Path) -> dict:
             errors,
             "plugin manifest claims unsupported later-stage product behavior",
         )
-    _validate_skill_guidance(root, errors)
-    _validate_main_skill_agent(root, errors)
     _validate_public_docs(root, errors)
-    _hook_locator_smoke(root, errors)
     return {
         "ok": not errors,
         "platform": "current-host",

@@ -18,7 +18,13 @@ from .workflow import WorkflowDefinition, validate_definition_document
 from .product import WORKFLOW_IDS
 
 
-BUILTIN_DIR = Path(__file__).resolve().parents[2] / "workflows"
+PACKAGE_BUILTIN_DIR = Path(__file__).resolve().parent / "workflow_assets"
+SOURCE_BUILTIN_DIR = Path(__file__).resolve().parents[2] / "workflows"
+# Wheels receive the root YAML directory through Hatch force-include.  Source
+# checkouts retain the repository-root files as the sole editable authority.
+BUILTIN_DIR = (
+    PACKAGE_BUILTIN_DIR if PACKAGE_BUILTIN_DIR.is_dir() else SOURCE_BUILTIN_DIR
+)
 
 
 def _error(code: str, message: str, **details: object) -> DevFlowError:

@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-from pathlib import Path
 import sys
 from typing import Mapping, Optional, Sequence
 
 from .controller import Controller
 from .model import DevFlowError, strict_json_loads
-from .product import PLUGIN_DATA_NAMESPACE
+from .runtime_paths import resolve_data_dir
 from .web import manage_web, run_web, run_web_worker
 
 
@@ -25,8 +23,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-dir",
         help=(
-            "exact controller state directory; defaults to the installed "
-            "Codex plugin data directory"
+            "controller data base directory; the Store appends the current "
+            "model namespace; defaults to the installed Codex plugin data root"
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -113,20 +111,6 @@ def _json_object(value: str, flag: str) -> Mapping[str, object]:
             "{} must be a JSON object".format(flag),
         )
     return parsed
-
-
-def _resolve_data_dir(value: Optional[str]) -> str:
-    if value:
-        return str(Path(value).expanduser().resolve())
-    plugin_data = os.environ.get("PLUGIN_DATA")
-    if plugin_data:
-        root = Path(plugin_data).expanduser().resolve()
-    else:
-        codex_root = Path(
-            os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
-        ).expanduser().resolve()
-        root = codex_root / "plugins" / "data" / "dev-flow-orchestrator-personal"
-    return str(root / PLUGIN_DATA_NAMESPACE)
 
 
 def _dispatch(arguments: argparse.Namespace) -> dict:
@@ -229,7 +213,7 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         arguments = _parser().parse_args(argv)
-        arguments.data_dir = _resolve_data_dir(arguments.data_dir)
+        arguments.data_dir = resolve_data_dir(arguments.data_dir)
         if arguments.command == "web":
             if arguments.web_action == "foreground":
                 return run_web(arguments.data_dir, port=arguments.port)

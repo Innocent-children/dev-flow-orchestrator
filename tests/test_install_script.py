@@ -120,6 +120,7 @@ class InstallerBehaviorTests(unittest.TestCase):
         )
         self.codex_log = self.test_root / "codex calls.log"
         self.codex_state = self.test_root / "installed plugin version.txt"
+        self.codex_candidate_active = self.test_root / "candidate plugin active"
         self.publisher_counter = 0
 
         fake_bin = self.test_root / "fake bin"
@@ -128,10 +129,21 @@ class InstallerBehaviorTests(unittest.TestCase):
         fake_codex.write_text(
             "#!/bin/sh\n"
             "case \"$*\" in\n"
+            "  'mcp list --json')\n"
+            "    if [ -f \"$DEV_FLOW_CODEX_CANDIDATE_ACTIVE\" ]; then\n"
+            "      printf '%s\\n' \"$DEV_FLOW_ACTIVE_MCP_LIST_JSON\"\n"
+            "    elif [ -n \"${DEV_FLOW_MCP_LIST_JSON+x}\" ]; then\n"
+            "      printf '%s\\n' \"$DEV_FLOW_MCP_LIST_JSON\"\n"
+            "    elif [ -f \"$DEV_FLOW_CODEX_STATE\" ]; then\n"
+            "      printf '%s\\n' \"$DEV_FLOW_ACTIVE_MCP_LIST_JSON\"\n"
+            "    else\n"
+            "      printf '[]\\n'\n"
+            "    fi\n"
+            "    ;;\n"
             "  'plugin list --marketplace personal --json')\n"
             "    if [ -f \"$DEV_FLOW_CODEX_STATE\" ]; then\n"
             "      version=\"$(cat \"$DEV_FLOW_CODEX_STATE\")\"\n"
-            "      printf '{\"installed\":[{\"pluginId\":\"dev-flow-orchestrator@personal\",\"version\":\"%s\",\"installed\":true}]}\\n' \"$version\"\n"
+            "      printf '{\"installed\":[{\"pluginId\":\"dev-flow-orchestrator@personal\",\"version\":\"%s\",\"installed\":true,\"enabled\":%s}]}\\n' \"$version\" \"${DEV_FLOW_CODEX_ENABLED_JSON:-true}\"\n"
             "    else\n"
             "      printf '{\"installed\":[]}\\n'\n"
             "    fi\n"
@@ -141,12 +153,22 @@ class InstallerBehaviorTests(unittest.TestCase):
             "    exit_code=\"${DEV_FLOW_CODEX_REMOVE_EXIT:-0}\"\n"
             "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
             "    rm -f \"$DEV_FLOW_CODEX_STATE\"\n"
+            "    rm -f \"$DEV_FLOW_CODEX_CANDIDATE_ACTIVE\"\n"
             "    ;;\n"
             "  'plugin add dev-flow-orchestrator@personal')\n"
             "    printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
+            "    if [ -n \"${DEV_FLOW_CODEX_ADD_FAIL_ONCE_FILE:-}\" ] && [ ! -f \"$DEV_FLOW_CODEX_ADD_FAIL_ONCE_FILE\" ]; then\n"
+            "      : > \"$DEV_FLOW_CODEX_ADD_FAIL_ONCE_FILE\"\n"
+            "      exit \"${DEV_FLOW_CODEX_ADD_FAIL_ONCE_EXIT:-17}\"\n"
+            "    fi\n"
             "    exit_code=\"${DEV_FLOW_CODEX_ADD_EXIT:-0}\"\n"
             "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
             "    printf '%s\\n' \"${DEV_FLOW_PACKAGE_VERSION:-0.4.0}\" > \"$DEV_FLOW_CODEX_STATE\"\n"
+            "    : > \"$DEV_FLOW_CODEX_CANDIDATE_ACTIVE\"\n"
+            "    if [ -n \"${DEV_FLOW_CODEX_CORRUPT_LAUNCHER:-}\" ] && [ -n \"${DEV_FLOW_CODEX_CORRUPT_ONCE_FILE:-}\" ] && [ ! -f \"$DEV_FLOW_CODEX_CORRUPT_ONCE_FILE\" ]; then\n"
+            "      : > \"$DEV_FLOW_CODEX_CORRUPT_ONCE_FILE\"\n"
+            "      printf '#!/bin/sh\\nexit 44\\n' > \"$DEV_FLOW_CODEX_CORRUPT_LAUNCHER\"\n"
+            "    fi\n"
             "    ;;\n"
             "  *)\n"
             "    exit 2\n"
@@ -180,10 +202,29 @@ class InstallerBehaviorTests(unittest.TestCase):
                 "DEV_FLOW_MARKETPLACE_FILE": str(self.marketplace),
                 "DEV_FLOW_CODEX_LOG": str(self.codex_log),
                 "DEV_FLOW_CODEX_STATE": str(self.codex_state),
+                "DEV_FLOW_CODEX_CANDIDATE_ACTIVE": str(
+                    self.codex_candidate_active
+                ),
                 "DEV_FLOW_CODEX_ADD_EXIT": "0",
                 "DEV_FLOW_CODEX_REMOVE_EXIT": "0",
+                "DEV_FLOW_CODEX_ENABLED_JSON": "true",
+                "DEV_FLOW_ACTIVE_MCP_LIST_JSON": json.dumps(
+                    [
+                        {
+                            "name": "dev-flow",
+                            "enabled": True,
+                            "disabled_reason": None,
+                            "transport": {
+                                "type": "stdio",
+                                "command": "dev-flow-mcp",
+                                "args": ["--stdio"],
+                            },
+                        }
+                    ]
+                ),
                 "DEV_FLOW_PACKAGE_VERSION": PACKAGE_VERSION,
                 "DEV_FLOW_BIN_DIR": str(fake_bin),
+                "DEV_FLOW_RUNTIME_HOME": str(self.test_root / "managed runtime"),
                 "CODEX_HOME": str(self.test_root / ".codex"),
                 "GIT_CONFIG_GLOBAL": os.devnull,
                 "GIT_CONFIG_NOSYSTEM": "1",
@@ -235,8 +276,19 @@ class InstallerBehaviorTests(unittest.TestCase):
     def set_installed_version(self, version: str) -> None:
         self.codex_state.write_text(version + "\n", encoding="utf-8")
 
+    def write_codex_config(self, content: str) -> None:
+        config = Path(self.environment["CODEX_HOME"]) / "config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(content, encoding="utf-8")
+
     def marketplace_plugins(self) -> list[object]:
         return json.loads(self.marketplace.read_text(encoding="utf-8"))["plugins"]
+
+    def runtime_releases(self) -> tuple[Path, ...]:
+        releases = Path(self.environment["DEV_FLOW_RUNTIME_HOME"]) / "releases"
+        if not releases.is_dir():
+            return ()
+        return tuple(sorted(path for path in releases.iterdir() if path.is_dir()))
 
     def advance_remote_main(self) -> str:
         self.publisher_counter += 1
@@ -335,6 +387,33 @@ class InstallerBehaviorTests(unittest.TestCase):
         launcher_text = launcher.read_text(encoding="utf-8")
         self.assertIn("# dev-flow-orchestrator managed launcher", launcher_text)
         self.assertIn(str(self.source_root / "scripts" / "dev_flow.py"), launcher_text)
+        mcp_launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
+        self.assertTrue(mcp_launcher.stat().st_mode & stat.S_IXUSR)
+        mcp_text = mcp_launcher.read_text(encoding="utf-8")
+        self.assertIn("# dev-flow-orchestrator managed MCP launcher", mcp_text)
+        self.assertNotIn("__DEV_FLOW_RUNTIME_PYTHON__", mcp_text)
+        releases = self.runtime_releases()
+        self.assertEqual(len(releases), 1)
+        runtime_python = releases[0] / "venv" / "bin" / "python"
+        self.assertIn(str(runtime_python), mcp_text)
+        receipt = json.loads(
+            (releases[0] / "runtime-receipt.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            set(receipt),
+            {
+                "activated_at",
+                "activation_action",
+                "dependency_lock_sha256",
+                "launcher_identity",
+                "python",
+                "release_version",
+                "runtime_identity",
+                "schema",
+                "source_commit",
+            },
+        )
+        self.assertEqual(receipt["activation_action"], "create")
 
     def test_launcher_uses_automatic_codex_data_directory(self) -> None:
         self.install_successfully()
@@ -425,7 +504,7 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertIn(str(self.source_root), result.stdout)
         self.assertIn(str(self.marketplace.parent), result.stdout)
         self.assertIn(str(self.test_root / ".codex"), result.stdout)
-        self.assertIn("Use $follow-dev-flow", result.stdout)
+        self.assertIn("call dev_flow_server_info", result.stdout)
         self.assertNotIn("\x1b[", result.stdout)
 
     def test_success_uses_neon_colors_when_forced(self) -> None:
@@ -682,12 +761,308 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(self.marketplace.read_bytes(), malformed)
         self.assertEqual(self.activation_calls(), [])
 
+    def test_duplicate_marketplace_entries_fail_without_editing_policy(self) -> None:
+        duplicate = {
+            "name": "dev-flow-orchestrator",
+            "source": {"source": "local", "path": "./old"},
+            "policy": {"installation": "MANUAL", "authentication": "NEVER"},
+        }
+        self.marketplace.parent.mkdir(parents=True)
+        before = (
+            json.dumps(
+                {
+                    "name": "personal",
+                    "plugins": [duplicate, dict(duplicate)],
+                    "unrelatedPolicy": {"keep": True},
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+        self.marketplace.write_bytes(before)
+
+        result = self.run_installer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate Dev Flow entries", result.stderr)
+        self.assertEqual(self.marketplace.read_bytes(), before)
+        self.assertFalse(
+            (Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp").exists()
+        )
+        self.assertEqual(self.activation_calls(), [])
+
+    def test_enabled_owned_standalone_registration_blocks_bundled_activation(self) -> None:
+        registration = [
+            {
+                "name": "standalone-dev-flow",
+                "enabled": True,
+                "transport": {
+                    "command": str(
+                        Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
+                    ),
+                    "args": ["--stdio"],
+                },
+            }
+        ]
+
+        result = self.run_installer(
+            {"DEV_FLOW_MCP_LIST_JSON": json.dumps(registration)}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("standalone Dev Flow MCP registration", result.stderr)
+        self.assertIn("disable or remove", result.stderr)
+        self.assertFalse(Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).exists())
+        self.assertEqual(self.activation_calls(), [])
+
+    def test_fresh_install_rejects_canonical_owned_standalone_registration(self) -> None:
+        registration = json.loads(self.environment["DEV_FLOW_ACTIVE_MCP_LIST_JSON"])
+
+        result = self.run_installer(
+            {"DEV_FLOW_MCP_LIST_JSON": json.dumps(registration)}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("standalone Dev Flow MCP registration", result.stderr)
+        self.assertFalse(Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).exists())
+        self.assertEqual(self.activation_calls(), [])
+
+    def test_disabled_plugin_does_not_exempt_canonical_owned_registration(self) -> None:
+        self.set_installed_version(PACKAGE_VERSION)
+
+        result = self.run_installer({"DEV_FLOW_CODEX_ENABLED_JSON": "false"})
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("standalone Dev Flow MCP registration", result.stderr)
+        self.assertFalse(Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).exists())
+        self.assertEqual(self.activation_calls(), [])
+
+    def test_same_name_explicit_config_blocks_active_bundled_shape(self) -> None:
+        self.set_installed_version(PACKAGE_VERSION)
+        self.write_codex_config(
+            '[plugins."dev-flow-orchestrator@personal"]\n'
+            "enabled = true\n\n"
+            "[mcp_servers.dev-flow]\n"
+            'command = "dev-flow-mcp"\n'
+            'args = ["--stdio"]\n'
+        )
+
+        result = self.run_installer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("explicit standalone Dev Flow MCP registration", result.stderr)
+        self.assertIn("config.toml", result.stderr)
+        self.assertFalse(Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).exists())
+        self.assertEqual(self.activation_calls(), [])
+
+    def test_extra_name_standalone_blocks_active_bundled_repair(self) -> None:
+        self.set_installed_version(PACKAGE_VERSION)
+        registration = json.loads(self.environment["DEV_FLOW_ACTIVE_MCP_LIST_JSON"])
+        registration.append(
+            {
+                "name": "legacy-dev-flow",
+                "enabled": True,
+                "transport": {
+                    "type": "stdio",
+                    "command": str(
+                        Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
+                    ),
+                    "args": ["--stdio"],
+                },
+            }
+        )
+
+        result = self.run_installer(
+            {"DEV_FLOW_MCP_LIST_JSON": json.dumps(registration)}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("legacy-dev-flow", result.stderr)
+        self.assertFalse(Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).exists())
+        self.assertEqual(self.activation_calls(), [])
+
+    def test_missing_bundled_registration_after_activation_rolls_back(self) -> None:
+        result = self.run_installer({"DEV_FLOW_ACTIVE_MCP_LIST_JSON": "[]"})
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundled MCP registration is missing", result.stderr)
+        self.assertEqual(
+            self.activation_calls(),
+            [
+                "plugin add dev-flow-orchestrator@personal",
+                "plugin remove dev-flow-orchestrator@personal",
+            ],
+        )
+        self.assertFalse(self.marketplace.exists())
+        self.assertFalse(
+            (Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp").exists()
+        )
+
+    def test_disabled_bundled_registration_after_activation_rolls_back(self) -> None:
+        registration = json.loads(self.environment["DEV_FLOW_ACTIVE_MCP_LIST_JSON"])
+        registration[0]["enabled"] = False
+
+        result = self.run_installer(
+            {"DEV_FLOW_ACTIVE_MCP_LIST_JSON": json.dumps(registration)}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bundled MCP registration is missing", result.stderr)
+        self.assertEqual(
+            self.activation_calls(),
+            [
+                "plugin add dev-flow-orchestrator@personal",
+                "plugin remove dev-flow-orchestrator@personal",
+            ],
+        )
+
+    def test_unrelated_similarly_named_registration_is_not_edited(self) -> None:
+        registration = [
+            {
+                "name": "dev-flow-metrics",
+                "enabled": True,
+                "transport": {
+                    "command": str(self.test_root / "unrelated-dev-flow-metrics"),
+                    "args": ["--stdio"],
+                },
+                "policy": {"operatorOwned": True},
+            }
+        ]
+
+        result = self.run_installer(
+            {"DEV_FLOW_MCP_LIST_JSON": json.dumps(registration)}
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.activation_calls(), ["plugin add dev-flow-orchestrator@personal"]
+        )
+
+    def test_simulated_unsupported_python_refuses_before_source_or_runtime(self) -> None:
+        fake_python = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "python3"
+        fake_python.write_text("#!/bin/sh\nexit 39\n", encoding="utf-8")
+        fake_python.chmod(0o755)
+
+        result = self.run_installer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("64-bit Python 3.10-3.14 is required", result.stderr)
+        self.assertFalse(self.source_root.exists())
+        self.assertFalse(Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).exists())
+        self.assertEqual(self.activation_calls(), [])
+
+    def test_failed_runtime_build_preserves_previous_runtime_plugin_and_data(self) -> None:
+        self.install_successfully()
+        launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
+        launcher_before = launcher.read_bytes()
+        marketplace_before = self.marketplace.read_bytes()
+        releases_before = self.runtime_releases()
+        data_root = (
+            Path(self.environment["CODEX_HOME"])
+            / "plugins"
+            / "data"
+            / "dev-flow-orchestrator-personal"
+            / "0.4.0"
+        )
+        data_root.mkdir(parents=True)
+        sentinel = data_root / "existing-task-bytes"
+        sentinel.write_bytes(b"preserve exact task data\n")
+        self.advance_remote_main()
+        fake_uv = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "uv"
+        fake_uv.write_text("#!/bin/sh\nexit 31\n", encoding="utf-8")
+        fake_uv.chmod(0o755)
+        self.clear_activation_calls()
+
+        result = self.run_installer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot build and validate the managed MCP runtime", result.stderr)
+        self.assertEqual(launcher.read_bytes(), launcher_before)
+        self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
+        self.assertEqual(self.runtime_releases(), releases_before)
+        self.assertEqual(
+            self.codex_state.read_text(encoding="utf-8"), PACKAGE_VERSION + "\n"
+        )
+        self.assertEqual(sentinel.read_bytes(), b"preserve exact task data\n")
+        self.assertEqual(self.activation_calls(), [])
+
+    def test_failed_upgrade_activation_restores_previous_launcher_and_plugin(self) -> None:
+        self.install_successfully()
+        launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
+        launcher_before = launcher.read_bytes()
+        marketplace_before = self.marketplace.read_bytes()
+        old_release = self.runtime_releases()[0]
+        self.advance_remote_main()
+        self.clear_activation_calls()
+        fail_once = self.test_root / "candidate-add-failed-once"
+
+        result = self.run_installer(
+            {
+                "DEV_FLOW_CODEX_ADD_FAIL_ONCE_FILE": str(fail_once),
+                "DEV_FLOW_CODEX_ADD_FAIL_ONCE_EXIT": "17",
+            }
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Previous plugin activation was restored", result.stderr)
+        self.assertEqual(launcher.read_bytes(), launcher_before)
+        self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
+        self.assertTrue(old_release.is_dir())
+        self.assertEqual(
+            self.codex_state.read_text(encoding="utf-8"), PACKAGE_VERSION + "\n"
+        )
+        self.assertEqual(
+            self.activation_calls(),
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+            ],
+        )
+
+    def test_post_activation_mcp_failure_restores_previous_activation(self) -> None:
+        self.install_successfully()
+        launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
+        launcher_before = launcher.read_bytes()
+        marketplace_before = self.marketplace.read_bytes()
+        old_release = self.runtime_releases()[0]
+        self.advance_remote_main()
+        self.clear_activation_calls()
+
+        result = self.run_installer(
+            {
+                "DEV_FLOW_CODEX_CORRUPT_LAUNCHER": str(launcher),
+                "DEV_FLOW_CODEX_CORRUPT_ONCE_FILE": str(
+                    self.test_root / "candidate-launcher-corrupted-once"
+                ),
+            }
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("real installed launcher failed", result.stderr)
+        self.assertIn("Previous plugin activation was restored", result.stderr)
+        self.assertEqual(launcher.read_bytes(), launcher_before)
+        self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
+        self.assertTrue(old_release.is_dir())
+        self.assertEqual(
+            self.codex_state.read_text(encoding="utf-8"), PACKAGE_VERSION + "\n"
+        )
+        self.assertEqual(
+            self.activation_calls(),
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+            ],
+        )
+
     def test_plugin_activation_failure_reports_rerun_guidance(self) -> None:
         result = self.run_installer({"DEV_FLOW_CODEX_ADD_EXIT": "17"})
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "Plugin activation failed. Rerun this installer",
+            "Plugin activation failed: Codex rejected the candidate plugin",
             result.stderr,
         )
         self.assertTrue(self.source_root.is_dir())
@@ -695,16 +1070,9 @@ class InstallerBehaviorTests(unittest.TestCase):
             self.activation_calls(),
             ["plugin add dev-flow-orchestrator@personal"],
         )
-        self.assertEqual(
-            len(
-                [
-                    item
-                    for item in self.marketplace_plugins()
-                    if isinstance(item, dict)
-                    and item.get("name") == "dev-flow-orchestrator"
-                ]
-            ),
-            1,
+        self.assertFalse(self.marketplace.exists())
+        self.assertFalse(
+            (Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp").exists()
         )
 
 

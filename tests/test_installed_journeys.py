@@ -1,108 +1,148 @@
-"""Focused subprocess-only self-test for installed Stage 1 acceptance."""
+"""Focused acceptance tests for the installed MCP STDIO journey."""
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(SRC))
 
-from dev_flow_orchestrator.product import (
-    AGENT_PROTOCOL_SCHEMA,
-    DELIVERY_DOSSIER_SCHEMA,
-    DRIVER_RESULT_SCHEMA,
-    EXTERNAL_EVIDENCE_SCHEMA,
-    REPOSITORY_SET_SNAPSHOT_SCHEMA,
-    VERIFICATION_COVERAGE_SCHEMA,
-)
+from scripts import manage_runtime
 from scripts import validate_installed_stage1 as acceptance
 
 
 RUNNER = ROOT / "scripts" / "validate_installed_stage1.py"
+SOURCE_LAUNCHER = ROOT / "scripts" / "dev_flow_mcp.py"
+LEGACY_RELEASE_COMMIT = "38685bf09e934ba5c97ea61112110beedb7083ca"
+LAUNCHER_PLACEHOLDER = "__DEV_FLOW_RUNTIME_PYTHON__"
+CANDIDATE_COPY_IGNORE = shutil.ignore_patterns(
+    ".git",
+    ".venv",
+    ".codebase-memory",
+    ".idea",
+    ".qoder",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".coverage",
+    ".DS_Store",
+    "__pycache__",
+    "*.py[cod]",
+    "htmlcov",
+    "work",
+)
 
 
-class ExternalEvidenceValidationTests(unittest.TestCase):
-    def _driver(self, tool: str) -> dict:
-        return {
-            "execution": "actual-tool-execution",
-            "output_sha256": "b" * 64,
-            "result": {
-                "schema": DRIVER_RESULT_SCHEMA,
-                "status": "available",
-                "tool": tool,
-                "phase": "stage1-release",
-                "details": {"observation": "actual tool output captured"},
-                "limitations": [],
-            },
-        }
-
-    def _external(self) -> dict:
-        return {
-            "schema": EXTERNAL_EVIDENCE_SCHEMA,
-            "installed_snapshot_digest": "a" * 64,
-            "driver_executions": [
-                self._driver("openspec"),
-                self._driver("codebase-memory"),
-                self._driver("independent-review"),
-            ],
-        }
-
-    def test_external_evidence_is_snapshot_bound(self) -> None:
-        result = acceptance._validate_external_release_evidence(
-            self._external(), "a" * 64
-        )
-        self.assertEqual(len(result["driver_executions"]), 3)
-
-        changed = self._external()
-        changed["installed_snapshot_digest"] = "2" * 64
-        with self.assertRaises(acceptance.AcceptanceFailure):
-            acceptance._validate_external_release_evidence(
-                changed, "a" * 64
-            )
-
-    def test_incomplete_driver_statuses_cannot_be_upgraded_to_release_evidence(self) -> None:
-        for status in ("partial", "failed", "skipped", "stale", "manual-unverified"):
-            with self.subTest(status=status):
-                changed = self._external()
-                changed["driver_executions"][0]["result"]["status"] = status
-                with self.assertRaises(acceptance.AcceptanceFailure):
-                    acceptance._validate_external_release_evidence(
-                        changed,
-                        "a" * 64,
-                    )
+def _git(repository: Path, *arguments: str) -> str:
+    environment = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        environment.pop(name, None)
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
 
 
-@unittest.skipUnless(sys.platform == "darwin", "installed acceptance is macOS-only")
-class InstalledStage1JourneyTests(unittest.TestCase):
-    def test_current_model_journeys_require_external_release_evidence(self) -> None:
+class InstalledMCPJourneyTests(unittest.TestCase):
+    def test_tree_digest_is_stable_and_content_sensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "asset.txt"
+            path.write_text("one\n", encoding="utf-8")
+            first = acceptance._tree_digest(root)
+            self.assertEqual(first, acceptance._tree_digest(root))
+            path.write_text("two\n", encoding="utf-8")
+            self.assertNotEqual(first, acceptance._tree_digest(root))
+
+    def test_missing_launcher_fails_with_canonical_json_evidence(self) -> None:
         completed = subprocess.run(
             [
                 sys.executable,
                 str(RUNNER),
                 "--plugin-root",
                 str(ROOT),
+                "--launcher",
+                str(ROOT / "missing-dev-flow-mcp"),
             ],
-            cwd=str(ROOT),
-            env={
-                **os.environ,
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "PYTHONHASHSEED": "0",
-            },
+            cwd=ROOT,
+            capture_output=True,
             text=True,
-            encoding="utf-8",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             check=False,
-            timeout=180,
         )
+        evidence = json.loads(completed.stdout)
+        self.assertEqual(completed.returncode, 1)
+        self.assertFalse(evidence["ok"])
+        self.assertEqual(evidence["schema"], acceptance.EVIDENCE_SCHEMA)
+        self.assertTrue(evidence["errors"])
+
+    def _run_full_journey(
+        self,
+        *,
+        plugin_root: Path,
+        python_executable: Path,
+        launcher: Path | None,
+        environment: dict[str, str] | None = None,
+        interpreter_arguments: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess[str]:
+        archived = subprocess.run(
+            ["git", "archive", "--format=tar", LEGACY_RELEASE_COMMIT],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        ).stdout
+        with tempfile.TemporaryDirectory() as temporary:
+            legacy_root = Path(temporary) / "legacy 0.4.2 artifact"
+            legacy_root.mkdir()
+            with tarfile.open(fileobj=io.BytesIO(archived), mode="r:") as archive:
+                archive.extractall(legacy_root)
+            legacy_manifest = json.loads(
+                (legacy_root / ".codex-plugin" / "plugin.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(legacy_manifest["version"], "0.4.2")
+            command = [
+                str(python_executable),
+                *interpreter_arguments,
+                str(plugin_root / "scripts" / "validate_installed_stage1.py"),
+                "--plugin-root",
+                str(plugin_root),
+                "--legacy-cli-root",
+                str(legacy_root),
+            ]
+            if launcher is not None:
+                command.extend(("--launcher", str(launcher)))
+            completed = subprocess.run(
+                command,
+                cwd=plugin_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=600,
+            )
+        return completed
+
+    def _assert_full_journey_evidence(
+        self,
+        completed: subprocess.CompletedProcess[str],
+    ) -> None:
+        self.assertNotIn("Fatal Python error", completed.stderr)
         try:
             evidence = json.loads(completed.stdout)
         except ValueError as exc:
@@ -111,166 +151,264 @@ class InstalledStage1JourneyTests(unittest.TestCase):
                     completed.stdout[-2048:], exc
                 )
             )
+        self.assertEqual(completed.returncode, 0, evidence.get("errors") or completed.stderr)
+        self.assertTrue(evidence["ok"])
+        self.assertEqual(evidence["plugin_digest_before"], evidence["plugin_digest_after"])
+        journey = evidence["journey"]
+        self.assertEqual(journey["initialize"]["server"], "dev-flow")
+        self.assertEqual(journey["initialize"]["release"], "0.5.0")
+        self.assertEqual(len(journey["initialize"]["instructions_sha256"]), 64)
+        self.assertEqual(tuple(journey["catalog"]), acceptance.EXPECTED_TOOLS)
+        self.assertTrue(journey["read_smoke"])
+        self.assertTrue(journey["mutation_smoke"])
+        self.assertTrue(journey["secondary_member_resume"])
+        self.assertTrue(journey["restart_resume"])
+        self.assertTrue(journey["disconnect_recovery"]["response_lost_after_commit"])
+        self.assertFalse(journey["disconnect_recovery"]["blind_mutation_replay"])
+        self.assertEqual(journey["disconnect_recovery"]["authoritative_revision"], 1)
         self.assertEqual(
-            completed.returncode,
-            1,
-            "{}\n{}".format(evidence.get("errors"), completed.stderr),
+            journey["disconnect_recovery"]["next_action_after_restart"],
+            "impact.record",
         )
-        self.assertFalse(evidence["ok"])
-        self.assertTrue(evidence["execution_ok"], evidence["errors"])
-        self.assertEqual(evidence["release_gate"]["status"], "unverified")
-        self.assertEqual(
-            evidence["release_gate"]["blockers"],
-            [
-                "actual OpenSpec, codebase-memory, and independent-review executions were not provided"
-            ],
-        )
-        self.assertTrue(evidence["installed"]["immutable_during_run"])
-        self.assertTrue(evidence["package_validation"]["result"]["ok"])
-        self.assertTrue(evidence["web_ui"]["state_unchanged"])
-        self.assertEqual(
-            evidence["web_ui"]["checks"],
-            ["inventory", "stored-detail", "live-detail", "hostile-origin"],
-        )
-        self.assertEqual(
-            evidence["web_ui"]["browser"]["status"],
-            "manual-unverified",
-        )
-        self.assertTrue(evidence["web_ui"]["browser"]["limitation"])
-        official = {
-            "official-success-{}".format(workflow)
-            for workflow in (
-                "bugfix",
-                "feature",
-                "full",
-                "investigation",
-                "lite",
-                "refactor",
-            )
+        self.assertTrue(journey["executor_source_reads"]["instrumented"])
+        self.assertEqual(journey["executor_source_reads"]["forbidden_reads"], [])
+        by_workflow = {
+            (item["workflow"], item["route"]): item
+            for item in journey["official_workflows"]
         }
-        names = {journey["name"] for journey in evidence["journeys"]}
-        self.assertTrue(official.issubset(names))
-        for workflow in (
-            "bugfix",
-            "feature",
-            "full",
-            "investigation",
-            "lite",
-            "refactor",
-        ):
-            outcome = evidence["outcomes"]["stage1-official-{}".format(workflow)]
-            dossier = outcome["dossier"]
-            baseline = evidence["baselines"]["stage1-official-{}".format(workflow)]
-            self.assertEqual(
-                baseline["snapshot"]["schema"],
-                REPOSITORY_SET_SNAPSHOT_SCHEMA,
-            )
-            self.assertEqual(len(baseline["snapshot"]["repositories"]), 1)
-            self.assertEqual(dossier["schema"], DELIVERY_DOSSIER_SCHEMA)
-            self.assertEqual(len(dossier["repository_set"]["members"]), 1)
-            self.assertIsInstance(dossier.get("assurance_plan"), dict)
-            self.assertIsInstance(dossier.get("obligation_states"), list)
-            self.assertTrue(
-                all(
-                    item["state"]
-                    in ("satisfied", "reused", "waived", "not-required")
-                    for item in dossier["obligation_states"]
-                )
-            )
-            self.assertTrue(
-                all(
-                    item["status"] in ("proven", "waived")
-                    for item in dossier["coverage"].values()
-                )
-            )
-        self.assertTrue(
+        self.assertEqual(
+            set(by_workflow),
             {
-                "process-restart-resume",
-                "cancellation",
-                "verification-rework-exhaustion",
-                "criterion-waiver",
-                "contract-revision-and-openspec-resources",
-                "exact-set-secondary-resume-drift-resources-dossier",
-                "exact-set-lite-success-dossier",
-            }.issubset(names)
-        )
-        exact_set = next(
-            journey
-            for journey in evidence["journeys"]
-            if journey["name"]
-            == "exact-set-secondary-resume-drift-resources-dossier"
-        )
-        self.assertEqual(exact_set["drift_error"], "ACTION_BINDING_STALE")
-        self.assertEqual(exact_set["secondary_hook_schema"], AGENT_PROTOCOL_SCHEMA)
-        self.assertIsInstance(exact_set["secondary_hook_process"], int)
-        self.assertEqual(exact_set["dossier_schema"], DELIVERY_DOSSIER_SCHEMA)
-        self.assertEqual(len(exact_set["repository_ids"]), 2)
-        self.assertNotEqual(
-            exact_set["stale_aggregate_digest"],
-            exact_set["fresh_aggregate_digest"],
-        )
-        self.assertTrue(exact_set["scoped_resource_repository_ids"])
-        self.assertTrue(
-            set(exact_set["scoped_resource_repository_ids"]).issubset(
-                set(exact_set["repository_ids"])
-            )
-        )
-        exact_outcome = evidence["outcomes"]["stage1-exact-set"]
-        self.assertEqual(
-            exact_outcome["dossier"]["schema"],
-            DELIVERY_DOSSIER_SCHEMA,
-        )
-        self.assertEqual(
-            len(exact_outcome["dossier"]["repository_set"]["members"]),
-            2,
-        )
-        exact_lite = next(
-            journey
-            for journey in evidence["journeys"]
-            if journey["name"] == "exact-set-lite-success-dossier"
-        )
-        self.assertEqual(exact_lite["workflow"], "lite")
-        self.assertEqual(exact_lite["projection_schema"], AGENT_PROTOCOL_SCHEMA)
-        self.assertEqual(
-            exact_lite["dossier_schema"],
-            DELIVERY_DOSSIER_SCHEMA,
-        )
-        self.assertEqual(exact_lite["outcome"], "success")
-        self.assertEqual(len(exact_lite["repository_ids"]), 2)
-        self.assertEqual(
-            set(exact_lite["dossier_repository_ids"]),
-            set(exact_lite["repository_ids"]),
-        )
-        lite_outcome = evidence["outcomes"]["stage1-exact-set-lite"]
-        self.assertEqual(lite_outcome["workflow"]["id"], "lite")
-        self.assertEqual(
-            lite_outcome["dossier"]["schema"],
-            DELIVERY_DOSSIER_SCHEMA,
-        )
-        self.assertEqual(
-            len(lite_outcome["dossier"]["repository_set"]["members"]),
-            2,
-        )
-        self.assertEqual(
-            {
-                path["result"]["status"]
-                for path in evidence["driver_paths"]
+                (workflow, route)
+                for workflow in acceptance.OFFICIAL_WORKFLOWS
+                for route in ("focused", "closed-trigger")
             },
-            {"available", "degraded", "unavailable"},
+        )
+        for (workflow, route), item in by_workflow.items():
+            with self.subTest(workflow=workflow, route=route):
+                self.assertEqual(item["terminal_status"], "DONE")
+                self.assertEqual(item["dossier"]["schema"], acceptance.DOSSIER_SCHEMA)
+                self.assertTrue(
+                    acceptance.EXPECTED_OBLIGATIONS[workflow].issubset(
+                        set(item["obligation_kinds"])
+                    )
+                )
+                self.assertEqual(
+                    item["allowance"], acceptance.EXPECTED_ALLOWANCE[workflow]
+                )
+                authority = item["assurance_authority"]
+                self.assertEqual(authority["profile"], workflow)
+                not_required = authority["not_required"]
+                self.assertEqual(
+                    set(not_required),
+                    {
+                        "documentation",
+                        "independent_review",
+                        "integration",
+                        "manual_evidence",
+                        "repository_ids",
+                        "rule",
+                    },
+                )
+                self.assertEqual(
+                    not_required["rule"],
+                    "closed-policy-profile-impact-and-risk-derivation",
+                )
+                observed = set(item["obligation_kinds"])
+                self.assertEqual(
+                    not_required["documentation"],
+                    "documentation-check" not in observed,
+                )
+                self.assertEqual(
+                    not_required["independent_review"],
+                    "independent-review" not in observed,
+                )
+                self.assertTrue(not_required["integration"])
+                self.assertEqual(
+                    not_required["manual_evidence"],
+                    "manual-evidence" not in observed,
+                )
+                self.assertEqual(
+                    len(not_required["repository_ids"]),
+                    0 if "repository-check" in observed else item["repository_count"],
+                )
+                self.assertEqual(
+                    set(authority["ceilings"]),
+                    {"verification", "review", "rework", "total_action"},
+                )
+                self.assertEqual(
+                    item["driver_observations"]["codebase_memory"]["tool"],
+                    "codebase-memory",
+                )
+                if route == "closed-trigger":
+                    self.assertIn("independent-review", item["obligation_kinds"])
+        feature_closed = by_workflow[("feature", "closed-trigger")]
+        self.assertTrue(feature_closed["scenario_evidence"]["openspec_stale_seen"])
+        self.assertTrue(
+            feature_closed["scenario_evidence"]["impact_gap_replanned"]
         )
         self.assertTrue(
-            all(
-                path["evidence_class"] == "controller-contract-simulation"
-                and path["qualifies_as_driver_execution"] is False
-                and path["result"]["schema"] == DRIVER_RESULT_SCHEMA
-                for path in evidence["driver_paths"]
-            )
+            feature_closed["scenario_evidence"]["impact_observed_current"]
         )
-        self.assertTrue(evidence["hook"]["bootstrap_verified"])
         self.assertEqual(
-            evidence["hook"]["codex_new_task_pickup"], "manual-unverified"
+            feature_closed["scenario_evidence"]["plan_blocked"], "AMBIENT_DRIFT"
         )
-        self.assertTrue(evidence["process_model"]["fresh_subprocess_per_command"])
+        self.assertTrue(
+            feature_closed["scenario_evidence"]["restored_for_replan"]
+        )
+        self.assertTrue(
+            feature_closed["scenario_evidence"]["implementation_reexecuted"]
+        )
+        bugfix_closed = by_workflow[("bugfix", "closed-trigger")]
+        self.assertTrue(bugfix_closed["scenario_evidence"]["review_waived"])
+        full_closed = by_workflow[("full", "closed-trigger")]
+        self.assertTrue(full_closed["scenario_evidence"]["finding_disposed"])
+        lite_closed = by_workflow[("lite", "closed-trigger")]
+        self.assertEqual(
+            lite_closed["scenario_evidence"]["finding_relations"],
+            ["introduced", "affected"],
+        )
+        self.assertTrue(lite_closed["scenario_evidence"]["review_rework_seen"])
+        legacy = journey["legacy_cli_resume"]
+        self.assertEqual(legacy["release"], "0.4.2")
+        self.assertEqual(legacy["model"], "0.4.0")
+        self.assertTrue(legacy["discovered_by_mcp"])
+        self.assertFalse(legacy["state_migration"])
+        self.assertEqual(legacy["terminal_status"], "DONE")
+        self.assertEqual(legacy["dossier"]["schema"], acceptance.DOSSIER_SCHEMA)
+        revision = journey["contract_revision"]
+        self.assertEqual(revision["reentered"], "impact")
+        self.assertEqual(
+            revision["adopted_paths"], ["ambient-adopted.txt", "journey-plan.md"]
+        )
+        self.assertEqual(revision["terminal_status"], "DONE")
+        self.assertEqual(revision["dossier"]["schema"], acceptance.DOSSIER_SCHEMA)
+        self.assertEqual(
+            journey["corrupt_inventory"]["error_code"],
+            "LEASE_INVENTORY_INVALID",
+        )
+        self.assertFalse(journey["corrupt_inventory"]["partial_task_created"])
+        self.assertTrue(journey["linked_worktrees"]["shared_git_common_dir"])
+        self.assertTrue(
+            journey["linked_worktrees"]["distinct_worktree_memberships"]
+        )
+        self.assertEqual(
+            len(journey["linked_worktrees"]["public_mcp_admissions"]), 2
+        )
+        exact_set = journey["exact_set_lite"]
+        self.assertEqual(exact_set["repository_count"], 2)
+        self.assertEqual(exact_set["terminal_status"], "DONE")
+        self.assertEqual(exact_set["dossier"]["schema"], acceptance.DOSSIER_SCHEMA)
+        self.assertEqual(journey["terminal_status"], "DONE")
+
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "installed launcher journey currently runs on macOS",
+    )
+    def test_real_stdio_source_launcher_exercises_installed_harness_journeys(
+        self,
+    ) -> None:
+        completed = self._run_full_journey(
+            plugin_root=ROOT,
+            python_executable=Path(sys.executable),
+            launcher=SOURCE_LAUNCHER,
+        )
+        self._assert_full_journey_evidence(completed)
+
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "managed installed launcher journey currently runs on macOS",
+    )
+    def test_managed_runtime_path_launcher_exercises_full_installed_journey(
+        self,
+    ) -> None:
+        if shutil.which("uv") is None:
+            self.skipTest("uv is required for managed-runtime integration")
+
+        with tempfile.TemporaryDirectory(
+            prefix="dev-flow-managed-installed-journey-"
+        ) as temporary:
+            base = Path(temporary)
+            candidate = base / "candidate source with spaces"
+            shutil.copytree(ROOT, candidate, ignore=CANDIDATE_COPY_IGNORE)
+
+            _git(candidate, "init", "-q")
+            _git(candidate, "config", "user.name", "Managed Journey Test")
+            _git(
+                candidate,
+                "config",
+                "user.email",
+                "managed-journey@example.invalid",
+            )
+            _git(candidate, "add", "--all")
+            _git(
+                candidate,
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "-qm",
+                "managed installed candidate",
+            )
+            source_commit = _git(candidate, "rev-parse", "HEAD")
+            self.assertEqual(len(source_commit), 40)
+            self.assertEqual(_git(candidate, "status", "--porcelain"), "")
+
+            runtime_root = base / "managed runtime with spaces 雪's"
+            data_root = base / "task data"
+            data_root.mkdir()
+            built = manage_runtime.build(
+                candidate,
+                runtime_root,
+                source_commit,
+                data_root,
+            )
+            self.assertTrue(built["ok"])
+            self.assertFalse(built["reused"])
+            self.assertEqual(built["receipt"]["source_commit"], source_commit)
+            self.assertEqual(
+                _git(candidate, "rev-parse", "HEAD"),
+                built["receipt"]["source_commit"],
+            )
+            self.assertEqual(_git(candidate, "status", "--porcelain"), "")
+
+            runtime_python = (
+                Path(built["runtime_dir"]) / "venv" / "bin" / "python"
+            )
+            self.assertTrue(runtime_python.is_file())
+            bin_dir = base / "native bin"
+            bin_dir.mkdir()
+            launcher = bin_dir / "dev-flow-mcp"
+            template_text = (
+                candidate / "scripts" / "dev_flow_mcp_launcher"
+            ).read_text(encoding="utf-8")
+            self.assertEqual(template_text.count(LAUNCHER_PLACEHOLDER), 1)
+            launcher_text = template_text.replace(
+                LAUNCHER_PLACEHOLDER,
+                shlex.quote(str(runtime_python)),
+                1,
+            )
+            self.assertNotIn(LAUNCHER_PLACEHOLDER, launcher_text)
+            self.assertNotIn("dev_flow_mcp.py", launcher_text)
+            launcher.write_text(launcher_text, encoding="utf-8")
+            launcher.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment["PATH"] = str(bin_dir) + os.pathsep + environment.get(
+                "PATH", ""
+            )
+            self.assertEqual(
+                shutil.which("dev-flow-mcp", path=environment["PATH"]),
+                str(launcher),
+            )
+            completed = self._run_full_journey(
+                plugin_root=candidate,
+                python_executable=runtime_python,
+                launcher=None,
+                environment=environment,
+                interpreter_arguments=("-I",),
+            )
+
+        self._assert_full_journey_evidence(completed)
 
 
 if __name__ == "__main__":

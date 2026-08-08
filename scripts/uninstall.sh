@@ -7,6 +7,7 @@ REPOSITORY_REF="main"
 SOURCE_ROOT="${DEV_FLOW_SOURCE_ROOT:-$HOME/plugins/dev-flow-orchestrator}"
 MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace.json}"
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
+RUNTIME_ROOT="${DEV_FLOW_RUNTIME_HOME:-$HOME/.local/share/dev-flow-orchestrator/runtime}"
 select_path_bin_dir() {
   if [ -n "${DEV_FLOW_BIN_DIR:-}" ]; then
     printf '%s\n' "$DEV_FLOW_BIN_DIR"
@@ -35,8 +36,10 @@ BIN_DIR="$(select_path_bin_dir)" || {
   exit 1
 }
 LAUNCHER_PATH="$BIN_DIR/dev-flow"
+MCP_LAUNCHER_PATH="$BIN_DIR/dev-flow-mcp"
 PLUGIN_ID="dev-flow-orchestrator@personal"
 LAUNCHER_MARKER="# dev-flow-orchestrator managed launcher"
+MCP_LAUNCHER_MARKER="# dev-flow-orchestrator managed MCP launcher"
 REMOVE_SOURCE=1
 
 usage() {
@@ -76,7 +79,7 @@ if command -v python3 >/dev/null 2>&1; then
 elif command -v python >/dev/null 2>&1; then
   PYTHON=python
 else
-  fail "Python 3.9-3.14 is required."
+  fail "Python 3.10-3.14 is required."
 fi
 
 LAUNCHER_STATE="already absent"
@@ -87,9 +90,93 @@ if [ -e "$LAUNCHER_PATH" ] || [ -L "$LAUNCHER_PATH" ]; then
     || fail "$LAUNCHER_PATH exists but is not owned by Dev Flow; preserve it and remove it manually."
   LAUNCHER_STATE="present"
 fi
+MCP_LAUNCHER_STATE="already absent"
+if [ -e "$MCP_LAUNCHER_PATH" ] || [ -L "$MCP_LAUNCHER_PATH" ]; then
+  [ ! -L "$MCP_LAUNCHER_PATH" ] && [ -f "$MCP_LAUNCHER_PATH" ] \
+    || fail "$MCP_LAUNCHER_PATH is not a regular installer-managed launcher."
+  grep -Fqx "$MCP_LAUNCHER_MARKER" "$MCP_LAUNCHER_PATH" \
+    || fail "$MCP_LAUNCHER_PATH exists but is not owned by Dev Flow; preserve it and remove it manually."
+  MCP_LAUNCHER_STATE="present"
+fi
 
-"$PYTHON" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info[:2] <= (3, 14) else 1)' \
-  || fail "Python 3.9-3.14 is required."
+RUNTIME_STATE="already absent"
+if [ -e "$RUNTIME_ROOT" ] || [ -L "$RUNTIME_ROOT" ]; then
+  [ ! -L "$RUNTIME_ROOT" ] && [ -d "$RUNTIME_ROOT" ] \
+    || fail "$RUNTIME_ROOT is not a regular managed runtime directory."
+  [ -f "$RUNTIME_ROOT/.dev-flow-managed-runtime" ] \
+    && [ "$(cat "$RUNTIME_ROOT/.dev-flow-managed-runtime")" = "dev-flow-managed-runtime/1" ] \
+    || fail "$RUNTIME_ROOT does not have the Dev Flow managed-runtime marker."
+  DEV_FLOW_RUNTIME_ROOT="$RUNTIME_ROOT" "$PYTHON" -I -S -c '
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["DEV_FLOW_RUNTIME_ROOT"]).expanduser().resolve()
+releases = root / "releases"
+if not releases.is_dir() or releases.is_symlink():
+    raise SystemExit("managed runtime releases directory is missing or unsafe")
+release_dirs = sorted(releases.iterdir())
+if not release_dirs:
+    raise SystemExit("managed runtime has no receipt-owned release")
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(128 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+for release in release_dirs:
+    if not release.is_dir() or release.is_symlink():
+        raise SystemExit("managed runtime contains a non-release entry")
+    receipt_path = release / "runtime-receipt.json"
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise SystemExit("managed runtime receipt cannot be read") from error
+    fields = {
+        "schema", "release_version", "source_commit", "python",
+        "dependency_lock_sha256", "launcher_identity", "runtime_identity",
+        "activation_action", "activated_at",
+    }
+    if not isinstance(receipt, dict) or set(receipt) != fields:
+        raise SystemExit("managed runtime receipt fields are invalid")
+    commit = receipt.get("source_commit")
+    lock = receipt.get("dependency_lock_sha256")
+    python = receipt.get("python")
+    if (
+        receipt.get("schema") != "dev-flow-runtime-receipt/1.0.0"
+        or receipt.get("release_version") != "0.5.0"
+        or receipt.get("launcher_identity") != "dev-flow-mcp --stdio"
+        or receipt.get("runtime_identity") != hashlib.sha256(
+            os.path.normcase(str(release.resolve())).encode("utf-8")
+        ).hexdigest()
+        or receipt.get("activation_action") not in {"create", "update"}
+        or not isinstance(commit, str) or len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+        or not isinstance(lock, str) or len(lock) != 64
+        or any(character not in "0123456789abcdef" for character in lock)
+        or not isinstance(python, dict)
+        or set(python) != {"executable_sha256", "version", "architecture", "bits"}
+        or python.get("bits") != 64
+        or release.name != "{}-{}-{}".format(receipt["release_version"], commit[:12], lock[:12])
+    ):
+        raise SystemExit("managed runtime receipt identity is invalid")
+    executable = release / "venv" / "bin" / "python"
+    if not executable.is_file() or sha256(executable) != python.get("executable_sha256"):
+        raise SystemExit("managed runtime Python does not match its receipt")
+    try:
+        datetime.datetime.fromisoformat(str(receipt["activated_at"]).replace("Z", "+00:00"))
+    except ValueError as error:
+        raise SystemExit("managed runtime activation timestamp is invalid") from error
+' || fail "$RUNTIME_ROOT contains a missing, stale, or mismatched runtime ownership receipt; preserve it for manual handling."
+  RUNTIME_STATE="present"
+fi
+
+"$PYTHON" -c 'import struct,sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] <= (3, 14) and struct.calcsize("P") == 8 else 1)' \
+  || fail "64-bit Python 3.10-3.14 is required."
 
 if [ "$(uname -s)" != "Darwin" ]; then
   fail "This Dev Flow uninstaller supports macOS; use the documented PowerShell uninstaller on Windows."
@@ -152,6 +239,179 @@ else:
     print("present" if matches else "no-entry")
 '
 )" || fail "Cannot validate the personal marketplace before uninstalling."
+
+printf 'Inspecting the installed Codex plugin...\n'
+PLUGIN_LIST_JSON="$(codex plugin list --json)" \
+  || fail "Cannot inspect the installed Codex plugins."
+PLUGIN_STATE="$(
+  printf '%s' "$PLUGIN_LIST_JSON" | "$PYTHON" -I -S -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, OSError) as error:
+    raise SystemExit(f"invalid plugin list JSON: {error}")
+installed = payload.get("installed") if isinstance(payload, dict) else None
+if not isinstance(installed, list):
+    raise SystemExit("plugin list JSON must contain an installed array")
+matches = [
+    item
+    for item in installed
+    if isinstance(item, dict)
+    and item.get("pluginId") == "dev-flow-orchestrator@personal"
+]
+if len(matches) > 1:
+    raise SystemExit("plugin list contains duplicate Dev Flow entries")
+if not matches or matches[0].get("installed") is not True:
+    print("not-installed")
+elif matches[0].get("enabled") is True:
+    print("installed-active")
+else:
+    print("installed-inactive")
+'
+)" || fail "Cannot interpret the installed Codex plugin state."
+
+PLUGIN_BUNDLED_ACTIVE=0
+if [ "$PLUGIN_STATE" = "installed-active" ]; then
+  PLUGIN_BUNDLED_ACTIVE=1
+fi
+
+MCP_LIST_JSON="$(codex mcp list --json)" \
+  || fail "Cannot inspect standalone MCP registrations before uninstalling."
+printf '%s' "$MCP_LIST_JSON" | \
+  DEV_FLOW_PLUGIN_BUNDLED_ACTIVE="$PLUGIN_BUNDLED_ACTIVE" \
+  DEV_FLOW_CODEX_CONFIG="$CODEX_ROOT/config.toml" \
+  DEV_FLOW_MCP_LAUNCHER="$MCP_LAUNCHER_PATH" \
+  "$PYTHON" -I -S -c '
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+payload = json.load(sys.stdin)
+if not isinstance(payload, list):
+    raise SystemExit("MCP list must be an array")
+owned = Path(os.environ["DEV_FLOW_MCP_LAUNCHER"]).expanduser().resolve()
+
+def commands(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.casefold() in {"command", "executable", "program"} and isinstance(item, str):
+                yield item
+            yield from commands(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from commands(item)
+
+def owned_command(command):
+    path = Path(command).expanduser()
+    if path.name.casefold() in {"dev-flow-mcp", "dev-flow-mcp.cmd"}:
+        return True
+    try:
+        return path.resolve() == owned
+    except OSError:
+        return False
+
+def is_owned(item):
+    return any(owned_command(command) for command in commands(item))
+
+def is_canonical(item):
+    if not isinstance(item, dict) or item.get("name") != "dev-flow" or item.get("enabled") is not True:
+        return False
+    transport = item.get("transport")
+    return (
+        isinstance(transport, dict)
+        and transport.get("type") == "stdio"
+        and transport.get("command") == "dev-flow-mcp"
+        and transport.get("args") == ["--stdio"]
+    )
+
+def fallback_explicit_owned(text):
+    names = []
+    current = None
+    apostrophe = chr(39)
+    name = rf"(?:\"([^\"]+)\"|{apostrophe}([^{apostrophe}]+){apostrophe}|([A-Za-z0-9_-]+))"
+    value = rf"(?:\"([^\"]+)\"|{apostrophe}([^{apostrophe}]+){apostrophe})"
+    header = re.compile(r"^\s*\[\s*mcp_servers\s*\.\s*" + name + r"\s*\]\s*$")
+    assignment = re.compile(r"^\s*command\s*=\s*" + value)
+    dotted = re.compile(
+        r"^\s*mcp_servers\s*\.\s*" + name + r"\s*\.\s*command\s*=\s*" + value
+    )
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = header.match(line)
+        if match:
+            current = next(value for value in match.groups() if value is not None)
+            continue
+        if line.startswith("["):
+            current = None
+            continue
+        match = dotted.match(line)
+        if match:
+            values = match.groups()
+            registration_name = next(value for value in values[:3] if value is not None)
+            command = next(value for value in values[3:] if value is not None)
+            if owned_command(command):
+                names.append(registration_name)
+            continue
+        if current is not None:
+            match = assignment.match(line)
+            if match:
+                command = next(value for value in match.groups() if value is not None)
+                if owned_command(command):
+                    names.append(current)
+    return names
+
+config_path = Path(os.environ["DEV_FLOW_CODEX_CONFIG"])
+explicit_owned = []
+if config_path.exists():
+    if not config_path.is_file():
+        raise SystemExit(f"{config_path} must be a regular config.toml file")
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        import tomllib
+    except ImportError:
+        explicit_owned = fallback_explicit_owned(text)
+    else:
+        try:
+            config = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as error:
+            raise SystemExit(f"cannot parse {config_path}: {error}")
+        servers = config.get("mcp_servers", {})
+        if not isinstance(servers, dict):
+            raise SystemExit(f"{config_path} mcp_servers must be a table")
+        explicit_owned = [
+            str(name)
+            for name, registration in servers.items()
+            if isinstance(registration, dict) and is_owned(registration)
+        ]
+if explicit_owned:
+    raise SystemExit(
+        "explicit standalone Dev Flow MCP registration(s) {} are present in {}; "
+        "remove them explicitly before uninstalling bundled mode".format(
+            ", ".join(sorted(explicit_owned)), config_path
+        )
+    )
+
+owned_rows = [item for item in payload if isinstance(item, dict) and is_owned(item)]
+canonical = [item for item in payload if is_canonical(item)]
+if os.environ["DEV_FLOW_PLUGIN_BUNDLED_ACTIVE"] == "1":
+    if len(canonical) != 1 or len(owned_rows) != 1:
+        raise SystemExit(
+            "active bundled plugin must expose exactly one enabled canonical dev-flow STDIO "
+            "registration and no additional owned-launcher registrations"
+        )
+elif owned_rows:
+    names = sorted(str(item.get("name", "<unnamed>")) for item in owned_rows)
+    raise SystemExit(
+        "standalone Dev Flow MCP registration(s) {} target the launcher/runtime selected "
+        "for removal; remove them explicitly with codex mcp first".format(", ".join(names))
+    )
+' || fail "Bundled or standalone Dev Flow MCP registration state is unsafe; preserve it and resolve it before uninstalling."
 
 SOURCE_STATE="absent"
 if [ -e "$SOURCE_ROOT" ]; then
@@ -228,36 +488,8 @@ print(source_root)
   fi
 fi
 
-printf 'Inspecting the installed Codex plugin...\n'
-PLUGIN_LIST_JSON="$(codex plugin list --json)" \
-  || fail "Cannot inspect the installed Codex plugins."
-PLUGIN_STATE="$(
-  printf '%s' "$PLUGIN_LIST_JSON" | "$PYTHON" -I -S -c '
-import json
-import sys
-
-try:
-    payload = json.load(sys.stdin)
-except (json.JSONDecodeError, OSError) as error:
-    raise SystemExit(f"invalid plugin list JSON: {error}")
-installed = payload.get("installed")
-if not isinstance(installed, list):
-    raise SystemExit("plugin list JSON must contain an installed array")
-matches = [
-    item
-    for item in installed
-    if isinstance(item, dict)
-    and item.get("pluginId") == "dev-flow-orchestrator@personal"
-    and item.get("installed") is True
-]
-if len(matches) > 1:
-    raise SystemExit("plugin list contains duplicate installed entries")
-print("installed" if matches else "not-installed")
-'
-)" || fail "Cannot interpret the installed Codex plugin state."
-
 PLUGIN_ACTION="already absent"
-if [ "$PLUGIN_STATE" = "installed" ]; then
+if [ "$PLUGIN_STATE" = "installed-active" ] || [ "$PLUGIN_STATE" = "installed-inactive" ]; then
   printf 'Removing the Codex plugin...\n'
   if ! codex plugin remove "$PLUGIN_ID"; then
     fail "Cannot remove $PLUGIN_ID. Finish or cancel active Dev Flow tasks, then rerun this uninstaller."
@@ -272,6 +504,23 @@ if [ "$LAUNCHER_STATE" = "present" ]; then
   [ ! -e "$LAUNCHER_PATH" ] && [ ! -L "$LAUNCHER_PATH" ] \
     || fail "Could not remove $LAUNCHER_PATH."
   LAUNCHER_ACTION="removed"
+fi
+MCP_LAUNCHER_ACTION="already absent"
+if [ "$MCP_LAUNCHER_STATE" = "present" ]; then
+  printf 'Removing the dev-flow-mcp PATH launcher...\n'
+  rm -f -- "$MCP_LAUNCHER_PATH"
+  [ ! -e "$MCP_LAUNCHER_PATH" ] && [ ! -L "$MCP_LAUNCHER_PATH" ] \
+    || fail "Could not remove $MCP_LAUNCHER_PATH."
+  MCP_LAUNCHER_ACTION="removed"
+fi
+
+RUNTIME_ACTION="already absent"
+if [ "$RUNTIME_STATE" = "present" ]; then
+  printf 'Removing the marker-validated managed MCP runtime...\n'
+  rm -rf -- "$RUNTIME_ROOT"
+  [ ! -e "$RUNTIME_ROOT" ] && [ ! -L "$RUNTIME_ROOT" ] \
+    || fail "Could not remove $RUNTIME_ROOT."
+  RUNTIME_ACTION="removed"
 fi
 
 MARKETPLACE_ACTION="already absent"
@@ -330,6 +579,12 @@ printf '%s│%s  %sMARKETPLACE%s  %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$MARKETPLACE_ACTION"
 printf '%s│%s  %sCOMMAND%s      %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$LAUNCHER_ACTION"
+printf '%s│%s  %sMCP COMMAND%s  %s\n' \
+  "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$MCP_LAUNCHER_ACTION"
+printf '%s│%s  %sMCP RUNTIME%s  %s\n' \
+  "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$RUNTIME_ACTION"
+printf '%s│%s  %sSTANDALONE%s   preserved / no owned registration removed\n' \
+  "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET"
 printf '%s│%s  %sSOURCE%s       %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$SOURCE_ACTION"
 printf '%s╰─%s\n' "$NEON_CYAN" "$COLOR_RESET"

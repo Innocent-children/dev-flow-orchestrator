@@ -83,7 +83,7 @@ class WebReadModelTests(RepositoryTestCase):
         self.assertEqual(detail["result"]["health"], "not-evaluated")
         self.assertEqual(
             detail["result"]["recovery"]["prompt"],
-            "$follow-dev-flow task_id={}".format(task_id),
+            "Call dev_flow_get_next_action with task_id={}".format(task_id),
         )
         self.assertNotIn(str(self.repository), serialized)
         self.assertNotIn(str(self.data_dir), serialized)
