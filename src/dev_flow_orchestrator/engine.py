@@ -266,11 +266,16 @@ def validate_action_payload(
             and all(character in "0123456789abcdef" for character in item)
         )
         if not valid:
+            details = {
+                "field": field,
+                "expected_type": expected_type,
+            }
+            if field == "resources" and expected_type == "object":
+                details["expected_fields"] = ["items"]
             raise _error(
                 NODE_OUTPUT_INVALID,
                 "node output field has the wrong type or size",
-                field=field,
-                expected_type=expected_type,
+                **details,
             )
     driver_result = value.get("driver_result")
     if driver_result is not None and (

@@ -914,6 +914,40 @@ class MCPRuntimeTests(unittest.TestCase):
                 self.assertEqual(result.structured_content["error"]["code"], code)
                 self.assertIsNone(result.structured_content["result"])
 
+    def test_invalid_action_payload_returns_correct_request_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            controller = mock.Mock()
+            controller.apply.side_effect = DevFlowError(
+                "NODE_OUTPUT_INVALID",
+                "resources must be an object containing exactly items",
+                details={"field": "resources", "expected_fields": ["items"]},
+            )
+            application = MCPApplication(data_dir)
+            application._controller = controller
+            result = application.call(
+                "dev_flow_apply_action",
+                {
+                    "task_id": "task-one",
+                    "action_id": "plan.record",
+                    "payload": {"resources": []},
+                    "binding": {},
+                },
+            )
+
+        self.assertTrue(result.is_error)
+        error = result.structured_content["error"]
+        self.assertEqual(error["code"], "NODE_OUTPUT_INVALID")
+        self.assertEqual(error["details"]["expected_fields"], ["items"])
+        self.assertEqual(
+            error["recovery"],
+            {
+                "kind": "correct-request",
+                "tool": "dev_flow_apply_action",
+                "task_id": "task-one",
+                "blind_retry": False,
+            },
+        )
+
     def test_current_action_is_compact_and_keeps_the_exact_binding(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -340,17 +340,38 @@ def resource_requests(
     if value is None:
         return ()
     if not isinstance(value, Mapping) or set(value) != {"items"}:
-        raise _error("NODE_OUTPUT_INVALID", "resources must contain exactly items")
+        raise _error(
+            "NODE_OUTPUT_INVALID",
+            "resources must be an object containing exactly items",
+            field="resources",
+            expected_fields=["items"],
+        )
     items = value.get("items")
     if not isinstance(items, (list, tuple)) or len(items) > MAX_RESOURCE_ITEMS:
-        raise _error("NODE_OUTPUT_INVALID", "resource item list is invalid")
+        raise _error(
+            "NODE_OUTPUT_INVALID",
+            "resources.items must be a bounded array",
+            field="resources.items",
+            item_limit=MAX_RESOURCE_ITEMS,
+        )
     normalized = []
     seen = set()
     member_ids = tuple(repository_ids)
     for item in items:
         expected_fields = {"path", "role", "normalizer", "repository_id"}
         if not isinstance(item, Mapping) or set(item) != expected_fields:
-            raise _error("NODE_OUTPUT_INVALID", "resource item fields are invalid")
+            actual_fields = (
+                sorted(str(field) for field in item)
+                if isinstance(item, Mapping)
+                else []
+            )
+            raise _error(
+                "NODE_OUTPUT_INVALID",
+                "resource item fields are invalid",
+                field="resources.items[]",
+                expected_fields=sorted(expected_fields),
+                actual_fields=actual_fields,
+            )
         repository_id = item.get("repository_id")
         if repository_id not in member_ids:
             raise _error(

@@ -160,6 +160,11 @@ GUIDANCE_CATALOG = {
                 "Do not silently adopt ambient drift, omit a changed member, claim unowned drift, change repository membership, or edit Controller state.",
                 "If action.context.blocked or the binding is null, do not change source or submit the action; follow only projected recovery."
             ],
+            "stale_recovery": (
+                "Keep the exact issued binding while performing the task-owned source edits authorized by this action. "
+                "If dev_flow_apply_action rejects a pre-commit payload with NODE_OUTPUT_INVALID, correct the payload and resubmit the same binding when task revision, action, contract, inputs, and repository membership are unchanged. "
+                "Do not refresh solely because those authorized edits changed repository evidence; refresh when task authority changes, and never claim unrelated ambient drift."
+            ),
         },
         "verifies-source": {
             "allowed_effects": "source-verifying",
@@ -295,7 +300,7 @@ def _payload_notes(payload: object) -> list:
         )
     if "resources" in fields:
         notes.append(
-            "Bind repository-scoped governing and reported resources with current identities and the projected semantic normalizer."
+            "resources must be exactly {items: [{repository_id, path, role, normalizer}]}; use a projected repository_id, a relative path, role governing or reported, and normalizer none or openspec-tasks/0.4.0."
         )
     if "assurance_result" in fields:
         notes.append("assurance_result must name only action.current_obligation.obligation_id.")

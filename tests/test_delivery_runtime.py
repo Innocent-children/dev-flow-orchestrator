@@ -469,6 +469,101 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 self.assertEqual(context.exception.code, "NODE_OUTPUT_INVALID")
                 self.assertEqual(self.controller.show(task_id), before)
 
+    def test_malformed_plan_resources_can_be_corrected_with_issued_binding(self) -> None:
+        task_id = self.start_feature("Recover a source-producing payload correction")
+        self.preflight(task_id)
+        self.apply_current(
+            task_id,
+            {"summary": "Impact checked", "driver_result": driver_result("available")},
+        )
+        planning = self.controller.next(task_id)
+        binding = planning["action"]["binding"]
+        plan_path = self.repository / "plan.md"
+        plan_path.write_text("# Accepted plan\n", encoding="utf-8")
+        ownership_claims = self.ownership_claims(task_id, ["plan.md"])
+        before = self.controller.show(task_id)
+
+        with self.assertRaises(DevFlowError) as malformed:
+            self.controller.apply(
+                task_id,
+                "plan.record",
+                {
+                    "summary": "Plan recorded",
+                    "resources": [],
+                    "driver_result": driver_result("available"),
+                    "ownership_claims": ownership_claims,
+                },
+                binding=binding,
+            )
+
+        self.assertEqual(malformed.exception.code, "NODE_OUTPUT_INVALID")
+        self.assertEqual(
+            malformed.exception.details,
+            {
+                "field": "resources",
+                "expected_type": "object",
+                "expected_fields": ["items"],
+            },
+        )
+        self.assertEqual(self.controller.show(task_id), before)
+
+        with self.assertRaises(DevFlowError) as missing_repository:
+            self.controller.apply(
+                task_id,
+                "plan.record",
+                {
+                    "summary": "Plan recorded",
+                    "resources": {
+                        "items": [{
+                            "path": "plan.md",
+                            "role": "governing",
+                            "normalizer": "none",
+                        }],
+                    },
+                    "driver_result": driver_result("available"),
+                    "ownership_claims": ownership_claims,
+                },
+                binding=binding,
+            )
+
+        self.assertEqual(missing_repository.exception.code, "NODE_OUTPUT_INVALID")
+        self.assertEqual(
+            missing_repository.exception.details,
+            {
+                "field": "resources.items[]",
+                "expected_fields": ["normalizer", "path", "repository_id", "role"],
+                "actual_fields": ["normalizer", "path", "role"],
+            },
+        )
+        self.assertEqual(self.controller.show(task_id), before)
+        refreshed = self.controller.next(task_id)
+        self.assertIsNone(refreshed["action"]["binding"])
+        self.assertEqual(
+            refreshed["action"]["blocked"]["code"],
+            "ARTIFACT_INPUT_MISSING",
+        )
+
+        corrected = self.controller.apply(
+            task_id,
+            "plan.record",
+            {
+                "summary": "Plan recorded",
+                "resources": self.resource_payload(
+                    task_id,
+                    [{
+                        "path": "plan.md",
+                        "role": "governing",
+                        "normalizer": "none",
+                    }],
+                ),
+                "driver_result": driver_result("available"),
+                "ownership_claims": ownership_claims,
+            },
+            binding=binding,
+        )
+
+        self.assertEqual(corrected["projection"]["current_node"], "implement")
+
     def test_coverage_missing_or_unsupported_schema_fails_atomically(self) -> None:
         task_id = self.start_lite("Reject invalid coverage schemas")
         self.preflight(task_id)

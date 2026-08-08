@@ -69,7 +69,11 @@ def _recovery(
     return value
 
 
-def _recovery_for_domain(code: str, task_id: Optional[str]) -> Optional[dict[str, object]]:
+def _recovery_for_domain(
+    code: str,
+    task_id: Optional[str],
+    tool: str,
+) -> Optional[dict[str, object]]:
     if code in {"TASK_NOT_FOUND", "TASK_ID_INVALID"}:
         return _recovery(
             "discover-task",
@@ -94,6 +98,13 @@ def _recovery_for_domain(code: str, task_id: Optional[str]) -> Optional[dict[str
         )
     if code in {"CURSOR_INVALID", "PAYLOAD_LIMIT", "VIEW_QUERY_INVALID"}:
         return _recovery("correct-request", blind_retry=False)
+    if code == "NODE_OUTPUT_INVALID" and tool == "dev_flow_apply_action":
+        return _recovery(
+            "correct-request",
+            tool="dev_flow_apply_action",
+            task_id=task_id,
+            blind_retry=False,
+        )
     return None
 
 
@@ -177,7 +188,7 @@ def domain_error(
             "code": code,
             "message": bounded_message,
             "details": _bounded_json(details, MAX_ERROR_DETAILS_BYTES),
-            "recovery": _recovery_for_domain(str(code), task_id),
+            "recovery": _recovery_for_domain(str(code), task_id, tool),
         },
     }
     text = "{}{}; request {}".format(

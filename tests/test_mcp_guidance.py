@@ -211,6 +211,10 @@ class MCPGuidanceTests(unittest.TestCase):
             "binding is null",
         ):
             self.assertIn(phrase, rendered)
+        self.assertIn("Keep the exact issued binding", guidance["stale_recovery"])
+        self.assertIn("NODE_OUTPUT_INVALID", guidance["stale_recovery"])
+        self.assertIn("Do not refresh solely", guidance["stale_recovery"])
+        self.assertIn("task revision", guidance["stale_recovery"])
 
         compact = compact_current_action(projection, guidance)
         self.assertIs(compact["action"]["binding"], binding)
@@ -273,7 +277,15 @@ class MCPGuidanceTests(unittest.TestCase):
         openspec = guidance_for_projection(self._projection(planning))
         self.assertEqual(openspec["driver"]["fallback"], openspec_fallback)
         self.assertIn("machine-readable status", openspec["driver"]["source_confirmation"])
-        self.assertIn("semantic normalizer", " ".join(openspec["payload_notes"]))
+        payload_notes = " ".join(openspec["payload_notes"])
+        for phrase in (
+            "resources must be exactly {items:",
+            "repository_id",
+            "governing or reported",
+            "openspec-tasks/0.4.0",
+        ):
+            self.assertIn(phrase, payload_notes)
+        self.assertLessEqual(len(_canonical(openspec)), MCP_GUIDANCE_MAX_BYTES)
 
     def test_assurance_keeps_current_obligation_slices_reuse_and_budgets(self) -> None:
         action = self._action(
