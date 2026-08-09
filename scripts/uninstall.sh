@@ -76,12 +76,27 @@ done
 
 command -v codex >/dev/null 2>&1 || fail "Codex with plugin support is required."
 
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
-  PYTHON=python
+python_supported() {
+  candidate="$1"
+  PYTHONDONTWRITEBYTECODE=1 "$candidate" -B -c 'import platform,struct,sys; raise SystemExit(0 if platform.python_implementation() == "CPython" and (3, 10) <= sys.version_info[:2] < (3, 15) and struct.calcsize("P") == 8 else 1)' >/dev/null 2>&1
+}
+
+if [ -n "${DEV_FLOW_PYTHON:-}" ]; then
+  [ ! -L "$DEV_FLOW_PYTHON" ] && [ -f "$DEV_FLOW_PYTHON" ] && [ -x "$DEV_FLOW_PYTHON" ] \
+    || fail "DEV_FLOW_PYTHON must name a regular executable."
+  python_supported "$DEV_FLOW_PYTHON" \
+    || fail "DEV_FLOW_PYTHON must be a supported 64-bit CPython 3.10-3.14."
+  PYTHON="$DEV_FLOW_PYTHON"
 else
-  fail "Python 3.10-3.14 is required."
+  PYTHON=""
+  for candidate in python3 python; do
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    if [ -n "$resolved" ] && [ -f "$resolved" ] && [ -x "$resolved" ] && python_supported "$resolved"; then
+      PYTHON="$resolved"
+      break
+    fi
+  done
+  [ -n "$PYTHON" ] || fail "Supported 64-bit CPython 3.10-3.14 is required."
 fi
 
 python_no_bytecode() {

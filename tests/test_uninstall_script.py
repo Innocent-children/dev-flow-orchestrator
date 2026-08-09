@@ -409,6 +409,7 @@ class UninstallerBehaviorTests(unittest.TestCase):
             },
             "runtime_path": str(physical_release),
             "launcher_sha256": "1" * 64,
+            "cli_launcher_sha256": None,
             "ownership_manifest_sha256": ownership_digest,
             "dependency_lock_sha256": "2" * 64,
             "created_at": "2026-08-08T00:00:00Z",
@@ -1092,6 +1093,36 @@ class UninstallerBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.activation_calls(), [])
+        self.assertIn("already absent", result.stdout)
+
+    def test_invalid_explicit_python_refuses_without_mutation(self) -> None:
+        self.write_marketplace()
+        before = self.marketplace.read_bytes()
+        fake_python = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "unsupported python"
+        fake_python.write_text("#!/bin/sh\nexit 39\n", encoding="utf-8")
+        fake_python.chmod(0o755)
+
+        result = self.run_uninstaller(overrides={"DEV_FLOW_PYTHON": str(fake_python)})
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DEV_FLOW_PYTHON must be a supported", result.stderr)
+        self.assertEqual(self.marketplace.read_bytes(), before)
+        self.assertTrue(self.source_root.exists())
+
+    def test_explicit_python_path_with_spaces_and_unicode_is_supported(self) -> None:
+        self.write_marketplace(include_dev_flow=False)
+        shutil.rmtree(self.source_root)
+        wrapper = self.test_root / "Python 雪 path" / "python executable"
+        wrapper.parent.mkdir()
+        wrapper.write_text(
+            "#!/bin/sh\nexec " + repr(sys.executable) + " \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+
+        result = self.run_uninstaller(overrides={"DEV_FLOW_PYTHON": str(wrapper)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("already absent", result.stdout)
 
     def test_uninstall_receipt_uses_neon_colors_when_forced(self) -> None:

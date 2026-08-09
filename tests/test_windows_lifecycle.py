@@ -256,6 +256,10 @@ class WindowsLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(receipt["schema"], "dev-flow-runtime-receipt/2.0.0")
         self.assertEqual(receipt["release_id"], plugin_root.parent.name)
+        cli_launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow.cmd"
+        self.assertTrue(cli_launcher.is_file())
+        self.assertIsInstance(receipt["cli_launcher_sha256"], str)
+        self.assertIn("managed CLI launcher", cli_launcher.read_text(encoding="utf-8"))
 
     def test_older_version_is_upgraded(self) -> None:
         self.assertEqual(self.run_script("install.ps1").returncode, 0)

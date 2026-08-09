@@ -1144,7 +1144,7 @@ class InstallerBehaviorTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("standalone Dev Flow MCP registration", result.stderr)
-        self.assertIn("disable or remove", result.stderr)
+        self.assertIn("preserve and inspect them manually", result.stderr)
         self.assertFalse(Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).exists())
         self.assertEqual(self.activation_calls(), [])
 
@@ -1271,18 +1271,41 @@ class InstallerBehaviorTests(unittest.TestCase):
             self.activation_calls(), ["plugin add dev-flow-orchestrator@personal"]
         )
 
-    def test_simulated_unsupported_python_refuses_before_source_or_runtime(self) -> None:
+    def test_unsupported_python3_falls_back_to_supported_python(self) -> None:
         fake_python = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "python3"
         fake_python.write_text("#!/bin/sh\nexit 39\n", encoding="utf-8")
         fake_python.chmod(0o755)
 
         result = self.run_installer()
 
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.source_root.exists())
+
+    def test_simulated_unsupported_python_refuses_before_source_or_runtime(self) -> None:
+        fake_python = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "unsupported python"
+        fake_python.write_text("#!/bin/sh\nexit 39\n", encoding="utf-8")
+        fake_python.chmod(0o755)
+
+        result = self.run_installer({"DEV_FLOW_PYTHON": str(fake_python)})
+
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("64-bit Python 3.10-3.14 is required", result.stderr)
+        self.assertIn("DEV_FLOW_PYTHON must be a supported", result.stderr)
         self.assertFalse(self.source_root.exists())
         self.assertFalse(Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).exists())
         self.assertEqual(self.activation_calls(), [])
+
+    def test_explicit_python_path_with_spaces_and_unicode_is_supported(self) -> None:
+        wrapper = self.test_root / "Python 雪 path" / "python executable"
+        wrapper.parent.mkdir()
+        wrapper.write_text(
+            "#!/bin/sh\nexec " + repr(sys.executable) + " \"$@\"\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+
+        result = self.run_installer({"DEV_FLOW_PYTHON": str(wrapper)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_failed_runtime_build_preserves_previous_runtime_plugin_and_data(self) -> None:
         self.install_successfully()

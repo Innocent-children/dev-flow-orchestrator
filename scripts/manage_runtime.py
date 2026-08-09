@@ -200,6 +200,27 @@ def _render_launcher(target: Path, staging: Path, release_id: str) -> Path:
     return launcher
 
 
+def _render_cli_launcher(target: Path, staging: Path, mcp_launcher: Path) -> Path | None:
+    if os.name != "nt":
+        return None
+    runtime_python = _python(target / "venv")
+    verifier = target / "integrity" / "runtime_integrity.py"
+    plugin_cli = target / "plugin" / "scripts" / "dev_flow.py"
+    payload = (
+        "@echo off\r\n"
+        "rem dev-flow-orchestrator managed CLI launcher\r\n"
+        "set \"PYTHONDONTWRITEBYTECODE=1\"\r\n"
+        f'"{runtime_python}" -B -I "{verifier}" verify-runtime '
+        f'--runtime-dir "{target}" --launcher "{mcp_launcher}"\r\n'
+        "if errorlevel 1 exit /b %errorlevel%\r\n"
+        f'"{runtime_python}" -B -I "{plugin_cli}" %*\r\n'
+    )
+    launcher = staging / "launchers" / "dev-flow.cmd"
+    launcher.write_text(payload, encoding="utf-8", newline="")
+    launcher.chmod(0o644)
+    return launcher
+
+
 def _verify_with_runtime(
     *,
     runtime_dir: Path,
@@ -237,6 +258,7 @@ def _runtime_result(
     launcher = target / "launchers" / (
         "dev-flow-mcp.cmd" if os.name == "nt" else "dev-flow-mcp"
     )
+    cli_launcher = target / "launchers" / "dev-flow.cmd"
     return {
         "ok": True,
         "reused": reused,
@@ -250,6 +272,8 @@ def _runtime_result(
         "verifier_path": str(target / "integrity" / "runtime_integrity.py"),
         "launcher_path": str(launcher),
         "launcher_sha256": receipt["launcher_sha256"],
+        "cli_launcher_path": str(cli_launcher) if cli_launcher.exists() else None,
+        "cli_launcher_sha256": receipt["cli_launcher_sha256"],
         "retained_paths": retained_paths,
     }
 
@@ -419,6 +443,7 @@ def build(
         shutil.copyfile(_HELPER_PATH, verifier)
         verifier.chmod(0o644)
         launcher = _render_launcher(target, staging, release_id)
+        cli_launcher = _render_cli_launcher(target, staging, launcher)
         ownership = integrity.build_ownership_manifest(staging, release_id)
         ownership_path = staging / OWNERSHIP_MANIFEST_NAME
         ownership_path.write_bytes(integrity.pretty_json_bytes(ownership))
@@ -435,6 +460,7 @@ def build(
                     "--plugin-release-manifest-sha256", str(staged_plugin_manifest["manifest_sha256"]),
                     "--wheel", str(wheels[0]),
                     "--launcher", str(launcher),
+                    *([] if cli_launcher is None else ["--cli-launcher", str(cli_launcher)]),
                     "--ownership-manifest", str(ownership_path),
                 ],
                 cwd=transaction,

@@ -13,6 +13,7 @@ $RuntimeRoot = if ($env:DEV_FLOW_RUNTIME_HOME) { $env:DEV_FLOW_RUNTIME_HOME } el
 $DataRoot = Join-Path $CodexRoot 'plugins\data\dev-flow-orchestrator-personal\0.4.0'
 $PluginId = 'dev-flow-orchestrator@personal'
 $McpLauncherMarker = 'rem dev-flow-orchestrator managed MCP launcher'
+$CliLauncherMarker = 'rem dev-flow-orchestrator managed CLI launcher'
 
 function Fail([string]$Message) {
     if ($null -ne (Get-Command Test-SelectedSourceInventory -CommandType Function -ErrorAction SilentlyContinue)) {
@@ -209,10 +210,34 @@ if (-not (Get-Command uv.exe -ErrorAction SilentlyContinue)) { Fail 'uv is requi
 $Python = Find-Python
 $BinDirectory = Find-BinDirectory
 $McpLauncherPath = Join-Path $BinDirectory 'dev-flow-mcp.cmd'
+$CliLauncherPath = Join-Path $BinDirectory 'dev-flow.cmd'
 if (Test-Path -LiteralPath $McpLauncherPath) {
     if (-not (Test-Path -LiteralPath $McpLauncherPath -PathType Leaf)) { Fail "$McpLauncherPath is not a regular file." }
     $FirstLines = @(Get-Content -LiteralPath $McpLauncherPath -TotalCount 3 -Encoding UTF8)
     if ($FirstLines -notcontains $McpLauncherMarker) { Fail "$McpLauncherPath exists and is not owned by Dev Flow." }
+}
+if (Test-Path -LiteralPath $CliLauncherPath) {
+    if (-not (Test-Path -LiteralPath $CliLauncherPath -PathType Leaf)) { Fail "$CliLauncherPath is not a regular file." }
+    if (@(Get-Content -LiteralPath $CliLauncherPath -TotalCount 3 -Encoding UTF8) -notcontains $CliLauncherMarker) {
+        Fail "$CliLauncherPath exists and is not owned by Dev Flow."
+    }
+}
+
+$EarlyMcpListJson = Capture-Checked 'codex' @('mcp', 'list', '--json') 'Cannot inspect standalone MCP registrations before installation.'
+if (-not $EarlyMcpListJson.TrimStart().StartsWith('[')) { Fail 'Codex MCP registration JSON must be an array.' }
+try { $EarlyMcpRegistrations = @($EarlyMcpListJson | ConvertFrom-Json) } catch { Fail 'Codex returned invalid MCP registration JSON.' }
+$EarlyStandalone = @($EarlyMcpRegistrations | Where-Object {
+    -not (Test-BundledMcpRegistration $_) -and (
+        $_.name -eq 'dev-flow' -or (Test-OwnedMcpRegistration $_ $McpLauncherPath)
+    )
+})
+if ($EarlyStandalone.Count -gt 0) {
+    Fail 'Unsupported standalone Dev Flow MCP registration is present; preserve it and inspect it manually before bundled installation.'
+}
+$EarlyConfigPath = Join-Path $CodexRoot 'config.toml'
+$EarlyExplicit = @(Get-ExplicitOwnedMcpRegistrationNames $EarlyConfigPath $McpLauncherPath)
+if ($EarlyExplicit.Count -gt 0) {
+    Fail "Unsupported standalone Dev Flow MCP registration(s) $($EarlyExplicit -join ', ') are present; preserve them before bundled installation."
 }
 
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
@@ -364,13 +389,16 @@ $RuntimePython = Join-Path ([string]$RuntimeResult.runtime_dir) 'venv\Scripts\py
 if (-not (Test-Path -LiteralPath $RuntimePython -PathType Leaf)) { Fail 'Managed MCP runtime Python is unavailable.' }
 $PersistentPluginRoot = [IO.Path]::GetFullPath([string]$RuntimeResult.plugin_root)
 $ManagedLauncherPayload = [IO.Path]::GetFullPath([string]$RuntimeResult.launcher_path)
+$ManagedCliLauncherPayload = [IO.Path]::GetFullPath([string]$RuntimeResult.cli_launcher_path)
 if (-not (Test-Path -LiteralPath $PersistentPluginRoot -PathType Container)) { Fail 'Managed sealed plugin release is unavailable.' }
 if (-not (Test-Path -LiteralPath $ManagedLauncherPayload -PathType Leaf)) { Fail 'Managed MCP launcher payload is unavailable.' }
+if (-not (Test-Path -LiteralPath $ManagedCliLauncherPayload -PathType Leaf)) { Fail 'Managed CLI launcher payload is unavailable.' }
 
 $PreviousReleaseId = ''
 $PreviousPersistentPluginRoot = ''
 $PreviousRuntimePython = ''
 $PreviousManagedLauncherPayload = ''
+$PreviousManagedCliLauncherPayload = ''
 if ($InstalledMatches.Count -eq 1) {
     if ($null -eq $PreviousSealResult) {
         $PreviousSealResult = $SealResult
@@ -389,10 +417,12 @@ if ($InstalledMatches.Count -eq 1) {
     $PreviousPersistentPluginRoot = [IO.Path]::GetFullPath([string]$PreviousRuntimeResult.plugin_root)
     $PreviousRuntimePython = Join-Path ([string]$PreviousRuntimeResult.runtime_dir) 'venv\Scripts\python.exe'
     $PreviousManagedLauncherPayload = [IO.Path]::GetFullPath([string]$PreviousRuntimeResult.launcher_path)
+    $PreviousManagedCliLauncherPayload = [IO.Path]::GetFullPath([string]$PreviousRuntimeResult.cli_launcher_path)
     if (
         -not (Test-Path -LiteralPath $PreviousPersistentPluginRoot -PathType Container) -or
         -not (Test-Path -LiteralPath $PreviousRuntimePython -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $PreviousManagedLauncherPayload -PathType Leaf)
+        -not (Test-Path -LiteralPath $PreviousManagedLauncherPayload -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $PreviousManagedCliLauncherPayload -PathType Leaf)
     ) { Fail 'The previous release cannot be staged for bounded rollback.' }
 }
 
@@ -411,6 +441,8 @@ if ($PreviousPersistentPluginRoot) {
 
 $PreviousLauncherBytes = if (Test-Path -LiteralPath $McpLauncherPath -PathType Leaf) { [IO.File]::ReadAllBytes($McpLauncherPath) } else { $null }
 $CandidateLauncherBytes = [IO.File]::ReadAllBytes($ManagedLauncherPayload)
+$PreviousCliLauncherBytes = if (Test-Path -LiteralPath $CliLauncherPath -PathType Leaf) { [IO.File]::ReadAllBytes($CliLauncherPath) } else { $null }
+$CandidateCliLauncherBytes = [IO.File]::ReadAllBytes($ManagedCliLauncherPayload)
 [IO.Directory]::CreateDirectory($MarketplaceDirectory) | Out-Null
 $MarketplaceOriginallyPresent = Test-Path -LiteralPath $MarketplaceFile
 if (Test-Path -LiteralPath $MarketplaceFile) {
@@ -492,6 +524,25 @@ function Set-McpLauncher([object]$Expected, [object]$Replacement) {
             [IO.File]::Replace($Temporary, $McpLauncherPath, $Backup)
             Remove-Item -LiteralPath $Backup -Force
         } else { [IO.File]::Move($Temporary, $McpLauncherPath) }
+        return $true
+    } catch { return $false }
+}
+
+function Set-CliLauncher([object]$Expected, [object]$Replacement) {
+    try {
+        $Current = if (Test-Path -LiteralPath $CliLauncherPath -PathType Leaf) { [IO.File]::ReadAllBytes($CliLauncherPath) } else { $null }
+        if (-not (Test-BytesEqual $Current $Expected)) { return $false }
+        if ($null -eq $Replacement) {
+            Remove-Item -LiteralPath $CliLauncherPath -Force -ErrorAction Stop
+            return $true
+        }
+        $Temporary = "$CliLauncherPath.tmp.$PID"
+        [IO.File]::WriteAllBytes($Temporary, [byte[]]$Replacement)
+        if (Test-Path -LiteralPath $CliLauncherPath) {
+            $Backup = "$CliLauncherPath.bak.$PID"
+            [IO.File]::Replace($Temporary, $CliLauncherPath, $Backup)
+            Remove-Item -LiteralPath $Backup -Force
+        } else { [IO.File]::Move($Temporary, $CliLauncherPath) }
         return $true
     } catch { return $false }
 }
@@ -599,7 +650,10 @@ function Restore-CandidateActivation([string]$Reason) {
 
     if ($script:TxLauncher -eq 'candidate') {
         $RollbackLauncherBytes = if ($PreviousReleaseId) { [IO.File]::ReadAllBytes($PreviousManagedLauncherPayload) } else { $PreviousLauncherBytes }
-        if (Set-McpLauncher $CandidateLauncherBytes $RollbackLauncherBytes) { $script:TxLauncher = 'original' }
+        $RollbackCliLauncherBytes = if ($PreviousReleaseId) { [IO.File]::ReadAllBytes($PreviousManagedCliLauncherPayload) } else { $PreviousCliLauncherBytes }
+        $McpLauncherRestored = Set-McpLauncher $CandidateLauncherBytes $RollbackLauncherBytes
+        $CliLauncherRestored = Set-CliLauncher $CandidateCliLauncherBytes $RollbackCliLauncherBytes
+        if ($McpLauncherRestored -and $CliLauncherRestored) { $script:TxLauncher = 'original' }
         else { $script:TxLauncher = 'unknown'; $RollbackOk = $false }
     }
 
@@ -642,11 +696,18 @@ function Restore-CandidateActivation([string]$Reason) {
 
 if (-not (Write-InstallTransaction)) { Fail 'Cannot create the bounded installation transaction record.' }
 if (-not (Set-McpLauncher $PreviousLauncherBytes $CandidateLauncherBytes)) { Fail 'Cannot install the exact managed MCP launcher.' }
+if (-not (Set-CliLauncher $PreviousCliLauncherBytes $CandidateCliLauncherBytes)) {
+    [void](Set-McpLauncher $CandidateLauncherBytes $PreviousLauncherBytes)
+    Fail 'Cannot install the exact managed CLI launcher.'
+}
 $script:TxLauncher = 'candidate'
 $script:TxStep = 'mcp-launcher'
 if (-not (Write-InstallTransaction)) { Restore-CandidateActivation 'Cannot record the managed MCP launcher update.' }
 if ((Get-FileHash -LiteralPath $McpLauncherPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$RuntimeResult.launcher_sha256) {
     Restore-CandidateActivation 'Installed MCP launcher bytes do not match the verified runtime receipt.'
+}
+if ((Get-FileHash -LiteralPath $CliLauncherPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$RuntimeResult.cli_launcher_sha256) {
+    Restore-CandidateActivation 'Installed CLI launcher bytes do not match the verified runtime receipt.'
 }
 
 if (-not (Set-MarketplaceEntry $OriginalMarketplaceEntry $CandidateMarketplaceEntry)) {
@@ -707,4 +768,5 @@ Write-Output "MARKETPLACE    $MarketplaceFile"
 Write-Output "CODEX HOME     $CodexRoot"
 Write-Output "MCP RUNTIME    $RuntimeRoot"
 Write-Output "MCP COMMAND    $McpLauncherPath"
+Write-Output "CLI COMMAND    $CliLauncherPath"
 Write-Output 'FIRST PROMPT   Ask Codex to discover or start a Dev Flow task through the dev-flow MCP server.'

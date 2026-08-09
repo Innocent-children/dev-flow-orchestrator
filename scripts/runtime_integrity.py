@@ -754,6 +754,7 @@ def build_runtime_receipt(
     plugin_release_manifest_sha256: str,
     wheel_path: Path,
     launcher_path: Path,
+    cli_launcher_path: Path | None,
     ownership_manifest_path: Path,
 ) -> dict[str, object]:
     release_id = _validate_release_id(release_id)
@@ -779,6 +780,11 @@ def build_runtime_receipt(
         "python": python_identity(physical_runtime, recorded_runtime),
         "runtime_path": str(Path(os.path.abspath(recorded_runtime))),
         "launcher_sha256": _regular_digest(launcher_path, label="managed MCP launcher"),
+        "cli_launcher_sha256": (
+            None
+            if cli_launcher_path is None
+            else _regular_digest(cli_launcher_path, label="managed CLI launcher")
+        ),
         "ownership_manifest_sha256": _regular_digest(
             ownership_manifest_path, label="runtime ownership manifest"
         ),
@@ -836,7 +842,8 @@ def validate_runtime_receipt(value: object) -> dict[str, object]:
     required = {
         "schema", "release_id", "source_commit", "source_tree", "wheel_sha256",
         "plugin_path", "plugin_release_manifest_sha256", "dev_flow", "dependencies",
-        "python", "runtime_path", "launcher_sha256", "ownership_manifest_sha256",
+        "python", "runtime_path", "launcher_sha256", "cli_launcher_sha256",
+        "ownership_manifest_sha256",
         "dependency_lock_sha256", "created_at",
     }
     if not isinstance(value, Mapping) or set(value) != required:
@@ -914,6 +921,11 @@ def validate_runtime_receipt(value: object) -> dict[str, object]:
         },
         "runtime_path": runtime_path,
         "launcher_sha256": _validate_hex(value.get("launcher_sha256"), label="launcher digest"),
+        "cli_launcher_sha256": (
+            None
+            if value.get("cli_launcher_sha256") is None
+            else _validate_hex(value.get("cli_launcher_sha256"), label="CLI launcher digest")
+        ),
         "ownership_manifest_sha256": _validate_hex(
             value.get("ownership_manifest_sha256"), label="ownership manifest digest"
         ),
@@ -977,6 +989,15 @@ def verify_runtime(
         raise IntegrityError("managed runtime content differs from its ownership manifest")
     if _regular_digest(launcher_path, label="managed MCP launcher") != receipt["launcher_sha256"]:
         raise IntegrityError("managed MCP launcher digest differs from the receipt")
+    cli_digest = receipt["cli_launcher_sha256"]
+    cli_path = runtime_dir / "launchers" / "dev-flow.cmd"
+    if (
+        cli_digest is not None
+        and _regular_digest(cli_path, label="managed CLI launcher") != cli_digest
+    ):
+        raise IntegrityError("managed CLI launcher digest differs from the receipt")
+    if cli_digest is None and (cli_path.exists() or cli_path.is_symlink()):
+        raise IntegrityError("unreceipted managed CLI launcher is present")
     artifacts = runtime_dir / "artifacts"
     try:
         wheels = [
@@ -1372,6 +1393,7 @@ def main(argv: list[str] | None = None) -> int:
     build_receipt.add_argument("--plugin-release-manifest-sha256", required=True)
     build_receipt.add_argument("--wheel", required=True)
     build_receipt.add_argument("--launcher", required=True)
+    build_receipt.add_argument("--cli-launcher")
     build_receipt.add_argument("--ownership-manifest", required=True)
     launch = subparsers.add_parser("launch-mcp")
     launch.add_argument("--runtime-dir", required=True)
@@ -1412,6 +1434,11 @@ def main(argv: list[str] | None = None) -> int:
                     plugin_release_manifest_sha256=arguments.plugin_release_manifest_sha256,
                     wheel_path=Path(arguments.wheel),
                     launcher_path=Path(arguments.launcher),
+                    cli_launcher_path=(
+                        None
+                        if arguments.cli_launcher is None
+                        else Path(arguments.cli_launcher)
+                    ),
                     ownership_manifest_path=Path(arguments.ownership_manifest),
                 ),
             }

@@ -34,9 +34,9 @@ git clone --branch main --single-branch \
 sh "$HOME/plugins/dev-flow-orchestrator/scripts/install.sh"
 ```
 
-安装器会验证候选包，在源码和任务数据之外构建精确锁定的 MCP 运行时，将
-`dev-flow-mcp` 安装到 `PATH`，然后激活插件。Windows、独立注册、修复、回滚和
-卸载参见 [INSTALL_CN.md](INSTALL_CN.md)。
+安装器会验证候选包，在源码和任务数据之外构建精确锁定的 MCP 运行时，将受支持的
+bundled 命令安装到 `PATH`，然后激活插件。Windows、修复、回滚、卸载及
+bundled-only 注册边界参见 [INSTALL_CN.md](INSTALL_CN.md)。
 
 在 Codex 中要求发现或启动 Dev Flow 任务。正常顺序是：
 

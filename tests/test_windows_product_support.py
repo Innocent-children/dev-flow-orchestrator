@@ -186,14 +186,36 @@ class WindowsProductSupportTests(unittest.TestCase):
             "'stdio'",
             "'dev-flow-mcp'",
             "'--stdio'",
+            "$CliLauncherPath",
+            "dev-flow.cmd",
+            "cli_launcher_sha256",
+            "Set-CliLauncher",
         ):
             self.assertIn(token, install)
         self.assertLess(
             install.index("$PluginJson = Capture-Checked"),
             install.index("$McpListJson = Capture-Checked"),
         )
-        self.assertEqual(install.count("@('mcp', 'list', '--json')"), 1)
+        self.assertEqual(install.count("@('mcp', 'list', '--json')"), 2)
         self.assertEqual(install.count("& codex mcp list --json"), 1)
+
+    def test_windows_cli_launcher_is_verified_owned_and_removed_exactly(self) -> None:
+        manage = (ROOT / "scripts" / "manage_runtime.py").read_text(encoding="utf-8")
+        install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        uninstall = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
+        integrity = (ROOT / "scripts" / "runtime_integrity.py").read_text(encoding="utf-8")
+        for token in (
+            "dev-flow-orchestrator managed CLI launcher",
+            "verify-runtime",
+            '"plugin" / "scripts" / "dev_flow.py"',
+            "%*",
+        ):
+            self.assertIn(token, manage)
+        self.assertIn("cli_launcher_sha256", integrity)
+        self.assertIn("Set-CliLauncher", install)
+        self.assertIn("CLI COMMAND", install)
+        self.assertIn("$CliLauncherMarker", uninstall)
+        self.assertIn("Remove-Item -LiteralPath $CliLauncherPath -Force", uninstall)
 
     def test_windows_uninstaller_distinguishes_bundled_and_standalone_mcp(
         self,

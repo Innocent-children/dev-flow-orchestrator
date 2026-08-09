@@ -642,6 +642,7 @@ class ManagedRuntimeTests(unittest.TestCase):
             },
             "runtime_path": str(canonical_release),
             "launcher_sha256": dummy,
+            "cli_launcher_sha256": None,
             "ownership_manifest_sha256": runtime_integrity.sha256_file(manifest_path),
             "dependency_lock_sha256": dummy,
             "created_at": "2026-08-09T00:00:00Z",

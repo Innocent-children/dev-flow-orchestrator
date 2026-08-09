@@ -20,6 +20,7 @@ $CodexRoot = [IO.Path]::GetFullPath($(if ($env:CODEX_HOME) { $env:CODEX_HOME } e
 $RuntimeRoot = [IO.Path]::GetFullPath($(if ($env:DEV_FLOW_RUNTIME_HOME) { $env:DEV_FLOW_RUNTIME_HOME } else { Join-Path $env:LOCALAPPDATA 'dev-flow-orchestrator\runtime' }))
 $PluginId = 'dev-flow-orchestrator@personal'
 $McpLauncherMarker = 'rem dev-flow-orchestrator managed MCP launcher'
+$CliLauncherMarker = 'rem dev-flow-orchestrator managed CLI launcher'
 $RuntimeIntegrityHelper = Join-Path $PSScriptRoot 'runtime_integrity.py'
 
 function Fail([string]$Message) { [Console]::Error.WriteLine("Dev Flow uninstallation failed: $Message"); exit 1 }
@@ -136,11 +137,19 @@ if (-not [Environment]::Is64BitProcess -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD6
 if (-not (Get-Command codex -ErrorAction SilentlyContinue)) { Fail 'Codex with plugin support is required.' }
 $BinDirectory = Find-BinDirectory
 $McpLauncherPath = Join-Path $BinDirectory 'dev-flow-mcp.cmd'
+$CliLauncherPath = Join-Path $BinDirectory 'dev-flow.cmd'
 $McpLauncherPresent = Test-Path -LiteralPath $McpLauncherPath
 if ($McpLauncherPresent) {
     if (-not (Test-Path -LiteralPath $McpLauncherPath -PathType Leaf)) { Fail "$McpLauncherPath is not a regular file." }
     if (@(Get-Content -LiteralPath $McpLauncherPath -TotalCount 3 -Encoding UTF8) -notcontains $McpLauncherMarker) {
         Fail "$McpLauncherPath exists but is not owned by Dev Flow."
+    }
+}
+$CliLauncherPresent = Test-Path -LiteralPath $CliLauncherPath
+if ($CliLauncherPresent) {
+    if (-not (Test-Path -LiteralPath $CliLauncherPath -PathType Leaf)) { Fail "$CliLauncherPath is not a regular file." }
+    if (@(Get-Content -LiteralPath $CliLauncherPath -TotalCount 3 -Encoding UTF8) -notcontains $CliLauncherMarker) {
+        Fail "$CliLauncherPath exists but is not owned by Dev Flow."
     }
 }
 $RuntimePresent = Test-Path -LiteralPath $RuntimeRoot
@@ -210,6 +219,11 @@ if ($McpLauncherPresent) {
     Remove-Item -LiteralPath $McpLauncherPath -Force
     $McpLauncherAction = 'removed'
 }
+$CliLauncherAction = 'already absent'
+if ($CliLauncherPresent) {
+    Remove-Item -LiteralPath $CliLauncherPath -Force
+    $CliLauncherAction = 'removed'
+}
 $RuntimeAction = 'already absent'
 $RuntimeRetainedPaths = @()
 if ($RuntimePresent) {
@@ -272,6 +286,7 @@ Write-Output "SOURCE         $SourceAction"
 Write-Output "SOURCE PATH    $SourceRoot"
 Write-Output 'SOURCE REASON  destructive removal disabled: no verifiable exact-ownership manifest'
 Write-Output "MCP COMMAND    $McpLauncherAction"
+Write-Output "CLI COMMAND    $CliLauncherAction"
 Write-Output "MCP RUNTIME    $RuntimeAction"
 if ($RuntimeRetainedPaths.Count -gt 0) {
     Write-Output "RUNTIME RETAINED $($RuntimeRetainedPaths -join '; ')"

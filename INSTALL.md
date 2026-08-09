@@ -5,18 +5,14 @@
 This guide installs release `0.5.0` with its local MCP-first interface. The
 persisted model and task-data namespace remain `0.4.0`.
 
-## 1. Choose one registration mode
+## 1. Supported registration mode
 
-Use exactly one of these modes:
-
-- **Bundled mode**: the recommended Codex plugin installation. The manifest
-  references the root `.mcp.json`.
-- **Standalone mode**: register the same `dev-flow-mcp --stdio` PATH launcher
-  directly in a compatible MCP host.
-
-The installer fails when an enabled standalone registration named `dev-flow`
-already exists, because enabling bundled and standalone mode together would
-expose duplicate tools. It never edits unrelated MCP or plugin policy.
+Bundled Codex plugin/MCP installation is the only supported mode. The manifest
+references the root `.mcp.json`; the installer does not provision standalone
+registrations. If an independently managed standalone registration already
+exists, installation stops before source, runtime, marketplace, plugin, or
+launcher mutation and tells the operator to inspect it manually. Uninstallation
+preserves registrations it cannot prove belong to the bundled installation.
 
 ## 2. Requirements
 
@@ -113,25 +109,10 @@ The server is a long-lived STDIO protocol process, so do not run
 `dev-flow-mcp --stdio` directly in an interactive terminal unless using an MCP
 client or inspector.
 
-## 6. Standalone registration
+## 6. Registration boundary
 
-Install or build the managed runtime and PATH launcher first, but do not enable
-the bundled plugin. Register the same command:
-
-```sh
-codex mcp add dev-flow -- dev-flow-mcp --stdio
-codex mcp list --json
-```
-
-Remove it before switching to bundled mode:
-
-```sh
-codex mcp remove dev-flow
-```
-
-Other MCP hosts may connect at the protocol level. The first complete delivery
-claim covers Codex hosts that provide the required local repository executor
-behavior; other hosts are protocol-compatible but outside that support claim.
+Standalone provisioning is not supported in this release. Existing standalone
+registrations remain operator-owned and are never silently adopted or removed.
 
 ## 7. Windows preview
 
@@ -146,8 +127,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 The installer uses literal paths, validates an x64 process and interpreter,
-builds `venv\Scripts\python.exe`, and creates an owned `dev-flow-mcp.cmd` in a
-writable absolute PATH directory. It does not use POSIX tooling.
+builds `venv\Scripts\python.exe`, and creates owned `dev-flow-mcp.cmd` and
+`dev-flow.cmd` launchers in a writable absolute PATH directory. The latter
+reuses the existing CLI and supports `--help` and `web start|status|stop`. It
+does not use POSIX tooling.
 
 ## 8. Approvals and residual boundary
 
@@ -220,9 +203,9 @@ the checkout and independently confirm ownership. `--keep-source` and
   into system or user Python.
 - `PATH has no writable absolute directory`: set `DEV_FLOW_BIN_DIR` to a safe
   directory already on `PATH`.
-- `standalone ... conflicts`: disable or remove the enabled standalone
-  `dev-flow` registration, or choose standalone mode and do not enable the
-  plugin.
+- `standalone ... conflicts`: the bundled installer does not manage standalone
+  registrations; inspect and preserve the existing registration, then resolve
+  the conflict manually before retrying.
 - `MCP_RUNTIME_UNAVAILABLE` for a transport option: use local `--stdio`; remote transports are not
   implemented.
 - uncertain mutation completion: call `dev_flow_get_task` and

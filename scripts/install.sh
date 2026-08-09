@@ -231,20 +231,90 @@ command -v git >/dev/null 2>&1 || fail "Git is required."
 command -v codex >/dev/null 2>&1 || fail "Codex with plugin support is required."
 command -v uv >/dev/null 2>&1 || fail "uv is required to build the exact locked MCP runtime."
 
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
-  PYTHON=python
+python_supported() {
+  candidate="$1"
+  PYTHONDONTWRITEBYTECODE=1 "$candidate" -B -c 'import platform,struct,sys; raise SystemExit(0 if platform.python_implementation() == "CPython" and (3, 10) <= sys.version_info[:2] < (3, 15) and struct.calcsize("P") == 8 else 1)' >/dev/null 2>&1
+}
+
+if [ -n "${DEV_FLOW_PYTHON:-}" ]; then
+  [ ! -L "$DEV_FLOW_PYTHON" ] && [ -f "$DEV_FLOW_PYTHON" ] && [ -x "$DEV_FLOW_PYTHON" ] \
+    || fail "DEV_FLOW_PYTHON must name a regular executable."
+  python_supported "$DEV_FLOW_PYTHON" \
+    || fail "DEV_FLOW_PYTHON must be a supported 64-bit CPython 3.10-3.14."
+  PYTHON="$DEV_FLOW_PYTHON"
 else
-  fail "Python 3.10-3.14 is required."
+  PYTHON=""
+  for candidate in python3 python; do
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    if [ -n "$resolved" ] && [ -f "$resolved" ] && [ -x "$resolved" ] && python_supported "$resolved"; then
+      PYTHON="$resolved"
+      break
+    fi
+  done
+  [ -n "$PYTHON" ] || fail "Supported 64-bit CPython 3.10-3.14 is required."
 fi
 
 python_no_bytecode() {
   PYTHONDONTWRITEBYTECODE=1 "$PYTHON" -B "$@"
 }
 
-python_no_bytecode -c 'import struct,sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] <= (3, 14) and struct.calcsize("P") == 8 else 1)' \
+python_no_bytecode -c 'import platform,struct,sys; raise SystemExit(0 if platform.python_implementation() == "CPython" and (3, 10) <= sys.version_info[:2] < (3, 15) and struct.calcsize("P") == 8 else 1)' \
   || fail "64-bit Python 3.10-3.14 is required."
+
+EARLY_MCP_LIST_JSON="$(codex mcp list --json)" \
+  || fail "Cannot inspect standalone MCP registrations before installation."
+printf '%s' "$EARLY_MCP_LIST_JSON" | DEV_FLOW_EARLY_CONFIG="$CODEX_ROOT/config.toml" \
+  DEV_FLOW_EARLY_LAUNCHER="$MCP_LAUNCHER_PATH" python_no_bytecode -I -S -c '
+import json, os, re, sys
+from pathlib import Path
+rows = json.load(sys.stdin)
+if not isinstance(rows, list):
+    raise SystemExit("MCP list must be an array")
+def canonical(row):
+    transport = row.get("transport") if isinstance(row, dict) else None
+    return (
+        row.get("name") == "dev-flow" and row.get("enabled") is True
+        and isinstance(transport, dict) and transport.get("type") == "stdio"
+        and transport.get("command") == "dev-flow-mcp"
+        and transport.get("args") == ["--stdio"]
+    )
+def commands(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.casefold() in {"command", "executable", "program"} and isinstance(item, str):
+                yield item
+            yield from commands(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from commands(item)
+conflicts = []
+for row in rows:
+    if not isinstance(row, dict) or canonical(row):
+        continue
+    if row.get("name") == "dev-flow" or any(command.rsplit("/", 1)[-1].casefold() in {"dev-flow-mcp", "dev-flow-mcp.cmd"} for command in commands(row)):
+        conflicts.append(str(row.get("name", "<unnamed>")))
+if conflicts:
+    raise SystemExit("unsupported standalone Dev Flow MCP registration(s) {} are present; preserve and inspect them manually before bundled installation".format(", ".join(sorted(conflicts))))
+config = Path(os.environ["DEV_FLOW_EARLY_CONFIG"])
+if config.exists():
+    if not config.is_file():
+        raise SystemExit("Codex config.toml is not a regular file")
+    current = None
+    for raw in config.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        header = re.match(r"^\[\s*mcp_servers\s*\.\s*(?:\"([^\"]+)\"|'"'"'([^'"'"']+)'"'"'|([A-Za-z0-9_-]+))\s*\]$", line)
+        if header:
+            current = next(value for value in header.groups() if value is not None)
+            continue
+        if line.startswith("["):
+            current = None
+            continue
+        command = re.match(r"^command\s*=\s*(?:\"([^\"]+)\"|'"'"'([^'"'"']+)'"'"')", line)
+        if current is not None and command:
+            value = next(item for item in command.groups() if item is not None)
+            if Path(value).name.casefold() in {"dev-flow-mcp", "dev-flow-mcp.cmd"}:
+                raise SystemExit("unsupported explicit standalone Dev Flow MCP registration is present in config.toml")
+' || fail "Unsupported standalone Dev Flow MCP registration conflicts with bundled-only installation."
 
 if [ "$(uname -s)" != "Darwin" ]; then
   fail "This Dev Flow installer supports macOS; use the documented PowerShell installer on Windows."

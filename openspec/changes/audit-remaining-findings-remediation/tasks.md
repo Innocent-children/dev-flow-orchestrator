@@ -19,13 +19,13 @@
 
 ## 3. Platform lifecycle and supported mode
 
-- [ ] 3.1 Prove every Windows fixture mutation authority is temporary before execution.
-- [ ] 3.2 Honor and validate `DEV_FLOW_PYTHON` consistently on POSIX lifecycle paths.
-- [ ] 3.3 Install, verify, roll back, and exactly remove owned `dev-flow.cmd`.
-- [ ] 3.4 Replace stale Windows Hook assertions with current MCP-first assertions.
-- [ ] 3.5 Document bundled MCP as the only supported mode and preserve detected foreign
+- [x] 3.1 Prove every Windows fixture mutation authority is temporary before execution.
+- [x] 3.2 Honor and validate `DEV_FLOW_PYTHON` consistently on POSIX lifecycle paths.
+- [x] 3.3 Install, verify, roll back, and exactly remove owned `dev-flow.cmd`.
+- [x] 3.4 Replace stale Windows Hook assertions with current MCP-first assertions.
+- [x] 3.5 Document bundled MCP as the only supported mode and preserve detected foreign
   standalone registrations before any mutation.
-- [ ] 3.6 Add lifecycle, interpreter, Windows host-neutral, and support-mode tests.
+- [x] 3.6 Add lifecycle, interpreter, Windows host-neutral, and support-mode tests.
 
 ## 4. Release truth
 

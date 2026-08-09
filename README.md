@@ -37,9 +37,9 @@ sh "$HOME/plugins/dev-flow-orchestrator/scripts/install.sh"
 ```
 
 The installer validates the candidate, builds an exact locked MCP runtime
-outside source and task data, installs `dev-flow-mcp` on `PATH`, and activates
-the plugin. See [INSTALL.md](INSTALL.md) for Windows, standalone registration,
-repair, rollback, and uninstall.
+outside source and task data, installs the supported bundled commands on
+`PATH`, and activates the plugin. See [INSTALL.md](INSTALL.md) for Windows,
+repair, rollback, uninstall, and the bundled-only registration boundary.
 
 In Codex, ask to discover or start a Dev Flow task. The normal sequence is:
 

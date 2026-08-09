@@ -4,14 +4,12 @@
 
 本指南安装带本地 MCP-first 接口的 `0.5.0`。持久化模型和任务数据命名空间仍为 `0.4.0`。
 
-## 1. 选择一种注册模式
+## 1. 支持的注册模式
 
-只能使用以下一种模式：
-
-- **Bundled 模式**：推荐的 Codex 插件安装；manifest 引用根 `.mcp.json`。
-- **Standalone 模式**：在兼容 MCP host 中直接注册同一个 `dev-flow-mcp --stdio` PATH launcher。
-
-若已存在名为 `dev-flow` 的启用 standalone 注册，安装器会失败，因为同时启用 bundled 和 standalone 会暴露重复工具。安装器不会编辑无关 MCP 或插件策略。
+Bundled Codex 插件/MCP 安装是唯一受支持模式。manifest 引用根 `.mcp.json`；
+安装器不提供 standalone 注册。若已存在独立管理的 standalone 注册，安装会在
+修改源码、runtime、marketplace、插件或 launcher 前停止，并提示人工检查。
+卸载时无法证明属于 bundled 安装的注册会被保留。
 
 ## 2. 要求
 
@@ -93,7 +91,8 @@ codex mcp list --json
 codex mcp remove dev-flow
 ```
 
-其他 MCP host 可在协议层连接。首个完整交付承诺覆盖能提供所需本地仓库 executor 行为的 Codex host；其他 host 协议兼容，但不在该支持承诺中。
+Standalone provisioning 在此版本中不受支持。已有 standalone 注册仍归操作者所有，
+产品不会静默接管或删除。
 
 ## 7. Windows 预览
 
@@ -107,7 +106,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$HOME\plugins\dev-flow-orchestrator\scripts\install.ps1"
 ```
 
-安装器使用 literal path，校验 x64 进程与解释器，构建 `venv\Scripts\python.exe`，并在可写绝对 PATH 目录中创建自有 `dev-flow-mcp.cmd`。它不使用 POSIX 工具。
+安装器使用 literal path，校验 x64 进程与解释器，构建
+`venv\Scripts\python.exe`，并在可写绝对 PATH 目录中创建自有
+`dev-flow-mcp.cmd` 和 `dev-flow.cmd`。后者复用现有 CLI，支持 `--help` 以及
+`web start|status|stop`。它不使用 POSIX 工具。
 
 ## 8. 审批与剩余边界
 
@@ -154,7 +156,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - `Python ... required`：把 `DEV_FLOW_PYTHON` 指向已验证的 64 位 CPython 3.10–3.14。
 - `uv is required`：安装 `uv` 后重试；依赖绝不会安装到系统或用户 Python。
 - `PATH has no writable absolute directory`：将 `DEV_FLOW_BIN_DIR` 设为已在 `PATH` 中的安全目录。
-- `standalone ... conflicts`：禁用或移除已启用的 standalone `dev-flow` 注册，或者选择 standalone 模式且不要启用插件。
+- `standalone ... conflicts`：bundled 安装器不管理 standalone 注册；请检查并保留
+  现有注册，人工解决冲突后再重试。
 - transport 选项触发 `MCP_RUNTIME_UNAVAILABLE`：使用本地 `--stdio`；尚未实现远程 transport。
 - mutation 完成状态不确定：调用 `dev_flow_get_task` 和 `dev_flow_get_next_action`，不得盲目重放 mutation。
 - 存储任务可见但 next action 失败：在规范路径恢复每个不可变成员 worktree 后重试读取。
