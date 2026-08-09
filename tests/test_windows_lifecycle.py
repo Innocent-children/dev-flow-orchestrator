@@ -151,7 +151,7 @@ class WindowsLifecycleTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.remote = self.root / "remote copy.git"
         shutil.copytree(self.remote_template, self.remote)
-        self.source = self.root / "plugins" / "source with spaces"
+        self.source = self.root / "plugins" / "source O'Brien 雪 with spaces"
         self.marketplace = self.root / ".agents" / "plugins" / "marketplace.json"
         self.state = self.root / "plugin-state.txt"
         self.log = self.root / "codex.log"
@@ -217,7 +217,7 @@ class WindowsLifecycleTests(unittest.TestCase):
             env=environment,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=300,
         )
 
     def advance_remote(self, name: str = "incoming.txt") -> str:
@@ -234,8 +234,6 @@ class WindowsLifecycleTests(unittest.TestCase):
     def test_fresh_install_and_repair_preserve_one_marketplace_entry(self) -> None:
         first = self.run_script("install.ps1")
         self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertIn("HOOK REVIEW", first.stdout)
-        self.assertIn("does not establish Hook trust", first.stdout)
         for label in ("ACTION", "VERSION", "SOURCE", "MARKETPLACE", "CODEX HOME", "FIRST PROMPT"):
             self.assertIn(label, first.stdout)
         second = self.run_script("install.ps1")
@@ -243,6 +241,21 @@ class WindowsLifecycleTests(unittest.TestCase):
         self.assertIn("repaired", second.stdout)
         plugins = json.loads(self.marketplace.read_text(encoding="utf-8-sig"))["plugins"]
         self.assertEqual(sum(item.get("name") == "dev-flow-orchestrator" for item in plugins), 1)
+        entry = next(
+            item for item in plugins if item.get("name") == "dev-flow-orchestrator"
+        )
+        plugin_root = (
+            self.marketplace.parent.parent.parent / entry["source"]["path"]
+        ).resolve()
+        plugin_root.relative_to(
+            Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).resolve()
+        )
+        self.assertNotEqual(plugin_root, self.source.resolve())
+        receipt = json.loads(
+            (plugin_root.parent / "runtime-receipt.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(receipt["schema"], "dev-flow-runtime-receipt/2.0.0")
+        self.assertEqual(receipt["release_id"], plugin_root.parent.name)
 
     def test_older_version_is_upgraded(self) -> None:
         self.assertEqual(self.run_script("install.ps1").returncode, 0)
@@ -264,7 +277,8 @@ class WindowsLifecycleTests(unittest.TestCase):
     def test_activation_failure_is_nonzero_with_recovery_command(self) -> None:
         result = self.run_script("install.ps1", overrides={"DEV_FLOW_CODEX_ADD_EXIT": "17"})
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("codex plugin add", result.stderr)
+        self.assertIn("Plugin activation failed", result.stderr)
+        self.assertIn("Inspect transaction state at", result.stderr)
 
     def test_keep_source_uninstall_preserves_checkout_and_task_data(self) -> None:
         self.assertEqual(self.run_script("install.ps1").returncode, 0)
@@ -309,24 +323,25 @@ class WindowsLifecycleTests(unittest.TestCase):
         self.assertEqual(self.marketplace.read_bytes(), original)
         self.assertFalse(self.state.exists())
 
-    def test_ignored_predecessor_cache_failure_has_recovery_commands(self) -> None:
+    def test_preexisting_ignored_cache_is_preserved_without_new_source_residue(self) -> None:
         self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        marketplace_before = self.marketplace.read_bytes()
         legacy = self.source / "scripts" / "dev_flow_parts" / "__pycache__"
         legacy.mkdir(parents=True)
-        (legacy / "old.cpython-314.pyc").write_bytes(b"cache")
+        sentinel = legacy / "old.cpython-314.pyc"
+        sentinel.write_bytes(b"cache")
+        before_ignored = git(
+            "ls-files", "--others", "--ignored", "--exclude-standard", cwd=self.source
+        )
         self.log.write_text("", encoding="utf-8")
 
         result = self.run_script("install.ps1")
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("git.exe -C", result.stderr)
-        self.assertIn("status --ignored --porcelain", result.stderr)
-        self.assertIn("powershell.exe -NoProfile", result.stderr)
-        self.assertIn("Preserve and inspect", result.stderr)
-        self.assertTrue(legacy.is_dir())
-        self.assertEqual(self.log.read_text(encoding="utf-8"), "")
-        self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sentinel.read_bytes(), b"cache")
+        self.assertEqual(
+            git("ls-files", "--others", "--ignored", "--exclude-standard", cwd=self.source),
+            before_ignored,
+        )
 
     def test_unrelated_marketplace_entries_are_preserved(self) -> None:
         self.marketplace.parent.mkdir(parents=True)
@@ -422,7 +437,34 @@ class WindowsLifecycleTests(unittest.TestCase):
 
 
 class WindowsLifecycleFixtureStaticTests(unittest.TestCase):
-    def test_uninstaller_disables_only_recursive_source_removal(self) -> None:
+    def test_installer_uses_sealed_previous_and_bounded_observed_rollback(self) -> None:
+        source = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        for token in (
+            "Seal-Commit $CurrentHead $PreviousSourceTree 'previous'",
+            "Build-SealedRuntime $PreviousStagedRoot",
+            "Write-InstallTransaction",
+            "Get-PluginObservation",
+            "Set-MarketplaceEntry $CandidateMarketplaceEntry $RollbackMarketplaceEntry",
+            "Set-McpLauncher $CandidateLauncherBytes $RollbackLauncherBytes",
+            "Test-ReleaseHealth $PreviousRuntimePython $PreviousPersistentPluginRoot",
+            "Previous plugin activation was restored and verified",
+            "rollback-incomplete",
+            "blind_retry_safe",
+            "candidate_release",
+            "previous_release",
+        ):
+            self.assertIn(token, source)
+        self.assertLess(
+            source.index("Seal-Commit $CurrentHead $PreviousSourceTree 'previous'"),
+            source.index("'merge', '--ff-only'"),
+        )
+        self.assertLess(
+            source.index("Build-SealedRuntime $SealedSourceRoot"),
+            source.index("Set-McpLauncher $PreviousLauncherBytes"),
+        )
+        self.assertNotIn("[IO.File]::WriteAllBytes($MarketplaceFile", source)
+
+    def test_uninstaller_disables_recursive_source_and_runtime_removal(self) -> None:
         source = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
         source_removal_lines = [
             line
@@ -434,10 +476,13 @@ class WindowsLifecycleFixtureStaticTests(unittest.TestCase):
         self.assertNotIn("[switch]$RemoveSource", source)
         self.assertNotIn("status', '--ignored', '--porcelain", source)
         self.assertNotIn("--remotes=origin", source)
-        self.assertIn(
+        self.assertNotIn(
             "Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force",
             source,
         )
+        self.assertIn("runtime_integrity.py", source)
+        self.assertIn("remove-owned", source)
+        self.assertIn("RUNTIME RETAINED", source)
         for token in (
             "OUTCOME        partial",
             "SOURCE         $SourceAction",

@@ -47,12 +47,14 @@ class WindowsProductSupportTests(unittest.TestCase):
             "independently confirm ownership",
             "TASK DATA",
             "preserved",
-            ".dev-flow-managed-runtime",
+            "runtime_integrity.py",
+            "remove-owned",
+            "RUNTIME RETAINED",
             "dev-flow-mcp.cmd",
         ):
             self.assertIn(token, uninstall)
 
-    def test_powershell_source_containment_is_target_precise(self) -> None:
+    def test_powershell_source_and_runtime_containment_are_target_precise(self) -> None:
         uninstall = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
         self.assertEqual(
             [
@@ -66,10 +68,11 @@ class WindowsProductSupportTests(unittest.TestCase):
         self.assertNotIn("[switch]$RemoveSource", uninstall)
         self.assertNotIn("status', '--ignored', '--porcelain", uninstall)
         self.assertNotIn("--remotes=origin", uninstall)
-        self.assertIn(
+        self.assertNotIn(
             "Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force",
             uninstall,
         )
+        self.assertNotIn("Remove-Item -LiteralPath $RuntimeRoot -Recurse", uninstall)
 
     def test_windows_installer_builds_native_managed_launcher(self) -> None:
         install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
@@ -79,16 +82,25 @@ class WindowsProductSupportTests(unittest.TestCase):
             "DEV_FLOW_RUNTIME_HOME",
             "DEV_FLOW_BIN_DIR",
             "MCP",
-            "scripts\\dev_flow_mcp_launcher.cmd",
-            "__DEV_FLOW_RUNTIME_PYTHON__",
-            "[regex]::Matches",
-            ".Replace('%', '%%')",
+            "runtime_integrity.py",
+            "Seal-Commit",
+            "launcher_path",
+            "launcher_sha256",
+            "Set-McpLauncher",
+            "$CandidateReleaseId",
+            "$PersistentPluginRoot",
+            "PYTHONDONTWRITEBYTECODE",
+            "-B",
         ):
             self.assertIn(token, install)
         launcher_template = (
             ROOT / "scripts" / "dev_flow_mcp_launcher.cmd"
         ).read_text(encoding="utf-8")
-        self.assertIn("-I -m dev_flow_orchestrator.mcp %*", launcher_template)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", launcher_template)
+        self.assertIn("-B -I", launcher_template)
+        self.assertIn("launch-mcp", launcher_template)
+        self.assertIn("--release-id", launcher_template)
+        self.assertNotIn("-m dev_flow_orchestrator.mcp", launcher_template)
         self.assertNotIn("dev_flow_python_launcher.cmd", install)
         self.assertNotIn("hooks\\", install.casefold())
 
@@ -97,37 +109,65 @@ class WindowsProductSupportTests(unittest.TestCase):
         windows = ROOT / "scripts" / "dev_flow_mcp_launcher.cmd"
         posix_text = posix.read_text(encoding="utf-8")
         windows_text = windows.read_text(encoding="utf-8")
-        placeholder = "__DEV_FLOW_RUNTIME_PYTHON__"
-        self.assertEqual(posix_text.count(placeholder), 1)
-        self.assertEqual(windows_text.count(placeholder), 1)
+        placeholders = (
+            "__DEV_FLOW_RUNTIME_PYTHON__",
+            "__DEV_FLOW_RUNTIME_VERIFIER__",
+            "__DEV_FLOW_RUNTIME_DIR__",
+            "__DEV_FLOW_RELEASE_ID__",
+        )
+        for placeholder in placeholders:
+            self.assertEqual(posix_text.count(placeholder), 1)
+            self.assertEqual(windows_text.count(placeholder), 1)
         self.assertTrue(posix_text.startswith("#!/bin/sh\n"))
         self.assertIn('"$@"', posix_text)
         self.assertTrue(windows_text.startswith("@echo off\n"))
         self.assertIn("%*", windows_text)
         self.assertNotIn("/bin/sh", windows_text)
         runtime_path = r"C:\Program Files\Dev Flow 雪\O'Brien\100%\python.exe"
-        generated = windows_text.replace(placeholder, runtime_path.replace("%", "%%"))
+        generated = windows_text.replace(
+            "__DEV_FLOW_RUNTIME_PYTHON__", runtime_path.replace("%", "%%")
+        )
+        generated = generated.replace(
+            "__DEV_FLOW_RUNTIME_VERIFIER__", r"C:\Program Files\Dev Flow\verifier.py"
+        )
+        generated = generated.replace(
+            "__DEV_FLOW_RUNTIME_DIR__", r"C:\Program Files\Dev Flow\release"
+        )
+        generated = generated.replace("__DEV_FLOW_RELEASE_ID__", "r-test-release")
         self.assertIn(
             "\"C:\\Program Files\\Dev Flow 雪\\O'Brien\\100%%\\python.exe\"",
             generated,
         )
-        self.assertNotIn(placeholder, generated)
+        for placeholder in placeholders:
+            self.assertNotIn(placeholder, generated)
         if os.name != "nt":
             self.assertTrue(posix.stat().st_mode & 0o100)
 
     def test_windows_receipt_duplicate_and_rollback_checks_are_present(self) -> None:
         install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
         uninstall = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
+        integrity = (ROOT / "scripts" / "runtime_integrity.py").read_text(
+            encoding="utf-8"
+        )
         for token in (
             "Test-OwnedMcpRegistration",
             "duplicate Dev Flow entries",
-            "Previous plugin activation was restored",
-            "runtime_identity",
-            "activation_action",
+            "Previous plugin activation was restored and verified",
+            "Write-InstallTransaction",
+            "blind_retry_safe",
+            "candidate_release",
+            "previous_release",
+            "rollback-incomplete",
             "validate_installed_stage1.py",
         ):
             self.assertIn(token, install + "\n" + uninstall)
-        self.assertIn("executable_sha256", uninstall)
+        for token in (
+            "dev-flow-runtime-receipt/2.0.0",
+            "executable_sha256",
+            "ownership_manifest_sha256",
+            "dependency_lock_sha256",
+        ):
+            self.assertIn(token, integrity)
         self.assertIn("Standalone Dev Flow MCP registration(s)", uninstall)
         self.assertIn("launcher/runtime selected for removal", uninstall)
 
@@ -139,8 +179,8 @@ class WindowsProductSupportTests(unittest.TestCase):
             "Get-ExplicitOwnedMcpRegistrationNames",
             "$PluginBundledActive",
             "$CanonicalBundled.Count -eq 1",
-            "$PostCanonicalBundled.Count -ne 1",
-            "$PostOwnedRegistrations.Count -ne 1",
+            "$Canonical.Count -eq 1",
+            "$Owned.Count -eq 1",
             "Join-Path $CodexRoot 'config.toml'",
             "'dev-flow'",
             "'stdio'",

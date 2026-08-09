@@ -15,6 +15,11 @@ $PluginId = 'dev-flow-orchestrator@personal'
 $McpLauncherMarker = 'rem dev-flow-orchestrator managed MCP launcher'
 
 function Fail([string]$Message) {
+    if ($null -ne (Get-Command Test-SelectedSourceInventory -CommandType Function -ErrorAction SilentlyContinue)) {
+        if (-not (Test-SelectedSourceInventory)) {
+            [Console]::Error.WriteLine('Authoritative source changed after candidate sealing; no post-seal activation input was read from that checkout.')
+        }
+    }
     [Console]::Error.WriteLine("Dev Flow installation failed: $Message")
     exit 1
 }
@@ -34,6 +39,38 @@ function Capture-Checked([string]$Program, [string[]]$Arguments, [string]$Failur
     return (($Output | Out-String).Trim())
 }
 
+function Invoke-NoBytecodePython([object[]]$Arguments, [string]$Failure) {
+    $PreviousNoBytecode = $env:PYTHONDONTWRITEBYTECODE
+    try {
+        $env:PYTHONDONTWRITEBYTECODE = '1'
+        $Output = & $Python.Program @($Python.Prefix) -B @Arguments
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        if ($null -eq $PreviousNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue }
+        else { $env:PYTHONDONTWRITEBYTECODE = $PreviousNoBytecode }
+    }
+    if ($ExitCode -ne 0) { Fail $Failure }
+    return $Output
+}
+
+function Seal-Commit([string]$Commit, [string]$Tree, [string]$Name) {
+    $Archive = Join-Path $TransactionRoot ($Name + '.tar')
+    $Destination = Join-Path $TransactionRoot ('sealed-' + $Name)
+    Invoke-Checked 'git.exe' @('-C', $SourceRoot, 'archive', '--format=tar', "--output=$Archive", $Commit) "Cannot export Git commit $Commit."
+    $Output = Invoke-NoBytecodePython @(
+        '-I', '-S', $SealHelper, 'seal',
+        '--archive', $Archive,
+        '--destination', $Destination,
+        '--source-commit', $Commit,
+        '--source-tree', $Tree
+    ) "Cannot seal Git commit $Commit."
+    try { $Result = (($Output | Out-String).Trim()) | ConvertFrom-Json } catch { Fail 'Sealed release helper returned invalid JSON.' }
+    if ($Result.ok -ne $true -or -not ($Result.release_id -is [string]) -or -not ($Result.plugin_root -is [string])) {
+        Fail 'Sealed release helper returned an invalid identity.'
+    }
+    return $Result
+}
+
 function Find-Python {
     $Candidates = @()
     if ($env:DEV_FLOW_PYTHON) { $Candidates += ,@($env:DEV_FLOW_PYTHON) }
@@ -46,8 +83,16 @@ function Find-Python {
         if ($Program -notmatch '[\\/]' -and -not (Get-Command $Program -ErrorAction SilentlyContinue)) { continue }
         $Prefix = @()
         if ($Candidate.Count -gt 1) { $Prefix = $Candidate[1..($Candidate.Count - 1)] }
-        & $Program @Prefix -c "import struct,sys;sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) and struct.calcsize('P') == 8 else 1)" 2>$null
-        if ($LASTEXITCODE -eq 0) { return @{ Program = $Program; Prefix = [string[]]$Prefix } }
+        $PreviousNoBytecode = $env:PYTHONDONTWRITEBYTECODE
+        try {
+            $env:PYTHONDONTWRITEBYTECODE = '1'
+            & $Program @Prefix -B -c "import struct,sys;sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) and struct.calcsize('P') == 8 else 1)" 2>$null
+            $ProbeExitCode = $LASTEXITCODE
+        } finally {
+            if ($null -eq $PreviousNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue }
+            else { $env:PYTHONDONTWRITEBYTECODE = $PreviousNoBytecode }
+        }
+        if ($ProbeExitCode -eq 0) { return @{ Program = $Program; Prefix = [string[]]$Prefix } }
     }
     Fail 'Supported 64-bit Python 3.10-3.14 is required.'
 }
@@ -198,12 +243,22 @@ if ($Branch -ne $RepositoryRef) { Fail "$SourceRoot is on '$Branch', expected br
 $Status = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--porcelain') "Cannot inspect $SourceRoot."
 if ($Status) { Fail "$SourceRoot has local changes; preserve or commit them before reinstalling." }
 
+$TransactionRoot = Join-Path $env:TEMP ('dev-flow-install-' + [Guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($TransactionRoot) | Out-Null
 Invoke-Checked 'git.exe' @('-C', $SourceRoot, 'fetch', '--no-tags', 'origin', "refs/heads/$RepositoryRef") "Cannot fetch authoritative main."
 $ApprovedHead = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'rev-parse', '--verify', 'FETCH_HEAD^{commit}') 'Fetched main is not a commit.'
 $CurrentHead = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'rev-parse', '--verify', 'HEAD^{commit}') 'HEAD is not a commit.'
+$SealHelper = Join-Path $TransactionRoot 'runtime_integrity.py'
+$HelperText = (& git.exe -C $SourceRoot show "${ApprovedHead}:scripts/runtime_integrity.py" | Out-String)
+if ($LASTEXITCODE -ne 0 -or -not $HelperText) { Fail 'The selected release is missing its runtime integrity helper.' }
+[IO.File]::WriteAllText($SealHelper, $HelperText, (New-Object Text.UTF8Encoding($false)))
+$PreviousSealResult = $null
+$PreviousSourceTree = ''
 if ($CurrentHead -ne $ApprovedHead) {
     & git.exe -C $SourceRoot merge-base --is-ancestor $CurrentHead $ApprovedHead
     if ($LASTEXITCODE -eq 0) {
+        $PreviousSourceTree = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'rev-parse', '--verify', "$CurrentHead^{tree}") 'Previous HEAD has no readable tree.'
+        $PreviousSealResult = Seal-Commit $CurrentHead $PreviousSourceTree 'previous'
         Invoke-Checked 'git.exe' @('-C', $SourceRoot, 'merge', '--ff-only', '--no-overwrite-ignore', $ApprovedHead) 'Could not fast-forward without overwriting local work.'
     } else {
         & git.exe -C $SourceRoot merge-base --is-ancestor $ApprovedHead $CurrentHead
@@ -212,41 +267,44 @@ if ($CurrentHead -ne $ApprovedHead) {
     }
 }
 $VerifiedHead = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'rev-parse', '--verify', 'HEAD^{commit}') 'Cannot verify final HEAD.'
+$VerifiedTree = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'rev-parse', '--verify', 'HEAD^{tree}') 'Cannot verify final tree.'
 $FinalStatus = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--porcelain') 'Cannot verify final status.'
 if ($VerifiedHead -ne $ApprovedHead -or $FinalStatus) { Fail 'Source is not the clean fetched authoritative commit.' }
-$IgnoredStatus = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--ignored', '--porcelain') 'Cannot inspect ignored source paths.'
-if ($IgnoredStatus) {
-    $QuotedSource = Quote-PowerShellLiteral $SourceRoot
-    $QuotedInstaller = Quote-PowerShellLiteral $PSCommandPath
-    [Console]::Error.WriteLine('Candidate source contains ignored paths. Preserve and inspect them before removing only confirmed disposable caches:')
-    [Console]::Error.WriteLine("  git.exe -C $QuotedSource status --ignored --porcelain")
-    [Console]::Error.WriteLine('After resolving every ignored source path, retry:')
-    [Console]::Error.WriteLine("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File $QuotedInstaller")
-    Fail 'Candidate source contains ignored paths and cannot be activated.'
+$SourceBaselineTracked = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--porcelain', '--untracked-files=all') 'Cannot capture the selected source inventory.'
+$SourceBaselineIgnored = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'ls-files', '--others', '--ignored', '--exclude-standard') 'Cannot capture ignored source paths.'
+
+function Test-SelectedSourceInventory {
+    $FinalHead = & git.exe -C $SourceRoot rev-parse --verify 'HEAD^{commit}' 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $FinalTree = & git.exe -C $SourceRoot rev-parse --verify 'HEAD^{tree}' 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $FinalTracked = & git.exe -C $SourceRoot status --porcelain --untracked-files=all 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $FinalIgnored = & git.exe -C $SourceRoot ls-files --others --ignored --exclude-standard 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return (
+        (($FinalHead | Out-String).Trim()) -ceq $VerifiedHead -and
+        (($FinalTree | Out-String).Trim()) -ceq $VerifiedTree -and
+        (($FinalTracked | Out-String).Trim()) -ceq $SourceBaselineTracked -and
+        (($FinalIgnored | Out-String).Trim()) -ceq $SourceBaselineIgnored
+    )
 }
+
+$SealResult = Seal-Commit $VerifiedHead $VerifiedTree 'candidate'
+$CandidateReleaseId = [string]$SealResult.release_id
+$SealedSourceRoot = [string]$SealResult.plugin_root
 
 $PreviousNoBytecode = $env:PYTHONDONTWRITEBYTECODE
 try {
     $env:PYTHONDONTWRITEBYTECODE = '1'
-    & $Python.Program @($Python.Prefix) -B -I -S (Join-Path $SourceRoot 'scripts\validate_package.py')
+    & $Python.Program @($Python.Prefix) -B -I -S (Join-Path $SealedSourceRoot 'scripts\validate_package.py')
     $ValidationExitCode = $LASTEXITCODE
 } finally {
     if ($null -eq $PreviousNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue }
     else { $env:PYTHONDONTWRITEBYTECODE = $PreviousNoBytecode }
 }
-if ($ValidationExitCode -ne 0) {
-    $IgnoredStatus = (& git.exe -C $SourceRoot status --ignored --porcelain 2>$null | Out-String).Trim()
-    if ($IgnoredStatus) {
-        $QuotedSource = Quote-PowerShellLiteral $SourceRoot
-        $QuotedInstaller = Quote-PowerShellLiteral $PSCommandPath
-        [Console]::Error.WriteLine('Candidate source contains ignored paths. Preserve and inspect them before removing only confirmed disposable caches:')
-        [Console]::Error.WriteLine("  git.exe -C $QuotedSource status --ignored --porcelain")
-        [Console]::Error.WriteLine('After resolving the candidate validation error, retry:')
-        [Console]::Error.WriteLine("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File $QuotedInstaller")
-    }
-    Fail 'Candidate package validation failed.'
-}
-$Manifest = Get-Content -LiteralPath (Join-Path $SourceRoot '.codex-plugin\plugin.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($ValidationExitCode -ne 0) { Fail 'Candidate package validation failed.' }
+$Manifest = Get-Content -LiteralPath (Join-Path $SealedSourceRoot '.codex-plugin\plugin.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if (-not ($Manifest.version -is [string]) -or -not $Manifest.version) { Fail 'Validated manifest has no version.' }
 $PluginVersion = $Manifest.version
 
@@ -286,34 +344,75 @@ if ($McpConflicts.Count -gt 0) {
     Fail "Standalone Dev Flow MCP registration(s) $Names target the owned launcher; disable or remove them with codex mcp before enabling bundled mode."
 }
 
-$RuntimeOutput = & $Python.Program @($Python.Prefix) (Join-Path $SourceRoot 'scripts\manage_runtime.py') --source-root $SourceRoot --runtime-root $RuntimeRoot --source-commit $VerifiedHead --data-root $DataRoot
-if ($LASTEXITCODE -ne 0) { Fail 'Cannot build and validate the managed MCP runtime.' }
-try { $RuntimeResult = (($RuntimeOutput | Out-String).Trim()) | ConvertFrom-Json } catch { Fail 'Managed MCP runtime returned invalid JSON.' }
-if ($RuntimeResult.ok -ne $true) { Fail 'Managed MCP runtime validation failed.' }
+function Build-SealedRuntime([string]$PluginRoot, [string]$Commit, [string]$Tree, [string]$ReleaseId) {
+    $Output = Invoke-NoBytecodePython @(
+        (Join-Path $SealedSourceRoot 'scripts\manage_runtime.py'),
+        '--source-root', $PluginRoot,
+        '--runtime-root', $RuntimeRoot,
+        '--source-commit', $Commit,
+        '--source-tree', $Tree,
+        '--release-id', $ReleaseId,
+        '--data-root', $DataRoot
+    ) 'Cannot build and validate the managed MCP runtime.'
+    try { $Result = (($Output | Out-String).Trim()) | ConvertFrom-Json } catch { Fail 'Managed MCP runtime returned invalid JSON.' }
+    if ($Result.ok -ne $true) { Fail 'Managed MCP runtime validation failed.' }
+    return $Result
+}
+
+$RuntimeResult = Build-SealedRuntime $SealedSourceRoot $VerifiedHead $VerifiedTree $CandidateReleaseId
 $RuntimePython = Join-Path ([string]$RuntimeResult.runtime_dir) 'venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $RuntimePython -PathType Leaf)) { Fail 'Managed MCP runtime Python is unavailable.' }
-$PreviousLauncherBytes = if (Test-Path -LiteralPath $McpLauncherPath -PathType Leaf) { [IO.File]::ReadAllBytes($McpLauncherPath) } else { $null }
-$PreviousMarketplaceBytes = if (Test-Path -LiteralPath $MarketplaceFile -PathType Leaf) { [IO.File]::ReadAllBytes($MarketplaceFile) } else { $null }
-$LauncherTemplatePath = Join-Path $SourceRoot 'scripts\dev_flow_mcp_launcher.cmd'
-if (-not (Test-Path -LiteralPath $LauncherTemplatePath -PathType Leaf)) { Fail 'Validated Windows MCP launcher template is unavailable.' }
-$LauncherPayload = [IO.File]::ReadAllText($LauncherTemplatePath, [Text.Encoding]::UTF8)
-$LauncherPlaceholder = '__DEV_FLOW_RUNTIME_PYTHON__'
-if ([regex]::Matches($LauncherPayload, [regex]::Escape($LauncherPlaceholder)).Count -ne 1 -or -not $LauncherPayload.Contains($McpLauncherMarker)) {
-    Fail 'Validated Windows MCP launcher template is invalid.'
-}
-# Percent is legal in a Windows path but is cmd.exe expansion syntax.  Doubling
-# it in the generated batch file preserves the literal runtime path.
-$EscapedRuntimePython = $RuntimePython.Replace('%', '%%')
-$LauncherPayload = $LauncherPayload.Replace($LauncherPlaceholder, $EscapedRuntimePython)
-$LauncherTemporary = "$McpLauncherPath.tmp.$PID"
-[IO.File]::WriteAllText($LauncherTemporary, $LauncherPayload, (New-Object Text.UTF8Encoding($false)))
-if (Test-Path -LiteralPath $McpLauncherPath) {
-    $LauncherBackup = "$McpLauncherPath.bak.$PID"
-    [IO.File]::Replace($LauncherTemporary, $McpLauncherPath, $LauncherBackup)
-    Remove-Item -LiteralPath $LauncherBackup -Force
-} else { [IO.File]::Move($LauncherTemporary, $McpLauncherPath) }
+$PersistentPluginRoot = [IO.Path]::GetFullPath([string]$RuntimeResult.plugin_root)
+$ManagedLauncherPayload = [IO.Path]::GetFullPath([string]$RuntimeResult.launcher_path)
+if (-not (Test-Path -LiteralPath $PersistentPluginRoot -PathType Container)) { Fail 'Managed sealed plugin release is unavailable.' }
+if (-not (Test-Path -LiteralPath $ManagedLauncherPayload -PathType Leaf)) { Fail 'Managed MCP launcher payload is unavailable.' }
 
+$PreviousReleaseId = ''
+$PreviousPersistentPluginRoot = ''
+$PreviousRuntimePython = ''
+$PreviousManagedLauncherPayload = ''
+if ($InstalledMatches.Count -eq 1) {
+    if ($null -eq $PreviousSealResult) {
+        $PreviousSealResult = $SealResult
+        $PreviousSourceTree = $VerifiedTree
+        $PreviousHead = $VerifiedHead
+    } else {
+        $PreviousHead = $CurrentHead
+    }
+    $PreviousReleaseId = [string]$PreviousSealResult.release_id
+    $PreviousStagedRoot = [string]$PreviousSealResult.plugin_root
+    if ($PreviousReleaseId -eq $CandidateReleaseId) {
+        $PreviousRuntimeResult = $RuntimeResult
+    } else {
+        $PreviousRuntimeResult = Build-SealedRuntime $PreviousStagedRoot $PreviousHead $PreviousSourceTree $PreviousReleaseId
+    }
+    $PreviousPersistentPluginRoot = [IO.Path]::GetFullPath([string]$PreviousRuntimeResult.plugin_root)
+    $PreviousRuntimePython = Join-Path ([string]$PreviousRuntimeResult.runtime_dir) 'venv\Scripts\python.exe'
+    $PreviousManagedLauncherPayload = [IO.Path]::GetFullPath([string]$PreviousRuntimeResult.launcher_path)
+    if (
+        -not (Test-Path -LiteralPath $PreviousPersistentPluginRoot -PathType Container) -or
+        -not (Test-Path -LiteralPath $PreviousRuntimePython -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $PreviousManagedLauncherPayload -PathType Leaf)
+    ) { Fail 'The previous release cannot be staged for bounded rollback.' }
+}
+
+$MarketplacePrefix = $MarketplaceRoot.TrimEnd('\') + '\'
+if (-not $PersistentPluginRoot.StartsWith($MarketplacePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    Fail "$PersistentPluginRoot must be inside marketplace root $MarketplaceRoot."
+}
+$RelativePlugin = $PersistentPluginRoot.Substring($MarketplacePrefix.Length)
+$RelativePreviousPlugin = ''
+if ($PreviousPersistentPluginRoot) {
+    if (-not $PreviousPersistentPluginRoot.StartsWith($MarketplacePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        Fail "$PreviousPersistentPluginRoot must be inside marketplace root $MarketplaceRoot."
+    }
+    $RelativePreviousPlugin = $PreviousPersistentPluginRoot.Substring($MarketplacePrefix.Length)
+}
+
+$PreviousLauncherBytes = if (Test-Path -LiteralPath $McpLauncherPath -PathType Leaf) { [IO.File]::ReadAllBytes($McpLauncherPath) } else { $null }
+$CandidateLauncherBytes = [IO.File]::ReadAllBytes($ManagedLauncherPayload)
 [IO.Directory]::CreateDirectory($MarketplaceDirectory) | Out-Null
+$MarketplaceOriginallyPresent = Test-Path -LiteralPath $MarketplaceFile
 if (Test-Path -LiteralPath $MarketplaceFile) {
     try { $Marketplace = Get-Content -LiteralPath $MarketplaceFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Fail "Cannot read $MarketplaceFile as JSON." }
     if ($null -eq $Marketplace.plugins -or -not ($Marketplace.plugins -is [Array])) { Fail "$MarketplaceFile must contain a plugins array." }
@@ -322,81 +421,280 @@ if (Test-Path -LiteralPath $MarketplaceFile) {
 }
 $ExistingEntries = @($Marketplace.plugins | Where-Object { $_.name -eq 'dev-flow-orchestrator' })
 if ($ExistingEntries.Count -gt 1) { Fail "$MarketplaceFile contains duplicate Dev Flow entries." }
-$Kept = @($Marketplace.plugins | Where-Object { $_.name -ne 'dev-flow-orchestrator' })
-$Entry = [pscustomobject]@{
+$OriginalMarketplaceEntry = if ($ExistingEntries.Count -eq 1) { $ExistingEntries[0] } else { $null }
+$CandidateMarketplaceEntry = [pscustomobject]@{
     name = 'dev-flow-orchestrator'
-    source = [pscustomobject]@{ source = 'local'; path = './' + ($RelativeSource -replace '\\', '/') }
+    source = [pscustomobject]@{ source = 'local'; path = './' + ($RelativePlugin -replace '\\', '/') }
     policy = [pscustomobject]@{ installation = 'AVAILABLE'; authentication = 'ON_INSTALL' }
     category = 'Productivity'
 }
-$Marketplace.plugins = @($Kept) + @($Entry)
-$Temporary = "$MarketplaceFile.tmp.$PID"
-[IO.File]::WriteAllText($Temporary, (($Marketplace | ConvertTo-Json -Depth 10) + "`n"), (New-Object Text.UTF8Encoding($false)))
-if (Test-Path -LiteralPath $MarketplaceFile) {
-    $Backup = "$MarketplaceFile.bak.$PID"
-    [IO.File]::Replace($Temporary, $MarketplaceFile, $Backup)
-    Remove-Item -LiteralPath $Backup -Force
-} else { [IO.File]::Move($Temporary, $MarketplaceFile) }
+$RollbackMarketplaceEntry = $OriginalMarketplaceEntry
+if ($InstalledMatches.Count -eq 1) {
+    $RollbackMarketplaceEntry = [pscustomobject]@{
+        name = 'dev-flow-orchestrator'
+        source = [pscustomobject]@{ source = 'local'; path = './' + ($RelativePreviousPlugin -replace '\\', '/') }
+        policy = [pscustomobject]@{ installation = 'AVAILABLE'; authentication = 'ON_INSTALL' }
+        category = 'Productivity'
+    }
+}
 
-$PreviousPluginRemoved = $false
-$NewPluginActive = $false
+function Convert-MarketplaceEntry([object]$Value) {
+    if ($null -eq $Value) { return '<absent>' }
+    return ($Value | ConvertTo-Json -Depth 10 -Compress)
+}
+
+function Set-MarketplaceEntry([object]$Expected, [object]$Replacement) {
+    try {
+        if (Test-Path -LiteralPath $MarketplaceFile) {
+            $CurrentMarketplace = Get-Content -LiteralPath $MarketplaceFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($null -eq $CurrentMarketplace.plugins -or -not ($CurrentMarketplace.plugins -is [Array])) { return $false }
+        } else {
+            $CurrentMarketplace = [pscustomobject]@{ name = 'personal'; interface = [pscustomobject]@{ displayName = 'Personal' }; plugins = @() }
+        }
+        $Matches = @($CurrentMarketplace.plugins | Where-Object { $_.name -eq 'dev-flow-orchestrator' })
+        if ($Matches.Count -gt 1) { return $false }
+        $Current = if ($Matches.Count -eq 1) { $Matches[0] } else { $null }
+        if ((Convert-MarketplaceEntry $Current) -cne (Convert-MarketplaceEntry $Expected)) { return $false }
+        $Kept = @($CurrentMarketplace.plugins | Where-Object { $_.name -ne 'dev-flow-orchestrator' })
+        $CurrentMarketplace.plugins = if ($null -eq $Replacement) { $Kept } else { @($Kept) + @($Replacement) }
+        if (-not $MarketplaceOriginallyPresent -and $null -eq $Replacement -and $Kept.Count -eq 0) {
+            Remove-Item -LiteralPath $MarketplaceFile -Force -ErrorAction SilentlyContinue
+            return $true
+        }
+        $Temporary = "$MarketplaceFile.tmp.$PID"
+        [IO.File]::WriteAllText($Temporary, (($CurrentMarketplace | ConvertTo-Json -Depth 10) + "`n"), (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $MarketplaceFile) {
+            $Backup = "$MarketplaceFile.bak.$PID"
+            [IO.File]::Replace($Temporary, $MarketplaceFile, $Backup)
+            Remove-Item -LiteralPath $Backup -Force
+        } else { [IO.File]::Move($Temporary, $MarketplaceFile) }
+        return $true
+    } catch { return $false }
+}
+
+function Test-BytesEqual([object]$Left, [object]$Right) {
+    if ($null -eq $Left -or $null -eq $Right) { return $null -eq $Left -and $null -eq $Right }
+    return [Convert]::ToBase64String([byte[]]$Left) -ceq [Convert]::ToBase64String([byte[]]$Right)
+}
+
+function Set-McpLauncher([object]$Expected, [object]$Replacement) {
+    try {
+        $Current = if (Test-Path -LiteralPath $McpLauncherPath -PathType Leaf) { [IO.File]::ReadAllBytes($McpLauncherPath) } else { $null }
+        if (-not (Test-BytesEqual $Current $Expected)) { return $false }
+        if ($null -eq $Replacement) {
+            Remove-Item -LiteralPath $McpLauncherPath -Force -ErrorAction Stop
+            return $true
+        }
+        $Temporary = "$McpLauncherPath.tmp.$PID"
+        [IO.File]::WriteAllBytes($Temporary, [byte[]]$Replacement)
+        if (Test-Path -LiteralPath $McpLauncherPath) {
+            $Backup = "$McpLauncherPath.bak.$PID"
+            [IO.File]::Replace($Temporary, $McpLauncherPath, $Backup)
+            Remove-Item -LiteralPath $Backup -Force
+        } else { [IO.File]::Move($Temporary, $McpLauncherPath) }
+        return $true
+    } catch { return $false }
+}
+
+function Get-PluginObservation {
+    $Json = & codex plugin list --marketplace personal --json 2>$null
+    if ($LASTEXITCODE -ne 0) { return 'unknown' }
+    try { $State = (($Json | Out-String).Trim()) | ConvertFrom-Json } catch { return 'unknown' }
+    $Matches = @($State.installed | Where-Object { $_.pluginId -eq $PluginId -and $_.installed -eq $true })
+    if ($Matches.Count -eq 0) { return 'absent' }
+    if ($Matches.Count -ne 1 -or -not ($Matches[0].version -is [string])) { return 'unknown' }
+    $Enabled = $Matches[0].PSObject.Properties['enabled']
+    $Prefix = if ($null -ne $Enabled -and $Enabled.Value -eq $true) { 'active:' } else { 'inactive:' }
+    return $Prefix + [string]$Matches[0].version
+}
+
+function Test-BundledMcpVisibility {
+    $Json = & codex mcp list --json 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    try { $Rows = @((($Json | Out-String).Trim()) | ConvertFrom-Json) } catch { return $false }
+    $Canonical = @($Rows | Where-Object { Test-BundledMcpRegistration $_ })
+    $Owned = @($Rows | Where-Object { Test-OwnedMcpRegistration $_ $McpLauncherPath })
+    return $Canonical.Count -eq 1 -and $Owned.Count -eq 1
+}
+
+function Test-ReleaseHealth([string]$HealthPython, [string]$HealthPluginRoot) {
+    $PreviousNoBytecode = $env:PYTHONDONTWRITEBYTECODE
+    try {
+        $env:PYTHONDONTWRITEBYTECODE = '1'
+        $Output = & $HealthPython -B -I (Join-Path $HealthPluginRoot 'scripts\validate_installed_stage1.py') --plugin-root $HealthPluginRoot --launcher $McpLauncherPath --smoke-only 2>$null
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        if ($null -eq $PreviousNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue }
+        else { $env:PYTHONDONTWRITEBYTECODE = $PreviousNoBytecode }
+    }
+    if ($ExitCode -ne 0) { return $false }
+    try { $Evidence = (($Output | Out-String).Trim()) | ConvertFrom-Json } catch { return $false }
+    return $Evidence.ok -eq $true -and $Evidence.journey.read_smoke -eq $true -and $Evidence.journey.mutation_smoke -eq $true
+}
+
+$TransactionId = 'tx-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '-' + $PID
+$TransactionOperation = switch ($Action) {
+    'installed' { 'install' }
+    'upgraded' { 'upgrade' }
+    'repaired' { 'repair' }
+}
+$TransactionDirectory = Join-Path $RuntimeRoot 'transactions'
+if (Test-Path -LiteralPath $TransactionDirectory) {
+    if (-not (Test-Path -LiteralPath $TransactionDirectory -PathType Container) -or ((Get-Item -LiteralPath $TransactionDirectory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        Fail "$TransactionDirectory must be a regular directory."
+    }
+} else { [IO.Directory]::CreateDirectory($TransactionDirectory) | Out-Null }
+$TransactionPath = Join-Path $TransactionDirectory ($TransactionId + '.json')
+$script:TxStep = 'staged'
+$script:TxOutcome = 'in_progress'
+$script:TxPlugin = if ($InstalledMatches.Count -eq 1) { 'previous' } else { 'absent' }
+$script:TxMarketplace = 'original'
+$script:TxLauncher = 'original'
+$script:TxRuntime = 'candidate-staged'
+$script:TxBlindRetrySafe = $true
+
+function Write-InstallTransaction {
+    try {
+        $Record = [ordered]@{
+            schema = 'dev-flow-install-transaction/0.4.0'
+            transaction_id = $TransactionId
+            operation = $TransactionOperation
+            previous_release = $(if ($PreviousReleaseId) { $PreviousReleaseId } else { $null })
+            candidate_release = $CandidateReleaseId
+            current_step = $script:TxStep
+            components = [ordered]@{
+                plugin = $script:TxPlugin
+                marketplace = $script:TxMarketplace
+                mcp_launcher = $script:TxLauncher
+                runtime = $script:TxRuntime
+            }
+            outcome = $script:TxOutcome
+            blind_retry_safe = $script:TxBlindRetrySafe
+            retained_paths = @([string]$RuntimeResult.runtime_dir) + $(if ($PreviousReleaseId -and $PreviousReleaseId -ne $CandidateReleaseId) { @([string]$PreviousRuntimeResult.runtime_dir) } else { @() })
+        }
+        $Temporary = "$TransactionPath.tmp.$PID"
+        [IO.File]::WriteAllText($Temporary, (($Record | ConvertTo-Json -Depth 10) + "`n"), (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $TransactionPath) {
+            $Backup = "$TransactionPath.bak.$PID"
+            [IO.File]::Replace($Temporary, $TransactionPath, $Backup)
+            Remove-Item -LiteralPath $Backup -Force
+        } else { [IO.File]::Move($Temporary, $TransactionPath) }
+        return $true
+    } catch { return $false }
+}
+
 function Restore-CandidateActivation([string]$Reason) {
-    if ($NewPluginActive) { & codex plugin remove $PluginId *> $null }
-    if ($null -eq $PreviousMarketplaceBytes) {
-        Remove-Item -LiteralPath $MarketplaceFile -Force -ErrorAction SilentlyContinue
-    } else {
-        [IO.File]::WriteAllBytes($MarketplaceFile, $PreviousMarketplaceBytes)
+    $RollbackOk = $true
+    $script:TxStep = 'rolling-back'
+    $script:TxOutcome = 'in_progress'
+    [void](Write-InstallTransaction)
+
+    & codex plugin remove $PluginId *> $null
+    if ((Get-PluginObservation) -eq 'absent') { $script:TxPlugin = 'absent' } else { $script:TxPlugin = 'unknown'; $RollbackOk = $false }
+
+    if ($script:TxMarketplace -eq 'candidate') {
+        if (Set-MarketplaceEntry $CandidateMarketplaceEntry $RollbackMarketplaceEntry) { $script:TxMarketplace = 'original' }
+        else { $script:TxMarketplace = 'unknown'; $RollbackOk = $false }
     }
-    if ($null -eq $PreviousLauncherBytes) {
-        Remove-Item -LiteralPath $McpLauncherPath -Force -ErrorAction SilentlyContinue
-    } else {
-        [IO.File]::WriteAllBytes($McpLauncherPath, $PreviousLauncherBytes)
+
+    if ($script:TxLauncher -eq 'candidate') {
+        $RollbackLauncherBytes = if ($PreviousReleaseId) { [IO.File]::ReadAllBytes($PreviousManagedLauncherPayload) } else { $PreviousLauncherBytes }
+        if (Set-McpLauncher $CandidateLauncherBytes $RollbackLauncherBytes) { $script:TxLauncher = 'original' }
+        else { $script:TxLauncher = 'unknown'; $RollbackOk = $false }
     }
-    if ($PreviousPluginRemoved) {
+
+    if ($PreviousReleaseId) {
         & codex plugin add $PluginId *> $null
-        if ($LASTEXITCODE -eq 0) { [Console]::Error.WriteLine('Previous plugin activation was restored after the failed candidate.') }
-        else { [Console]::Error.WriteLine("Previous plugin reactivation failed; after resolving Codex, run: codex plugin add $PluginId") }
+        $PreviousObserved = Get-PluginObservation
+        if (
+            $PreviousObserved -eq ('active:' + $PreviousVersion) -and
+            (Test-BundledMcpVisibility) -and
+            (Test-ReleaseHealth $PreviousRuntimePython $PreviousPersistentPluginRoot)
+        ) { $script:TxPlugin = 'previous' }
+        else { $script:TxPlugin = 'unknown'; $RollbackOk = $false }
+    } elseif ((Get-PluginObservation) -ne 'absent') {
+        $script:TxPlugin = 'unknown'
+        $RollbackOk = $false
+    }
+
+    if ($RollbackOk) {
+        $script:TxStep = 'rolled-back'
+        $script:TxOutcome = 'rolled_back'
+        $script:TxRuntime = 'candidate-retained'
+        $script:TxBlindRetrySafe = $true
+        if (-not (Write-InstallTransaction)) { $RollbackOk = $false }
+    }
+    if (-not $RollbackOk) {
+        $script:TxStep = 'rollback-incomplete'
+        $script:TxOutcome = 'partial'
+        $script:TxRuntime = 'candidate-retained'
+        $script:TxBlindRetrySafe = $false
+        [void](Write-InstallTransaction)
+        [Console]::Error.WriteLine('Installation rollback is partial; blind_retry_safe=false.')
+    } elseif ($PreviousReleaseId) {
+        [Console]::Error.WriteLine('Previous plugin activation was restored and verified after the failed candidate.')
     }
     [Console]::Error.WriteLine("Plugin activation failed: $Reason")
-    [Console]::Error.WriteLine("Recovery: codex plugin remove $PluginId; codex plugin add $PluginId")
-    [Console]::Error.WriteLine('Inspect MCP state with: codex mcp list --json')
+    [Console]::Error.WriteLine("Inspect transaction state at: $TransactionPath")
+    Remove-Item -LiteralPath $TransactionRoot -Recurse -Force -ErrorAction SilentlyContinue
     exit 1
 }
+
+if (-not (Write-InstallTransaction)) { Fail 'Cannot create the bounded installation transaction record.' }
+if (-not (Set-McpLauncher $PreviousLauncherBytes $CandidateLauncherBytes)) { Fail 'Cannot install the exact managed MCP launcher.' }
+$script:TxLauncher = 'candidate'
+$script:TxStep = 'mcp-launcher'
+if (-not (Write-InstallTransaction)) { Restore-CandidateActivation 'Cannot record the managed MCP launcher update.' }
+if ((Get-FileHash -LiteralPath $McpLauncherPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$RuntimeResult.launcher_sha256) {
+    Restore-CandidateActivation 'Installed MCP launcher bytes do not match the verified runtime receipt.'
+}
+
+if (-not (Set-MarketplaceEntry $OriginalMarketplaceEntry $CandidateMarketplaceEntry)) {
+    Restore-CandidateActivation 'The Dev Flow marketplace member changed concurrently.'
+}
+$script:TxMarketplace = 'candidate'
+$script:TxStep = 'marketplace'
+if (-not (Write-InstallTransaction)) { Restore-CandidateActivation 'Cannot record the marketplace member update.' }
+
 if ($InstalledMatches.Count -eq 1) {
-    Invoke-Checked 'codex' @('plugin', 'remove', $PluginId) "Cannot remove $PluginId before repair or upgrade."
-    $PreviousPluginRemoved = $true
+    & codex plugin remove $PluginId
+    if ((Get-PluginObservation) -ne 'absent') {
+        $script:TxPlugin = 'unknown'
+        Restore-CandidateActivation "Cannot remove $PluginId or prove it absent."
+    }
+    $script:TxPlugin = 'absent'
+    $script:TxStep = 'plugin-removed'
+    if (-not (Write-InstallTransaction)) { Restore-CandidateActivation 'Cannot record the observed plugin removal.' }
 }
+
 & codex plugin add $PluginId
-if ($LASTEXITCODE -ne 0) {
-    Restore-CandidateActivation 'Codex rejected the candidate plugin.'
+$CandidateObserved = Get-PluginObservation
+if ($CandidateObserved -ne ('active:' + $PluginVersion)) {
+    $script:TxPlugin = if ($CandidateObserved -eq 'absent') { 'absent' } else { 'unknown' }
+    Restore-CandidateActivation 'Codex did not expose the candidate plugin after activation.'
 }
-$NewPluginActive = $true
+$script:TxPlugin = 'candidate'
+$script:TxStep = 'plugin-active'
+if (-not (Write-InstallTransaction)) { Restore-CandidateActivation 'Cannot record the observed plugin activation.' }
 
-$PostPluginJson = & codex plugin list --marketplace personal --json
-if ($LASTEXITCODE -ne 0) { Restore-CandidateActivation 'Codex could not report the installed plugin after activation.' }
-try { $PostPluginState = (($PostPluginJson | Out-String).Trim()) | ConvertFrom-Json } catch { Restore-CandidateActivation 'Codex returned invalid installed-plugin JSON after activation.' }
-$PostMatches = @($PostPluginState.installed | Where-Object {
-    $EnabledProperty = $_.PSObject.Properties['enabled']
-    $_.pluginId -eq $PluginId -and $_.installed -eq $true -and $null -ne $EnabledProperty -and $EnabledProperty.Value -eq $true -and $_.version -eq $PluginVersion
-})
-if ($PostMatches.Count -ne 1) { Restore-CandidateActivation 'The activated plugin identity or release is not visible.' }
-
-$PostMcpJson = & codex mcp list --json
-if ($LASTEXITCODE -ne 0) { Restore-CandidateActivation 'Codex could not report MCP registrations after activation.' }
-$PostMcpText = ($PostMcpJson | Out-String).Trim()
-if (-not $PostMcpText.TrimStart().StartsWith('[')) { Restore-CandidateActivation 'Codex MCP registration JSON after activation was not an array.' }
-try { $PostMcpRegistrations = @($PostMcpText | ConvertFrom-Json) } catch { Restore-CandidateActivation 'Codex returned invalid MCP registration JSON after activation.' }
-$PostCanonicalBundled = @($PostMcpRegistrations | Where-Object { Test-BundledMcpRegistration $_ })
-$PostOwnedRegistrations = @($PostMcpRegistrations | Where-Object { Test-OwnedMcpRegistration $_ $McpLauncherPath })
-if ($PostCanonicalBundled.Count -ne 1 -or $PostOwnedRegistrations.Count -ne 1) {
+if (-not (Test-BundledMcpVisibility)) {
     Restore-CandidateActivation 'The activated bundled MCP registration is missing, disabled, duplicated, or shadowed.'
 }
+if (-not (Test-ReleaseHealth $RuntimePython $PersistentPluginRoot)) {
+    Restore-CandidateActivation 'The real installed launcher failed initialize, catalog, read, or mutation smoke.'
+}
 
-$HealthOutput = & $RuntimePython -I (Join-Path $SourceRoot 'scripts\validate_installed_stage1.py') --plugin-root $SourceRoot --launcher $McpLauncherPath --smoke-only
-if ($LASTEXITCODE -ne 0) { Restore-CandidateActivation 'The real installed launcher failed initialize, catalog, read, or mutation smoke.' }
-try { $Health = (($HealthOutput | Out-String).Trim()) | ConvertFrom-Json } catch { Restore-CandidateActivation 'The installed MCP health evidence is invalid JSON.' }
-if ($Health.ok -ne $true -or $Health.journey.read_smoke -ne $true -or $Health.journey.mutation_smoke -ne $true) {
-    Restore-CandidateActivation 'The installed MCP health evidence is incomplete.'
+try { Remove-Item -LiteralPath $TransactionRoot -Recurse -Force -ErrorAction Stop }
+catch { Restore-CandidateActivation 'Cannot clean the bounded transaction staging directory.' }
+
+$script:TxStep = 'committed'
+$script:TxOutcome = 'committed'
+$script:TxRuntime = 'candidate-active'
+$script:TxBlindRetrySafe = $true
+if (-not (Write-InstallTransaction)) { Restore-CandidateActivation 'Cannot publish the committed installation transaction.' }
+
+if (-not (Test-SelectedSourceInventory)) {
+    [Console]::Error.WriteLine('Authoritative source changed after sealing; no post-seal activation input was read from that checkout.')
 }
 
 Write-Output ''

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -108,6 +109,9 @@ class UninstallerBehaviorTests(unittest.TestCase):
         self.codex_root = self.test_root / ".codex"
         self.codex_state = self.test_root / "installed plugin.txt"
         self.codex_log = self.test_root / "codex calls.log"
+        self.runtime_external_target = self.test_root / "external runtime target.bin"
+        self.runtime_external_target.write_bytes(b"external runtime target\x00\xff")
+        self.runtime_external_target.chmod(0o755)
 
         seed = self.test_root / "seed"
         manifest = seed / ".codex-plugin" / "plugin.json"
@@ -167,6 +171,9 @@ class UninstallerBehaviorTests(unittest.TestCase):
             "    printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
             "    if [ -n \"${DEV_FLOW_CODEX_CREATE_SOURCE_FILE:-}\" ]; then\n"
             "      printf 'created during plugin removal\\n' > \"$DEV_FLOW_CODEX_CREATE_SOURCE_FILE\"\n"
+            "    fi\n"
+            "    if [ -n \"${DEV_FLOW_CODEX_CREATE_RUNTIME_FILE:-}\" ]; then\n"
+            "      printf 'created during plugin removal\\n' > \"$DEV_FLOW_CODEX_CREATE_RUNTIME_FILE\"\n"
             "    fi\n"
             "    exit_code=\"${DEV_FLOW_CODEX_REMOVE_EXIT:-0}\"\n"
             "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
@@ -312,37 +319,104 @@ class UninstallerBehaviorTests(unittest.TestCase):
         (runtime_root / ".dev-flow-managed-runtime").write_text(
             "dev-flow-managed-runtime/1\n", encoding="utf-8"
         )
-        commit = "a" * 40
-        lock = "b" * 64
-        release = runtime_root / "releases" / "0.5.0-{}-{}".format(
-            commit[:12], lock[:12]
-        )
+        self.write_managed_release(runtime_root, "r-test-owned-release")
+        return runtime_root
+
+    def write_managed_release(self, runtime_root: Path, release_id: str) -> Path:
+        release = runtime_root / "releases" / release_id
         executable = release / "venv" / "bin" / "python"
         executable.parent.mkdir(parents=True)
-        executable.symlink_to(Path(sys.executable).resolve())
-        digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+        executable.symlink_to(self.runtime_external_target.resolve())
+        site_packages = (
+            release
+            / "venv"
+            / "lib"
+            / "python{}.{}".format(sys.version_info.major, sys.version_info.minor)
+            / "site-packages"
+        )
+        (site_packages / "dev_flow_orchestrator").mkdir(parents=True)
+        (site_packages / "dev_flow_orchestrator-0.5.0.dist-info").mkdir()
+        plugin = release / "plugin"
+        plugin.mkdir()
+        (plugin / "payload.txt").write_bytes(b"owned plugin payload\n")
+        physical_release = release.resolve()
+
+        entries: list[dict[str, object]] = [
+            {
+                "path": ".",
+                "type": "directory",
+                "mode": stat.S_IMODE(release.lstat().st_mode),
+                "release_id": release_id,
+            }
+        ]
+        for path in sorted(release.rglob("*"), key=lambda item: item.as_posix()):
+            metadata = path.lstat()
+            entry: dict[str, object] = {
+                "path": path.relative_to(release).as_posix(),
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "release_id": release_id,
+            }
+            if stat.S_ISLNK(metadata.st_mode):
+                entry.update({"type": "symlink", "target": os.readlink(path)})
+            elif stat.S_ISDIR(metadata.st_mode):
+                entry["type"] = "directory"
+            elif stat.S_ISREG(metadata.st_mode):
+                entry.update(
+                    {
+                        "type": "file",
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                )
+            else:
+                raise AssertionError("fixture produced an unsupported owned entry")
+            entries.append(entry)
+        entries.sort(key=lambda item: str(item["path"]))
+        ownership = {
+            "schema": "dev-flow-runtime-ownership/1.0.0",
+            "release_id": release_id,
+            "entries": entries,
+        }
+        ownership_path = release / "ownership-manifest.json"
+        ownership_path.write_text(
+            json.dumps(ownership, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        ownership_digest = hashlib.sha256(ownership_path.read_bytes()).hexdigest()
         receipt = {
-            "schema": "dev-flow-runtime-receipt/1.0.0",
-            "release_version": "0.5.0",
-            "source_commit": commit,
+            "schema": "dev-flow-runtime-receipt/2.0.0",
+            "release_id": release_id,
+            "source_commit": "a" * 40,
+            "source_tree": "b" * 40,
+            "wheel_sha256": "c" * 64,
+            "plugin_path": str(physical_release / "plugin"),
+            "plugin_release_manifest_sha256": "d" * 64,
+            "dev_flow": {
+                "name": "dev-flow-orchestrator",
+                "version": "0.5.0",
+                "metadata_sha256": "e" * 64,
+                "record_sha256": "f" * 64,
+                "files": [],
+            },
+            "dependencies": [],
             "python": {
-                "executable_sha256": digest,
+                "path": str(physical_release / "venv" / "bin" / "python"),
+                "executable_sha256": hashlib.sha256(
+                    executable.resolve().read_bytes()
+                ).hexdigest(),
                 "version": platform.python_version(),
                 "architecture": platform.machine(),
                 "bits": 64,
             },
-            "dependency_lock_sha256": lock,
-            "launcher_identity": "dev-flow-mcp --stdio",
-            "runtime_identity": hashlib.sha256(
-                os.path.normcase(str(release.resolve())).encode("utf-8")
-            ).hexdigest(),
-            "activation_action": "create",
-            "activated_at": "2026-08-08T00:00:00Z",
+            "runtime_path": str(physical_release),
+            "launcher_sha256": "1" * 64,
+            "ownership_manifest_sha256": ownership_digest,
+            "dependency_lock_sha256": "2" * 64,
+            "created_at": "2026-08-08T00:00:00Z",
         }
         (release / "runtime-receipt.json").write_text(
             json.dumps(receipt), encoding="utf-8"
         )
-        return runtime_root
+        return release
 
     def test_default_uninstall_reports_partial_and_retains_clean_source(self) -> None:
         self.write_marketplace()
@@ -396,10 +470,188 @@ class UninstallerBehaviorTests(unittest.TestCase):
         self.assertFalse(launcher.exists())
         self.assertFalse(mcp_launcher.exists())
         self.assertFalse(runtime_root.exists())
+        self.assertEqual(
+            self.runtime_external_target.read_bytes(),
+            b"external runtime target\x00\xff",
+        )
+        self.assertIn(
+            "MCP RUNTIME  removed (exact ownership manifest)", result.stdout
+        )
         self.assert_source_containment_receipt(result, self.source_root)
         self.assertIn("// SYSTEM OFFLINE", result.stdout)
         self.assertIn("UNINSTALL RECEIPT", result.stdout)
         self.assertIn("External Dev Flow task data", result.stdout)
+
+    def test_unknown_entries_across_runtime_scopes_are_retained_exactly(
+        self,
+    ) -> None:
+        self.write_marketplace()
+        marketplace = json.loads(self.marketplace.read_text(encoding="utf-8"))
+        unrelated_before = json.dumps(
+            marketplace["plugins"][0],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        task_data = self.codex_root / "plugins" / "data" / "task.bin"
+        task_data.parent.mkdir(parents=True)
+        task_data.write_bytes(b"task sentinel\x00\xff")
+        task_before = task_data.read_bytes()
+        source_before = _tree_snapshot(self.source_root)
+        external_before = self.runtime_external_target.read_bytes()
+
+        runtime_root = self.write_managed_runtime()
+        active_release = runtime_root / "releases" / "r-test-owned-release"
+        inactive_release = self.write_managed_release(
+            runtime_root, "r-test-inactive-release"
+        )
+        site_packages = (
+            active_release
+            / "venv"
+            / "lib"
+            / "python{}.{}".format(sys.version_info.major, sys.version_info.minor)
+            / "site-packages"
+        )
+        unknown_entries = {
+            runtime_root / "runtime-root-extra.bin": b"runtime root\x00\xff",
+            active_release / "active-release-extra.bin": b"active release\x00\xff",
+            inactive_release / "inactive-release-extra.bin": b"inactive release\x00\xff",
+            active_release / "venv" / "venv-extra.bin": b"venv\x00\xff",
+            site_packages / "site-packages-extra.py": b"site packages\x00\xff",
+            active_release / "venv" / "bin" / "bin-extra": b"bin\x00\xff",
+            site_packages
+            / "dev_flow_orchestrator-0.5.0.dist-info"
+            / "metadata-extra.bin": b"metadata\x00\xff",
+        }
+        for path, content in unknown_entries.items():
+            path.write_bytes(content)
+
+        result = self.run_uninstaller()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "MCP RUNTIME  partial (unknown or changed content retained)",
+            result.stdout,
+        )
+        for path, content in unknown_entries.items():
+            with self.subTest(path=path):
+                self.assertEqual(path.read_bytes(), content)
+        self.assertIn(str(runtime_root.resolve()), result.stdout)
+        self.assertIn(str(inactive_release.resolve()), result.stdout)
+        self.assertIn(str((active_release / "venv").resolve()), result.stdout)
+        self.assertFalse((active_release / "plugin" / "payload.txt").exists())
+        self.assertFalse((inactive_release / "plugin" / "payload.txt").exists())
+        self.assertEqual(task_data.read_bytes(), task_before)
+        self.assertEqual(_tree_snapshot(self.source_root), source_before)
+        self.assertEqual(self.runtime_external_target.read_bytes(), external_before)
+        unrelated_after = json.dumps(
+            json.loads(self.marketplace.read_text(encoding="utf-8"))["plugins"][0],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertEqual(unrelated_after, unrelated_before)
+
+    def test_changed_known_owned_file_is_retained_without_deleting_neighbors(
+        self,
+    ) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        runtime_root = self.write_managed_runtime()
+        release = runtime_root / "releases" / "r-test-owned-release"
+        replaced = release / "plugin" / "payload.txt"
+        replaced.write_bytes(b"user replacement\x00\xff")
+        external_before = self.runtime_external_target.read_bytes()
+
+        result = self.run_uninstaller()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(replaced.read_bytes(), b"user replacement\x00\xff")
+        self.assertTrue((release / "runtime-receipt.json").is_file())
+        self.assertTrue((release / "ownership-manifest.json").is_file())
+        self.assertFalse((release / "venv" / "bin" / "python").exists())
+        self.assertEqual(self.runtime_external_target.read_bytes(), external_before)
+        self.assertIn(
+            "MCP RUNTIME  partial (unknown or changed content retained)",
+            result.stdout,
+        )
+        self.assertIn(str(replaced.resolve()), result.stdout)
+
+    def test_unknown_symlink_and_external_target_are_retained_without_following(
+        self,
+    ) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        runtime_root = self.write_managed_runtime()
+        release = runtime_root / "releases" / "r-test-owned-release"
+        external_target = self.test_root / "external symlink target.bin"
+        external_target.write_bytes(b"external symlink target\x00\xff")
+        external_before = external_target.read_bytes()
+        unknown_link = release / "plugin" / "user-link"
+        unknown_link.symlink_to(external_target.resolve())
+        link_target = os.readlink(unknown_link)
+
+        result = self.run_uninstaller()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(unknown_link.is_symlink())
+        self.assertEqual(os.readlink(unknown_link), link_target)
+        self.assertEqual(external_target.read_bytes(), external_before)
+        self.assertFalse((release / "plugin" / "payload.txt").exists())
+        self.assertIn(
+            "MCP RUNTIME  partial (unknown or changed content retained)",
+            result.stdout,
+        )
+
+    def test_unknown_fifo_and_socket_are_retained_when_supported(self) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        runtime_root = self.write_managed_runtime()
+        fifo_path = runtime_root / "f"
+        os.mkfifo(fifo_path)
+        socket_path = runtime_root / "s"
+        unix_socket: Optional[socket.socket] = None
+        socket_supported = False
+        try:
+            unix_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            unix_socket.bind(str(socket_path))
+            socket_supported = True
+
+            result = self.run_uninstaller()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(stat.S_ISFIFO(fifo_path.lstat().st_mode))
+            if socket_supported:
+                self.assertTrue(stat.S_ISSOCK(socket_path.lstat().st_mode))
+            self.assertIn(
+                "MCP RUNTIME  partial (unknown or changed content retained)",
+                result.stdout,
+            )
+        finally:
+            if unix_socket is not None:
+                unix_socket.close()
+
+    def test_runtime_file_created_during_plugin_removal_is_retained(self) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        runtime_root = self.write_managed_runtime()
+        late_file = runtime_root / "arrived-during-plugin-removal.bin"
+
+        result = self.run_uninstaller(
+            overrides={"DEV_FLOW_CODEX_CREATE_RUNTIME_FILE": str(late_file)}
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            late_file.read_bytes(), b"created during plugin removal\n"
+        )
+        self.assertTrue(runtime_root.is_dir())
+        self.assertIn(str(late_file.resolve()), result.stdout)
+        self.assertIn(
+            "MCP RUNTIME  partial (unknown or changed content retained)",
+            result.stdout,
+        )
 
     def test_uninstall_uses_the_same_path_directory_selection(self) -> None:
         self.write_marketplace()
@@ -602,24 +854,41 @@ class UninstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(self.marketplace.read_bytes(), malformed)
         self.assertEqual(self.activation_calls(), [])
 
-    def test_mismatched_runtime_receipt_fails_closed_before_any_mutation(self) -> None:
+    def test_mismatched_runtime_receipt_fails_closed_before_any_mutation(
+        self,
+    ) -> None:
+        """Keep the historical selector while asserting current retained/partial safety."""
         self.write_marketplace()
+        unrelated_before = json.loads(
+            self.marketplace.read_text(encoding="utf-8")
+        )["plugins"][0]
         self.codex_state.write_text("installed\n", encoding="utf-8")
         runtime_root = self.write_managed_runtime()
         receipt = next(runtime_root.glob("releases/*/runtime-receipt.json"))
         value = json.loads(receipt.read_text(encoding="utf-8"))
-        value["dependency_lock_sha256"] = "c" * 64
+        value["schema"] = "dev-flow-runtime-receipt/1.0.0"
         receipt.write_text(json.dumps(value), encoding="utf-8")
-        marketplace_before = self.marketplace.read_bytes()
+        receipt.with_name("ownership-manifest.json").unlink()
+        runtime_before = _tree_snapshot(runtime_root)
 
         result = self.run_uninstaller()
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ownership receipt", result.stderr)
-        self.assertTrue(runtime_root.exists())
-        self.assertTrue(self.codex_state.exists())
-        self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
-        self.assertEqual(self.activation_calls(), [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_tree_snapshot(runtime_root), runtime_before)
+        self.assertFalse(self.codex_state.exists())
+        self.assertEqual(
+            json.loads(self.marketplace.read_text(encoding="utf-8"))["plugins"],
+            [unrelated_before],
+        )
+        self.assertEqual(
+            self.activation_calls(),
+            ["plugin remove dev-flow-orchestrator@personal"],
+        )
+        self.assertIn(
+            "MCP RUNTIME  retained (legacy, missing, or mismatched exact ownership)",
+            result.stdout,
+        )
+        self.assertIn(str(runtime_root.resolve()), result.stdout)
 
     def test_enabled_standalone_owned_launcher_blocks_bundled_uninstall(self) -> None:
         self.write_marketplace()
@@ -836,6 +1105,31 @@ class UninstallerBehaviorTests(unittest.TestCase):
         self.assertIn("\x1b[38;5;51m", result.stdout)
         self.assertIn("\x1b[38;5;213m", result.stdout)
         self.assertIn("\x1b[38;5;82m", result.stdout)
+
+
+class RuntimeDeletionContainmentStaticTests(unittest.TestCase):
+    def test_uninstallers_never_recursively_delete_managed_runtime_roots(self) -> None:
+        posix = UNINSTALLER.read_text(encoding="utf-8")
+        runtime_integrity = (ROOT / "scripts" / "runtime_integrity.py").read_text(
+            encoding="utf-8"
+        )
+        powershell = (ROOT / "scripts" / "uninstall.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('rm -rf -- "$RUNTIME_ROOT"', posix)
+        self.assertNotIn('rm -rf "$RUNTIME_ROOT"', posix)
+        self.assertNotRegex(
+            posix,
+            r'(?m)^\s*rm\b[^\n]*(?:-[^\s]*[rR][^\s]*|--recursive)[^\n]*RUNTIME_ROOT',
+        )
+        self.assertNotIn(
+            "Remove-Item -LiteralPath $RuntimeRoot -Recurse",
+            powershell,
+        )
+        self.assertNotIn("shutil.rmtree", posix)
+        self.assertNotIn("shutil.rmtree", runtime_integrity)
+        self.assertNotIn("shutil.rmtree", powershell)
 
 
 if __name__ == "__main__":

@@ -20,12 +20,26 @@ $CodexRoot = [IO.Path]::GetFullPath($(if ($env:CODEX_HOME) { $env:CODEX_HOME } e
 $RuntimeRoot = [IO.Path]::GetFullPath($(if ($env:DEV_FLOW_RUNTIME_HOME) { $env:DEV_FLOW_RUNTIME_HOME } else { Join-Path $env:LOCALAPPDATA 'dev-flow-orchestrator\runtime' }))
 $PluginId = 'dev-flow-orchestrator@personal'
 $McpLauncherMarker = 'rem dev-flow-orchestrator managed MCP launcher'
+$RuntimeIntegrityHelper = Join-Path $PSScriptRoot 'runtime_integrity.py'
 
 function Fail([string]$Message) { [Console]::Error.WriteLine("Dev Flow uninstallation failed: $Message"); exit 1 }
 function Capture-Checked([string]$Program, [string[]]$Arguments, [string]$Failure) {
     $Output = & $Program @Arguments 2>$null
     if ($LASTEXITCODE -ne 0) { Fail $Failure }
     return (($Output | Out-String).Trim())
+}
+function Find-OwnershipPython {
+    $Candidates = @(
+        [pscustomobject]@{ Program = 'py.exe'; Prefix = @('-3') },
+        [pscustomobject]@{ Program = 'python.exe'; Prefix = @() },
+        [pscustomobject]@{ Program = 'python3.exe'; Prefix = @() }
+    )
+    foreach ($Candidate in $Candidates) {
+        if (-not (Get-Command $Candidate.Program -ErrorAction SilentlyContinue)) { continue }
+        & $Candidate.Program @($Candidate.Prefix) -B -I -S -c 'import struct,sys;raise SystemExit(0 if (3,10) <= sys.version_info[:2] < (3,15) and struct.calcsize("P") == 8 else 1)' *> $null
+        if ($LASTEXITCODE -eq 0) { return $Candidate }
+    }
+    return $null
 }
 function Find-BinDirectory {
     if ($env:DEV_FLOW_BIN_DIR) { $Candidates = @($env:DEV_FLOW_BIN_DIR) }
@@ -130,47 +144,6 @@ if ($McpLauncherPresent) {
     }
 }
 $RuntimePresent = Test-Path -LiteralPath $RuntimeRoot
-if ($RuntimePresent) {
-    if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) { Fail "$RuntimeRoot is not a directory." }
-    if ((Get-Item -LiteralPath $RuntimeRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { Fail "$RuntimeRoot is a reparse point." }
-    $Marker = Join-Path $RuntimeRoot '.dev-flow-managed-runtime'
-    if (-not (Test-Path -LiteralPath $Marker -PathType Leaf) -or (Get-Content -LiteralPath $Marker -Raw -Encoding UTF8) -ne "dev-flow-managed-runtime/1`n") {
-        Fail "$RuntimeRoot does not have the Dev Flow managed-runtime marker."
-    }
-    $Releases = Join-Path $RuntimeRoot 'releases'
-    if (-not (Test-Path -LiteralPath $Releases -PathType Container) -or ((Get-Item -LiteralPath $Releases -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        Fail "$RuntimeRoot has no receipt-validated releases directory."
-    }
-    $ReleaseDirectories = @(Get-ChildItem -LiteralPath $Releases -Directory -Force)
-    if ($ReleaseDirectories.Count -eq 0) { Fail "$RuntimeRoot has no receipt-validated release." }
-    foreach ($Release in $ReleaseDirectories) {
-        if ($Release.Attributes -band [IO.FileAttributes]::ReparsePoint) { Fail "$($Release.FullName) is a reparse point." }
-        $ReceiptPath = Join-Path $Release.FullName 'runtime-receipt.json'
-        try { $Receipt = Get-Content -LiteralPath $ReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Fail "$ReceiptPath cannot be read." }
-        $ExpectedFields = @('activation_action', 'activated_at', 'dependency_lock_sha256', 'launcher_identity', 'python', 'release_version', 'runtime_identity', 'schema', 'source_commit')
-        $ActualFields = @($Receipt.PSObject.Properties.Name | Sort-Object)
-        if (($ActualFields -join ',') -ne ($ExpectedFields -join ',')) { Fail "$ReceiptPath fields are invalid." }
-        $Commit = [string]$Receipt.source_commit
-        $Lock = [string]$Receipt.dependency_lock_sha256
-        if ($Receipt.schema -ne 'dev-flow-runtime-receipt/1.0.0' -or $Receipt.release_version -ne '0.5.0' -or $Receipt.launcher_identity -ne 'dev-flow-mcp --stdio' -or $Commit -notmatch '^[0-9a-f]{40}$' -or $Lock -notmatch '^[0-9a-f]{64}$') {
-            Fail "$ReceiptPath identity is invalid."
-        }
-        $PythonFields = @($Receipt.python.PSObject.Properties.Name | Sort-Object)
-        if (($PythonFields -join ',') -ne 'architecture,bits,executable_sha256,version' -or $Receipt.python.bits -ne 64) { Fail "$ReceiptPath Python identity is invalid." }
-        $ExpectedName = "0.5.0-$($Commit.Substring(0,12))-$($Lock.Substring(0,12))"
-        if ($Release.Name -ne $ExpectedName) { Fail "$ReceiptPath does not match its release directory." }
-        $CanonicalReleaseLocation = [IO.Path]::GetFullPath($Release.FullName).ToLowerInvariant()
-        $IdentityBytes = [Text.Encoding]::UTF8.GetBytes($CanonicalReleaseLocation)
-        $Hasher = [Security.Cryptography.SHA256]::Create()
-        try { $ExpectedRuntimeIdentity = ([BitConverter]::ToString($Hasher.ComputeHash($IdentityBytes))).Replace('-', '').ToLowerInvariant() } finally { $Hasher.Dispose() }
-        if ($Receipt.runtime_identity -ne $ExpectedRuntimeIdentity -or $Receipt.activation_action -notin @('create', 'update')) { Fail "$ReceiptPath managed location identity is invalid." }
-        $RuntimePython = Join-Path $Release.FullName 'venv\Scripts\python.exe'
-        if (-not (Test-Path -LiteralPath $RuntimePython -PathType Leaf)) { Fail "$RuntimePython is missing." }
-        if ((Get-FileHash -LiteralPath $RuntimePython -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$Receipt.python.executable_sha256) { Fail "$RuntimePython does not match its receipt." }
-        $ActivationTime = [DateTimeOffset]::MinValue
-        if (-not [DateTimeOffset]::TryParse([string]$Receipt.activated_at, [ref]$ActivationTime)) { Fail "$ReceiptPath activation timestamp is invalid." }
-    }
-}
 
 $MarketplaceDirectory = Split-Path -Parent $MarketplaceFile
 if ((Split-Path -Leaf $MarketplaceFile) -ne 'marketplace.json' -or (Split-Path -Leaf $MarketplaceDirectory) -ne 'plugins' -or (Split-Path -Leaf (Split-Path -Parent $MarketplaceDirectory)) -ne '.agents') {
@@ -238,9 +211,40 @@ if ($McpLauncherPresent) {
     $McpLauncherAction = 'removed'
 }
 $RuntimeAction = 'already absent'
+$RuntimeRetainedPaths = @()
 if ($RuntimePresent) {
-    Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force
-    $RuntimeAction = 'removed'
+    $OwnershipPython = Find-OwnershipPython
+    if (
+        $null -eq $OwnershipPython -or
+        -not (Test-Path -LiteralPath $RuntimeIntegrityHelper -PathType Leaf) -or
+        ((Get-Item -LiteralPath $RuntimeIntegrityHelper -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)
+    ) {
+        $RuntimeAction = 'retained (exact ownership helper unavailable)'
+        $RuntimeRetainedPaths = @($RuntimeRoot)
+    } else {
+        $PreviousNoBytecode = $env:PYTHONDONTWRITEBYTECODE
+        try {
+            $env:PYTHONDONTWRITEBYTECODE = '1'
+            $RuntimeRemovalOutput = & $OwnershipPython.Program @($OwnershipPython.Prefix) -B -I -S $RuntimeIntegrityHelper remove-owned --runtime-root $RuntimeRoot
+            $RuntimeRemovalExitCode = $LASTEXITCODE
+        } finally {
+            if ($null -eq $PreviousNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue }
+            else { $env:PYTHONDONTWRITEBYTECODE = $PreviousNoBytecode }
+        }
+        try { $RuntimeRemoval = (($RuntimeRemovalOutput | Out-String).Trim()) | ConvertFrom-Json } catch { $RuntimeRemoval = $null }
+        if ($RuntimeRemovalExitCode -eq 0 -and $null -ne $RuntimeRemoval -and $RuntimeRemoval.action -eq 'removed') {
+            $RuntimeAction = 'removed (exact ownership manifest)'
+        } elseif ($RuntimeRemovalExitCode -eq 0 -and $null -ne $RuntimeRemoval -and $RuntimeRemoval.action -eq 'partial') {
+            $RuntimeAction = 'partial (unknown or changed content retained)'
+            $RuntimeRetainedPaths = @($RuntimeRemoval.retained_paths | Where-Object { $_ -is [string] })
+        } else {
+            $RuntimeAction = 'retained (legacy, missing, or mismatched exact ownership)'
+            if ($null -ne $RuntimeRemoval) {
+                $RuntimeRetainedPaths = @($RuntimeRemoval.retained_paths | Where-Object { $_ -is [string] })
+            }
+            if ($RuntimeRetainedPaths.Count -eq 0) { $RuntimeRetainedPaths = @($RuntimeRoot) }
+        }
+    }
 }
 
 $MarketplaceAction = 'already absent'
@@ -269,6 +273,12 @@ Write-Output "SOURCE PATH    $SourceRoot"
 Write-Output 'SOURCE REASON  destructive removal disabled: no verifiable exact-ownership manifest'
 Write-Output "MCP COMMAND    $McpLauncherAction"
 Write-Output "MCP RUNTIME    $RuntimeAction"
+if ($RuntimeRetainedPaths.Count -gt 0) {
+    Write-Output "RUNTIME RETAINED $($RuntimeRetainedPaths -join '; ')"
+}
 Write-Output 'STANDALONE     preserved / no owned registration removed'
 Write-Output 'TASK DATA      preserved (external Controller data was not changed)'
+if ($RuntimeRetainedPaths.Count -gt 0) {
+    Write-Output "RUNTIME ACTION Inspect retained runtime paths before any manual deletion: $($RuntimeRetainedPaths -join '; ')"
+}
 Write-Output 'MANUAL ACTION  Inspect and back up the retained source checkout, then independently confirm ownership before any manual action.'

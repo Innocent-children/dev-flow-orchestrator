@@ -31,14 +31,15 @@ dev_flow_try_python() {
       ;;
   esac
 
-  if ! "$dev_flow_candidate" -c \
+  if ! env PYTHONDONTWRITEBYTECODE=1 "$dev_flow_candidate" -B -c \
     'import sys;sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 15) else 1)' \
     >/dev/null 2>&1
   then
     return 1
   fi
 
-  exec "$dev_flow_candidate" "$dev_flow_handler" "$@"
+  exec env PYTHONDONTWRITEBYTECODE=1 \
+    "$dev_flow_candidate" -B "$dev_flow_handler" "$@"
 }
 
 if [ -n "${DEV_FLOW_PYTHON:-}" ]; then

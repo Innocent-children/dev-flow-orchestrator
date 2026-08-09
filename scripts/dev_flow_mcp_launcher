@@ -1,5 +1,17 @@
 #!/bin/sh
 # dev-flow-orchestrator managed MCP launcher
+# The verifier launches dev_flow_orchestrator.mcp only after receipt validation.
 set -eu
 
-exec __DEV_FLOW_RUNTIME_PYTHON__ -I -m dev_flow_orchestrator.mcp "$@"
+dev_flow_launcher=$0
+case "$dev_flow_launcher" in
+  /*) ;;
+  *) dev_flow_launcher=$(command -v "$dev_flow_launcher") ;;
+esac
+
+exec env PYTHONDONTWRITEBYTECODE=1 __DEV_FLOW_RUNTIME_PYTHON__ -B -I \
+  __DEV_FLOW_RUNTIME_VERIFIER__ launch-mcp \
+  --runtime-dir __DEV_FLOW_RUNTIME_DIR__ \
+  --launcher "$dev_flow_launcher" \
+  --release-id __DEV_FLOW_RELEASE_ID__ \
+  -- "$@"

@@ -1,288 +1,160 @@
 ## ADDED Requirements
 
-### Requirement: Install upgrade and repair use one durable transaction
+### Requirement: Install upgrade and repair use one bounded transaction record
 
-Before a source clone/fast-forward or the first staging, runtime, launcher,
-marketplace, plugin, health, or active-record mutation, the lifecycle SHALL durably
-create a unique transaction containing the previous authority class, all previous
-identities actually available, explicit unresolved candidate fields, and a
-per-component plan. The `staged` transition SHALL atomically bind the selected
-commit/tree, candidate/release IDs, manifest, wheel, and final lock identities and
-SHALL make them immutable for later states. It SHALL persist atomic state
-transitions through `prepared`, `staged`,
-`promoted`, `activating`, `activated`, `verified`, and `committed`, or through
-`failed` to `rolled-back` or `partial`. An unfinished transaction SHALL be resolved
-before another lifecycle operation begins.
+Each install, upgrade, or repair attempt SHALL use a small versioned record containing
+optional `transaction_id`, operation, previous release, candidate release, current
+step, actual observed state for runtime selection, plugin, marketplace, MCP launcher,
+and CLI launcher, and terminal outcome `committed`, `rolled_back`, or `partial`.
+The record SHALL be atomically replaced as observations change.
 
-#### Scenario: Fresh install is prepared
+Before the real plugin, Dev Flow marketplace member, launcher, or selected runtime
+is changed, the candidate plugin/runtime/launcher assets SHALL be fully staged and
+verified and the previous sealed release SHALL remain available.
 
-- **WHEN** no previous Dev Flow release is active
-- **THEN** the transaction records previous identity as `none`, stages a complete
-  candidate before external activation, and owns only entries it creates
+#### Scenario: Fresh install is staged
 
-#### Scenario: Upgrade or repair is prepared
+- **WHEN** no previous Dev Flow release is installed
+- **THEN** the record identifies previous release as `none`, and external mutation
+  begins only after the candidate release is complete
 
-- **WHEN** a conforming previous release is active
-- **THEN** the transaction binds the previous sealed plugin, runtime, marketplace,
-  launcher, active-record, receipt, and ownership identities before mutation
+#### Scenario: Conforming previous release is staged
 
-#### Scenario: Legacy previous release is observed
+- **WHEN** install, upgrade, or repair replaces a release that already has sealed
+  plugin and runtime assets
+- **THEN** the record captures that previous `release_id` and retains its artifacts
+  until commit or verified rollback
 
-- **WHEN** a Phase 0 or older release is active without sealed plugin, active-record,
-  attestation, or exact-ownership authority
-- **THEN** the transaction classifies it `legacy-observed`, records only available
-  observations and retained paths, and does not call it immutable or exact-owned
+#### Scenario: Source-based previous installation is upgraded
 
-#### Scenario: Process stops with an unfinished transaction
+- **WHEN** the previous plugin still resolves to the authoritative source checkout
+- **THEN** the installer exports and verifies a runnable sealed previous release
+  from the current verified commit before source fast-forward or external mutation,
+  or fails with the previous installation unchanged
 
-- **WHEN** a later invocation finds a journal not in `committed`, `rolled-back`, or a
-  terminal truthful `partial` state
-- **THEN** it resumes only a proven idempotent step or performs observed
-  compensation, and it does not begin a blind repair
+#### Scenario: Candidate staging or runtime build fails
 
-### Requirement: Lifecycle operations share one profile-scoped lock authority
+- **WHEN** release staging, runtime build, or runtime promotion fails before external
+  activation changes
+- **THEN** the previous release remains selected and the result does not claim that
+  the candidate committed
 
-Each supported personal Codex profile SHALL have one stable, process-independent
-Dev Flow lifecycle lock whose identity is derived only from the normalized profile
-root and product ID. The lock object SHALL live in an installer-controlled profile
-control path outside the source, runtime release, launcher, marketplace, and active
-record paths that lifecycle operations replace or remove. Install, upgrade, repair,
-and uninstall for that profile SHALL use this same lock; all of their resolved
-source, runtime, launcher, marketplace, active-record, and journal roots are
-subordinate to it. They SHALL NOT acquire per-root lifecycle locks.
+### Requirement: External effects are observed and success is published last
 
-The operation SHALL acquire the profile lock before classifying previous state,
-inspecting an unfinished journal, writing a new journal, or mutating a product
-authority. It SHALL hold the lock through a durable `committed`, `rolled-back`, or
-`partial` terminal record and immediate read-only completion observation.
-Marketplace generation is guarded data under this lock, not another lock.
-Contention SHALL use one bounded documented wait policy or return `busy` before
-journal creation or product mutation.
+The transaction SHALL treat marketplace and Codex operations as observable external
+effects. Marketplace update SHALL re-read a valid current document, change only the
+Dev Flow member, preserve unrelated members, atomically replace the document, and
+retain the transaction's previous bytes. Rollback SHALL restore only the Dev Flow
+member and only when current state still permits safe restoration; otherwise it
+SHALL preserve current state and report `partial`.
 
-An abnormal process exit MAY release the process lock, but the next lifecycle
-operation SHALL acquire the same profile lock and resolve any durable unfinished
-journal before starting another transaction. Compensation SHALL act only on
-identities owned by that journal and SHALL NOT undo another transaction's observed
-state or effects.
+After every `codex plugin remove` and `codex plugin add` return, whether successful
+or unsuccessful, the installer SHALL query currently visible plugin and MCP state
+and SHALL NOT infer absence of side effects from the return code.
 
-#### Scenario: One profile resolves multiple lifecycle roots
+Candidate plugin visibility, MCP registration, installed health, and applicable
+final CLI/MCP smoke SHALL pass before the active selection receipt is atomically
+published. That publication SHALL name the selected `release_id`, SHALL be the last
+product mutation on the success path, and SHALL carry the committed outcome.
 
-- **WHEN** one profile resolves source, runtime, launcher, marketplace, and
-  active-record authorities on different roots
-- **THEN** every lifecycle entry point uses the same single profile lock before
-  observation and holds it to a durable terminal result without a multi-lock order
+#### Scenario: Marketplace write fails
 
-#### Scenario: Two installs compete
+- **WHEN** the Dev Flow marketplace member cannot be published safely
+- **THEN** plugin commit is refused and previous state is restored or the actual
+  retained marketplace state is reported as partial without overwriting unrelated
+  members
 
-- **WHEN** two install operations for overlapping lifecycle authorities start
-  concurrently
-- **THEN** only the lock holder may classify previous state or create a journal, and
-  the other waits or returns busy without a second candidate or previous authority
+#### Scenario: Codex command reports failure after a side effect
 
-#### Scenario: Repair competes with install
-
-- **WHEN** repair and install target any overlapping lifecycle authority
-- **THEN** only one enters transaction observation or mutation, and the later
-  operation re-observes authority after acquiring the profile lock
-
-#### Scenario: Install competes with uninstall
-
-- **WHEN** install and uninstall target any overlapping lifecycle authority
-- **THEN** they cannot classify, mutate, remove, or compensate concurrently, and the
-  later operation begins from the first operation's durable terminal record
-
-#### Scenario: Repair competes with uninstall
-
-- **WHEN** repair and uninstall target any overlapping lifecycle authority
-- **THEN** they use the same profile lock and neither operation removes or restores
-  entries owned by the other's transaction
-
-#### Scenario: A lock holder exits abnormally
-
-- **WHEN** a lifecycle process exits after writing a journal but before a durable
-  terminal record
-- **THEN** the next operation first acquires the same profile lock and resolves that
-  journal without beginning a second blind transaction
-
-### Requirement: The active installation record replace is the commit point
-
-The transaction SHALL prepare and verify the candidate runtime, applicable
-launchers, exact marketplace member, Codex plugin visibility, bundled MCP
-registration, installed health, and applicable final CLI/MCP smoke before atomically
-replacing the active installation record. The published `committed` active record
-SHALL be the authoritative terminal transaction record; recovery SHALL read it
-before treating a matching pre-commit journal as unfinished. No second journal
-transition is required. That replace SHALL be the only commit point. Success output
-SHALL occur only after it. No product mutation SHALL follow the commit point.
-
-Filesystem entries on one filesystem MAY use atomic promotion. The product SHALL
-model shared marketplace edits and Codex plugin remove/add as provisional effects
-with compensation and SHALL NOT claim that these effects form a globally atomic
-transaction.
-
-Pre-commit candidate health SHALL use a sealed activation descriptor whose digest is
-bound by the same `activated` journal. The verifier SHALL resolve the activation ID
-through that descriptor to the candidate receipt and promoted runtime while the
-previous active record remains authoritative. Ordinary installed startup SHALL NOT
-accept this transaction-scoped mode.
-
-#### Scenario: Candidate staging fails
-
-- **WHEN** candidate export, validation, wheel build, or staging fails
-- **THEN** the active record and previous release remain unchanged and the candidate
-  is absent or explicitly retained as unreferenced staging
-
-#### Scenario: Runtime promotion fails
-
-- **WHEN** the staged runtime cannot be atomically promoted or its promoted identity
-  cannot be revalidated
-- **THEN** activation does not begin and the journal records whether any
-  unreferenced candidate path remains
-
-#### Scenario: Launcher or marketplace write fails
-
-- **WHEN** an applicable launcher cannot be installed with exact compare-and-replace
-  semantics or a lifecycle-coordinated marketplace publication cannot complete
-- **THEN** the active record is not committed and all provisional effects are
-  compensated or described by a durable partial result
-
-#### Scenario: Codex command has uncertain side effects
-
-- **WHEN** plugin remove or add returns success or failure
-- **THEN** the installer observes actual plugin and MCP state instead of inferring
-  side effects from the return code, and chooses the next transaction state from
-  that observation
+- **WHEN** remove or add returns non-zero after changing visible state
+- **THEN** the next action is selected from the observed plugin and MCP state rather
+  than the command return code alone
 
 #### Scenario: Candidate health or final smoke fails
 
-- **WHEN** visibility, MCP registration, installed health, or applicable final
-  CLI/MCP smoke fails before commit
-- **THEN** the previous release is compensated and verified or the transaction
-  becomes truthful partial
+- **WHEN** candidate health or applicable CLI/MCP smoke fails after provisional
+  activation
+- **THEN** the active selection receipt is not published and bounded rollback begins
 
-#### Scenario: Candidate health targets the uncommitted release
+#### Scenario: Candidate passes every gate
 
-- **WHEN** previous A remains in the active record while same-version candidate B is
-  provisionally activated
-- **THEN** journal-bound pre-commit health executes B, records B's activation,
-  candidate, release, and runtime marker, and cannot pass by executing A
+- **WHEN** staged assets, marketplace member, launchers, plugin/MCP visibility,
+  health, and final smoke all match the candidate release
+- **THEN** the active selection receipt is published last and subsequent work is
+  limited to output and read-only observation
 
-#### Scenario: Active record replacement fails
+### Requirement: Rollback restores the sealed previous release
 
-- **WHEN** all candidate gates passed but the final active record cannot be
-  atomically replaced and fsynced
-- **THEN** the transaction remains uncommitted and performs the same compensation
-  and partial-state rules as any other provisional failure
+On any late failure, rollback SHALL use the retained sealed previous release rather
+than the mutable checkout or candidate. It SHALL restore the previous plugin,
+Dev Flow marketplace member, MCP launcher, CLI launcher, and runtime selection, then
+re-observe plugin and MCP state and run previous MCP health plus applicable CLI
+smoke. Only an actually running, healthy previous release MAY be reported as
+`rolled_back` or "previous restored".
 
-#### Scenario: Active record replacement succeeds
-
-- **WHEN** the final active record is atomically replaced after all gates pass
-- **THEN** the transaction is committed, later response loss requires reading that
-  record, and blind retry is not assumed safe
-
-#### Scenario: Marketplace changes after commit
-
-- **WHEN** read-only observation after active-record replacement finds marketplace
-  drift or cannot read current marketplace state
-- **THEN** the result remains committed, reports marketplace freshness as `false` or
-  `unknown`, performs no compensation, and forbids blind retry
-
-### Requirement: Rollback restores the immutable previous release
-
-Compensation for an upgrade or repair SHALL restore local assets and plugin
-activation from the sealed previous release, not from the mutable source checkout or
-candidate. It SHALL re-observe the active plugin and SHALL run previous-release
-visibility, bundled MCP, runtime attestation, installed health, and applicable CLI
-smoke checks. Only a complete successful revalidation MAY be reported as
-`rolled-back` or “restored”.
-
-When the previous authority is `legacy-observed`, the lifecycle MAY conservatively
-restore captured local bytes and re-observe the logical plugin after a failure, but
-SHALL return `partial` after any external mutation and SHALL NOT claim
-`rolled-back`, “restored”, exact previous identity, or ownership. A successful
-candidate transaction MAY commit a new conforming release beside the retained
-legacy runtime.
+Fresh-install rollback SHALL remove only transaction-created non-source entries that
+still match exact ownership. Source and all pre-existing unknown content SHALL be
+retained.
 
 #### Scenario: Candidate plugin add fails
 
-- **WHEN** candidate activation fails after the previous plugin was removed
-- **THEN** compensation re-adds the sealed previous artifact and proves its previous
-  source root, activation ID, bundled transport, release identity, attestation, and
-  health before claiming restoration
+- **WHEN** the previous plugin was removed and candidate add fails
+- **THEN** rollback re-adds the sealed previous plugin path and proves the previous
+  release is visible and healthy before claiming restoration
 
-#### Scenario: Failure follows candidate activation
+#### Scenario: Failure occurs after candidate activation
 
-- **WHEN** candidate activation succeeded but a later health, launcher, smoke, or
-  active-record step fails
-- **THEN** candidate state is removed only when its identity matches, previous state
-  is restored from its immutable release, and no undeclared mixed state remains
+- **WHEN** launcher, health, smoke, or final selection publication fails after the
+  candidate becomes visible
+- **THEN** rollback restores each previous component from retained evidence and
+  either verifies the actual previous release or reports partial
 
-#### Scenario: Fresh-install rollback is required
+#### Scenario: Fresh install requires rollback
 
-- **WHEN** a fresh install fails after provisional effects
-- **THEN** compensation removes only exact transaction-created non-source entries,
-  verifies no candidate plugin is active, retains source under DFO-AUDIT-002, and
-  preserves all pre-existing unknown content
+- **WHEN** a fresh install fails after creating provisional entries
+- **THEN** only matching transaction-owned runtime, plugin-release, marketplace,
+  and launcher entries are eligible for removal, while source and unknown entries
+  remain
 
-#### Scenario: Source changed during rollback
+#### Scenario: Source changes during rollback
 
-- **WHEN** source has changed since transaction preparation
-- **THEN** rollback does not reset, clean, or overwrite source, uses sealed release
-  artifacts for product recovery, and records a partial outcome when source differs
-  from the operation-start identity
+- **WHEN** an external writer changes source during failure handling
+- **THEN** rollback neither resets nor cleans source and uses the sealed previous
+  release, or reports partial if restoration cannot be proved
 
-#### Scenario: Legacy transition fails after external mutation
+### Requirement: Incomplete rollback is reported as partial
 
-- **WHEN** activation of a conforming candidate from a `legacy-observed` previous
-  installation fails after a marketplace or Codex effect
-- **THEN** the legacy runtime is retained, observed component state is durably
-  reported as `partial`, and no restoration or immutable-previous claim is emitted
+If any restoration or post-restoration verification is unsuccessful or uncertain,
+the command SHALL return non-zero and persist `partial`. The record SHALL list the
+current plugin, marketplace, launcher, and runtime states, retained paths, previous
+and candidate `release_id` values when known, and `blind_retry_safe=false`.
+Candidate B SHALL NOT be described as restored previous A.
 
-### Requirement: Rollback failure is a truthful partial outcome
-
-When any compensation or restoration verification is unsuccessful or unavailable,
-the lifecycle SHALL persist and return `partial`. The result SHALL identify the
-observed active release as previous, candidate, none, or unknown; list every asset
-as restored, candidate, absent, retained, or unknown; name retained release paths;
-provide precise recovery actions bound to sealed identities; and state whether
-blind retry is safe with its prerequisites. The default SHALL be
-`blind_retry_safe=false`.
+Deterministic permanent tests SHALL inject failures at candidate staging, runtime
+build, runtime promotion, marketplace write, MCP launcher write, CLI launcher write,
+plugin remove, plugin add, health, final CLI/MCP smoke, and rollback itself.
 
 #### Scenario: Previous plugin reactivation fails
 
-- **WHEN** the previous sealed plugin cannot be reactivated or observed
-- **THEN** the result does not claim restoration, records active identity as none or
-  unknown as observed, and gives recovery steps that name the previous release
+- **WHEN** rollback cannot re-add or observe the sealed previous plugin
+- **THEN** the result records plugin state as absent or unknown as observed, keeps
+  recovery paths, and makes no restoration claim
 
-#### Scenario: Local and external assets are mixed
+#### Scenario: Local and external components remain mixed
 
-- **WHEN** only some launchers, marketplace, runtime, plugin, or active-record assets
-  were restored
-- **THEN** each component is reported separately, the mixed state is durable, and
-  no success receipt is emitted
+- **WHEN** only some marketplace, launcher, plugin, or runtime components restore
+- **THEN** every component is reported separately with terminal outcome `partial`
+  and no success receipt is emitted
 
-#### Scenario: Blind retry cannot be proven safe
+#### Scenario: A forward mutation boundary fails under test
 
-- **WHEN** an external Codex side effect or commit occurrence is uncertain
-- **THEN** the partial result forbids blind retry and requires re-observation of the
-  transaction and active authorities
-
-### Requirement: Mutation boundaries have deterministic fault evidence
-
-The implementation SHALL expose test-only failure seams for candidate staging,
-runtime build, runtime promotion, applicable launcher write, marketplace write,
-plugin remove, plugin add, health, active receipt replace, and final CLI/MCP smoke.
-Production behavior SHALL NOT depend on enabling those seams.
-
-#### Scenario: A mutation boundary fails under test
-
-- **WHEN** a deterministic fault is injected at any named boundary
-- **THEN** the test proves either the exact previous release is active and healthy or
-  a durable truthful partial result exists, and proves the candidate is not called
-  restored previous state
+- **WHEN** a deterministic failure is injected at any named forward boundary
+- **THEN** the test proves candidate B committed and is healthy, previous A was
+  actually restored and is healthy, or a declared partial result describes the
+  mixed state
 
 #### Scenario: Rollback also fails under test
 
-- **WHEN** a boundary failure is followed by a deterministic compensation failure
-- **THEN** the test proves the component matrix, active identity, retained paths,
-  recovery actions, and retry-safety fields are complete
+- **WHEN** a forward failure is followed by deterministic rollback failure
+- **THEN** the record contains actual component state, retained paths, known release
+  identities, and `blind_retry_safe=false`

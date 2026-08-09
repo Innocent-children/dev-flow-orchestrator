@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)" || {
+  printf 'Dev Flow uninstallation failed: cannot resolve the uninstaller directory.\n' >&2
+  exit 1
+}
+RUNTIME_INTEGRITY_HELPER="$SCRIPT_DIR/runtime_integrity.py"
+
 SOURCE_ROOT="${DEV_FLOW_SOURCE_ROOT:-$HOME/plugins/dev-flow-orchestrator}"
 MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace.json}"
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
@@ -78,8 +84,12 @@ else
   fail "Python 3.10-3.14 is required."
 fi
 
+python_no_bytecode() {
+  PYTHONDONTWRITEBYTECODE=1 "$PYTHON" -B "$@"
+}
+
 SOURCE_ROOT="$(
-  DEV_FLOW_SOURCE_ROOT_VALUE="$SOURCE_ROOT" "$PYTHON" -I -S -c '
+  DEV_FLOW_SOURCE_ROOT_VALUE="$SOURCE_ROOT" python_no_bytecode -I -S -c '
 import os
 
 print(os.path.abspath(os.path.expanduser(os.environ["DEV_FLOW_SOURCE_ROOT_VALUE"])))
@@ -105,81 +115,14 @@ fi
 
 RUNTIME_STATE="already absent"
 if [ -e "$RUNTIME_ROOT" ] || [ -L "$RUNTIME_ROOT" ]; then
-  [ ! -L "$RUNTIME_ROOT" ] && [ -d "$RUNTIME_ROOT" ] \
-    || fail "$RUNTIME_ROOT is not a regular managed runtime directory."
-  [ -f "$RUNTIME_ROOT/.dev-flow-managed-runtime" ] \
-    && [ "$(cat "$RUNTIME_ROOT/.dev-flow-managed-runtime")" = "dev-flow-managed-runtime/1" ] \
-    || fail "$RUNTIME_ROOT does not have the Dev Flow managed-runtime marker."
-  DEV_FLOW_RUNTIME_ROOT="$RUNTIME_ROOT" "$PYTHON" -I -S -c '
-import datetime
-import hashlib
-import json
-import os
-from pathlib import Path
-
-root = Path(os.environ["DEV_FLOW_RUNTIME_ROOT"]).expanduser().resolve()
-releases = root / "releases"
-if not releases.is_dir() or releases.is_symlink():
-    raise SystemExit("managed runtime releases directory is missing or unsafe")
-release_dirs = sorted(releases.iterdir())
-if not release_dirs:
-    raise SystemExit("managed runtime has no receipt-validated release")
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(128 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-for release in release_dirs:
-    if not release.is_dir() or release.is_symlink():
-        raise SystemExit("managed runtime contains a non-release entry")
-    receipt_path = release / "runtime-receipt.json"
-    try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise SystemExit("managed runtime receipt cannot be read") from error
-    fields = {
-        "schema", "release_version", "source_commit", "python",
-        "dependency_lock_sha256", "launcher_identity", "runtime_identity",
-        "activation_action", "activated_at",
-    }
-    if not isinstance(receipt, dict) or set(receipt) != fields:
-        raise SystemExit("managed runtime receipt fields are invalid")
-    commit = receipt.get("source_commit")
-    lock = receipt.get("dependency_lock_sha256")
-    python = receipt.get("python")
-    if (
-        receipt.get("schema") != "dev-flow-runtime-receipt/1.0.0"
-        or receipt.get("release_version") != "0.5.0"
-        or receipt.get("launcher_identity") != "dev-flow-mcp --stdio"
-        or receipt.get("runtime_identity") != hashlib.sha256(
-            os.path.normcase(str(release.resolve())).encode("utf-8")
-        ).hexdigest()
-        or receipt.get("activation_action") not in {"create", "update"}
-        or not isinstance(commit, str) or len(commit) != 40
-        or any(character not in "0123456789abcdef" for character in commit)
-        or not isinstance(lock, str) or len(lock) != 64
-        or any(character not in "0123456789abcdef" for character in lock)
-        or not isinstance(python, dict)
-        or set(python) != {"executable_sha256", "version", "architecture", "bits"}
-        or python.get("bits") != 64
-        or release.name != "{}-{}-{}".format(receipt["release_version"], commit[:12], lock[:12])
-    ):
-        raise SystemExit("managed runtime receipt identity is invalid")
-    executable = release / "venv" / "bin" / "python"
-    if not executable.is_file() or sha256(executable) != python.get("executable_sha256"):
-        raise SystemExit("managed runtime Python does not match its receipt")
-    try:
-        datetime.datetime.fromisoformat(str(receipt["activated_at"]).replace("Z", "+00:00"))
-    except ValueError as error:
-        raise SystemExit("managed runtime activation timestamp is invalid") from error
-' || fail "$RUNTIME_ROOT contains a missing, stale, or mismatched runtime ownership receipt; preserve it for manual handling."
-  RUNTIME_STATE="present"
+  if [ -L "$RUNTIME_ROOT" ] || [ ! -d "$RUNTIME_ROOT" ]; then
+    RUNTIME_STATE="retained (runtime root is not a regular directory)"
+  else
+    RUNTIME_STATE="present"
+  fi
 fi
 
-"$PYTHON" -c 'import struct,sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] <= (3, 14) and struct.calcsize("P") == 8 else 1)' \
+python_no_bytecode -c 'import struct,sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] <= (3, 14) and struct.calcsize("P") == 8 else 1)' \
   || fail "64-bit Python 3.10-3.14 is required."
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -206,7 +149,7 @@ if [ -z "${NO_COLOR:-}" ] && {
 fi
 
 MARKETPLACE_STATE="$(
-  DEV_FLOW_MARKETPLACE_FILE="$MARKETPLACE_FILE" "$PYTHON" -I -S -c '
+  DEV_FLOW_MARKETPLACE_FILE="$MARKETPLACE_FILE" python_no_bytecode -I -S -c '
 import json
 import os
 from pathlib import Path
@@ -248,7 +191,7 @@ printf 'Inspecting the installed Codex plugin...\n'
 PLUGIN_LIST_JSON="$(codex plugin list --json)" \
   || fail "Cannot inspect the installed Codex plugins."
 PLUGIN_STATE="$(
-  printf '%s' "$PLUGIN_LIST_JSON" | "$PYTHON" -I -S -c '
+  printf '%s' "$PLUGIN_LIST_JSON" | python_no_bytecode -I -S -c '
 import json
 import sys
 
@@ -287,7 +230,7 @@ printf '%s' "$MCP_LIST_JSON" | \
   DEV_FLOW_PLUGIN_BUNDLED_ACTIVE="$PLUGIN_BUNDLED_ACTIVE" \
   DEV_FLOW_CODEX_CONFIG="$CODEX_ROOT/config.toml" \
   DEV_FLOW_MCP_LAUNCHER="$MCP_LAUNCHER_PATH" \
-  "$PYTHON" -I -S -c '
+  python_no_bytecode -I -S -c '
 import json
 import os
 import re
@@ -444,17 +387,67 @@ if [ "$MCP_LAUNCHER_STATE" = "present" ]; then
 fi
 
 RUNTIME_ACTION="already absent"
+RUNTIME_RETAINED_PATHS=""
 if [ "$RUNTIME_STATE" = "present" ]; then
-  printf 'Removing the marker-validated managed MCP runtime...\n'
-  rm -rf -- "$RUNTIME_ROOT"
-  [ ! -e "$RUNTIME_ROOT" ] && [ ! -L "$RUNTIME_ROOT" ] \
-    || fail "Could not remove $RUNTIME_ROOT."
-  RUNTIME_ACTION="removed"
+  if [ ! -f "$RUNTIME_INTEGRITY_HELPER" ] || [ -L "$RUNTIME_INTEGRITY_HELPER" ]; then
+    RUNTIME_ACTION="retained (exact ownership helper unavailable)"
+    RUNTIME_RETAINED_PATHS="$RUNTIME_ROOT"
+  else
+    RUNTIME_REMOVAL_JSON="$(
+      python_no_bytecode -I -S "$RUNTIME_INTEGRITY_HELPER" remove-owned \
+        --runtime-root "$RUNTIME_ROOT"
+    )" || true
+    RUNTIME_REMOVAL_ACTION="$(
+      printf '%s' "$RUNTIME_REMOVAL_JSON" | python_no_bytecode -I -S -c '
+import json
+import sys
+try:
+    value = json.load(sys.stdin)
+except (OSError, json.JSONDecodeError):
+    print("retained")
+else:
+    action = value.get("action")
+    print(action if action in {"removed", "partial", "retained"} else "retained")
+'
+    )"
+    RUNTIME_RETAINED_PATHS="$(
+      printf '%s' "$RUNTIME_REMOVAL_JSON" | python_no_bytecode -I -S -c '
+import json
+import sys
+try:
+    value = json.load(sys.stdin)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+paths = value.get("retained_paths")
+if isinstance(paths, list):
+    for path in paths:
+        if isinstance(path, str):
+            print(json.dumps(path, ensure_ascii=False))
+'
+    )"
+    case "$RUNTIME_REMOVAL_ACTION" in
+      removed)
+        RUNTIME_ACTION="removed (exact ownership manifest)"
+        ;;
+      partial)
+        RUNTIME_ACTION="partial (unknown or changed content retained)"
+        ;;
+      *)
+        RUNTIME_ACTION="retained (legacy, missing, or mismatched exact ownership)"
+        if [ -z "$RUNTIME_RETAINED_PATHS" ]; then
+          RUNTIME_RETAINED_PATHS="$RUNTIME_ROOT"
+        fi
+        ;;
+    esac
+  fi
+elif [ "$RUNTIME_STATE" != "already absent" ]; then
+  RUNTIME_ACTION="$RUNTIME_STATE"
+  RUNTIME_RETAINED_PATHS="$RUNTIME_ROOT"
 fi
 
 MARKETPLACE_ACTION="already absent"
 if [ "$MARKETPLACE_STATE" = "present" ]; then
-  DEV_FLOW_MARKETPLACE_FILE="$MARKETPLACE_FILE" "$PYTHON" -I -S -c '
+  DEV_FLOW_MARKETPLACE_FILE="$MARKETPLACE_FILE" python_no_bytecode -I -S -c '
 import json
 import os
 from pathlib import Path
@@ -506,6 +499,10 @@ printf '%s│%s  %sMCP COMMAND%s  %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$MCP_LAUNCHER_ACTION"
 printf '%s│%s  %sMCP RUNTIME%s  %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$RUNTIME_ACTION"
+if [ -n "$RUNTIME_RETAINED_PATHS" ]; then
+  printf '%s│%s  %sRUNTIME RETAINED%s %s\n' \
+    "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$RUNTIME_RETAINED_PATHS"
+fi
 printf '%s│%s  %sSTANDALONE%s   preserved / no owned registration removed\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET"
 printf '%s│%s  %sSOURCE%s       %s\n' \
@@ -521,5 +518,8 @@ printf '%s╰─%s\n' "$NEON_CYAN" "$COLOR_RESET"
 printf '\n%s%sPRESERVED%s\n' "$TEXT_BOLD" "$NEON_GREEN" "$COLOR_RESET"
 printf '  External Dev Flow task data under Codex-managed state was not deleted.\n'
 printf '  Codex-managed state root: %s\n' "$CODEX_ROOT"
+if [ -n "$RUNTIME_RETAINED_PATHS" ]; then
+  printf '  Retained runtime content: %s\n' "$RUNTIME_RETAINED_PATHS"
+fi
 printf '\n%s%sMANUAL ACTION%s\n' "$TEXT_BOLD" "$NEON_GREEN" "$COLOR_RESET"
 printf '  Inspect and back up the retained source checkout, then independently confirm ownership before any manual action.\n'

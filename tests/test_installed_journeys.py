@@ -6,7 +6,6 @@ import io
 import json
 import os
 from pathlib import Path
-import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TESTS))
 
 from scripts import manage_runtime
+from scripts import runtime_integrity
 from scripts import validate_installed_stage1 as acceptance
 from support import (
     assert_hermetic_subprocess_env,
@@ -30,9 +30,7 @@ from support import (
 
 
 RUNNER = ROOT / "scripts" / "validate_installed_stage1.py"
-SOURCE_LAUNCHER = ROOT / "scripts" / "dev_flow_mcp.py"
 LEGACY_RELEASE_COMMIT = "38685bf09e934ba5c97ea61112110beedb7083ca"
-LAUNCHER_PLACEHOLDER = "__DEV_FLOW_RUNTIME_PYTHON__"
 CANDIDATE_COPY_IGNORE = shutil.ignore_patterns(
     ".git",
     ".venv",
@@ -178,7 +176,11 @@ class InstalledMCPJourneyTests(unittest.TestCase):
                     completed.stdout[-2048:], exc
                 )
             )
-        self.assertEqual(completed.returncode, 0, evidence.get("errors") or completed.stderr)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            {"errors": evidence.get("errors"), "stderr": completed.stderr[-4096:]},
+        )
         self.assertTrue(evidence["ok"])
         self.assertEqual(evidence["plugin_digest_before"], evidence["plugin_digest_after"])
         journey = evidence["journey"]
@@ -335,11 +337,27 @@ class InstalledMCPJourneyTests(unittest.TestCase):
     def test_real_stdio_source_launcher_exercises_installed_harness_journeys(
         self,
     ) -> None:
-        completed = self._run_full_journey(
-            plugin_root=ROOT,
-            python_executable=Path(sys.executable),
-            launcher=SOURCE_LAUNCHER,
-        )
+        with tempfile.TemporaryDirectory(
+            prefix="dev-flow-source-installed-journey-"
+        ) as temporary:
+            base = Path(temporary)
+            source_snapshot = base / "source snapshot with spaces"
+            shutil.copytree(
+                ROOT,
+                source_snapshot,
+                symlinks=True,
+                ignore=CANDIDATE_COPY_IGNORE,
+            )
+            environment = hermetic_subprocess_env(base)
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            completed = self._run_full_journey(
+                plugin_root=source_snapshot,
+                python_executable=Path(sys.executable),
+                launcher=source_snapshot / "scripts" / "dev_flow_mcp.py",
+                environment=environment,
+                environment_root=base,
+                interpreter_arguments=("-B", "-I"),
+            )
         self._assert_full_journey_evidence(completed)
 
     @unittest.skipUnless(
@@ -357,7 +375,9 @@ class InstalledMCPJourneyTests(unittest.TestCase):
         ) as temporary:
             base = Path(temporary)
             candidate = base / "candidate source with spaces"
-            shutil.copytree(ROOT, candidate, ignore=CANDIDATE_COPY_IGNORE)
+            shutil.copytree(
+                ROOT, candidate, symlinks=True, ignore=CANDIDATE_COPY_IGNORE
+            )
 
             _git(candidate, "init", "-q")
             _git(candidate, "config", "user.name", "Managed Journey Test")
@@ -377,8 +397,29 @@ class InstalledMCPJourneyTests(unittest.TestCase):
                 "managed installed candidate",
             )
             source_commit = _git(candidate, "rev-parse", "HEAD")
+            source_tree = _git(candidate, "rev-parse", "HEAD^{tree}")
             self.assertEqual(len(source_commit), 40)
+            self.assertEqual(len(source_tree), 40)
             self.assertEqual(_git(candidate, "status", "--porcelain"), "")
+
+            archive_path = base / "candidate.tar"
+            subprocess.run(
+                [
+                    "git", "archive", "--format=tar", "-o", str(archive_path),
+                    source_commit,
+                ],
+                cwd=candidate,
+                env=hermetic_subprocess_env(base),
+                check=True,
+            )
+            sealed_root = base / "sealed candidate with spaces"
+            sealed = runtime_integrity.seal_archive(
+                archive_path,
+                sealed_root,
+                source_commit,
+                source_tree,
+            )
+            release_id = str(sealed["release_id"])
 
             runtime_root = base / "managed runtime with spaces 雪's"
             data_root = base / "task data"
@@ -387,57 +428,106 @@ class InstalledMCPJourneyTests(unittest.TestCase):
             probe_subprocess_runtime_roots(base, build_environment)
             with mock.patch.dict(os.environ, build_environment, clear=True):
                 built = manage_runtime.build(
-                    candidate,
+                    sealed_root,
                     runtime_root,
                     source_commit,
+                    source_tree,
+                    release_id,
                     data_root,
                 )
             self.assertTrue(built["ok"])
             self.assertFalse(built["reused"])
             self.assertEqual(built["receipt"]["source_commit"], source_commit)
+            self.assertEqual(built["receipt"]["source_tree"], source_tree)
+            self.assertEqual(built["release_id"], release_id)
             self.assertEqual(
                 _git(candidate, "rev-parse", "HEAD"),
                 built["receipt"]["source_commit"],
             )
             self.assertEqual(_git(candidate, "status", "--porcelain"), "")
 
-            runtime_python = (
-                Path(built["runtime_dir"]) / "venv" / "bin" / "python"
-            )
+            runtime_dir = Path(built["runtime_dir"])
+            installed_plugin = Path(built["plugin_root"])
+            runtime_python = runtime_dir / "venv" / "bin" / "python"
             self.assertTrue(runtime_python.is_file())
+            self.assertEqual(installed_plugin.parent, runtime_dir)
             bin_dir = base / "native bin"
             bin_dir.mkdir()
             launcher = bin_dir / "dev-flow-mcp"
-            template_text = (
-                candidate / "scripts" / "dev_flow_mcp_launcher"
-            ).read_text(encoding="utf-8")
-            self.assertEqual(template_text.count(LAUNCHER_PLACEHOLDER), 1)
-            launcher_text = template_text.replace(
-                LAUNCHER_PLACEHOLDER,
-                shlex.quote(str(runtime_python)),
-                1,
-            )
-            self.assertNotIn(LAUNCHER_PLACEHOLDER, launcher_text)
-            self.assertNotIn("dev_flow_mcp.py", launcher_text)
-            launcher.write_text(launcher_text, encoding="utf-8")
+            managed_launcher = Path(built["launcher_path"])
+            shutil.copyfile(managed_launcher, launcher)
             launcher.chmod(0o755)
+            self.assertEqual(launcher.read_bytes(), managed_launcher.read_bytes())
 
             environment = hermetic_subprocess_env(
                 base,
                 path_entries=(bin_dir,),
             )
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
             self.assertEqual(
                 shutil.which("dev-flow-mcp", path=environment["PATH"]),
                 str(launcher),
             )
+            verified = subprocess.run(
+                [
+                    str(runtime_python),
+                    "-B",
+                    "-I",
+                    str(built["verifier_path"]),
+                    "verify-runtime",
+                    "--runtime-dir",
+                    str(runtime_dir),
+                    "--launcher",
+                    str(launcher),
+                    "--release-id",
+                    release_id,
+                ],
+                cwd=installed_plugin,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                verified.returncode,
+                0,
+                verified.stdout or verified.stderr,
+            )
             completed = self._run_full_journey(
-                plugin_root=candidate,
-                python_executable=runtime_python,
+                plugin_root=installed_plugin,
+                python_executable=Path(sys.executable),
                 launcher=None,
                 environment=environment,
                 environment_root=base,
-                interpreter_arguments=("-I",),
+                interpreter_arguments=("-B", "-I"),
             )
+            recorded_ownership = runtime_integrity.validate_ownership_manifest(
+                runtime_integrity.read_json(
+                    Path(built["ownership_manifest_path"])
+                ),
+                release_id,
+            )
+            observed_ownership = runtime_integrity.build_ownership_manifest(
+                runtime_dir,
+                release_id,
+            )
+            if recorded_ownership != observed_ownership:
+                recorded_entries = {
+                    str(item["path"]): item
+                    for item in recorded_ownership["entries"]
+                }
+                observed_entries = {
+                    str(item["path"]): item
+                    for item in observed_ownership["entries"]
+                }
+                self.fail({
+                    "missing": sorted(set(recorded_entries) - set(observed_entries)),
+                    "extra": sorted(set(observed_entries) - set(recorded_entries)),
+                    "changed": sorted(
+                        path for path in set(recorded_entries) & set(observed_entries)
+                        if recorded_entries[path] != observed_entries[path]
+                    ),
+                })
 
         self._assert_full_journey_evidence(completed)
 

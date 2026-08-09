@@ -2,42 +2,25 @@
 
 ### Requirement: Marketplace registration remains isolated and deterministic
 
-After source and sealed-candidate validation succeed, the installer SHALL acquire
-its lifecycle marketplace authority, re-read a valid personal marketplace, replace
-only the `dev-flow-orchestrator` member in that current document, and atomically
-publish the merged bytes. It SHALL preserve every unrelated entry observed under
-that authority and SHALL leave exactly one entry that resolves to the
-release-specific sealed candidate plugin artifact. That artifact's activation
-descriptor SHALL bind the transaction, release, and candidate identities used by
-runtime, activation, health, launchers, and the active record; the marketplace entry
-need only resolve to that artifact through its supported local-source fields. It
-SHALL NOT point to the mutable authoritative source checkout.
+After source verification, sealed-release validation, and package validation
+succeed, the installer SHALL re-read a valid personal marketplace, replace only the
+`dev-flow-orchestrator` member in that current document, and atomically publish the
+merged bytes. It SHALL preserve every unrelated member and leave exactly one Dev
+Flow entry that resolves to the installer-owned release-specific plugin directory.
+It SHALL NOT point that entry to the mutable authoritative checkout.
 
-Marketplace replacement is a shared-file provisional effect, not a globally atomic
-Codex transaction. Transaction-aware lifecycle writers SHALL share a versioned
-lock/generation authority, so a changed generation fails before publish and
-preserves the newer document. For an existing file, publication SHALL use a
-platform-proven atomic exchange or replacement-with-displaced-file backup; for an
-absent file it SHALL use atomic no-clobber creation. If those primitives are
-unavailable, installation SHALL fail before marketplace or Codex mutation.
-
-After publication, the installer SHALL compare the displaced bytes to its captured
-generation and re-observe the canonical path. A mismatched displaced generation or
-post-publish observation SHALL prevent commit; every displaced/candidate/current
-version under installer control SHALL be retained or conditionally restored, and
-the result SHALL be truthful `partial` with exact digests and recovery guidance. A
-writer that does not participate in the lifecycle authority cannot be given a
-linearizable file CAS guarantee, so the specification does not claim that the
-candidate was never briefly visible or that later external writers were serialized.
-Compensation SHALL merge only the Dev Flow member into the latest valid document and
-SHALL NOT blindly restore a complete old marketplace snapshot.
+The bounded transaction SHALL retain the previous marketplace bytes. Rollback SHALL
+re-read the current document and restore only the Dev Flow member when current state
+still matches the candidate value written by that transaction. If safe member-only
+restoration cannot be proved, it SHALL preserve the current document and report
+`partial`; it SHALL NOT overwrite unrelated changes with an old whole-file snapshot.
 
 #### Scenario: Existing valid marketplace contains unrelated entries
 
-- **WHEN** installation succeeds with a marketplace containing unrelated plugin
-  entries and an older Dev Flow entry
-- **THEN** unrelated entries remain unchanged and exactly one Dev Flow entry points
-  to the sealed candidate plugin release that matches the committed active record
+- **WHEN** installation succeeds with unrelated plugin entries and an older Dev Flow
+  member
+- **THEN** unrelated entries remain unchanged and exactly one Dev Flow member points
+  to the sealed plugin release named by the committed selection receipt
 
 #### Scenario: Marketplace JSON is malformed
 
@@ -45,85 +28,61 @@ SHALL NOT blindly restore a complete old marketplace snapshot.
 - **THEN** installation fails without replacing the malformed file or invoking
   plugin activation
 
-#### Scenario: Coordinated marketplace writer changes concurrently
+#### Scenario: Marketplace changes before rollback
 
-- **WHEN** another transaction-aware lifecycle writer changes the marketplace
-  generation after capture and before replacement
-- **THEN** replacement fails closed, preserves the newly observed content, and the
-  transaction restores the previous release or records a truthful partial outcome
-
-#### Scenario: Displaced-file preservation is unavailable
-
-- **WHEN** the platform cannot atomically exchange an existing marketplace or retain
-  the exact displaced file during replacement
-- **THEN** installation fails before marketplace or Codex mutation and does not use
-  unconditional replacement as a fallback
-
-#### Scenario: Uncoordinated marketplace writer races replacement
-
-- **WHEN** a writer outside the lifecycle authority changes the marketplace during
-  the final read-to-replace interval
-- **THEN** the atomic exchange/backup retains the displaced document, any observed
-  conflict prevents commit and is reported as partial, no complete old snapshot is
-  blindly restored, and no global-CAS or serialization claim is emitted
+- **WHEN** rollback observes that the marketplace no longer contains the exact
+  candidate member written by the transaction
+- **THEN** it preserves the current file, reports the observed state as partial,
+  and does not overwrite unrelated members
 
 ### Requirement: Windows uninstallation removes only validated installation assets
 
 The product SHALL provide `scripts/uninstall.ps1` for supported Windows x64 clients.
 It SHALL remove the installed plugin when present, atomically remove only the Dev
-Flow entry from a valid personal marketplace, and report launcher and runtime
-outcomes without treating them as proof of source ownership. It SHALL preserve
-external Controller task data in all cases, preserve unrelated marketplace entries,
-and preserve unrelated bundled or standalone MCP registrations.
+Flow member from a valid personal marketplace, preserve unrelated marketplace and
+MCP entries, and report plugin, marketplace, launchers, runtime, source, and task
+data separately.
 
-Every source checkout SHALL be retained until installation has produced a versioned,
-receipt-bound exact-ownership manifest and the separately specified quarantine and
-per-entry removal protocol is implemented and validated. Default uninstall,
-keep-source, and any explicit source-removal option SHALL therefore preserve source
-in this phase. No option SHALL bypass containment with `Remove-Item -Recurse` or any
-equivalent whole-tree deletion. Path, origin, branch, clean status, ancestry, and
-checkout location SHALL NOT substitute for exact ownership.
+Managed-runtime removal SHALL follow the exact per-entry ownership Requirements in
+this change. It SHALL retain legacy, missing, mismatched, changed, unknown, or
+unverifiable runtime content and SHALL NOT use `Remove-Item -Recurse` or an
+equivalent whole-tree runtime/release deletion.
 
-Managed-runtime handling SHALL follow the separate `exact-runtime-ownership`
-Requirements in this change: only revalidated entries of a conforming manifest may
-be removed per entry, while legacy, missing, mismatched, changed, or unverifiable
-runtime ownership SHALL be retained and reported truthfully as partial. Runtime
-ownership SHALL NOT authorize source deletion. Uninstallation SHALL report plugin,
-marketplace, MCP registration, runtime, source, and task-data outcomes separately.
-Its human and machine-observable result SHALL name the exact retained source path,
-identify the missing verifiable source-ownership manifest or disabled destructive
-source removal, report an explicit partial outcome, and direct the operator to
-inspect and back up the checkout and independently confirm source ownership. It
-SHALL NOT claim complete source removal or recommend unconditional recursive manual
-deletion.
+Every source checkout SHALL be retained. Default uninstall, keep-source, and any
+explicit source-removal request SHALL preserve source because destructive source
+removal remains disabled under DFO-AUDIT-002 containment. Runtime ownership SHALL
+NOT authorize source removal. Controller task data SHALL remain unchanged.
 
-#### Scenario: Ordinary Windows source removal is safety-contained
+When source or runtime is retained, the human and machine-observable result SHALL
+name each retained path, report a partial component outcome where applicable, and
+provide inspection and backup guidance without an unconditional recursive deletion
+command.
 
-- **WHEN** plugin, marketplace entry, launchers, runtime, and source are present
-- **THEN** source is retained, conforming runtime entries follow exact per-entry
-  ownership while unverifiable runtime is retained, and the receipt reports each
-  component, a partial source outcome, and preserved Controller task data
+#### Scenario: Ordinary Windows uninstall runs
+
+- **WHEN** plugin, marketplace member, launchers, managed runtime, and source are
+  present
+- **THEN** only exact-owned runtime entries are eligible for per-entry removal,
+  source and task data are retained, and all component outcomes are reported
 
 #### Scenario: Windows source contains user work
 
 - **WHEN** source has local changes, ignored content, local-only commits, unexpected
-  origin, a symlink or reparse mismatch, or another unsafe identity
-- **THEN** source and all user work remain unchanged and the result reports retained
-  path and exact-ownership containment without deleting task data or unrelated MCP
-  configuration
+  origin, or another identity mismatch
+- **THEN** source and user work remain unchanged and the result names the retained
+  path without deleting task data or unrelated configuration
 
 #### Scenario: Keep source is requested
 
 - **WHEN** the operator supplies the documented keep-source option
 - **THEN** other component operations may proceed and are reported separately while
-  source and task data remain unchanged and source retention is reported explicitly
+  source and task data remain unchanged
 
 #### Scenario: Explicit source removal is requested
 
-- **WHEN** the operator requests source removal without a conforming exact-ownership
-  manifest and implemented removal protocol
-- **THEN** the request fails closed to source retention and the partial result states
-  that destructive source removal is disabled
+- **WHEN** the operator requests source removal
+- **THEN** the request fails closed to source retention and reports that destructive
+  source removal is disabled
 
 #### Scenario: Manual source recovery is described
 

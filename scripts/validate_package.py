@@ -33,6 +33,8 @@ _PREIMPORT_REQUIRED = (
     "scripts/dev_flow_mcp_launcher.cmd",
     "scripts/dev_flow_python_launcher",
     "scripts/manage_runtime.py",
+    "scripts/runtime_integrity.py",
+    "scripts/runtime_integrity.py",
     "scripts/validate_installed_stage1.py",
     "src/dev_flow_orchestrator/_version.py",
     "src/dev_flow_orchestrator/review_guidance.py",
@@ -158,14 +160,21 @@ def _preimport_candidate_errors(root: Path) -> list[str]:
         "scripts/dev_flow_mcp_launcher": (
             "dev-flow-orchestrator managed MCP launcher",
             "__DEV_FLOW_RUNTIME_PYTHON__",
-            "dev_flow_orchestrator.mcp",
+            "__DEV_FLOW_RUNTIME_VERIFIER__",
+            "launch-mcp",
         ),
         "scripts/dev_flow_mcp_launcher.cmd": (
             "dev-flow-orchestrator managed MCP launcher",
             "__DEV_FLOW_RUNTIME_PYTHON__",
-            "dev_flow_orchestrator.mcp",
+            "__DEV_FLOW_RUNTIME_VERIFIER__",
+            "launch-mcp",
         ),
-        "scripts/manage_runtime.py": ("uv", "runtime_receipt"),
+        "scripts/manage_runtime.py": ("uv", "runtime_integrity", "build-receipt"),
+        "scripts/runtime_integrity.py": (
+            "dev-flow-runtime-receipt/2.0.0",
+            "verify-runtime",
+            "remove-owned",
+        ),
         "src/dev_flow_orchestrator/mcp/guidance.py": (
             "SERVER_INSTRUCTIONS",
             "GUIDANCE_CATALOG",
@@ -472,6 +481,9 @@ EXTERNAL_VERSION_LITERALS = {
         "dev-flow-mcp-action/1.0.0",
         "dev-flow-mcp-guidance/1.0.0",
         "dev-flow-runtime-receipt/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-plugin-release/1.0.0",
+        "dev-flow-runtime-ownership/1.0.0",
         "dev-flow-mcp-installed-evidence/1.0.0",
     ),
     "src/dev_flow_orchestrator/mcp/runtime.py": (
@@ -490,7 +502,13 @@ EXTERNAL_VERSION_LITERALS = {
         "dev-flow-mcp-guidance/1.0.0",
     ),
     "src/dev_flow_orchestrator/runtime_receipt.py": (
-        "dev-flow-runtime-receipt/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
+    ),
+    "scripts/runtime_integrity.py": (
+        "dev-flow-managed-runtime/1",
+        "dev-flow-plugin-release/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-runtime-ownership/1.0.0",
     ),
     # Response freshness is a release-neutral wire contract, not a persisted
     # product-model schema.
@@ -517,15 +535,23 @@ EXTERNAL_VERSION_LITERALS = {
         "dev-flow-mcp-action/1.0.0",
         "dev-flow-mcp-guidance/1.0.0",
         "dev-flow-runtime-receipt/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-plugin-release/1.0.0",
+        "dev-flow-runtime-ownership/1.0.0",
         "dev-flow-managed-runtime/1",
         "dev-flow-workspace-freshness/1.0.0",
         "dev-flow-orchestrator/repository-authority-lock/v1",
     ),
     "tests/test_mcp_runtime.py": (
         "dev-flow-mcp-action/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
         # Negative startup-self-check fixture; this is deliberately not a
         # shipped interface identity.
         "dev-flow-mcp/" + "2.0.0",
+    ),
+    "tests/test_managed_runtime.py": (
+        "dev-flow-managed-runtime/1",
+        "dev-flow-runtime-receipt/2.0.0",
     ),
     "tests/test_uninstall_script.py": (
         "dev-flow-managed-runtime/1",
@@ -708,6 +734,9 @@ def _without_external_version_literals(relative: str, document: str) -> str:
         "dev-flow-mcp-action/1.0.0",
         "dev-flow-mcp-guidance/1.0.0",
         "dev-flow-runtime-receipt/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-plugin-release/1.0.0",
+        "dev-flow-runtime-ownership/1.0.0",
         "dev-flow-mcp-installed-evidence/1.0.0",
         "dev-flow-openspec-traceability/1.0.0",
     ):
@@ -2645,7 +2674,8 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
             "no verifiable exact-ownership manifest",
             "independently confirm ownership",
             "TASK DATA",
-            ".dev-flow-managed-runtime",
+            "runtime_integrity.py",
+            "remove-owned",
         ),
     }
     for relative, tokens in required_tokens.items():

@@ -1,175 +1,160 @@
 ## ADDED Requirements
 
-### Requirement: Installation records exact ownership per entry
+### Requirement: New releases record simple exact ownership
 
-Before a release can be committed active, the installer SHALL complete a closed,
-canonical, versioned exact-ownership record set. Its ownership body SHALL bind the
-transaction, release, candidate, launcher identities, expected receipt path/schema,
-and expected active-record path/schema/generation. Every release-asset path SHALL be
-relative to a declared root and SHALL record entry type, file digest and size,
-executable or mode information, symlink target, release ID, and necessary
-parent-directory ownership.
+Every new managed release SHALL have one closed, versioned ownership manifest. For
+each owned entry it SHALL record a declared root, normalized relative path,
+`release_id`, entry type, regular-file digest, executable bit or mode, and symlink
+target text as applicable. The manifest SHALL contain only concrete deletion
+evidence and SHALL NOT infer ownership from current directory enumeration, a root
+marker, package version, location, or successful health.
 
-The ownership body SHALL exclude its own bytes and the later receipt, activation
-descriptor, terminal pre-commit journal, and active record bytes. The receipt SHALL
-bind the ownership-body digest. The committed active record SHALL bind the receipt
-and ownership-body digests and SHALL contain the ownership envelope for those
-control files, the activation descriptor, terminal pre-commit journal, and its own
-fixed path/schema/generation.
-Its self digest SHALL be computed over canonical active-record bytes with the
-self-digest field omitted. This one-way construction SHALL NOT contain a manifest,
-receipt, or active-record digest cycle. Shared marketplace ownership SHALL identify
-only the exact logical Dev Flow member and SHALL NOT claim the complete marketplace
-file.
+The manifest SHALL cover installer-created plugin and runtime release payloads,
+launchers, metadata, and owned parent directories. Shared marketplace ownership
+SHALL cover only the Dev Flow member, not the entire marketplace file. Runtime
+ownership SHALL NOT grant source-checkout ownership.
 
-Current directory contents, a root marker, shallow receipt validity, package
-version, location, or successful smoke SHALL NOT establish ownership.
+#### Scenario: Regular files and directories are installed
 
-#### Scenario: Runtime release ownership is recorded
+- **WHEN** a new plugin/runtime release and its launchers are promoted
+- **THEN** every installer-created regular file and necessary owned directory has
+  exact relative-path, type, digest or mode, and `release_id` evidence
 
-- **WHEN** candidate and runtime staging completes
-- **THEN** every installer-created runtime, plugin, metadata, verifier, launcher, and
-  owned parent entry is in the ownership body, while its manifest file, receipt,
-  activation descriptor, terminal journal, and active pointer are completed by the
-  downstream committed ownership envelope
+#### Scenario: A symlink is installed
 
-#### Scenario: Active release retains its terminal journal
-
-- **WHEN** a committed release remains active and startup attestation validates its
-  exact-ownership envelope
-- **THEN** routine cleanup does not delete or rewrite the bound terminal journal;
-  uninstall may remove it only after active attestation is no longer required
-
-#### Scenario: Symlink ownership is recorded
-
-- **WHEN** an installer-owned entry is a symbolic link
+- **WHEN** an installer-owned release entry is a symbolic link
 - **THEN** the manifest records the link itself and exact target text without
-  treating the target as transitively owned
+  treating the target as owned
 
-#### Scenario: Shared marketplace state is recorded
+#### Scenario: Pre-existing content shares a managed parent
 
-- **WHEN** the transaction replaces the Dev Flow marketplace member
-- **THEN** ownership covers that canonical member value and comparison authority,
-  while unrelated members and the containing file remain user/shared state
+- **WHEN** a selected runtime or launcher parent existed before installation
+- **THEN** the manifest records only entries actually created or replaced by the
+  installer and does not claim the pre-existing parent contents
 
-### Requirement: Uninstall removes only revalidated owned entries
+### Requirement: Uninstall removes only matching owned entries
 
-Uninstall SHALL acquire the lifecycle authority, validate the receipt and ownership
-manifest, and operate on entries without following symlinks or reparse points. It
-SHALL remove a file or link only when its last-use type, digest, mode, target, root,
-transaction, and release identity match. It SHALL remove an owned directory only
-after all eligible children have been handled, the directory is empty at removal
-time, and directory ownership matches. It SHALL NOT recursively delete a runtime or
-release root.
+Uninstall SHALL validate the exact manifest and process each known entry without
+following links or reparse points. It SHALL use `lstat` at last use and SHALL remove
+a regular file or symlink only when type, digest, mode, target, root, and
+`release_id` match. It MAY first rename a matching file or symlink to a
+same-filesystem quarantine entry, then revalidate and unlink it. A mismatch SHALL be
+restored when safe or retained and reported.
 
-Same-filesystem quarantine MAY contain races by atomically renaming an exact-owned
-entry or release before per-entry deletion. Any unknown or changed entry found in
-place or quarantine SHALL be retained and reported.
+Owned directories SHALL be processed deepest first and removed only with
+non-recursive `rmdir` after they are proven owned and empty at removal time. The
+uninstaller SHALL NOT recursively delete a managed runtime root or release root with
+shell, PowerShell, Python, or an equivalent helper.
 
-#### Scenario: All entries match ownership
+Unknown, changed, concurrent, special, or unverifiable entries SHALL be retained,
+along with required ancestor directories. A partial result SHALL name retained
+paths. External symlink targets, Controller task data, source, and unrelated
+marketplace members SHALL remain unchanged.
 
-- **WHEN** every selected installer-owned entry still matches its manifest and every
-  owned directory becomes empty
-- **THEN** those entries are removed individually, task data is unchanged, and the
-  receipt reports exactly which roots became empty
+#### Scenario: Every selected entry still matches
+
+- **WHEN** all selected owned files, links, and directories match the manifest and
+  owned directories become empty
+- **THEN** entries are removed individually and only empty owned directories are
+  removed with non-recursive `rmdir`
 
 #### Scenario: Unknown runtime-root content exists
 
-- **WHEN** a file, directory, symlink, or special entry not present in the manifest
-  exists directly under the runtime root
-- **THEN** that entry and required ancestors remain and the uninstall result is
-  truthful partial with its retained path
+- **WHEN** an unowned file or directory exists directly under the runtime root
+- **THEN** it and its required ancestors remain and the runtime result is partial
+  with the retained path
 
-#### Scenario: Unknown release or venv content exists
+#### Scenario: Unknown active or inactive release content exists
 
-- **WHEN** unknown content exists under an active or inactive release, venv,
-  site-packages, scripts/bin, or distribution metadata directory
-- **THEN** that content is retained in place or quarantine, no ancestor is removed
-  recursively, and other component outcomes are reported separately
+- **WHEN** an extra entry exists under an active release, inactive release, venv,
+  site-packages, bin/scripts, or distribution metadata directory
+- **THEN** the entry remains in place or quarantine, no ancestor is recursively
+  removed, and other component outcomes are reported separately
 
-#### Scenario: Symlink or reparse content is unknown
+#### Scenario: A known owned file has changed
 
-- **WHEN** an unknown symlink, Windows reparse point, or changed owned link is found
-- **THEN** uninstall neither follows nor deletes it and preserves its external
-  target
+- **WHEN** an owned regular file's type, digest, or mode differs at last-use
+  validation
+- **THEN** the changed entry is retained, its ancestors remain, and the result names
+  the mismatch instead of unlinking it
 
-#### Scenario: Special entry is unknown
+#### Scenario: An unknown link targets external data
 
-- **WHEN** a socket, FIFO, device, or other unsupported special entry is present
-- **THEN** it is retained and reported without using a whole-tree deletion fallback
+- **WHEN** an unknown or changed symlink or reparse point resolves outside the
+  managed root
+- **THEN** uninstall neither follows nor removes the link and the external target
+  remains byte-identical
 
-#### Scenario: Content appears concurrently
+#### Scenario: A special entry exists
 
-- **WHEN** an entry appears or changes after initial enumeration but before its
-  parent could be removed
-- **THEN** last-use revalidation or quarantine enumeration preserves it and the
-  result becomes partial rather than deleting the parent recursively
+- **WHEN** a FIFO, socket, device, or other unsupported special entry is found
+- **THEN** it is retained and reported without invoking a recursive fallback
 
-### Requirement: Legacy runtime content is preserved without adoption
+#### Scenario: Content appears during removal
 
-A runtime or release lacking a conforming exact ownership manifest, or having a
-missing, malformed, incompatible, or mismatched receipt, SHALL be retained. The
-uninstaller SHALL name the retained path and explain that ownership is unavailable.
-It SHALL NOT enumerate current contents and silently mark them owned. Repair MAY
-install a new conforming release beside legacy content but SHALL NOT delete the
-legacy path.
+- **WHEN** an entry is created or replaced after initial inventory but before its
+  parent directory could be removed
+- **THEN** last-use `lstat` or non-recursive `rmdir` preserves it and the result is
+  partial
 
-#### Scenario: Old runtime has only a shallow receipt
+### Requirement: Legacy runtime content is retained without adoption
 
-- **WHEN** uninstall finds a legacy marker and receipt but no exact manifest
-- **THEN** it preserves the runtime, reports a partial outcome, and gives manual
+A runtime or release lacking the exact manifest, or having a missing, malformed,
+incompatible, or mismatched manifest/receipt, SHALL be retained. The uninstaller
+SHALL return partial, name the retained path, and provide manual inspection and
+backup guidance. It SHALL NOT enumerate current contents and relabel them as owned.
+Repair MAY select a new conforming release beside legacy content and SHALL report
+the retained legacy path.
+
+#### Scenario: Legacy runtime has only a shallow receipt
+
+- **WHEN** uninstall finds a legacy marker or receipt but no conforming exact
+  ownership manifest
+- **THEN** the complete runtime is retained with a partial result and manual
   inspection guidance
 
-#### Scenario: Successful repair replaces a legacy active runtime
+#### Scenario: Repair replaces a legacy selected runtime
 
-- **WHEN** repair successfully commits a conforming new release while legacy content
-  remains
-- **THEN** the active record points only to the new release and separately records
-  the retained legacy path without ownership adoption
+- **WHEN** repair successfully selects a new receipt-v2 release while legacy
+  runtime content remains
+- **THEN** only the new release is selected and the legacy path is reported as
+  retained without ownership adoption
 
-#### Scenario: Adoption is requested
+### Requirement: Runtime removal preserves source and unrelated data
 
-- **WHEN** an operator wants existing unknown runtime content treated as owned
-- **THEN** the product requires a separately specified auditable adoption workflow
-  and does not infer ownership in this lifecycle
+Default uninstall, keep-source behavior, and any unsupported explicit source-removal
+request SHALL retain the authoritative checkout under DFO-AUDIT-002 containment.
+Exact runtime ownership SHALL NOT authorize source deletion. Controller task data
+and unrelated marketplace members SHALL remain byte-identical for complete and
+partial runtime outcomes.
 
-### Requirement: Runtime ownership does not authorize source deletion
+#### Scenario: A new exact-owned runtime is uninstalled
 
-Runtime/plugin artifact manifests and source checkout ownership SHALL remain
-separate authorities. This change SHALL NOT add or enable a source removal option.
-Default uninstall, keep-source, and any unsupported explicit request SHALL preserve
-the source checkout under DFO-AUDIT-002 containment, even for installations that
-have conforming runtime ownership.
+- **WHEN** a conforming runtime is eligible for exact per-entry removal
+- **THEN** only matching runtime entries are handled while source and Controller task
+  data are retained
 
-#### Scenario: New installation is uninstalled
+#### Scenario: Unrelated marketplace entries coexist
 
-- **WHEN** a Phase 1-conforming runtime has exact ownership but source lacks the
-  separately accepted source ownership protocol
-- **THEN** exact runtime entries may be handled per manifest while source is retained
-  with its exact path and containment reason
+- **WHEN** uninstall removes the Dev Flow marketplace member
+- **THEN** every unrelated member remains unchanged regardless of runtime outcome
 
-#### Scenario: Task and unrelated marketplace data coexist
+### Requirement: Platform evidence is reported separately
 
-- **WHEN** uninstall handles exact-owned runtime entries
-- **THEN** Controller task data and unrelated marketplace members remain
-  byte-identical regardless of complete or partial runtime outcome
+POSIX and PowerShell SHALL implement the same prohibition on recursive managed-root
+deletion, per-entry ownership checks, unknown-content retention, legacy retention,
+and source retention. Dynamic platform success SHALL be claimed only after native
+lifecycle execution in isolated temporary authorities.
 
-### Requirement: Platform evidence is reported without extrapolation
+#### Scenario: Host-neutral PowerShell checks run
 
-POSIX and PowerShell implementations SHALL preserve the same no-recursive-root,
-per-entry ownership, unknown-content, legacy-preservation, and source-retention
-invariants. A platform SHALL be claimed dynamically verified only after its native
-lifecycle runs against isolated mutation authorities and external sentinels.
-
-#### Scenario: Host-neutral PowerShell validation runs
-
-- **WHEN** parser, static, receipt-contract, or non-native simulation checks pass on
-  a non-Windows host
+- **WHEN** parser, static, or host-neutral PowerShell checks pass on a non-Windows
+  host
 - **THEN** the evidence is labeled host-neutral/static and native Windows remains
   `NOT RUN — native Windows host unavailable`
 
-#### Scenario: Native Windows evidence is later collected
+#### Scenario: Native Windows evidence is unavailable
 
-- **WHEN** a supported isolated Windows host runs the destructive-boundary matrix
-- **THEN** the report records native outcomes separately and does not rewrite prior
-  static evidence as a native run
+- **WHEN** no supported isolated Windows host is available for lifecycle execution
+- **THEN** the change does not report Windows dynamic PASS or infer it from POSIX
+  results

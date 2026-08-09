@@ -134,7 +134,7 @@ class InstallerBehaviorTests(unittest.TestCase):
         shutil.copytree(self.remote_template, self.remote)
         self.remote_url = self.remote.as_uri()
         self.source_root = (
-            self.test_root / "plugins" / "installed source with spaces"
+            self.test_root / "plugins" / "installed source O'Brien 雪 with spaces"
         )
         self.marketplace = (
             self.test_root / ".agents" / "plugins" / "marketplace.json"
@@ -142,6 +142,8 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.codex_log = self.test_root / "codex calls.log"
         self.codex_state = self.test_root / "installed plugin version.txt"
         self.codex_candidate_active = self.test_root / "candidate plugin active"
+        self.codex_active_release = self.test_root / "active plugin release.txt"
+        self.codex_add_count = self.test_root / "plugin add count.txt"
         self.publisher_counter = 0
 
         fake_bin = self.test_root / "fake bin"
@@ -149,6 +151,7 @@ class InstallerBehaviorTests(unittest.TestCase):
         fake_codex = fake_bin / "codex"
         fake_codex.write_text(
             "#!/bin/sh\n"
+            "set -eu\n"
             "case \"$*\" in\n"
             "  'mcp list --json')\n"
             "    if [ -f \"$DEV_FLOW_CODEX_CANDIDATE_ACTIVE\" ]; then\n"
@@ -172,24 +175,37 @@ class InstallerBehaviorTests(unittest.TestCase):
             "  'plugin remove dev-flow-orchestrator@personal')\n"
             "    printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
             "    exit_code=\"${DEV_FLOW_CODEX_REMOVE_EXIT:-0}\"\n"
-            "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
+            "    if [ \"$exit_code\" -ne 0 ] && [ -z \"${DEV_FLOW_CODEX_REMOVE_APPLY_THEN_EXIT:-}\" ]; then exit \"$exit_code\"; fi\n"
             "    rm -f \"$DEV_FLOW_CODEX_STATE\"\n"
             "    rm -f \"$DEV_FLOW_CODEX_CANDIDATE_ACTIVE\"\n"
+            "    rm -f \"$DEV_FLOW_CODEX_ACTIVE_RELEASE\"\n"
+            "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
             "    ;;\n"
             "  'plugin add dev-flow-orchestrator@personal')\n"
             "    printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
+            "    add_count=0\n"
+            "    if [ -f \"$DEV_FLOW_CODEX_ADD_COUNT\" ]; then add_count=\"$(cat \"$DEV_FLOW_CODEX_ADD_COUNT\")\"; fi\n"
+            "    add_count=$((add_count + 1))\n"
+            "    printf '%s\\n' \"$add_count\" > \"$DEV_FLOW_CODEX_ADD_COUNT\"\n"
             "    if [ -n \"${DEV_FLOW_CODEX_ADD_FAIL_ONCE_FILE:-}\" ] && [ ! -f \"$DEV_FLOW_CODEX_ADD_FAIL_ONCE_FILE\" ]; then\n"
             "      : > \"$DEV_FLOW_CODEX_ADD_FAIL_ONCE_FILE\"\n"
             "      exit \"${DEV_FLOW_CODEX_ADD_FAIL_ONCE_EXIT:-17}\"\n"
             "    fi\n"
             "    exit_code=\"${DEV_FLOW_CODEX_ADD_EXIT:-0}\"\n"
-            "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
+            "    if [ -n \"${DEV_FLOW_CODEX_ADD_FAIL_ON_CALL:-}\" ] && [ \"$add_count\" -eq \"$DEV_FLOW_CODEX_ADD_FAIL_ON_CALL\" ]; then exit_code=\"${DEV_FLOW_CODEX_ADD_FAIL_ON_CALL_EXIT:-19}\"; fi\n"
+            "    if [ \"$exit_code\" -ne 0 ] && [ -z \"${DEV_FLOW_CODEX_ADD_APPLY_THEN_EXIT:-}\" ]; then exit \"$exit_code\"; fi\n"
             "    printf '%s\\n' \"${DEV_FLOW_PACKAGE_VERSION:-0.4.0}\" > \"$DEV_FLOW_CODEX_STATE\"\n"
             "    : > \"$DEV_FLOW_CODEX_CANDIDATE_ACTIVE\"\n"
+            "    DEV_FLOW_TEST_MARKETPLACE=\"$DEV_FLOW_MARKETPLACE_FILE\" PYTHONDONTWRITEBYTECODE=1 \"$DEV_FLOW_TEST_PYTHON\" -B -I -S -c 'import json,os; from pathlib import Path; path=Path(os.environ[\"DEV_FLOW_TEST_MARKETPLACE\"]).resolve(); value=json.loads(path.read_text(encoding=\"utf-8\")); matches=[item for item in value[\"plugins\"] if isinstance(item,dict) and item.get(\"name\")==\"dev-flow-orchestrator\"]; assert len(matches)==1; source=Path(matches[0][\"source\"][\"path\"]); print((path.parent.parent.parent / source).resolve() if not source.is_absolute() else source.resolve())' > \"$DEV_FLOW_CODEX_ACTIVE_RELEASE\"\n"
+            "    if [ -n \"${DEV_FLOW_CODEX_ADD_UNRELATED_ONCE_FILE:-}\" ] && [ ! -f \"$DEV_FLOW_CODEX_ADD_UNRELATED_ONCE_FILE\" ]; then\n"
+            "      : > \"$DEV_FLOW_CODEX_ADD_UNRELATED_ONCE_FILE\"\n"
+            "      DEV_FLOW_TEST_MARKETPLACE=\"$DEV_FLOW_MARKETPLACE_FILE\" PYTHONDONTWRITEBYTECODE=1 \"$DEV_FLOW_TEST_PYTHON\" -B -I -S -c 'import json,os; from pathlib import Path; path=Path(os.environ[\"DEV_FLOW_TEST_MARKETPLACE\"]); value=json.loads(path.read_text(encoding=\"utf-8\")); value[\"plugins\"].append({\"name\":\"concurrent-unrelated\",\"source\":{\"source\":\"local\",\"path\":\"/tmp/concurrent\"}}); path.write_text(json.dumps(value,ensure_ascii=False,indent=2)+\"\\n\",encoding=\"utf-8\")'\n"
+            "    fi\n"
             "    if [ -n \"${DEV_FLOW_CODEX_CORRUPT_LAUNCHER:-}\" ] && [ -n \"${DEV_FLOW_CODEX_CORRUPT_ONCE_FILE:-}\" ] && [ ! -f \"$DEV_FLOW_CODEX_CORRUPT_ONCE_FILE\" ]; then\n"
             "      : > \"$DEV_FLOW_CODEX_CORRUPT_ONCE_FILE\"\n"
             "      printf '#!/bin/sh\\nexit 44\\n' > \"$DEV_FLOW_CODEX_CORRUPT_LAUNCHER\"\n"
             "    fi\n"
+            "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
             "    ;;\n"
             "  *)\n"
             "    exit 2\n"
@@ -219,6 +235,9 @@ class InstallerBehaviorTests(unittest.TestCase):
                 "DEV_FLOW_CODEX_CANDIDATE_ACTIVE": str(
                     self.codex_candidate_active
                 ),
+                "DEV_FLOW_CODEX_ACTIVE_RELEASE": str(self.codex_active_release),
+                "DEV_FLOW_CODEX_ADD_COUNT": str(self.codex_add_count),
+                "DEV_FLOW_TEST_PYTHON": sys.executable,
                 "DEV_FLOW_CODEX_ADD_EXIT": "0",
                 "DEV_FLOW_CODEX_REMOVE_EXIT": "0",
                 "DEV_FLOW_CODEX_ENABLED_JSON": "true",
@@ -254,6 +273,8 @@ class InstallerBehaviorTests(unittest.TestCase):
             "DEV_FLOW_SOURCE_ROOT",
             "DEV_FLOW_MARKETPLACE_FILE",
             "DEV_FLOW_BIN_DIR",
+            "DEV_FLOW_CODEX_ACTIVE_RELEASE",
+            "DEV_FLOW_CODEX_ADD_COUNT",
         ):
             Path(self.environment[authority]).resolve().relative_to(
                 self.test_root.resolve()
@@ -317,6 +338,54 @@ class InstallerBehaviorTests(unittest.TestCase):
         if not releases.is_dir():
             return ()
         return tuple(sorted(path for path in releases.iterdir() if path.is_dir()))
+
+    def active_plugin_root(self) -> Path:
+        return Path(
+            self.codex_active_release.read_text(encoding="utf-8").strip()
+        ).resolve()
+
+    def transaction_records(self) -> tuple[dict[str, object], ...]:
+        transactions = (
+            Path(self.environment["DEV_FLOW_RUNTIME_HOME"]) / "transactions"
+        )
+        if not transactions.is_dir():
+            return ()
+        return tuple(
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(
+                transactions.glob("*.json"),
+                key=lambda item: (item.stat().st_mtime_ns, item.name),
+            )
+        )
+
+    def source_inventory(self) -> dict[str, object]:
+        ignored = subprocess.run(
+            ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+            cwd=self.source_root,
+            env=self.environment,
+            check=True,
+            capture_output=True,
+        ).stdout
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=self.source_root,
+            env=self.environment,
+            check=True,
+            capture_output=True,
+        ).stdout
+        return {
+            "head": _git("rev-parse", "HEAD", cwd=self.source_root),
+            "tree": _git("rev-parse", "HEAD^{tree}", cwd=self.source_root),
+            "tracked": subprocess.run(
+                ["git", "status", "--porcelain", "-z", "--untracked-files=no"],
+                cwd=self.source_root,
+                env=self.environment,
+                check=True,
+                capture_output=True,
+            ).stdout,
+            "untracked": untracked,
+            "ignored": ignored,
+        }
 
     def advance_remote_main(self) -> str:
         self.publisher_counter += 1
@@ -403,7 +472,9 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(len(dev_flow_entries), 1)
         self.assertEqual(
             dev_flow_entries[0]["source"]["path"],
-            "./plugins/installed source with spaces",
+            "./managed runtime/releases/{}/plugin".format(
+                self.runtime_releases()[0].name
+            ),
         )
         self.assertEqual(
             self.activation_calls(),
@@ -414,7 +485,10 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertTrue(launcher.stat().st_mode & stat.S_IXUSR)
         launcher_text = launcher.read_text(encoding="utf-8")
         self.assertIn("# dev-flow-orchestrator managed launcher", launcher_text)
-        self.assertIn(str(self.source_root / "scripts" / "dev_flow.py"), launcher_text)
+        self.assertIn(
+            str(self.active_plugin_root() / "scripts" / "dev_flow.py"),
+            launcher_text,
+        )
         mcp_launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
         self.assertTrue(mcp_launcher.stat().st_mode & stat.S_IXUSR)
         mcp_text = mcp_launcher.read_text(encoding="utf-8")
@@ -427,21 +501,39 @@ class InstallerBehaviorTests(unittest.TestCase):
         receipt = json.loads(
             (releases[0] / "runtime-receipt.json").read_text(encoding="utf-8")
         )
+        self.assertEqual(receipt["release_id"], releases[0].name)
+        self.assertEqual(receipt["source_commit"], _git("rev-parse", "HEAD", cwd=self.source_root))
+        self.assertEqual(receipt["source_tree"], _git("rev-parse", "HEAD^{tree}", cwd=self.source_root))
+        self.assertEqual(Path(receipt["plugin_path"]), self.active_plugin_root())
+        self.assertTrue((self.active_plugin_root() / "release-manifest.json").is_file())
+        self.assertTrue((releases[0] / "ownership-manifest.json").is_file())
+        transaction = self.transaction_records()[-1]
         self.assertEqual(
-            set(receipt),
+            set(transaction),
             {
-                "activated_at",
-                "activation_action",
-                "dependency_lock_sha256",
-                "launcher_identity",
-                "python",
-                "release_version",
-                "runtime_identity",
                 "schema",
-                "source_commit",
+                "transaction_id",
+                "operation",
+                "previous_release",
+                "candidate_release",
+                "current_step",
+                "components",
+                "outcome",
+                "blind_retry_safe",
+                "retained_paths",
             },
         )
-        self.assertEqual(receipt["activation_action"], "create")
+        self.assertEqual(transaction["schema"], "dev-flow-install-transaction/0.4.0")
+        self.assertEqual(transaction["operation"], "install")
+        self.assertIsNone(transaction["previous_release"])
+        self.assertEqual(transaction["candidate_release"], releases[0].name)
+        self.assertEqual(transaction["current_step"], "committed")
+        self.assertEqual(transaction["outcome"], "committed")
+        self.assertIs(transaction["blind_retry_safe"], True)
+        self.assertEqual(
+            set(transaction["components"]),
+            {"plugin", "marketplace", "mcp_launcher", "cli_launcher", "runtime"},
+        )
 
     def test_launcher_uses_automatic_codex_data_directory(self) -> None:
         self.install_successfully()
@@ -525,6 +617,207 @@ class InstallerBehaviorTests(unittest.TestCase):
                 "plugin add dev-flow-orchestrator@personal",
             ],
         )
+
+    def test_fresh_repair_and_failed_install_preserve_source_inventory(self) -> None:
+        self.install_successfully()
+        fresh = self.source_inventory()
+        self.assertEqual(fresh["tracked"], b"")
+        self.assertEqual(fresh["untracked"], b"")
+        self.assertEqual(fresh["ignored"], b"")
+
+        relative = "local ignored O'Brien 雪 sentinel.bin"
+        sentinel = self.source_root / relative
+        sentinel_bytes = b"\x00user-owned ignored bytes\xff\n"
+        sentinel.write_bytes(sentinel_bytes)
+        exclude = self.source_root / ".git" / "info" / "exclude"
+        with exclude.open("a", encoding="utf-8") as stream:
+            stream.write("/{}\n".format(relative))
+        before_repair = self.source_inventory()
+
+        self.install_successfully()
+
+        self.assertEqual(self.source_inventory(), before_repair)
+        self.assertEqual(sentinel.read_bytes(), sentinel_bytes)
+
+        failed = self.run_installer(
+            {
+                "DEV_FLOW_CODEX_ADD_FAIL_ONCE_FILE": str(
+                    self.test_root / "source-clean-add-failed-once"
+                )
+            }
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(self.source_inventory(), before_repair)
+        self.assertEqual(sentinel.read_bytes(), sentinel_bytes)
+        ignored_names = {
+            os.fsdecode(value)
+            for value in before_repair["ignored"].split(b"\0")
+            if value
+        }
+        self.assertEqual(ignored_names, {relative})
+        forbidden = ("__pycache__", ".pyc", "build", "dist", ".egg-info")
+        self.assertFalse(
+            any(token in name for name in ignored_names for token in forbidden)
+        )
+
+    def test_post_seal_source_drift_cannot_enter_active_release(self) -> None:
+        points = (
+            "runtime-build-before",
+            "runtime-build-after",
+            "launcher-generation-before",
+            "launcher-generation-after",
+            "marketplace-write-before",
+            "marketplace-write-after",
+            "plugin-add-before",
+            "plugin-add-after",
+            "health-before",
+            "health-after",
+            "success-receipt-before",
+        )
+        previous_release_id = None
+        for index, point in enumerate(points):
+            with self.subTest(point=point):
+                if index:
+                    self.advance_remote_main()
+                result = self.run_installer(
+                    {"DEV_FLOW_INSTALL_TEST_SOURCE_DRIFT_AT": point}
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                marker = "DEV_FLOW_INSTALL_TEST_SOURCE_DRIFT:{}".format(
+                    point
+                ).encode("utf-8")
+                source_readme = self.source_root / "README.md"
+                self.assertIn(marker, source_readme.read_bytes())
+                committed_readme = subprocess.run(
+                    ["git", "show", "HEAD:README.md"],
+                    cwd=self.source_root,
+                    env=self.environment,
+                    check=True,
+                    capture_output=True,
+                ).stdout
+
+                active_root = self.active_plugin_root()
+                release = active_root.parent
+                self.assertNotIn(marker, (active_root / "README.md").read_bytes())
+                self.assertEqual(
+                    (active_root / "README.md").read_bytes(), committed_readme
+                )
+                for candidate in release.rglob("*"):
+                    if candidate.is_file() and not candidate.is_symlink():
+                        self.assertNotIn(marker, candidate.read_bytes(), candidate)
+
+                receipt = json.loads(
+                    (release / "runtime-receipt.json").read_text(encoding="utf-8")
+                )
+                head = _git("rev-parse", "HEAD", cwd=self.source_root)
+                tree = _git("rev-parse", "HEAD^{tree}", cwd=self.source_root)
+                self.assertEqual(receipt["release_id"], release.name)
+                self.assertEqual(receipt["source_commit"], head)
+                self.assertEqual(receipt["source_tree"], tree)
+                self.assertEqual(Path(receipt["plugin_path"]), active_root)
+                manifest = json.loads(
+                    (active_root / "release-manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(manifest["release_id"], release.name)
+                self.assertEqual(manifest["source_commit"], head)
+                self.assertEqual(manifest["source_tree"], tree)
+                if previous_release_id is not None:
+                    self.assertNotEqual(release.name, previous_release_id)
+                previous_release_id = release.name
+
+                launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow"
+                launcher_bytes = launcher.read_bytes()
+                self.assertIn(os.fsencode(active_root), launcher_bytes)
+                self.assertNotIn(os.fsencode(self.source_root), launcher_bytes)
+                self.assertNotIn(marker, launcher_bytes)
+                mcp_launcher = (
+                    Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
+                )
+                self.assertEqual(
+                    mcp_launcher.read_bytes(),
+                    (release / "launchers" / "dev-flow-mcp").read_bytes(),
+                )
+                self.assertNotIn(marker, mcp_launcher.read_bytes())
+
+                entries = [
+                    item
+                    for item in self.marketplace_plugins()
+                    if isinstance(item, dict)
+                    and item.get("name") == "dev-flow-orchestrator"
+                ]
+                self.assertEqual(len(entries), 1)
+                source = Path(entries[0]["source"]["path"])
+                marketplace_root = self.marketplace.parent.parent.parent.resolve()
+                marketplace_plugin = (
+                    source.resolve()
+                    if source.is_absolute()
+                    else (marketplace_root / source).resolve()
+                )
+                self.assertEqual(marketplace_plugin, active_root)
+                transaction = self.transaction_records()[-1]
+                self.assertEqual(transaction["candidate_release"], release.name)
+                self.assertEqual(transaction["outcome"], "committed")
+                self.assertIn(
+                    "Authoritative source changed after candidate sealing",
+                    result.stderr,
+                )
+
+                source_readme.write_bytes(committed_readme)
+                self.assertEqual(
+                    _git("status", "--porcelain", cwd=self.source_root), ""
+                )
+
+    def test_bounded_transaction_failure_boundaries_leave_declared_state(self) -> None:
+        launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow"
+        mcp_launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow-mcp"
+
+        for point in ("candidate-staging", "runtime-build"):
+            with self.subTest(point=point):
+                result = self.run_installer({"DEV_FLOW_INSTALL_FAIL_AT": point})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.codex_state.exists())
+                self.assertFalse(self.marketplace.exists())
+                self.assertFalse(launcher.exists())
+                self.assertFalse(mcp_launcher.exists())
+
+        promoted = self.run_installer(
+            {"DEV_FLOW_INSTALL_FAIL_AT": "runtime-promotion"}
+        )
+        self.assertNotEqual(promoted.returncode, 0)
+        self.assertFalse(self.codex_state.exists())
+        self.assertFalse(self.marketplace.exists())
+        self.assertFalse(launcher.exists())
+        self.assertFalse(mcp_launcher.exists())
+        promoted_record = self.transaction_records()[-1]
+        self.assertEqual(promoted_record["outcome"], "rolled_back")
+        self.assertIs(promoted_record["blind_retry_safe"], True)
+        self.assertEqual(promoted_record["components"]["runtime"], "candidate-retained")
+        self.assertTrue(
+            any(Path(path).is_dir() for path in promoted_record["retained_paths"])
+        )
+
+        for point in (
+            "mcp-launcher",
+            "cli-launcher",
+            "marketplace",
+            "plugin-add",
+            "health",
+            "final-smoke",
+        ):
+            with self.subTest(point=point):
+                result = self.run_installer({"DEV_FLOW_INSTALL_FAIL_AT": point})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.codex_state.exists())
+                self.assertFalse(self.codex_active_release.exists())
+                self.assertFalse(self.marketplace.exists())
+                self.assertFalse(launcher.exists())
+                self.assertFalse(mcp_launcher.exists())
+                record = self.transaction_records()[-1]
+                self.assertEqual(record["outcome"], "rolled_back")
+                self.assertIs(record["blind_retry_safe"], True)
 
     def test_success_prints_receipt_and_touched_directories(self) -> None:
         result = self.install_successfully()
@@ -613,12 +906,16 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertIn("Finish or cancel active Dev Flow tasks", result.stderr)
         self.assertEqual(
             self.activation_calls(),
-            ["plugin remove dev-flow-orchestrator@personal"],
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin remove dev-flow-orchestrator@personal",
+            ],
         )
         self.assertEqual(
             self.codex_state.read_text(encoding="utf-8"),
             PACKAGE_VERSION + "\n",
         )
+        self.assertEqual(self.transaction_records()[-1]["outcome"], "partial")
 
     def test_existing_install_fast_forwards_to_fetched_main(self) -> None:
         self.install_successfully()
@@ -1028,6 +1325,7 @@ class InstallerBehaviorTests(unittest.TestCase):
         launcher_before = launcher.read_bytes()
         marketplace_before = self.marketplace.read_bytes()
         old_release = self.runtime_releases()[0]
+        old_plugin_root = self.active_plugin_root()
         self.advance_remote_main()
         self.clear_activation_calls()
         fail_once = self.test_root / "candidate-add-failed-once"
@@ -1047,11 +1345,14 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(
             self.codex_state.read_text(encoding="utf-8"), PACKAGE_VERSION + "\n"
         )
+        self.assertEqual(self.active_plugin_root(), old_plugin_root)
+        self.assertEqual(self.transaction_records()[-1]["outcome"], "rolled_back")
         self.assertEqual(
             self.activation_calls(),
             [
                 "plugin remove dev-flow-orchestrator@personal",
                 "plugin add dev-flow-orchestrator@personal",
+                "plugin remove dev-flow-orchestrator@personal",
                 "plugin add dev-flow-orchestrator@personal",
             ],
         )
@@ -1062,20 +1363,14 @@ class InstallerBehaviorTests(unittest.TestCase):
         launcher_before = launcher.read_bytes()
         marketplace_before = self.marketplace.read_bytes()
         old_release = self.runtime_releases()[0]
+        old_plugin_root = self.active_plugin_root()
         self.advance_remote_main()
         self.clear_activation_calls()
 
-        result = self.run_installer(
-            {
-                "DEV_FLOW_CODEX_CORRUPT_LAUNCHER": str(launcher),
-                "DEV_FLOW_CODEX_CORRUPT_ONCE_FILE": str(
-                    self.test_root / "candidate-launcher-corrupted-once"
-                ),
-            }
-        )
+        result = self.run_installer({"DEV_FLOW_INSTALL_FAIL_AT": "health"})
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("real installed launcher failed", result.stderr)
+        self.assertIn("Injected installer failure at health", result.stderr)
         self.assertIn("Previous plugin activation was restored", result.stderr)
         self.assertEqual(launcher.read_bytes(), launcher_before)
         self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
@@ -1083,6 +1378,8 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(
             self.codex_state.read_text(encoding="utf-8"), PACKAGE_VERSION + "\n"
         )
+        self.assertEqual(self.active_plugin_root(), old_plugin_root)
+        self.assertEqual(self.transaction_records()[-1]["outcome"], "rolled_back")
         self.assertEqual(
             self.activation_calls(),
             [
@@ -1093,12 +1390,89 @@ class InstallerBehaviorTests(unittest.TestCase):
             ],
         )
 
+    def test_codex_applied_then_nonzero_is_resolved_by_observation(self) -> None:
+        added = self.run_installer(
+            {
+                "DEV_FLOW_CODEX_ADD_EXIT": "23",
+                "DEV_FLOW_CODEX_ADD_APPLY_THEN_EXIT": "1",
+            }
+        )
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertEqual(self.transaction_records()[-1]["outcome"], "committed")
+
+        self.clear_activation_calls()
+        repaired = self.run_installer(
+            {
+                "DEV_FLOW_CODEX_REMOVE_EXIT": "29",
+                "DEV_FLOW_CODEX_REMOVE_APPLY_THEN_EXIT": "1",
+            }
+        )
+        self.assertEqual(repaired.returncode, 0, repaired.stderr)
+        self.assertEqual(
+            self.activation_calls(),
+            [
+                "plugin remove dev-flow-orchestrator@personal",
+                "plugin add dev-flow-orchestrator@personal",
+            ],
+        )
+        self.assertEqual(self.transaction_records()[-1]["outcome"], "committed")
+
+    def test_rollback_preserves_concurrent_unrelated_marketplace_member(self) -> None:
+        self.install_successfully()
+        previous_root = self.active_plugin_root()
+        self.advance_remote_main()
+        unrelated_once = self.test_root / "unrelated-marketplace-added-once"
+
+        result = self.run_installer(
+            {
+                "DEV_FLOW_CODEX_ADD_UNRELATED_ONCE_FILE": str(unrelated_once),
+                "DEV_FLOW_INSTALL_FAIL_AT": "health",
+            }
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.transaction_records()[-1]["outcome"], "rolled_back")
+        self.assertEqual(self.active_plugin_root(), previous_root)
+        plugins = self.marketplace_plugins()
+        self.assertEqual(
+            len(
+                [
+                    item
+                    for item in plugins
+                    if isinstance(item, dict)
+                    and item.get("name") == "concurrent-unrelated"
+                ]
+            ),
+            1,
+        )
+
+    def test_rollback_reactivation_failure_is_truthful_partial(self) -> None:
+        self.install_successfully()
+        self.advance_remote_main()
+
+        result = self.run_installer(
+            {
+                "DEV_FLOW_CODEX_ADD_FAIL_ON_CALL": "3",
+                "DEV_FLOW_CODEX_ADD_FAIL_ON_CALL_EXIT": "31",
+                "DEV_FLOW_INSTALL_FAIL_AT": "health",
+            }
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("Previous plugin activation was restored", result.stderr)
+        self.assertIn("rollback is partial", result.stderr)
+        record = self.transaction_records()[-1]
+        self.assertEqual(record["outcome"], "partial")
+        self.assertIs(record["blind_retry_safe"], False)
+        self.assertEqual(record["components"]["plugin"], "unknown")
+        self.assertGreaterEqual(len(record["retained_paths"]), 2)
+
     def test_plugin_activation_failure_reports_rerun_guidance(self) -> None:
         result = self.run_installer({"DEV_FLOW_CODEX_ADD_EXIT": "17"})
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "Plugin activation failed: Codex rejected the candidate plugin",
+            "Codex rejected the candidate plugin",
             result.stderr,
         )
         self.assertTrue(self.source_root.is_dir())

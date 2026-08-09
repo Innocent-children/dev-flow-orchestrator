@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -206,16 +205,38 @@ class MCPRuntimeTests(unittest.TestCase):
         runtime = resolve_managed_runtime_root(environment=environment)
         self.assertTrue(runtime.endswith("Dev Flow 运行时's"))
         self.assertNotIn("secret-task-data", runtime)
+        managed_release = "/tmp/managed-runtime/releases/r-test"
+        digest = "b" * 64
         receipt = build_runtime_receipt(
+            release_id="r-test",
             source_commit="a" * 40,
-            dependency_lock_digest="b" * 64,
-            launcher_identity="dev-flow-mcp --stdio",
-            runtime_identity=hashlib.sha256(b"releases/test").hexdigest(),
-            activation_action="create",
+            source_tree="c" * 40,
+            wheel_sha256=digest,
+            plugin_path=managed_release + "/plugin",
+            plugin_release_manifest_sha256=digest,
+            dev_flow={
+                "name": "dev-flow-orchestrator", "version": "0.5.0",
+                "metadata_sha256": digest, "record_sha256": digest,
+                "files": [{"path": "venv/lib/site-packages/dev_flow_orchestrator/__init__.py", "sha256": digest}],
+            },
+            dependencies=[{
+                "name": "mcp", "version": "2.0.0",
+                "metadata_sha256": digest, "record_sha256": digest,
+            }],
+            python={
+                "path": managed_release + "/venv/bin/python",
+                "executable_sha256": digest, "version": "3.14.0",
+                "architecture": "test", "bits": 64,
+            },
+            runtime_path=managed_release,
+            launcher_sha256=digest,
+            ownership_manifest_sha256=digest,
+            dependency_lock_sha256=digest,
+            created_at="2026-08-09T00:00:00Z",
         )
         self.assertEqual(validate_runtime_receipt(receipt), receipt)
         self.assertEqual(receipt["schema"], RUNTIME_RECEIPT_SCHEMA)
-        self.assertEqual(receipt["activation_action"], "create")
+        self.assertEqual(receipt["release_id"], "r-test")
         self.assertNotIn("secret-task-data", json.dumps(receipt))
 
         with self.assertRaisesRegex(DevFlowError, "disjoint"):
@@ -225,12 +246,34 @@ class MCPRuntimeTests(unittest.TestCase):
             )
 
     def test_runtime_receipt_rejects_invalid_identity_and_first_excess_file(self) -> None:
+        managed_release = "/tmp/managed-runtime/releases/r-test"
+        digest = "b" * 64
         receipt = build_runtime_receipt(
+            release_id="r-test",
             source_commit="a" * 40,
-            dependency_lock_digest="b" * 64,
-            launcher_identity="dev-flow-mcp --stdio",
-            runtime_identity="c" * 64,
-            activation_action="create",
+            source_tree="c" * 40,
+            wheel_sha256=digest,
+            plugin_path=managed_release + "/plugin",
+            plugin_release_manifest_sha256=digest,
+            dev_flow={
+                "name": "dev-flow-orchestrator", "version": "0.5.0",
+                "metadata_sha256": digest, "record_sha256": digest,
+                "files": [],
+            },
+            dependencies=[{
+                "name": "mcp", "version": "2.0.0",
+                "metadata_sha256": digest, "record_sha256": digest,
+            }],
+            python={
+                "path": managed_release + "/venv/bin/python",
+                "executable_sha256": digest, "version": "3.14.0",
+                "architecture": "test", "bits": 64,
+            },
+            runtime_path=managed_release,
+            launcher_sha256=digest,
+            ownership_manifest_sha256=digest,
+            dependency_lock_sha256=digest,
+            created_at="2026-08-09T00:00:00Z",
         )
         invalid = json.loads(json.dumps(receipt))
         invalid["python"]["version"] = "3.9.99"
@@ -245,6 +288,31 @@ class MCPRuntimeTests(unittest.TestCase):
             path.write_bytes(b" " * (MAX_RUNTIME_RECEIPT_BYTES + 1))
             with self.assertRaisesRegex(DevFlowError, "byte limit"):
                 read_runtime_receipt(path)
+
+    def test_managed_launchers_route_through_stdlib_verifier_before_candidate_import(self) -> None:
+        for name in ("dev_flow_mcp_launcher", "dev_flow_mcp_launcher.cmd"):
+            text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+            self.assertIn("PYTHONDONTWRITEBYTECODE", text)
+            self.assertIn(" -B -I ", text)
+            self.assertIn("__DEV_FLOW_RUNTIME_VERIFIER__", text)
+            self.assertIn("launch-mcp", text)
+            command_lines = [
+                line for line in text.splitlines()
+                if line and not line.lstrip().startswith(("#", "rem "))
+            ]
+            self.assertNotIn("-m dev_flow_orchestrator.mcp", "\n".join(command_lines))
+        helper_tree = ast.parse(
+            (ROOT / "scripts" / "runtime_integrity.py").read_text(encoding="utf-8")
+        )
+        imported = set()
+        for node in ast.walk(helper_tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+        self.assertFalse(
+            any(name == "dev_flow_orchestrator" or name.startswith("dev_flow_orchestrator.") for name in imported)
+        )
 
     def test_read_tools_page_discover_secondary_member_and_isolate_corruption(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
