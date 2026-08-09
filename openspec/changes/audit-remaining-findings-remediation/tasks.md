@@ -10,12 +10,12 @@
 
 ## 2. MCP protocol boundaries
 
-- [ ] 2.1 Convert bounded decoder recursion failures into recoverable invalid messages.
-- [ ] 2.2 Publish compact closed active/terminal current-action schemas.
-- [ ] 2.3 Bridge MCP cancellation and peer close to `GitClient.cancellation`.
-- [ ] 2.4 Preserve request/task/read-after-write context in the outer output guard.
-- [ ] 2.5 Hash one canonical complete observable tool projection.
-- [ ] 2.6 Add raw transport, negative schema, cancellation, uncertainty, and digest tests.
+- [x] 2.1 Convert bounded decoder recursion failures into recoverable invalid messages.
+- [x] 2.2 Publish compact closed active/terminal current-action schemas.
+- [x] 2.3 Bridge MCP cancellation and peer close to `GitClient.cancellation`.
+- [x] 2.4 Preserve request/task/read-after-write context in the outer output guard.
+- [x] 2.5 Hash one canonical complete observable tool projection.
+- [x] 2.6 Add raw transport, negative schema, cancellation, uncertainty, and digest tests.
 
 ## 3. Platform lifecycle and supported mode
 

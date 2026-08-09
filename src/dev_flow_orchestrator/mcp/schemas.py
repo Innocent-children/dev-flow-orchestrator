@@ -129,6 +129,121 @@ def result_schema(tool: str, data_schema: dict[str, Any]) -> dict[str, Any]:
 
 OBJECT: dict[str, Any] = {"type": "object"}
 NULLABLE_OBJECT: dict[str, Any] = {"anyOf": [OBJECT, {"type": "null"}]}
+TASK_AUTHORITY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["task_id", "status", "revision", "current_node", "workflow"],
+    "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "minLength": 1},
+        "revision": {"type": "integer", "minimum": 0},
+        "current_node": {"type": "string", "minLength": 1},
+        "workflow": {"type": "string", "minLength": 1},
+    },
+}
+REPOSITORY_MEMBER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "id", "path", "snapshot_digest", "head", "branch", "clean",
+        "status_sha256", "status_bytes", "object_format", "index_entry_count",
+        "index_output_bytes", "has_unmerged_entries",
+    ],
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "snapshot_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "head": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        "branch": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "clean": {"type": "boolean"},
+        "status_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "status_bytes": {"type": "integer", "minimum": 0},
+        "object_format": {"enum": ["sha1", "sha256"]},
+        "index_entry_count": {"type": "integer", "minimum": 0},
+        "index_output_bytes": {"type": "integer", "minimum": 0},
+        "has_unmerged_entries": {"type": "boolean"},
+    },
+}
+REPOSITORY_AUTHORITY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["repository_set_id", "repositories", "workspace_snapshot_digest"],
+    "properties": {
+        "repository_set_id": {"type": "string", "minLength": 1},
+        "repositories": {
+            "type": "array", "minItems": 1, "maxItems": 8,
+            "items": REPOSITORY_MEMBER_SCHEMA,
+        },
+        "workspace_snapshot_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    },
+}
+BINDING_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "schema", "task_id", "task_revision", "action_id", "node_id",
+        "contract_revision", "contract_digest", "inputs", "source_predecessor",
+        "starting_snapshot_digest", "digest",
+    ],
+    "properties": {
+        "schema": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "task_revision": {"type": "integer", "minimum": 0},
+        "action_id": {"type": "string", "minLength": 1},
+        "node_id": {"type": "string", "minLength": 1},
+        "contract_revision": {"type": "integer", "minimum": 0},
+        "contract_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "inputs": {"type": "array"},
+        "source_predecessor": {},
+        "starting_snapshot_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    },
+}
+ACTION_AUTHORITY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "id", "kind", "payload_schema", "binding", "retry_budget", "driver",
+        "current_obligation", "task_change_slice", "assurance", "review_state",
+        "review_contract", "verification_coverage", "context",
+    ],
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "payload_schema": {"type": "object"},
+        "binding": BINDING_SCHEMA,
+        "retry_budget": {}, "driver": {}, "current_obligation": {},
+        "task_change_slice": {}, "assurance": {}, "review_state": {},
+        "review_contract": {}, "verification_coverage": {},
+        "context": {"type": "object", "minProperties": 1},
+    },
+}
+GUIDANCE_AUTHORITY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "schema", "objective", "must_read", "allowed_effects", "required_evidence",
+        "payload_notes", "driver", "stale_recovery", "completion_rule", "guidance_digest",
+    ],
+    "properties": {
+        "schema": {"type": "string", "minLength": 1},
+        "objective": {"type": "string", "minLength": 1},
+        "must_read": {"type": "array", "minItems": 1},
+        "allowed_effects": {"type": "string", "minLength": 1},
+        "required_evidence": {"type": "array", "minItems": 1},
+        "payload_notes": {"type": "array", "minItems": 1},
+        "driver": {},
+        "stale_recovery": {"type": "string", "minLength": 1},
+        "completion_rule": {"type": "string", "minLength": 1},
+        "guidance_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    },
+}
+TERMINAL_AUTHORITY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["done", "dossier"],
+    "properties": {"done": {"const": True}, "dossier": {}},
+}
 CURRENT_ACTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
@@ -138,19 +253,35 @@ CURRENT_ACTION_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "schema": {"const": "dev-flow-mcp-action/1.0.0"},
-        "task": OBJECT,
+        "task": TASK_AUTHORITY_SCHEMA,
         "contract": OBJECT,
-        "repository_set": OBJECT,
-        "action": NULLABLE_OBJECT,
+        "repository_set": REPOSITORY_AUTHORITY_SCHEMA,
+        "action": {"anyOf": [ACTION_AUTHORITY_SCHEMA, {"type": "null"}]},
         "inputs": {"type": "array"},
         "resources": {"type": "array"},
-        "guidance": OBJECT,
-        "terminal": {},
+        "guidance": GUIDANCE_AUTHORITY_SCHEMA,
+        "terminal": {"anyOf": [TERMINAL_AUTHORITY_SCHEMA, {"type": "null"}]},
         "source_projection_digest": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
         },
     },
+    "oneOf": [
+        {
+            "properties": {
+                "action": ACTION_AUTHORITY_SCHEMA,
+                "terminal": {"type": "null"},
+            },
+            "required": ["action", "terminal"],
+        },
+        {
+            "properties": {
+                "action": {"type": "null"},
+                "terminal": TERMINAL_AUTHORITY_SCHEMA,
+            },
+            "required": ["action", "terminal"],
+        },
+    ],
 }
 WORKSPACE_FRESHNESS_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -247,7 +378,7 @@ MUTATION_RESULT_SCHEMA: dict[str, Any] = {
     "required": ["receipt", "current"],
     "properties": {
         "receipt": PUBLISHED_MUTATION_RECEIPT_SCHEMA,
-        "current": NULLABLE_OBJECT,
+        "current": {"anyOf": [CURRENT_ACTION_SCHEMA, {"type": "null"}]},
     },
 }
 

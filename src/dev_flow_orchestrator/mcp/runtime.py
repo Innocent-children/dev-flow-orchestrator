@@ -22,9 +22,10 @@ from .logging import configure, write_startup_error
 from .server import create_server
 from .catalog import (
     GUIDANCE_CATALOG_DIGEST,
-    TOOL_CATALOG_DIGEST,
     TOOL_NAMES,
     _digest,
+    catalog_digest,
+    canonical_tool_projection,
 )
 from .guidance import GUIDANCE_CATALOG, SERVER_INSTRUCTIONS
 from .schemas import OUTPUT_SCHEMAS
@@ -103,19 +104,20 @@ def startup_self_check() -> None:
         or len(SERVER_INSTRUCTIONS.encode("utf-8")) > 4 * 1024
     ):
         raise DevFlowError("MCP_DEPENDENCY_INVALID", "MCP tool or instruction catalog is invalid")
-    expected_tool_digest = _digest({
-        "names": tuple(sorted(OUTPUT_SCHEMAS)),
-        "output_schemas": OUTPUT_SCHEMAS,
-    })
     expected_guidance_digest = _digest({
         "server_instructions": SERVER_INSTRUCTIONS,
         "catalog": GUIDANCE_CATALOG,
         "independent_review_guidance_digest": INDEPENDENT_REVIEW_GUIDANCE_DIGEST,
     })
-    if (
-        TOOL_CATALOG_DIGEST != expected_tool_digest
-        or GUIDANCE_CATALOG_DIGEST != expected_guidance_digest
-    ):
+    if GUIDANCE_CATALOG_DIGEST != expected_guidance_digest:
+        raise DevFlowError("MCP_DEPENDENCY_INVALID", "MCP catalog digests are invalid")
+    catalog_server = create_server(".")
+    projection = canonical_tool_projection(
+        catalog_server._tool_manager.list_tools(),
+        output_schemas=OUTPUT_SCHEMAS,
+    )
+    expected_tool_digest = catalog_digest(projection)
+    if getattr(catalog_server, "tool_catalog_digest", None) != expected_tool_digest:
         raise DevFlowError("MCP_DEPENDENCY_INVALID", "MCP catalog digests are invalid")
 
 

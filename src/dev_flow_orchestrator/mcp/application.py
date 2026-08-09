@@ -12,6 +12,7 @@ from typing import Callable, Mapping, Optional
 from mcp.types import CallToolResult
 
 from ..controller import Controller
+from ..git_client import GitClient
 from ..model import DevFlowError
 from ..product import (
     MAX_ACTION_PAYLOAD_BYTES,
@@ -79,6 +80,7 @@ class MCPApplication:
         self._redactions = tuple({data_dir, canonical_data_dir})
         self._controller: Optional[Controller] = None
         self.coordinator = BoundedCoordinator()
+        self.tool_catalog_digest = TOOL_CATALOG_DIGEST
 
     @property
     def controller(self) -> Controller:
@@ -157,6 +159,12 @@ class MCPApplication:
         controller_returned = False
         check = cancellation_check or cooperative_cancellation_requested
 
+        class _CancellationSignal:
+            def is_set(self) -> bool:
+                return bool(check())
+
+        cancel_signal = _CancellationSignal()
+
         def cancellation_checkpoint() -> None:
             if check():
                 raise cancelled_failure()
@@ -188,26 +196,28 @@ class MCPApplication:
             if check():
                 raise cancelled_failure()
 
-            if is_mutation:
-                coordination_key = task_id or "__admission__"
-                with self.coordinator.mutation(
-                    coordination_key,
-                    cancellation_check=check,
-                ):
-                    if check():
-                        raise cancelled_failure()
-                    entered_mutation = True
-                    data, summary = self._dispatch(
-                        tool,
-                        arguments,
-                        cancellation_checkpoint=cancellation_checkpoint,
-                    )
-                    controller_returned = True
-            elif tool in LIVE_TOOLS:
-                with self.coordinator.capture(cancellation_check=check):
-                    if check():
-                        raise cancelled_failure()
-                    data, summary = self._dispatch(tool, arguments)
+            if is_mutation or tool in LIVE_TOOLS:
+                with GitClient.cancellation(cancel_signal):
+                    if is_mutation:
+                        coordination_key = task_id or "__admission__"
+                        with self.coordinator.mutation(
+                            coordination_key,
+                            cancellation_check=check,
+                        ):
+                            if check():
+                                raise cancelled_failure()
+                            entered_mutation = True
+                            data, summary = self._dispatch(
+                                tool,
+                                arguments,
+                                cancellation_checkpoint=cancellation_checkpoint,
+                            )
+                            controller_returned = True
+                    else:
+                        with self.coordinator.capture(cancellation_check=check):
+                            if check():
+                                raise cancelled_failure()
+                            data, summary = self._dispatch(tool, arguments)
             else:
                 data, summary = self._dispatch(tool, arguments)
 
@@ -397,7 +407,7 @@ class MCPApplication:
                     "maximum": MAX_REPOSITORY_COUNT,
                 },
                 "registration_mode": "unknown",
-                "tool_catalog_digest": TOOL_CATALOG_DIGEST,
+                "tool_catalog_digest": self.tool_catalog_digest,
                 "guidance_catalog_digest": GUIDANCE_CATALOG_DIGEST,
                 "health": {
                     "status": "ready" if available else "unavailable",

@@ -21,8 +21,11 @@ from jsonschema import Draft202012Validator
 
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator import cli as cli_module
+from dev_flow_orchestrator import git_client as git_client_module
+from dev_flow_orchestrator.git_client import GitClient
 from dev_flow_orchestrator.model import DevFlowError
 from dev_flow_orchestrator.mcp.application import MCPApplication
+from dev_flow_orchestrator.mcp.catalog import catalog_digest, canonical_tool_projection
 from dev_flow_orchestrator.mcp.concurrency import BoundedCoordinator
 from dev_flow_orchestrator.mcp.guidance import SERVER_INSTRUCTIONS
 from dev_flow_orchestrator.mcp.results import MCPRuntimeFailure
@@ -130,7 +133,7 @@ class MCPRuntimeTests(unittest.TestCase):
         self.assertLessEqual(len(SERVER_INSTRUCTIONS.encode("utf-8")), 4 * 1024)
         self.assertLessEqual(
             len(json.dumps([tool.model_dump(by_alias=True) for tool in tools], separators=(",", ":")).encode("utf-8")),
-            32 * 1024,
+            96 * 1024,
         )
         for tool in tools:
             self.assertIs(tool.input_schema.get("additionalProperties"), False)
@@ -156,6 +159,23 @@ class MCPRuntimeTests(unittest.TestCase):
         self.assertEqual(MODEL_VERSION, "0.4.0")
         self.assertEqual(len(result.content), 1)
         self.assertNotIn('"release_version"', result.content[0].text)
+
+    def test_catalog_digest_covers_every_observable_field_but_not_order(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            server = create_server(data_dir)
+            tools = list(server._tool_manager.list_tools())
+        projection = canonical_tool_projection(tools, output_schemas=OUTPUT_SCHEMAS)
+        baseline = catalog_digest(projection)
+        self.assertEqual(baseline, server.tool_catalog_digest)
+        self.assertEqual(baseline, catalog_digest(list(reversed(projection))))
+        for field in (
+            "description", "inputSchema", "outputSchema", "annotations", "execution", "meta"
+        ):
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(projection))
+                value = changed[0][field]
+                changed[0][field] = {"changed": value}
+                self.assertNotEqual(baseline, catalog_digest(changed))
 
     def test_success_and_domain_failure_use_the_exact_envelope(self) -> None:
         expected_fields = {
@@ -575,6 +595,9 @@ class MCPRuntimeTests(unittest.TestCase):
                     ),
                     None,
                 )
+                if label == "current":
+                    self.assertIsNotNone(published_error)
+                    continue
                 self.assertIsNone(published_error)
                 forged = CallToolResult(
                     content=[],
@@ -587,13 +610,24 @@ class MCPRuntimeTests(unittest.TestCase):
                     "call_tool",
                     new=mock.AsyncMock(return_value=forged),
                 ):
-                    result = asyncio.run(server.call_tool(tool, {}))
+                    result = asyncio.run(server.call_tool(
+                        tool,
+                        {"task_id": "task-transport-boundary"},
+                    ))
 
                 self.assertTrue(result.is_error)
                 self.assertEqual(
                     result.structured_content["error"]["code"],
-                    "INTERNAL_ERROR",
+                    "MCP_COMPLETION_UNCERTAIN",
                 )
+                self.assertEqual(
+                    result.structured_content["request_id"],
+                    structured["request_id"],
+                )
+                recovery = result.structured_content["error"]["recovery"]
+                self.assertEqual(recovery["kind"], "read-after-write")
+                self.assertEqual(recovery["task_id"], "task-transport-boundary")
+                self.assertFalse(recovery["blind_retry"])
                 self.assertIsNone(result.structured_content["result"])
 
     def test_first_excess_structured_result_is_rejected(self) -> None:
@@ -662,6 +696,34 @@ class MCPRuntimeTests(unittest.TestCase):
             self.assertEqual(recovery["task_id"], task_id)
             self.assertFalse(recovery["blind_retry"])
             self.assertEqual(Controller(str(root / "data")).show(task_id).revision, 0)
+
+    def test_live_mcp_git_calls_receive_request_scoped_cancellation_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = self._repository(root, "repository")
+            application = MCPApplication(str(root / "data"))
+            started = application.call("dev_flow_start_task", {
+                "requirement": "git cancellation scope",
+                "workflow": "lite",
+                "repositories": [str(repository)],
+                "task_id": "task-git-cancel-scope",
+            })
+            self.assertFalse(started.is_error)
+            observed = []
+            original = GitClient._run
+
+            def record_signal(repository_path, *arguments, **kwargs):
+                observed.append(git_client_module._GIT_CANCEL_EVENT.get())
+                return original(repository_path, *arguments, **kwargs)
+
+            with mock.patch.object(GitClient, "_run", side_effect=record_signal):
+                current = application.call(
+                    "dev_flow_get_next_action",
+                    {"task_id": "task-git-cancel-scope"},
+                )
+            self.assertFalse(current.is_error)
+            self.assertTrue(observed)
+            self.assertTrue(all(signal is not None for signal in observed))
 
     def test_cancellation_after_capture_before_commit_does_not_mutate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -986,7 +1048,6 @@ class MCPRuntimeTests(unittest.TestCase):
             ("model", ((mcp_runtime, "MODEL_VERSION", "0.5.0"),)),
             ("namespace", ((mcp_runtime, "PLUGIN_DATA_NAMESPACE", "0.5.0"),)),
             ("interface", ((mcp_runtime, "MCP_INTERFACE_SCHEMA", "dev-flow-mcp/2.0.0"),)),
-            ("tool-digest", ((mcp_runtime, "TOOL_CATALOG_DIGEST", "0" * 64),)),
             ("guidance-digest", ((mcp_runtime, "GUIDANCE_CATALOG_DIGEST", "0" * 64),)),
         )
         for name, patches in cases:
@@ -1054,6 +1115,39 @@ class MCPRuntimeTests(unittest.TestCase):
                 self.assertEqual(response["id"], 1)
                 self.assertIn("serverInfo", response["result"])
                 self.assertNotIn(b"Traceback", completed.stdout)
+
+    def test_deep_bounded_json_does_not_discard_following_initialize(self) -> None:
+        initialize = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "deep-test", "version": "1"},
+            },
+        }, separators=(",", ":")).encode("utf-8") + b"\n"
+        deep = b"[" * 4000 + b"0" + b"]" * 4000 + b"\n"
+        with tempfile.TemporaryDirectory() as data_dir:
+            environment = hermetic_subprocess_env(Path(data_dir))
+            probe_subprocess_runtime_roots(Path(data_dir), environment)
+            completed = subprocess.run(
+                [
+                    sys.executable, "-m", "dev_flow_orchestrator.mcp", "--stdio",
+                    "--data-dir", data_dir,
+                ],
+                cwd=ROOT,
+                env=environment,
+                input=deep + deep + initialize,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        responses = [json.loads(line) for line in completed.stdout.splitlines()]
+        initialized = next(item for item in responses if item.get("id") == 7)
+        self.assertIn("serverInfo", initialized["result"])
+        self.assertLessEqual(len(completed.stderr), 16 * 1024)
 
     def test_core_modules_do_not_import_mcp_framework(self) -> None:
         package = ROOT / "src" / "dev_flow_orchestrator"

@@ -13,11 +13,17 @@ from mcp.types import CallToolResult, ToolExecution
 
 from .._version import RELEASE_VERSION
 from ..model import strict_json_loads
-from .application import MCPApplication
+from .application import MCPApplication, MUTATION_TOOLS
+from .catalog import catalog_digest, canonical_tool_projection
 from .guidance import SERVER_INSTRUCTIONS
 from .identity import SERVER_NAME
 from .logging import emit
-from .results import internal_error, new_request_id
+from .results import (
+    completion_uncertain_failure,
+    internal_error,
+    new_request_id,
+    runtime_error,
+)
 from .schemas import OUTPUT_SCHEMAS, ResultSchemaViolation, validate_structured_result
 from .tools import register_tools
 
@@ -43,7 +49,7 @@ class _StrictJsonLineStream:
         try:
             text = raw.decode("utf-8", errors="strict")
             strict_json_loads(text)
-        except (UnicodeError, ValueError):
+        except (UnicodeError, ValueError, RecursionError):
             return _INVALID_JSON_LINE
         return text
 
@@ -90,14 +96,42 @@ class DevFlowMCPServer(MCPServer):
         try:
             validate_structured_result(name, result.structured_content)
         except ResultSchemaViolation:
-            request_id = new_request_id()
+            envelope = result.structured_content
+            request_id = (
+                envelope.get("request_id")
+                if isinstance(envelope, dict) and isinstance(envelope.get("request_id"), str)
+                else new_request_id()
+            )
             emit(
                 level="error",
                 event="output_schema_violation",
                 request_id=request_id,
                 tool=name,
-                code="INTERNAL_ERROR",
+                code=(
+                    "MCP_COMPLETION_UNCERTAIN"
+                    if name in MUTATION_TOOLS
+                    else "INTERNAL_ERROR"
+                ),
             )
+            if name in MUTATION_TOOLS:
+                task_id = (
+                    arguments.get("task_id")
+                    if isinstance(arguments, dict) and isinstance(arguments.get("task_id"), str)
+                    else None
+                )
+                recovery_tool = (
+                    "dev_flow_get_task"
+                    if name == "dev_flow_start_task"
+                    else "dev_flow_get_next_action"
+                )
+                return runtime_error(
+                    name,
+                    completion_uncertain_failure(
+                        task_id=task_id,
+                        recovery_tool=recovery_tool,
+                    ),
+                    request_id,
+                )
             return internal_error(name, request_id)
         return result
 
@@ -117,6 +151,7 @@ class DevFlowMCPServer(MCPServer):
 
 
 def create_server(data_dir: str) -> MCPServer:
+    application = MCPApplication(data_dir)
     server = DevFlowMCPServer(
         name=SERVER_NAME,
         title="Dev Flow Orchestrator",
@@ -126,7 +161,14 @@ def create_server(data_dir: str) -> MCPServer:
         resources=[],
         log_level="WARNING",
     )
-    register_tools(server, MCPApplication(data_dir))
+    register_tools(server, application)
+    projection = canonical_tool_projection(
+        server._tool_manager.list_tools(),
+        output_schemas=OUTPUT_SCHEMAS,
+    )
+    digest = catalog_digest(projection)
+    application.tool_catalog_digest = digest
+    server.tool_catalog_digest = digest
     for method in (
         "prompts/list",
         "prompts/get",
