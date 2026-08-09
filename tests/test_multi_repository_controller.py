@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -28,7 +27,11 @@ from dev_flow_orchestrator.product import (
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     VERIFICATION_COVERAGE_SCHEMA,
 )
-from support import make_repository
+from support import (
+    hermetic_subprocess_env,
+    make_repository,
+    probe_subprocess_runtime_roots,
+)
 
 
 class CountingGitClient:
@@ -133,6 +136,11 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         }
 
     def test_repeated_cli_repo_and_one_member_python_call_share_one_model(self) -> None:
+        environment = hermetic_subprocess_env(
+            self.root,
+            overrides={"PYTHONPATH": str(SRC)},
+        )
+        probe_subprocess_runtime_roots(self.root, environment)
         completed = subprocess.run(
             [
                 sys.executable,
@@ -154,7 +162,7 @@ class MultiRepositoryControllerTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
-            env={**os.environ, "PYTHONPATH": str(SRC)},
+            env=environment,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         task = json.loads(completed.stdout)["task"]
@@ -243,6 +251,7 @@ class MultiRepositoryControllerTests(unittest.TestCase):
                 "linked-test-branch",
                 str(linked),
             ],
+            env=hermetic_subprocess_env(self.root),
             check=True,
         )
         with self.assertRaises(DevFlowError) as shared:
@@ -332,7 +341,7 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         matches = self.controller.tasks_for_path(str(nested))
         self.assertEqual([item.task_id for item in matches], [state.task_id])
 
-    def test_every_cardinality_uses_two_complete_capture_passes(self) -> None:
+    def test_reads_use_two_passes_and_mutations_use_three_complete_captures(self) -> None:
         one_member_git = CountingGitClient()
         one_member_controller = Controller(
             str(self.root / "single-data"),
@@ -367,7 +376,7 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         self.assertEqual(projection["schema"], AGENT_PROTOCOL_SCHEMA)
         self.assertEqual(
             [path for path, _ in multi_git.calls],
-            expected_order + expected_order,
+            expected_order * 2,
         )
 
         binding = projection["action"]["binding"]
@@ -381,7 +390,7 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         self.assertEqual(applied["receipt"]["committed_revision"], 1)
         self.assertEqual(
             [path for path, _ in multi_git.calls],
-            expected_order + expected_order,
+            expected_order * 6,
         )
 
         current = multi.show(state.task_id)
@@ -398,7 +407,7 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         self.assertEqual(revised["receipt"]["committed_revision"], 2)
         self.assertEqual(
             [path for path, _ in multi_git.calls],
-            expected_order + expected_order,
+            expected_order * 6,
         )
 
         cancel_git = CountingGitClient()
@@ -418,7 +427,7 @@ class MultiRepositoryControllerTests(unittest.TestCase):
         self.assertEqual(cancelled["receipt"]["status"], "CANCELLED")
         self.assertEqual(
             [path for path, _ in cancel_git.calls],
-            cancel_order + cancel_order + cancel_order + cancel_order,
+            cancel_order * 6,
         )
 
     def test_multi_repository_verification_and_dossier_remain_aggregate(self) -> None:
@@ -541,6 +550,8 @@ class MultiRepositoryControllerTests(unittest.TestCase):
             unavailable_view["snapshot_error"]["details"],
         )
 
+        environment = hermetic_subprocess_env(self.root)
+        probe_subprocess_runtime_roots(self.root, environment)
         shown = subprocess.run(
             [
                 sys.executable,
@@ -555,6 +566,7 @@ class MultiRepositoryControllerTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            env=environment,
         )
         self.assertEqual(shown.returncode, 0, shown.stderr)
         shown_task = json.loads(shown.stdout)["task"]

@@ -1779,10 +1779,10 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         task_id = self.start_lite()
         self.preflight(task_id)
         racing = Controller(self.data_dir)
-        original_update = self.controller.store.update
+        original_commit = self.controller.store.commit_repository_mutation
         raced = False
 
-        def update_after_competing_decision(candidate_task_id, expected_revision, mutation):
+        def commit_after_competing_decision(*args, **kwargs):
             nonlocal raced
             if not raced:
                 raced = True
@@ -1790,9 +1790,11 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                     task_id,
                     decision=self.decision("race-winner", subject="scope-race"),
                 )
-            return original_update(candidate_task_id, expected_revision, mutation)
+            return original_commit(*args, **kwargs)
 
-        self.controller.store.update = update_after_competing_decision
+        self.controller.store.commit_repository_mutation = (
+            commit_after_competing_decision
+        )
         try:
             with self.assertRaises(DevFlowError) as caught:
                 self.controller.revise_contract(
@@ -1802,7 +1804,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                     actor_label="maintainer",
                 )
         finally:
-            self.controller.store.update = original_update
+            self.controller.store.commit_repository_mutation = original_commit
         self.assertEqual(caught.exception.code, "REVISION_CONFLICT")
         self.assertEqual(caught.exception.details["projection"]["revision"], 3)
         state = self.controller.show(task_id)

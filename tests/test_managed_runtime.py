@@ -10,47 +10,58 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
+sys.path.insert(0, str(TESTS))
 
 from dev_flow_orchestrator.product import WORKFLOW_IDS
 from dev_flow_orchestrator.workflows import load_definition
 from scripts import manage_runtime
+from support import hermetic_subprocess_env, probe_subprocess_runtime_roots
 
 
 class ManagedRuntimeTests(unittest.TestCase):
     def test_real_locked_runtime_create_receipt_smoke_and_reuse(self) -> None:
         if shutil.which("uv") is None:
             self.skipTest("uv is required for managed-runtime integration")
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        status_before = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
         with tempfile.TemporaryDirectory(prefix="dev-flow-managed-runtime-") as temporary:
             base = Path(temporary)
+            environment = hermetic_subprocess_env(base)
+            roots = probe_subprocess_runtime_roots(base, environment)
+            self.assertTrue(roots["data"].is_relative_to(base.resolve()))
+            self.assertTrue(roots["runtime"].is_relative_to(base.resolve()))
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            status_before = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
             runtime_root = base / "runtime with spaces 雪's"
             data_root = base / "task data"
             data_root.mkdir()
             sentinel = data_root / "existing-task-bytes"
             sentinel.write_bytes(b"unchanged\n")
 
-            created = manage_runtime.build(ROOT, runtime_root, commit, data_root)
-            reused = manage_runtime.build(ROOT, runtime_root, commit, data_root)
+            with mock.patch.dict(os.environ, environment, clear=True):
+                created = manage_runtime.build(ROOT, runtime_root, commit, data_root)
+                reused = manage_runtime.build(ROOT, runtime_root, commit, data_root)
 
             self.assertTrue(created["ok"])
             self.assertFalse(created["reused"])
@@ -64,17 +75,19 @@ class ManagedRuntimeTests(unittest.TestCase):
             self.assertNotIn(str(data_root), json.dumps(created["receipt"]))
             moved_root = base / "moved runtime"
             runtime_root.rename(moved_root)
-            with self.assertRaises(manage_runtime.RuntimeBuildError) as moved:
-                manage_runtime.build(ROOT, moved_root, commit, data_root)
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with self.assertRaises(manage_runtime.RuntimeBuildError) as moved:
+                    manage_runtime.build(ROOT, moved_root, commit, data_root)
             self.assertIn("unverified prior release", str(moved.exception))
-        status_after = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        self.assertEqual(status_after, status_before)
+            status_after = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertEqual(status_after, status_before)
 
     def test_existing_unmarked_runtime_root_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="dev-flow-unowned-runtime-") as temporary:
@@ -82,8 +95,10 @@ class ManagedRuntimeTests(unittest.TestCase):
             runtime_root.mkdir()
             sentinel = runtime_root / "user-owned"
             sentinel.write_bytes(b"preserve\n")
-            with self.assertRaises(manage_runtime.RuntimeBuildError) as context:
-                manage_runtime.build(ROOT, runtime_root, "a" * 40, None)
+            environment = hermetic_subprocess_env(Path(temporary))
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with self.assertRaises(manage_runtime.RuntimeBuildError) as context:
+                    manage_runtime.build(ROOT, runtime_root, "a" * 40, None)
             self.assertIn("ownership marker", str(context.exception))
             self.assertEqual(sentinel.read_bytes(), b"preserve\n")
             self.assertFalse((runtime_root / manage_runtime.ROOT_MARKER).exists())
@@ -96,8 +111,10 @@ class ManagedRuntimeTests(unittest.TestCase):
             target.mkdir()
             selected = base / "selected"
             selected.symlink_to(target, target_is_directory=True)
-            with self.assertRaises(manage_runtime.RuntimeBuildError) as context:
-                manage_runtime.build(ROOT, selected, "a" * 40, None)
+            environment = hermetic_subprocess_env(base)
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with self.assertRaises(manage_runtime.RuntimeBuildError) as context:
+                    manage_runtime.build(ROOT, selected, "a" * 40, None)
             self.assertIn("symbolic link", str(context.exception))
             self.assertEqual(tuple(target.iterdir()), ())
 
@@ -108,10 +125,15 @@ class ManagedRuntimeTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory(prefix="dev-flow-wheel-assets-") as temporary:
             root = Path(temporary)
+            environment = hermetic_subprocess_env(root)
+            roots = probe_subprocess_runtime_roots(root, environment)
+            self.assertTrue(roots["data"].is_relative_to(root.resolve()))
+            self.assertTrue(roots["runtime"].is_relative_to(root.resolve()))
             wheel_dir = root / "dist"
             completed = subprocess.run(
                 ["uv", "build", "--wheel", "--out-dir", str(wheel_dir)],
                 cwd=ROOT,
+                env=environment,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -144,6 +166,7 @@ print(json.dumps({
             probed = subprocess.run(
                 [sys.executable, "-I", "-S", "-c", code, str(extracted)],
                 cwd=root,
+                env=environment,
                 capture_output=True,
                 text=True,
                 check=False,

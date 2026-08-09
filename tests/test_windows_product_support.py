@@ -38,16 +38,38 @@ class WindowsProductSupportTests(unittest.TestCase):
             self.assertIn(token, install)
         for token in (
             "[switch]$KeepSource",
-            "status', '--ignored', '--porcelain",
-            "--remotes=origin",
             "[IO.File]::Replace",
             "codex plugin remove",
+            "OUTCOME        partial",
+            "SOURCE PATH",
+            "no verifiable exact-ownership manifest",
+            "MANUAL ACTION",
+            "independently confirm ownership",
             "TASK DATA",
             "preserved",
             ".dev-flow-managed-runtime",
             "dev-flow-mcp.cmd",
         ):
             self.assertIn(token, uninstall)
+
+    def test_powershell_source_containment_is_target_precise(self) -> None:
+        uninstall = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
+        self.assertEqual(
+            [
+                line
+                for line in uninstall.splitlines()
+                if "Remove-Item" in line and "$SourceRoot" in line
+            ],
+            [],
+        )
+        self.assertNotIn("$RemoveSource", uninstall)
+        self.assertNotIn("[switch]$RemoveSource", uninstall)
+        self.assertNotIn("status', '--ignored', '--porcelain", uninstall)
+        self.assertNotIn("--remotes=origin", uninstall)
+        self.assertIn(
+            "Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force",
+            uninstall,
+        )
 
     def test_windows_installer_builds_native_managed_launcher(self) -> None:
         install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")

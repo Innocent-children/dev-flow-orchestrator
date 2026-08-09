@@ -10,11 +10,10 @@ $ErrorActionPreference = 'Stop'
 if ($Help) {
     Write-Output 'Usage: .\uninstall.ps1 [-KeepSource] [-Help]'
     Write-Output 'Removes the plugin and marketplace entry; external Controller task data is always preserved.'
+    Write-Output 'The source checkout is always retained; -KeepSource remains accepted for compatibility.'
     exit 0
 }
 
-$DefaultRepositoryUrl = 'https://github.com/Innocent-children/dev-flow-orchestrator.git'
-$RepositoryUrl = if ($env:DEV_FLOW_REPOSITORY_URL) { $env:DEV_FLOW_REPOSITORY_URL } else { $DefaultRepositoryUrl }
 $SourceRoot = [IO.Path]::GetFullPath($(if ($env:DEV_FLOW_SOURCE_ROOT) { $env:DEV_FLOW_SOURCE_ROOT } else { Join-Path $env:USERPROFILE 'plugins\dev-flow-orchestrator' }))
 $MarketplaceFile = [IO.Path]::GetFullPath($(if ($env:DEV_FLOW_MARKETPLACE_FILE) { $env:DEV_FLOW_MARKETPLACE_FILE } else { Join-Path $env:USERPROFILE '.agents\plugins\marketplace.json' }))
 $CodexRoot = [IO.Path]::GetFullPath($(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }))
@@ -120,7 +119,6 @@ function Get-ExplicitOwnedMcpRegistrationNames([string]$ConfigPath, [string]$Own
 
 if ($env:OS -ne 'Windows_NT') { Fail 'This uninstaller requires a supported Windows x64 client.' }
 if (-not [Environment]::Is64BitProcess -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { Fail 'This uninstaller requires an x64 process on Windows x64.' }
-if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { Fail 'Git for Windows is required.' }
 if (-not (Get-Command codex -ErrorAction SilentlyContinue)) { Fail 'Codex with plugin support is required.' }
 $BinDirectory = Find-BinDirectory
 $McpLauncherPath = Join-Path $BinDirectory 'dev-flow-mcp.cmd'
@@ -141,10 +139,10 @@ if ($RuntimePresent) {
     }
     $Releases = Join-Path $RuntimeRoot 'releases'
     if (-not (Test-Path -LiteralPath $Releases -PathType Container) -or ((Get-Item -LiteralPath $Releases -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        Fail "$RuntimeRoot has no safe receipt-owned releases directory."
+        Fail "$RuntimeRoot has no receipt-validated releases directory."
     }
     $ReleaseDirectories = @(Get-ChildItem -LiteralPath $Releases -Directory -Force)
-    if ($ReleaseDirectories.Count -eq 0) { Fail "$RuntimeRoot has no receipt-owned release." }
+    if ($ReleaseDirectories.Count -eq 0) { Fail "$RuntimeRoot has no receipt-validated release." }
     foreach ($Release in $ReleaseDirectories) {
         if ($Release.Attributes -band [IO.FileAttributes]::ReparsePoint) { Fail "$($Release.FullName) is a reparse point." }
         $ReceiptPath = Join-Path $Release.FullName 'runtime-receipt.json'
@@ -227,24 +225,6 @@ if ($PluginBundledActive) {
     Fail "Standalone Dev Flow MCP registration(s) $Names still target the launcher/runtime selected for removal; remove them explicitly with codex mcp first."
 }
 
-$RemoveSource = -not $KeepSource
-if ($RemoveSource -and (Test-Path -LiteralPath $SourceRoot)) {
-    if ((Get-Item -LiteralPath $SourceRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { Fail "$SourceRoot is a reparse point; preserve it for manual handling." }
-    if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot '.git') -PathType Container)) { Fail "$SourceRoot is not the expected Git checkout." }
-    $MarketplaceRoot = [IO.Path]::GetFullPath((Join-Path $MarketplaceDirectory '..\..'))
-    if (-not $SourceRoot.StartsWith($MarketplaceRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { Fail "$SourceRoot is outside marketplace root $MarketplaceRoot." }
-    try { $Manifest = Get-Content -LiteralPath (Join-Path $SourceRoot '.codex-plugin\plugin.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Fail 'Cannot validate the source manifest.' }
-    if ($Manifest.name -ne 'dev-flow-orchestrator') { Fail "$SourceRoot is not Dev Flow plugin source." }
-    $Origin = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'remote', 'get-url', 'origin') 'Cannot inspect source origin.'
-    $Allowed = if ($env:DEV_FLOW_REPOSITORY_URL) { $Origin -eq $RepositoryUrl } else { $Origin -in @($DefaultRepositoryUrl, 'git@github.com:Innocent-children/dev-flow-orchestrator.git') }
-    if (-not $Allowed) { Fail "$SourceRoot has unexpected origin '$Origin'." }
-    $Branch = Capture-Checked 'git.exe' @('-C', $SourceRoot, 'symbolic-ref', '--quiet', '--short', 'HEAD') 'Source must have an attached branch.'
-    if ($Branch -ne 'main') { Fail "$SourceRoot is on '$Branch', expected main." }
-    if (Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--porcelain') 'Cannot inspect source changes.') { Fail "$SourceRoot has local changes." }
-    if (Capture-Checked 'git.exe' @('-C', $SourceRoot, 'status', '--ignored', '--porcelain') 'Cannot inspect ignored source paths.') { Fail "$SourceRoot contains ignored paths." }
-    if ((Capture-Checked 'git.exe' @('-C', $SourceRoot, 'rev-list', '--count', '--all', '--not', '--remotes=origin') 'Cannot inspect local-only history.') -ne '0') { Fail "$SourceRoot contains local-only commits." }
-}
-
 $PluginAction = 'already absent'
 if ($Installed.Count -eq 1) {
     & codex plugin remove $PluginId
@@ -274,18 +254,21 @@ if ($MarketplaceHasEntry) {
     $MarketplaceAction = 'entry removed'
 }
 
-$SourceAction = 'already absent'
+$SourceAction = 'already absent (no deletion attempted)'
 if (Test-Path -LiteralPath $SourceRoot) {
-    if ($KeepSource) { $SourceAction = 'preserved (-KeepSource)' }
-    else { Remove-Item -LiteralPath $SourceRoot -Recurse -Force; $SourceAction = 'removed' }
+    $SourceAction = 'retained (destructive removal disabled)'
 }
 
 Write-Output ''
 Write-Output 'DEV FLOW ORCHESTRATOR // UNINSTALL RECEIPT'
+Write-Output 'OUTCOME        partial'
 Write-Output "PLUGIN         $PluginAction"
 Write-Output "MARKETPLACE    $MarketplaceAction"
 Write-Output "SOURCE         $SourceAction"
+Write-Output "SOURCE PATH    $SourceRoot"
+Write-Output 'SOURCE REASON  destructive removal disabled: no verifiable exact-ownership manifest'
 Write-Output "MCP COMMAND    $McpLauncherAction"
 Write-Output "MCP RUNTIME    $RuntimeAction"
 Write-Output 'STANDALONE     preserved / no owned registration removed'
 Write-Output 'TASK DATA      preserved (external Controller data was not changed)'
+Write-Output 'MANUAL ACTION  Inspect and back up the retained source checkout, then independently confirm ownership before any manual action.'

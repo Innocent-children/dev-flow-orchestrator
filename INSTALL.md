@@ -182,7 +182,8 @@ macOS:
 sh "$HOME/plugins/dev-flow-orchestrator/scripts/uninstall.sh"
 ```
 
-Preserve the source checkout:
+The source checkout is preserved by both forms. `--keep-source` remains accepted
+for compatibility and makes that intent explicit:
 
 ```sh
 sh "$HOME/plugins/dev-flow-orchestrator/scripts/uninstall.sh" --keep-source
@@ -198,11 +199,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$HOME\plugins\dev-flow-orchestrator\scripts\uninstall.ps1" -KeepSource
 ```
 
-The uninstallers remove only the Dev Flow plugin entry, owned launcher, and a
-marker-validated managed runtime. They fail closed on ownership uncertainty.
-Task data and unrelated MCP/plugin configuration are preserved. Source deletion
-requires the expected manifest, official origin, attached `main`, clean and
-ignored-clean worktree, and no local-only commits.
+The uninstallers may remove the Dev Flow plugin entry, owned launchers, personal
+marketplace entry, and the managed runtime under their existing component checks.
+They report each component separately and return an explicit `partial` outcome
+because the source checkout is retained. This does not establish exact ownership
+or independent safety for runtime removal; DFO-AUDIT-010 remains open.
+
+Destructive source removal is disabled because installations do not yet have a
+verifiable, receipt-bound exact-ownership manifest. The receipt names the lexical
+absolute retained source path and preserves Controller task data and unrelated
+marketplace/MCP/plugin configuration. Before any manual action, inspect and back up
+the checkout and independently confirm ownership. `--keep-source` and
+`-KeepSource` have the same source-retention behavior as the default invocation.
 
 ## 11. Troubleshooting
 

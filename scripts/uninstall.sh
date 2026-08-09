@@ -1,9 +1,6 @@
 #!/bin/sh
 set -eu
 
-DEFAULT_REPOSITORY_URL="https://github.com/Innocent-children/dev-flow-orchestrator.git"
-REPOSITORY_URL="${DEV_FLOW_REPOSITORY_URL:-$DEFAULT_REPOSITORY_URL}"
-REPOSITORY_REF="main"
 SOURCE_ROOT="${DEV_FLOW_SOURCE_ROOT:-$HOME/plugins/dev-flow-orchestrator}"
 MARKETPLACE_FILE="${DEV_FLOW_MARKETPLACE_FILE:-$HOME/.agents/plugins/marketplace.json}"
 CODEX_ROOT="${CODEX_HOME:-$HOME/.codex}"
@@ -40,13 +37,13 @@ MCP_LAUNCHER_PATH="$BIN_DIR/dev-flow-mcp"
 PLUGIN_ID="dev-flow-orchestrator@personal"
 LAUNCHER_MARKER="# dev-flow-orchestrator managed launcher"
 MCP_LAUNCHER_MARKER="# dev-flow-orchestrator managed MCP launcher"
-REMOVE_SOURCE=1
 
 usage() {
   printf 'Usage: uninstall.sh [--keep-source]\n'
   printf '\n'
   printf 'Removes the Codex plugin and its personal marketplace entry.\n'
-  printf 'The clean installer-managed source checkout is removed by default.\n'
+  printf 'The source checkout is always retained while exact ownership is unavailable.\n'
+  printf '%s\n' '--keep-source remains accepted for compatibility and has the same behavior.'
   printf 'External Dev Flow task data is always preserved.\n'
 }
 
@@ -58,7 +55,7 @@ fail() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --keep-source)
-      REMOVE_SOURCE=0
+      :
       ;;
     -h|--help)
       usage
@@ -71,7 +68,6 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-command -v git >/dev/null 2>&1 || fail "Git is required."
 command -v codex >/dev/null 2>&1 || fail "Codex with plugin support is required."
 
 if command -v python3 >/dev/null 2>&1; then
@@ -81,6 +77,14 @@ elif command -v python >/dev/null 2>&1; then
 else
   fail "Python 3.10-3.14 is required."
 fi
+
+SOURCE_ROOT="$(
+  DEV_FLOW_SOURCE_ROOT_VALUE="$SOURCE_ROOT" "$PYTHON" -I -S -c '
+import os
+
+print(os.path.abspath(os.path.expanduser(os.environ["DEV_FLOW_SOURCE_ROOT_VALUE"])))
+'
+)" || fail "Cannot determine the lexical absolute source path."
 
 LAUNCHER_STATE="already absent"
 if [ -e "$LAUNCHER_PATH" ] || [ -L "$LAUNCHER_PATH" ]; then
@@ -119,7 +123,7 @@ if not releases.is_dir() or releases.is_symlink():
     raise SystemExit("managed runtime releases directory is missing or unsafe")
 release_dirs = sorted(releases.iterdir())
 if not release_dirs:
-    raise SystemExit("managed runtime has no receipt-owned release")
+    raise SystemExit("managed runtime has no receipt-validated release")
 
 def sha256(path):
     digest = hashlib.sha256()
@@ -413,81 +417,6 @@ elif owned_rows:
     )
 ' || fail "Bundled or standalone Dev Flow MCP registration state is unsafe; preserve it and resolve it before uninstalling."
 
-SOURCE_STATE="absent"
-if [ -e "$SOURCE_ROOT" ]; then
-  SOURCE_STATE="present"
-  if [ "$REMOVE_SOURCE" = "1" ]; then
-  [ ! -L "$SOURCE_ROOT" ] \
-    || fail "$SOURCE_ROOT is a symbolic link; preserve and remove it manually."
-  [ -d "$SOURCE_ROOT/.git" ] \
-    || fail "$SOURCE_ROOT is not the expected Git checkout."
-
-  CANONICAL_SOURCE="$(
-    DEV_FLOW_MARKETPLACE_FILE="$MARKETPLACE_FILE" \
-    DEV_FLOW_SOURCE_ROOT="$SOURCE_ROOT" \
-    "$PYTHON" -I -S -c '
-import json
-import os
-from pathlib import Path
-
-marketplace_path = Path(os.environ["DEV_FLOW_MARKETPLACE_FILE"]).expanduser().resolve()
-marketplace_root = marketplace_path.parent.parent.parent
-source_root = Path(os.environ["DEV_FLOW_SOURCE_ROOT"]).expanduser().resolve()
-try:
-    relative = source_root.relative_to(marketplace_root)
-except ValueError:
-    raise SystemExit(
-        f"{source_root} must be inside marketplace root {marketplace_root}"
-    ) from None
-if not relative.parts or source_root == marketplace_root:
-    raise SystemExit("refusing to remove the marketplace root")
-manifest_path = source_root / ".codex-plugin" / "plugin.json"
-try:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-except (OSError, json.JSONDecodeError) as error:
-    raise SystemExit(f"Cannot read {manifest_path}: {error}")
-if manifest.get("name") != "dev-flow-orchestrator":
-    raise SystemExit(f"{source_root} is not the Dev Flow plugin source")
-print(source_root)
-'
-  )" || fail "Cannot validate the source removal target."
-  SOURCE_ROOT="$CANONICAL_SOURCE"
-
-  EXISTING_REMOTE="$(git -C "$SOURCE_ROOT" remote get-url origin 2>/dev/null || true)"
-  if [ "${DEV_FLOW_REPOSITORY_URL+x}" = "x" ]; then
-    [ "$EXISTING_REMOTE" = "$REPOSITORY_URL" ] \
-      || fail "$SOURCE_ROOT origin is '$EXISTING_REMOTE', expected '$REPOSITORY_URL'."
-  else
-    case "$EXISTING_REMOTE" in
-      "$DEFAULT_REPOSITORY_URL"|git@github.com:Innocent-children/dev-flow-orchestrator.git)
-        ;;
-      *)
-        fail "$SOURCE_ROOT origin is '$EXISTING_REMOTE', not an official Dev Flow repository URL."
-        ;;
-    esac
-  fi
-
-  CURRENT_BRANCH="$(git -C "$SOURCE_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-  [ "$CURRENT_BRANCH" = "$REPOSITORY_REF" ] \
-    || fail "$SOURCE_ROOT is on '${CURRENT_BRANCH:-a detached HEAD}', expected branch '$REPOSITORY_REF'."
-
-  SOURCE_STATUS="$(git -C "$SOURCE_ROOT" status --porcelain 2>/dev/null)" \
-    || fail "Cannot inspect the working tree at $SOURCE_ROOT."
-  [ -z "$SOURCE_STATUS" ] \
-    || fail "$SOURCE_ROOT has local changes; preserve them before uninstalling."
-
-  IGNORED_STATUS="$(git -C "$SOURCE_ROOT" status --ignored --porcelain 2>/dev/null)" \
-    || fail "Cannot inspect ignored paths at $SOURCE_ROOT."
-  [ -z "$IGNORED_STATUS" ] \
-    || fail "$SOURCE_ROOT contains ignored paths; preserve or remove them manually before uninstalling."
-
-  LOCAL_ONLY_COUNT="$(git -C "$SOURCE_ROOT" rev-list --count --all --not --remotes=origin 2>/dev/null)" \
-    || fail "Cannot inspect local-only Git history at $SOURCE_ROOT."
-  [ "$LOCAL_ONLY_COUNT" = "0" ] \
-    || fail "$SOURCE_ROOT contains commits that are not present on origin; preserve them before uninstalling."
-  fi
-fi
-
 PLUGIN_ACTION="already absent"
 if [ "$PLUGIN_STATE" = "installed-active" ] || [ "$PLUGIN_STATE" = "installed-inactive" ]; then
   printf 'Removing the Codex plugin...\n'
@@ -550,17 +479,9 @@ temporary.replace(path)
   MARKETPLACE_ACTION="entry removed"
 fi
 
-SOURCE_ACTION="already absent"
-if [ "$SOURCE_STATE" = "present" ]; then
-  if [ "$REMOVE_SOURCE" = "1" ]; then
-    printf 'Removing the validated source checkout...\n'
-    rm -rf -- "$SOURCE_ROOT"
-    [ ! -e "$SOURCE_ROOT" ] \
-      || fail "Could not completely remove $SOURCE_ROOT."
-    SOURCE_ACTION="removed"
-  else
-    SOURCE_ACTION="preserved (--keep-source)"
-  fi
+SOURCE_ACTION="already absent (no deletion attempted)"
+if [ -e "$SOURCE_ROOT" ] || [ -L "$SOURCE_ROOT" ]; then
+  SOURCE_ACTION="retained (destructive removal disabled)"
 fi
 
 printf '\n%s%s┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓%s\n' \
@@ -573,6 +494,8 @@ printf '%s%s┗━━━━━━━━━━━━━━━━━━━━━�
 
 printf '\n%s%s╭─ UNINSTALL RECEIPT%s\n' \
   "$TEXT_BOLD" "$NEON_CYAN" "$COLOR_RESET"
+printf '%s│%s  %sOUTCOME%s      partial\n' \
+  "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET"
 printf '%s│%s  %sPLUGIN%s       %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$PLUGIN_ACTION"
 printf '%s│%s  %sMARKETPLACE%s  %s\n' \
@@ -587,8 +510,16 @@ printf '%s│%s  %sSTANDALONE%s   preserved / no owned registration removed\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET"
 printf '%s│%s  %sSOURCE%s       %s\n' \
   "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$SOURCE_ACTION"
+printf '%s│%s  %sSOURCE PATH%s  %s\n' \
+  "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET" "$SOURCE_ROOT"
+printf '%s│%s  %sSOURCE REASON%s destructive removal disabled: no verifiable exact-ownership manifest\n' \
+  "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET"
+printf '%s│%s  %sTASK DATA%s    preserved\n' \
+  "$NEON_CYAN" "$COLOR_RESET" "$TEXT_DIM" "$COLOR_RESET"
 printf '%s╰─%s\n' "$NEON_CYAN" "$COLOR_RESET"
 
 printf '\n%s%sPRESERVED%s\n' "$TEXT_BOLD" "$NEON_GREEN" "$COLOR_RESET"
 printf '  External Dev Flow task data under Codex-managed state was not deleted.\n'
 printf '  Codex-managed state root: %s\n' "$CODEX_ROOT"
+printf '\n%s%sMANUAL ACTION%s\n' "$TEXT_BOLD" "$NEON_GREEN" "$COLOR_RESET"
+printf '  Inspect and back up the retained source checkout, then independently confirm ownership before any manual action.\n'

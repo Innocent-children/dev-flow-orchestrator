@@ -30,7 +30,11 @@ from dev_flow_orchestrator.web import (
     create_server,
     startup_receipt,
 )
-from support import RepositoryTestCase
+from support import (
+    RepositoryTestCase,
+    hermetic_subprocess_env,
+    probe_subprocess_runtime_roots,
+)
 
 
 class WebServerTests(RepositoryTestCase):
@@ -468,8 +472,11 @@ class WebServerTests(RepositoryTestCase):
         self.assertEqual(context.exception.code, "WEB_BIND_FAILED")
 
     def test_cli_web_is_foreground_and_stops_on_console_interrupt(self) -> None:
-        environment = dict(os.environ)
-        environment["PYTHONPATH"] = str(SRC)
+        environment = hermetic_subprocess_env(
+            self.root,
+            overrides={"PYTHONPATH": str(SRC)},
+        )
+        probe_subprocess_runtime_roots(self.root, environment)
         creationflags = (
             subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         )
@@ -521,8 +528,11 @@ class WebServerTests(RepositoryTestCase):
                 process.stderr.close()
 
     def test_cli_managed_web_start_status_open_restart_and_stop(self) -> None:
-        environment = dict(os.environ)
-        environment["PYTHONPATH"] = str(SRC)
+        environment = hermetic_subprocess_env(
+            self.root,
+            overrides={"PYTHONPATH": str(SRC)},
+        )
+        probe_subprocess_runtime_roots(self.root, environment)
         command = [
             sys.executable,
             "-m",

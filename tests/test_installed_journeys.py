@@ -13,12 +13,20 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(TESTS))
 
 from scripts import manage_runtime
 from scripts import validate_installed_stage1 as acceptance
+from support import (
+    assert_hermetic_subprocess_env,
+    hermetic_subprocess_env,
+    probe_subprocess_runtime_roots,
+)
 
 
 RUNNER = ROOT / "scripts" / "validate_installed_stage1.py"
@@ -44,9 +52,7 @@ CANDIDATE_COPY_IGNORE = shutil.ignore_patterns(
 
 
 def _git(repository: Path, *arguments: str) -> str:
-    environment = os.environ.copy()
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
-        environment.pop(name, None)
+    environment = hermetic_subprocess_env(repository.parent)
     completed = subprocess.run(
         ["git", *arguments],
         cwd=repository,
@@ -70,20 +76,25 @@ class InstalledMCPJourneyTests(unittest.TestCase):
             self.assertNotEqual(first, acceptance._tree_digest(root))
 
     def test_missing_launcher_fails_with_canonical_json_evidence(self) -> None:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(RUNNER),
-                "--plugin-root",
-                str(ROOT),
-                "--launcher",
-                str(ROOT / "missing-dev-flow-mcp"),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = hermetic_subprocess_env(root)
+            probe_subprocess_runtime_roots(root, environment)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(RUNNER),
+                    "--plugin-root",
+                    str(ROOT),
+                    "--launcher",
+                    str(ROOT / "missing-dev-flow-mcp"),
+                ],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         evidence = json.loads(completed.stdout)
         self.assertEqual(completed.returncode, 1)
         self.assertFalse(evidence["ok"])
@@ -97,15 +108,31 @@ class InstalledMCPJourneyTests(unittest.TestCase):
         python_executable: Path,
         launcher: Path | None,
         environment: dict[str, str] | None = None,
+        environment_root: Path | None = None,
         interpreter_arguments: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
-        archived = subprocess.run(
-            ["git", "archive", "--format=tar", LEGACY_RELEASE_COMMIT],
-            cwd=ROOT,
-            capture_output=True,
-            check=True,
-        ).stdout
-        with tempfile.TemporaryDirectory() as temporary:
+        temporary_parent = None if environment_root is None else str(environment_root)
+        with tempfile.TemporaryDirectory(dir=temporary_parent) as temporary:
+            fixture_root = (
+                Path(temporary).resolve()
+                if environment_root is None
+                else environment_root.resolve()
+            )
+            if environment is None:
+                child_environment = hermetic_subprocess_env(fixture_root)
+            else:
+                child_environment = dict(environment)
+                assert_hermetic_subprocess_env(fixture_root, child_environment)
+            roots = probe_subprocess_runtime_roots(fixture_root, child_environment)
+            self.assertTrue(roots["data"].is_relative_to(fixture_root))
+            self.assertTrue(roots["runtime"].is_relative_to(fixture_root))
+            archived = subprocess.run(
+                ["git", "archive", "--format=tar", LEGACY_RELEASE_COMMIT],
+                cwd=ROOT,
+                env=child_environment,
+                capture_output=True,
+                check=True,
+            ).stdout
             legacy_root = Path(temporary) / "legacy 0.4.2 artifact"
             legacy_root.mkdir()
             with tarfile.open(fileobj=io.BytesIO(archived), mode="r:") as archive:
@@ -130,7 +157,7 @@ class InstalledMCPJourneyTests(unittest.TestCase):
             completed = subprocess.run(
                 command,
                 cwd=plugin_root,
-                env=environment,
+                env=child_environment,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -356,12 +383,15 @@ class InstalledMCPJourneyTests(unittest.TestCase):
             runtime_root = base / "managed runtime with spaces 雪's"
             data_root = base / "task data"
             data_root.mkdir()
-            built = manage_runtime.build(
-                candidate,
-                runtime_root,
-                source_commit,
-                data_root,
-            )
+            build_environment = hermetic_subprocess_env(base)
+            probe_subprocess_runtime_roots(base, build_environment)
+            with mock.patch.dict(os.environ, build_environment, clear=True):
+                built = manage_runtime.build(
+                    candidate,
+                    runtime_root,
+                    source_commit,
+                    data_root,
+                )
             self.assertTrue(built["ok"])
             self.assertFalse(built["reused"])
             self.assertEqual(built["receipt"]["source_commit"], source_commit)
@@ -392,9 +422,9 @@ class InstalledMCPJourneyTests(unittest.TestCase):
             launcher.write_text(launcher_text, encoding="utf-8")
             launcher.chmod(0o755)
 
-            environment = os.environ.copy()
-            environment["PATH"] = str(bin_dir) + os.pathsep + environment.get(
-                "PATH", ""
+            environment = hermetic_subprocess_env(
+                base,
+                path_entries=(bin_dir,),
             )
             self.assertEqual(
                 shutil.which("dev-flow-mcp", path=environment["PATH"]),
@@ -405,6 +435,7 @@ class InstalledMCPJourneyTests(unittest.TestCase):
                 python_executable=runtime_python,
                 launcher=None,
                 environment=environment,
+                environment_root=base,
                 interpreter_arguments=("-I",),
             )
 

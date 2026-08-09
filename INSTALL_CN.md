@@ -129,7 +129,7 @@ macOS：
 sh "$HOME/plugins/dev-flow-orchestrator/scripts/uninstall.sh"
 ```
 
-保留源码 checkout：
+两种形式都会保留源码 checkout。`--keep-source` 继续作为兼容参数被接受，并用于明确表达这一意图：
 
 ```sh
 sh "$HOME/plugins/dev-flow-orchestrator/scripts/uninstall.sh" --keep-source
@@ -145,7 +145,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$HOME\plugins\dev-flow-orchestrator\scripts\uninstall.ps1" -KeepSource
 ```
 
-卸载器只移除 Dev Flow 插件条目、自有 launcher 和经 marker 校验的托管 runtime；所有权不确定时 fail closed。任务数据和无关 MCP/插件配置会保留。删除源码要求预期 manifest、官方 origin、已附着 `main`、干净且 ignored-clean 的 worktree，并且没有本地独有 commit。
+卸载器可以在各组件现有检查允许时移除 Dev Flow 插件条目、自有 launcher、personal marketplace 条目和托管 runtime。它们会分别报告每个组件，并返回明确的 `partial` 结果，因为源码 checkout 会保留。这并不为 runtime 移除建立精确所有权或独立安全性；DFO-AUDIT-010 仍未关闭。
+
+破坏性源码移除已禁用，因为现有安装尚无可验证、与 receipt 绑定的精确所有权 manifest。receipt 会给出所保留源码的词法绝对路径，并保留 Controller 任务数据和无关 marketplace/MCP/插件配置。在执行任何手工操作前，应检查并备份 checkout，再独立确认所有权。`--keep-source` 和 `-KeepSource` 的源码保留行为与默认调用相同。
 
 ## 11. 故障排查
 

@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal
 from jsonschema import Draft202012Validator
 from pydantic import Field
 
+from ..product import RECEIPT_SCHEMA, WORKSPACE_FRESHNESS_SCHEMA
+
 
 TaskId = Annotated[
     str,
@@ -150,28 +152,102 @@ CURRENT_ACTION_SCHEMA: dict[str, Any] = {
         },
     },
 }
+WORKSPACE_FRESHNESS_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["schema", "status", "observed_at", "reasons"],
+    "properties": {
+        "schema": {"const": WORKSPACE_FRESHNESS_SCHEMA},
+        "status": {
+            "anyOf": [
+                {"type": "boolean"},
+                {"const": "unknown"},
+            ],
+        },
+        "observed_at": {
+            "anyOf": [
+                {"type": "string", "minLength": 1, "maxLength": 64},
+                {"type": "null"},
+            ],
+        },
+        "reasons": {
+            "type": "array",
+            "maxItems": 9,
+            "uniqueItems": True,
+            "items": {"type": "string", "minLength": 1, "maxLength": 320},
+        },
+    },
+}
+MUTATION_RECOVERY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["kind", "tool", "task_id", "blind_retry"],
+    "properties": {
+        "kind": {"const": "read-after-write"},
+        "tool": {"const": "dev_flow_get_next_action"},
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "blind_retry": {"const": False},
+    },
+}
+MUTATION_RECEIPT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "schema", "task_id", "action_id", "committed_revision",
+        "status", "current_node", "committed", "workspace_freshness",
+        "blind_retry", "recovery",
+    ],
+    "properties": {
+        "schema": {"const": RECEIPT_SCHEMA},
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "action_id": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "committed_revision": {"type": "integer", "minimum": 0},
+        "status": {"type": "string", "minLength": 1, "maxLength": 64},
+        "current_node": {"type": "string", "minLength": 1, "maxLength": 256},
+        "committed": {"const": True},
+        "workspace_freshness": WORKSPACE_FRESHNESS_RESULT_SCHEMA,
+        "blind_retry": {"const": False},
+        "recovery": MUTATION_RECOVERY_SCHEMA,
+    },
+}
+
+# Tool discovery repeats an output schema once per mutation. Keep that published
+# shape compact and closed while the transport validator below applies the complete
+# receipt and current-action schemas before any structured result is emitted.
+PUBLISHED_MUTATION_RECEIPT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": list(MUTATION_RECEIPT_SCHEMA["required"]),
+    "properties": {
+        "schema": {"const": RECEIPT_SCHEMA},
+        "task_id": {},
+        "action_id": {},
+        "committed_revision": {},
+        "status": {},
+        "current_node": {},
+        "committed": {"const": True},
+        "workspace_freshness": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["schema", "status", "observed_at", "reasons"],
+            "properties": {
+                "schema": {"const": WORKSPACE_FRESHNESS_SCHEMA},
+                "status": {"enum": [True, False, "unknown"]},
+                "observed_at": {},
+                "reasons": {"type": "array", "maxItems": 9},
+            },
+        },
+        "blind_retry": {"const": False},
+        "recovery": OBJECT,
+    },
+}
 MUTATION_RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["receipt", "current"],
     "properties": {
-        "receipt": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": [
-                "schema", "task_id", "action_id", "committed_revision",
-                "status", "current_node",
-            ],
-            "properties": {
-                "schema": {"const": "dev-flow-receipt/0.4.0"},
-                "task_id": {"type": "string", "minLength": 1, "maxLength": 256},
-                "action_id": {"type": "string", "minLength": 1, "maxLength": 8192},
-                "committed_revision": {"type": "integer", "minimum": 0},
-                "status": {"type": "string", "minLength": 1, "maxLength": 64},
-                "current_node": {"type": "string", "minLength": 1, "maxLength": 256},
-            },
-        },
-        "current": OBJECT,
+        "receipt": PUBLISHED_MUTATION_RECEIPT_SCHEMA,
+        "current": NULLABLE_OBJECT,
     },
 }
 
@@ -355,6 +431,14 @@ _OUTPUT_VALIDATORS = {
     for name, schema in OUTPUT_SCHEMAS.items()
 }
 _CURRENT_ACTION_VALIDATOR = Draft202012Validator(CURRENT_ACTION_SCHEMA)
+_MUTATION_RECEIPT_VALIDATOR = Draft202012Validator(MUTATION_RECEIPT_SCHEMA)
+_MUTATION_TOOLS = frozenset({
+    "dev_flow_apply_action",
+    "dev_flow_revise_contract",
+    "dev_flow_record_decision",
+    "dev_flow_dispose_finding",
+    "dev_flow_cancel_task",
+})
 
 
 def validate_structured_result(tool: str, value: object) -> None:
@@ -365,6 +449,19 @@ def validate_structured_result(tool: str, value: object) -> None:
     error = next(validator.iter_errors(value), None)
     if error is not None:
         raise ResultSchemaViolation("structured result violates its declared output schema")
+    if tool in _MUTATION_TOOLS and isinstance(value, dict) and value.get("ok") is True:
+        result = value.get("result")
+        if not isinstance(result, dict):
+            raise ResultSchemaViolation("mutation result is not an object")
+        receipt = result.get("receipt")
+        if next(_MUTATION_RECEIPT_VALIDATOR.iter_errors(receipt), None) is not None:
+            raise ResultSchemaViolation("mutation receipt violates its complete schema")
+        current = result.get("current")
+        if (
+            current is not None
+            and next(_CURRENT_ACTION_VALIDATOR.iter_errors(current), None) is not None
+        ):
+            raise ResultSchemaViolation("nested current action violates its complete schema")
 
 
 def validate_current_action(value: object) -> None:

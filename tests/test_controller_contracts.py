@@ -21,6 +21,7 @@ from dev_flow_orchestrator.product import (
     PLUGIN_DATA_NAMESPACE,
     RECEIPT_SCHEMA,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
+    WORKSPACE_FRESHNESS_SCHEMA,
 )
 from support import RepositoryTestCase, make_repository
 
@@ -283,6 +284,9 @@ class ControllerContractTests(RepositoryTestCase):
             {},
             binding=projected["action"]["binding"],
         )
+        observed_at = result["receipt"]["workspace_freshness"]["observed_at"]
+        self.assertIsInstance(observed_at, str)
+        self.assertTrue(observed_at.endswith("Z"))
 
         self.assertEqual(
             result["receipt"],
@@ -293,6 +297,20 @@ class ControllerContractTests(RepositoryTestCase):
                 "committed_revision": 1,
                 "status": "ANALYZING",
                 "current_node": "impact",
+                "committed": True,
+                "workspace_freshness": {
+                    "schema": WORKSPACE_FRESHNESS_SCHEMA,
+                    "status": True,
+                    "observed_at": observed_at,
+                    "reasons": [],
+                },
+                "blind_retry": False,
+                "recovery": {
+                    "kind": "read-after-write",
+                    "tool": "dev_flow_get_next_action",
+                    "task_id": task_id,
+                    "blind_retry": False,
+                },
             },
         )
         self.assertEqual(result["projection"]["revision"], 1)

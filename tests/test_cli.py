@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager, redirect_stdout
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import os
 import subprocess
 import sys
+import tempfile
+import threading
 from pathlib import Path
+from typing import Iterator
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -15,7 +22,14 @@ TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
-from support import make_repository
+from support import (
+    assert_hermetic_subprocess_env,
+    hermetic_subprocess_env,
+    make_repository,
+    probe_subprocess_runtime_roots,
+)
+from dev_flow_orchestrator import cli as cli_module
+from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.runtime_paths import resolve_data_dir
 from dev_flow_orchestrator.store import TaskStore
 from dev_flow_orchestrator.product import (
@@ -23,13 +37,90 @@ from dev_flow_orchestrator.product import (
     DELIVERY_DOSSIER_SCHEMA,
     DRIVER_RESULT_SCHEMA,
     MODEL_VERSION,
+    RECEIPT_SCHEMA,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
     TASK_CHANGE_CLAIMS_SCHEMA,
     WORKFLOW_SCHEMA,
+    WORKSPACE_FRESHNESS_SCHEMA,
+    PRODUCT_IDENTITY,
 )
 
 
-def run_cli(data_dir: str, *arguments: str) -> subprocess.CompletedProcess:
+class _LiveWebStateHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        payload = json.dumps({"product_identity": PRODUCT_IDENTITY}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *arguments: object) -> None:
+        pass
+
+
+@contextmanager
+def live_web_state(data_root: Path) -> Iterator[None]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _LiveWebStateHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    token = "hostile-parent-token-0123456789abcdef"
+    runtime = data_root / "web-runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "state.json").write_text(
+        json.dumps(
+            {
+                "schema": "dev-flow-web-runtime",
+                "instance_id": "hostile-parent-instance-0123456789",
+                "pid": os.getpid(),
+                "status": "running",
+                "started_at": "2026-08-09T00:00:00Z",
+                "host": "127.0.0.1",
+                "port": port,
+                "token": token,
+                "url": "http://127.0.0.1:{}/#token={}".format(port, token),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    try:
+        yield
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def tree_bytes(root: Path) -> tuple[tuple[str, str, bytes | None], ...]:
+    """Capture names, entry kinds, and all regular-file bytes below ``root``."""
+
+    entries = []
+    for path in sorted(root.rglob("*"), key=lambda item: str(item).encode("utf-8")):
+        relative = str(path.relative_to(root))
+        if path.is_symlink():
+            entries.append((relative, "symlink", os.fsencode(os.readlink(path))))
+        elif path.is_dir():
+            entries.append((relative, "directory", None))
+        else:
+            entries.append((relative, "file", path.read_bytes()))
+    return tuple(entries)
+
+
+def run_cli(
+    data_dir: str,
+    *arguments: str,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    if environment is None:
+        environment = hermetic_subprocess_env(
+            Path(data_dir).resolve().parent,
+            overrides={"PYTHONPATH": str(SRC)},
+        )
+    else:
+        assert_hermetic_subprocess_env(Path(data_dir).resolve().parent, environment)
     return subprocess.run(
         [
             sys.executable,
@@ -43,7 +134,7 @@ def run_cli(data_dir: str, *arguments: str) -> subprocess.CompletedProcess:
         text=True,
         capture_output=True,
         check=False,
-        env={**os.environ, "PYTHONPATH": str(SRC)},
+        env=environment,
     )
 
 
@@ -59,8 +150,117 @@ class CliTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_mutation_freshness_false_and_unknown_are_successful_cli_results(self) -> None:
+        cases = (
+            (
+                "changed",
+                {
+                    "status": False,
+                    "observed_at": "2026-08-09T00:00:00Z",
+                    "reasons": ["workspace_changed", "workspace_changed:repository"],
+                },
+                {"revision": 2, "status": "ANALYZING"},
+            ),
+            (
+                "unknown",
+                {
+                    "status": "unknown",
+                    "observed_at": None,
+                    "reasons": ["observation_failed:OBSERVATION_FAILED"],
+                },
+                None,
+            ),
+        )
+        for label, freshness, projection in cases:
+            with self.subTest(freshness=label):
+                receipt = {
+                    "schema": RECEIPT_SCHEMA,
+                    "task_id": "task-adapter-freshness",
+                    "action_id": "task.preflight",
+                    "committed_revision": 2,
+                    "status": "ANALYZING",
+                    "current_node": "impact",
+                    "committed": True,
+                    "workspace_freshness": {
+                        "schema": WORKSPACE_FRESHNESS_SCHEMA,
+                        **freshness,
+                    },
+                    "blind_retry": False,
+                    "recovery": {
+                        "kind": "read-after-write",
+                        "tool": "dev_flow_get_next_action",
+                        "task_id": "task-adapter-freshness",
+                        "blind_retry": False,
+                    },
+                }
+                mutation_result = {
+                    "receipt": receipt,
+                    "projection": projection,
+                }
+                controller = mock.Mock()
+                controller.apply.return_value = mutation_result
+                stdout = io.StringIO()
+                with mock.patch.object(
+                    cli_module,
+                    "Controller",
+                    return_value=controller,
+                ), redirect_stdout(stdout):
+                    exit_code = cli_module.main(
+                        (
+                            "--data-dir",
+                            self.data_dir,
+                            "apply",
+                            "task-adapter-freshness",
+                            "--action",
+                            "task.preflight",
+                            "--payload-json",
+                            "{}",
+                            "--binding-json",
+                            "{}",
+                        )
+                    )
+
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(
+                    json.loads(stdout.getvalue()),
+                    {
+                        "ok": True,
+                        "command": "apply",
+                        **mutation_result,
+                    },
+                )
+                controller.apply.assert_called_once_with(
+                    "task-adapter-freshness",
+                    "task.preflight",
+                    {},
+                    binding={},
+                )
+
     def test_data_directory_defaults_to_codex_plugin_namespace(self) -> None:
         codex_root = self.root / "codex-home"
+        environment = hermetic_subprocess_env(
+            self.root,
+            overrides={
+                "CODEX_HOME": str(codex_root),
+                "PYTHONPATH": str(SRC),
+            },
+            unset=("DEV_FLOW_DATA_DIR", "PLUGIN_DATA"),
+        )
+        resolved = Path(
+            resolve_data_dir(None, environment=environment)
+        ).resolve()
+        expected_root = (
+            codex_root
+            / "plugins"
+            / "data"
+            / "dev-flow-orchestrator-personal"
+        ).resolve()
+        self.assertEqual(resolved, expected_root)
+        resolved.relative_to(self.root.resolve())
+        self.assertEqual(
+            probe_subprocess_runtime_roots(self.root, environment)["data"],
+            expected_root,
+        )
         completed = subprocess.run(
             [
                 sys.executable,
@@ -73,16 +273,155 @@ class CliTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
-            env={
-                **os.environ,
-                "CODEX_HOME": str(codex_root),
-                "PYTHONPATH": str(SRC),
-            },
+            env=environment,
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout)["status"], "stopped")
         self.assertFalse(codex_root.exists())
+
+    def test_default_data_root_ignores_hostile_parent_authorities(self) -> None:
+        authority_cases = (
+            ("data", ("DEV_FLOW_DATA_DIR",)),
+            ("plugin", ("PLUGIN_DATA",)),
+            ("codex", ("CODEX_HOME",)),
+            ("data-plugin", ("DEV_FLOW_DATA_DIR", "PLUGIN_DATA")),
+            ("data-codex", ("DEV_FLOW_DATA_DIR", "CODEX_HOME")),
+            ("plugin-codex", ("PLUGIN_DATA", "CODEX_HOME")),
+            (
+                "all",
+                ("DEV_FLOW_DATA_DIR", "PLUGIN_DATA", "CODEX_HOME"),
+            ),
+        )
+        for label, selected in authority_cases:
+            with self.subTest(authorities=label), tempfile.TemporaryDirectory(
+                prefix="dev-flow-hostile-parent-"
+            ) as external_temporary:
+                external = Path(external_temporary)
+                authority_roots = {
+                    "DEV_FLOW_DATA_DIR": external / "data-override",
+                    "PLUGIN_DATA": external / "plugin-data",
+                    "CODEX_HOME": external / "codex-home",
+                }
+                redirected_runtime = external / "xdg-data-home"
+                redirected_git_dir = external / "redirected-git-dir"
+                redirected_work_tree = external / "redirected-work-tree"
+                redirected_index = external / "redirected-index"
+                for redirected in (
+                    redirected_runtime,
+                    redirected_git_dir,
+                    redirected_work_tree,
+                ):
+                    redirected.mkdir()
+                    (redirected / "redirect-sentinel.bin").write_bytes(
+                        b"hostile redirect must remain byte-stable\x00\xfe"
+                    )
+                redirected_index.write_bytes(
+                    b"hostile index redirect must remain byte-stable\x00\xfd"
+                )
+                for name in selected:
+                    root = authority_roots[name]
+                    root.mkdir(parents=True)
+                    (root / "authority-sentinel.bin").write_bytes(
+                        b"hostile authority must remain byte-stable\x00\xff"
+                    )
+
+                if "DEV_FLOW_DATA_DIR" in selected:
+                    external_data = authority_roots["DEV_FLOW_DATA_DIR"]
+                elif "PLUGIN_DATA" in selected:
+                    external_data = authority_roots["PLUGIN_DATA"]
+                else:
+                    external_data = (
+                        authority_roots["CODEX_HOME"]
+                        / "plugins"
+                        / "data"
+                        / "dev-flow-orchestrator-personal"
+                    )
+                external_repository = make_repository(
+                    external, "external-authority-repository"
+                )
+                external_task_id = "hostile-parent-task"
+                Controller(str(external_data)).start(
+                    requirement="External authority must never be observed",
+                    workflow="lite",
+                    repositories=(str(external_repository),),
+                    task_id=external_task_id,
+                )
+
+                with live_web_state(external_data):
+                    external_before = tree_bytes(external)
+                    hostile = {
+                        "DEV_FLOW_DATA_DIR": "",
+                        "PLUGIN_DATA": "",
+                        "CODEX_HOME": "",
+                        "XDG_DATA_HOME": str(redirected_runtime),
+                        "GIT_DIR": str(redirected_git_dir),
+                        "GIT_WORK_TREE": str(redirected_work_tree),
+                        "GIT_INDEX_FILE": str(redirected_index),
+                    }
+                    hostile.update(
+                        {name: str(authority_roots[name]) for name in selected}
+                    )
+                    isolated_root = self.root / ("isolated-" + label)
+                    isolated_root.mkdir()
+                    isolated_codex = isolated_root / "codex-home"
+                    with mock.patch.dict(os.environ, hostile, clear=False):
+                        environment = hermetic_subprocess_env(
+                            isolated_root,
+                            overrides={
+                                "CODEX_HOME": str(isolated_codex),
+                                "PYTHONPATH": str(SRC),
+                            },
+                            unset=("DEV_FLOW_DATA_DIR", "PLUGIN_DATA"),
+                        )
+                    expected_data = (
+                        isolated_codex
+                        / "plugins"
+                        / "data"
+                        / "dev-flow-orchestrator-personal"
+                    ).resolve()
+                    observed = probe_subprocess_runtime_roots(
+                        isolated_root, environment
+                    )
+                    self.assertEqual(observed["data"], expected_data)
+                    expected_data.relative_to(isolated_root.resolve())
+                    self.assertFalse((expected_data / "web-runtime").exists())
+                    self.assertFalse(
+                        (expected_data / MODEL_VERSION / "tasks").exists()
+                    )
+
+                    def invoke_default(*arguments: str) -> subprocess.CompletedProcess:
+                        return subprocess.run(
+                            [
+                                sys.executable,
+                                "-I",
+                                "-S",
+                                str(ROOT / "scripts" / "dev_flow.py"),
+                                *arguments,
+                            ],
+                            text=True,
+                            capture_output=True,
+                            check=False,
+                            env=environment,
+                        )
+
+                    status = invoke_default("web", "status")
+                    listed = invoke_default("list")
+                    self.assertEqual(status.returncode, 0, status.stderr)
+                    self.assertEqual(
+                        json.loads(status.stdout)["status"], "stopped"
+                    )
+                    self.assertEqual(listed.returncode, 0, listed.stderr)
+                    self.assertEqual(json.loads(listed.stdout)["tasks"], [])
+                    self.assertNotIn(external_task_id, listed.stdout)
+                    self.assertFalse((expected_data / "web-runtime").exists())
+                    self.assertFalse(
+                        (expected_data / MODEL_VERSION / "tasks").exists()
+                    )
+                    self.assertEqual(
+                        tree_bytes(external),
+                        external_before,
+                    )
 
     def test_data_directory_resolution_precedence_is_explicit_override_plugin_then_codex(self) -> None:
         explicit = self.root / "explicit"

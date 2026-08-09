@@ -49,6 +49,9 @@ VERIFICATION_COVERAGE_SCHEMA = product_schema("verification-coverage")
 DELIVERY_DOSSIER_SCHEMA = product_schema("delivery-dossier")
 DELIVERY_CONTRACT_SCHEMA = product_schema("delivery-contract")
 RECEIPT_SCHEMA = product_schema("receipt")
+# Response-only freshness is versioned independently and deliberately excluded
+# from product_document(), whose digest is persisted in existing task state.
+WORKSPACE_FRESHNESS_SCHEMA = "dev-flow-workspace-freshness/1.0.0"
 DRIVER_RESULT_SCHEMA = product_schema("driver-result")
 IMPACT_REPORT_SCHEMA = product_schema("impact-report")
 INDEPENDENT_REVIEW_SCHEMA = product_schema("independent-review")

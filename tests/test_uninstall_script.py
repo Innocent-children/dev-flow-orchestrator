@@ -17,6 +17,15 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TESTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS))
+
+from support import (
+    assert_hermetic_subprocess_env,
+    hermetic_subprocess_env,
+    probe_subprocess_runtime_roots,
+)
+
 UNINSTALLER = ROOT / "scripts" / "uninstall.sh"
 CANONICAL_BUNDLED_MCP = {
     "name": "dev-flow",
@@ -31,9 +40,27 @@ CANONICAL_BUNDLED_MCP = {
 
 
 def _git(*arguments: str, cwd: Optional[Path] = None) -> str:
+    if cwd is not None:
+        isolation_root = cwd.resolve()
+    else:
+        absolute = next(
+            (Path(value) for value in arguments if Path(value).is_absolute()),
+            None,
+        )
+        if absolute is None:
+            raise AssertionError("fixture Git command has no temporary path authority")
+        isolation_root = absolute.resolve().parent
     completed = subprocess.run(
-        ["git", *arguments],
+        [
+            "git",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            *arguments,
+        ],
         cwd=cwd,
+        env=hermetic_subprocess_env(isolation_root),
         check=True,
         capture_output=True,
         text=True,
@@ -44,6 +71,29 @@ def _git(*arguments: str, cwd: Optional[Path] = None) -> str:
 def _configure_identity(repository: Path) -> None:
     _git("config", "user.name", "Uninstaller Test", cwd=repository)
     _git("config", "user.email", "uninstaller-test@example.invalid", cwd=repository)
+
+
+def _tree_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
+    """Capture paths, types, modes, link targets, and file bytes without following links."""
+
+    entries: list[tuple[object, ...]] = []
+
+    def visit(path: Path, relative: str) -> None:
+        metadata = path.lstat()
+        mode = stat.S_IMODE(metadata.st_mode)
+        if stat.S_ISLNK(metadata.st_mode):
+            entries.append((relative, "symlink", mode, os.readlink(path)))
+            return
+        if stat.S_ISDIR(metadata.st_mode):
+            entries.append((relative, "directory", mode))
+            for child in sorted(path.iterdir(), key=lambda item: item.name):
+                child_relative = child.name if not relative else f"{relative}/{child.name}"
+                visit(child, child_relative)
+            return
+        entries.append((relative, "file", mode, path.read_bytes()))
+
+    visit(root, "")
+    return tuple(entries)
 
 
 @unittest.skipUnless(sys.platform == "darwin", "uninstaller supports macOS only")
@@ -115,6 +165,9 @@ class UninstallerBehaviorTests(unittest.TestCase):
             "    ;;\n"
             "  'plugin remove dev-flow-orchestrator@personal')\n"
             "    printf '%s\\n' \"$*\" >> \"$DEV_FLOW_CODEX_LOG\"\n"
+            "    if [ -n \"${DEV_FLOW_CODEX_CREATE_SOURCE_FILE:-}\" ]; then\n"
+            "      printf 'created during plugin removal\\n' > \"$DEV_FLOW_CODEX_CREATE_SOURCE_FILE\"\n"
+            "    fi\n"
             "    exit_code=\"${DEV_FLOW_CODEX_REMOVE_EXIT:-0}\"\n"
             "    [ \"$exit_code\" -eq 0 ] || exit \"$exit_code\"\n"
             "    rm -f \"$DEV_FLOW_CODEX_STATE\"\n"
@@ -135,17 +188,10 @@ class UninstallerBehaviorTests(unittest.TestCase):
             | stat.S_IXOTH
         )
 
-        self.environment = os.environ.copy()
-        for name in (
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "NO_COLOR",
-            "DEV_FLOW_FORCE_COLOR",
-        ):
-            self.environment.pop(name, None)
-        self.environment.update(
-            {
+        self.environment = hermetic_subprocess_env(
+            self.test_root,
+            path_entries=(fake_bin,),
+            overrides={
                 "DEV_FLOW_REPOSITORY_URL": self.remote_url,
                 "DEV_FLOW_SOURCE_ROOT": str(self.source_root),
                 "DEV_FLOW_MARKETPLACE_FILE": str(self.marketplace),
@@ -159,14 +205,27 @@ class UninstallerBehaviorTests(unittest.TestCase):
                 "DEV_FLOW_BIN_DIR": str(fake_bin),
                 "DEV_FLOW_RUNTIME_HOME": str(self.test_root / "managed runtime"),
                 "CODEX_HOME": str(self.codex_root),
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "LANG": "C",
-                "LC_ALL": "C",
-                "PATH": str(fake_bin)
-                + os.pathsep
-                + self.environment.get("PATH", ""),
-            }
+            },
+        )
+        for authority in (
+            "HOME",
+            "USERPROFILE",
+            "LOCALAPPDATA",
+            "XDG_DATA_HOME",
+            "CODEX_HOME",
+            "DEV_FLOW_DATA_DIR",
+            "PLUGIN_DATA",
+            "DEV_FLOW_RUNTIME_HOME",
+            "DEV_FLOW_SOURCE_ROOT",
+            "DEV_FLOW_MARKETPLACE_FILE",
+            "DEV_FLOW_BIN_DIR",
+        ):
+            Path(self.environment[authority]).resolve().relative_to(
+                self.test_root.resolve()
+            )
+        self.assertEqual(
+            Path(self.environment["PATH"].split(os.pathsep)[0]).resolve(),
+            fake_bin.resolve(),
         )
 
     def tearDown(self) -> None:
@@ -177,6 +236,7 @@ class UninstallerBehaviorTests(unittest.TestCase):
             {
                 "name": "other-plugin",
                 "source": {"source": "local", "path": "./plugins/other"},
+                "opaque": {"bytes-as-text": "00ff", "label": "保留"},
             }
         ]
         if include_dev_flow:
@@ -209,6 +269,8 @@ class UninstallerBehaviorTests(unittest.TestCase):
         environment = self.environment.copy()
         if overrides:
             environment.update(overrides)
+        assert_hermetic_subprocess_env(self.test_root, environment)
+        probe_subprocess_runtime_roots(self.test_root, environment)
         return subprocess.run(
             ["/bin/sh", str(UNINSTALLER), *arguments],
             cwd=self.test_root,
@@ -221,6 +283,28 @@ class UninstallerBehaviorTests(unittest.TestCase):
         if not self.codex_log.exists():
             return []
         return self.codex_log.read_text(encoding="utf-8").splitlines()
+
+    def assert_source_containment_receipt(
+        self,
+        result: subprocess.CompletedProcess[str],
+        expected_path: Path,
+    ) -> None:
+        self.assertIn("OUTCOME", result.stdout)
+        self.assertIn("partial", result.stdout)
+        self.assertIn("SOURCE", result.stdout)
+        self.assertIn("retained (destructive removal disabled)", result.stdout)
+        self.assertIn("SOURCE PATH", result.stdout)
+        self.assertIn(str(expected_path.absolute()), result.stdout)
+        self.assertIn(
+            "destructive removal disabled: no verifiable exact-ownership manifest",
+            result.stdout,
+        )
+        self.assertIn("TASK DATA", result.stdout)
+        self.assertIn("preserved", result.stdout)
+        self.assertIn("MANUAL ACTION", result.stdout)
+        self.assertIn("Inspect and back up", result.stdout)
+        self.assertIn("independently confirm ownership", result.stdout)
+        self.assertNotIn("SOURCE       removed", result.stdout)
 
     def write_managed_runtime(self) -> Path:
         runtime_root = Path(self.environment["DEV_FLOW_RUNTIME_HOME"])
@@ -260,8 +344,11 @@ class UninstallerBehaviorTests(unittest.TestCase):
         )
         return runtime_root
 
-    def test_default_uninstall_removes_plugin_entry_and_clean_source(self) -> None:
+    def test_default_uninstall_reports_partial_and_retains_clean_source(self) -> None:
         self.write_marketplace()
+        unrelated_before = json.loads(
+            self.marketplace.read_text(encoding="utf-8")
+        )["plugins"][0]
         self.codex_state.write_text("installed\n", encoding="utf-8")
         plugin_config = self.write_codex_config(
             '[plugins."dev-flow-orchestrator@personal"]\nenabled = true\n'
@@ -282,6 +369,7 @@ class UninstallerBehaviorTests(unittest.TestCase):
         )
         mcp_launcher.chmod(0o755)
         runtime_root = self.write_managed_runtime()
+        source_before = _tree_snapshot(self.source_root)
 
         result = self.run_uninstaller()
 
@@ -290,7 +378,7 @@ class UninstallerBehaviorTests(unittest.TestCase):
             0,
             "stdout:\n{}\nstderr:\n{}".format(result.stdout, result.stderr),
         )
-        self.assertFalse(self.source_root.exists())
+        self.assertEqual(_tree_snapshot(self.source_root), source_before)
         self.assertFalse(self.codex_state.exists())
         self.assertEqual(
             self.activation_calls(),
@@ -299,7 +387,7 @@ class UninstallerBehaviorTests(unittest.TestCase):
         plugins = json.loads(self.marketplace.read_text(encoding="utf-8"))[
             "plugins"
         ]
-        self.assertEqual([item["name"] for item in plugins], ["other-plugin"])
+        self.assertEqual(plugins, [unrelated_before])
         self.assertEqual(task_data.read_text(encoding="utf-8"), "preserve me\n")
         self.assertEqual(
             plugin_config.read_text(encoding="utf-8"),
@@ -308,6 +396,7 @@ class UninstallerBehaviorTests(unittest.TestCase):
         self.assertFalse(launcher.exists())
         self.assertFalse(mcp_launcher.exists())
         self.assertFalse(runtime_root.exists())
+        self.assert_source_containment_receipt(result, self.source_root)
         self.assertIn("// SYSTEM OFFLINE", result.stdout)
         self.assertIn("UNINSTALL RECEIPT", result.stdout)
         self.assertIn("External Dev Flow task data", result.stdout)
@@ -342,38 +431,44 @@ class UninstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(launcher.read_text(encoding="utf-8"), "#!/bin/sh\necho user-owned\n")
         self.assertEqual(self.activation_calls(), [])
 
-    def test_keep_source_allows_local_work_and_preserves_checkout(self) -> None:
+    def test_keep_source_allows_local_work_and_reports_common_containment(self) -> None:
         self.write_marketplace()
         self.codex_state.write_text("installed\n", encoding="utf-8")
         local_file = self.source_root / "local work.txt"
         local_file.write_text("preserve me\n", encoding="utf-8")
+        task_data = self.codex_root / "plugins" / "data" / "task.json"
+        task_data.parent.mkdir(parents=True)
+        task_data.write_bytes(b"task bytes\x00\xff")
+        source_before = _tree_snapshot(self.source_root)
 
         result = self.run_uninstaller("--keep-source")
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_tree_snapshot(self.source_root), source_before)
         self.assertEqual(local_file.read_text(encoding="utf-8"), "preserve me\n")
-        self.assertIn("preserved (--keep-source)", result.stdout)
+        self.assertEqual(task_data.read_bytes(), b"task bytes\x00\xff")
+        self.assert_source_containment_receipt(result, self.source_root)
         self.assertFalse(self.codex_state.exists())
 
-    def test_dirty_source_stops_before_any_uninstall_mutation(self) -> None:
+    def test_untracked_source_work_is_retained_while_other_components_proceed(self) -> None:
         self.write_marketplace()
-        marketplace_before = self.marketplace.read_bytes()
         self.codex_state.write_text("installed\n", encoding="utf-8")
-        (self.source_root / "local work.txt").write_text(
+        local_file = self.source_root / "local work.txt"
+        local_file.write_text(
             "preserve me\n", encoding="utf-8"
         )
+        source_before = _tree_snapshot(self.source_root)
 
         result = self.run_uninstaller()
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("has local changes", result.stderr)
-        self.assertTrue(self.codex_state.exists())
-        self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
-        self.assertEqual(self.activation_calls(), [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_tree_snapshot(self.source_root), source_before)
+        self.assertEqual(local_file.read_text(encoding="utf-8"), "preserve me\n")
+        self.assertFalse(self.codex_state.exists())
+        self.assert_source_containment_receipt(result, self.source_root)
 
-    def test_ignored_source_path_stops_before_mutation(self) -> None:
+    def test_ignored_source_path_is_retained_while_other_components_proceed(self) -> None:
         self.write_marketplace()
-        marketplace_before = self.marketplace.read_bytes()
         self.codex_state.write_text("installed\n", encoding="utf-8")
         ignored_name = "ignored-local-data.txt"
         (self.source_root / ".git" / "info" / "exclude").write_text(
@@ -383,16 +478,16 @@ class UninstallerBehaviorTests(unittest.TestCase):
             "preserve me\n", encoding="utf-8"
         )
         self.assertEqual(_git("status", "--porcelain", cwd=self.source_root), "")
+        source_before = _tree_snapshot(self.source_root)
 
         result = self.run_uninstaller()
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("contains ignored paths", result.stderr)
-        self.assertTrue(self.codex_state.exists())
-        self.assertEqual(self.marketplace.read_bytes(), marketplace_before)
-        self.assertEqual(self.activation_calls(), [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_tree_snapshot(self.source_root), source_before)
+        self.assertFalse(self.codex_state.exists())
+        self.assert_source_containment_receipt(result, self.source_root)
 
-    def test_local_only_commit_stops_before_mutation(self) -> None:
+    def test_local_only_commit_is_retained_while_other_components_proceed(self) -> None:
         self.write_marketplace()
         self.codex_state.write_text("installed\n", encoding="utf-8")
         _configure_identity(self.source_root)
@@ -400,12 +495,82 @@ class UninstallerBehaviorTests(unittest.TestCase):
         local_file.write_text("preserve me\n", encoding="utf-8")
         _git("add", "local-commit.txt", cwd=self.source_root)
         _git("commit", "-m", "local commit", cwd=self.source_root)
+        source_before = _tree_snapshot(self.source_root)
 
         result = self.run_uninstaller()
 
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_tree_snapshot(self.source_root), source_before)
+        self.assertFalse(self.codex_state.exists())
+        self.assert_source_containment_receipt(result, self.source_root)
+
+    def test_tracked_modification_is_retained_while_other_components_proceed(self) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        manifest = self.source_root / ".codex-plugin" / "plugin.json"
+        manifest.write_bytes(manifest.read_bytes() + b"\nuser edit\n")
+        source_before = _tree_snapshot(self.source_root)
+
+        result = self.run_uninstaller()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_tree_snapshot(self.source_root), source_before)
+        self.assertFalse(self.codex_state.exists())
+        self.assert_source_containment_receipt(result, self.source_root)
+
+    def test_file_created_during_plugin_removal_is_retained(self) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        late_file = self.source_root / "arrived-during-plugin-removal.txt"
+
+        result = self.run_uninstaller(
+            overrides={"DEV_FLOW_CODEX_CREATE_SOURCE_FILE": str(late_file)}
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            late_file.read_text(encoding="utf-8"),
+            "created during plugin removal\n",
+        )
+        self.assertTrue(self.source_root.is_dir())
+        self.assert_source_containment_receipt(result, self.source_root)
+
+    def test_source_symlink_and_target_are_retained_without_canonicalization(self) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        shutil.rmtree(self.source_root)
+        user_checkout = self.test_root / "user checkout outside marketplace"
+        user_checkout.mkdir()
+        user_file = user_checkout / "user work.bin"
+        user_file.write_bytes(b"preserve\x00me\xff")
+        self.source_root.symlink_to(user_checkout, target_is_directory=True)
+
+        result = self.run_uninstaller()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertEqual(os.readlink(self.source_root), str(user_checkout))
+        self.assertEqual(user_file.read_bytes(), b"preserve\x00me\xff")
+        self.assert_source_containment_receipt(result, self.source_root)
+
+    def test_unknown_remove_source_fails_before_any_mutation(self) -> None:
+        self.write_marketplace()
+        self.codex_state.write_text("installed\n", encoding="utf-8")
+        launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow"
+        launcher.write_text(
+            "#!/bin/sh\n# dev-flow-orchestrator managed launcher\nexit 0\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        self.write_managed_runtime()
+        probe_subprocess_runtime_roots(self.test_root, self.environment)
+        before = _tree_snapshot(self.test_root)
+
+        result = self.run_uninstaller("--remove-source")
+
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("commits that are not present on origin", result.stderr)
-        self.assertTrue(self.codex_state.exists())
+        self.assertIn("Unknown argument '--remove-source'", result.stderr)
+        self.assertEqual(_tree_snapshot(self.test_root), before)
         self.assertEqual(self.activation_calls(), [])
 
     def test_plugin_remove_failure_preserves_entry_and_source(self) -> None:

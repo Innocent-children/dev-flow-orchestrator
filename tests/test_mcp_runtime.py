@@ -16,6 +16,9 @@ from unittest import mock
 
 from mcp.client import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.server import MCPServer
+from mcp.types import CallToolResult
+from jsonschema import Draft202012Validator
 
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator import cli as cli_module
@@ -27,7 +30,12 @@ from dev_flow_orchestrator.mcp.results import MCPRuntimeFailure
 from dev_flow_orchestrator.mcp.server import create_server
 from dev_flow_orchestrator.mcp import runtime as mcp_runtime
 from dev_flow_orchestrator.mcp.runtime import main as mcp_main
-from dev_flow_orchestrator.product import MODEL_VERSION
+from dev_flow_orchestrator.mcp.schemas import OUTPUT_SCHEMAS
+from dev_flow_orchestrator.product import (
+    MODEL_VERSION,
+    RECEIPT_SCHEMA,
+    WORKSPACE_FRESHNESS_SCHEMA,
+)
 from dev_flow_orchestrator.runtime_paths import resolve_managed_runtime_root
 from dev_flow_orchestrator.runtime_receipt import (
     MAX_RUNTIME_RECEIPT_BYTES,
@@ -39,6 +47,11 @@ from dev_flow_orchestrator.runtime_receipt import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TESTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS))
+
+from support import hermetic_subprocess_env, probe_subprocess_runtime_roots
+
 EXPECTED_TOOLS = (
     "dev_flow_apply_action",
     "dev_flow_cancel_task",
@@ -61,18 +74,49 @@ class MCPRuntimeTests(unittest.TestCase):
     def _repository(self, root: Path, name: str) -> Path:
         repository = root / name
         repository.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-        subprocess.run(["git", "config", "user.email", "mcp@example.invalid"], cwd=repository, check=True)
-        subprocess.run(["git", "config", "user.name", "MCP Test"], cwd=repository, check=True)
+        environment = hermetic_subprocess_env(root)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=repository, env=environment, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "mcp@example.invalid"],
+            cwd=repository,
+            env=environment,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "MCP Test"],
+            cwd=repository,
+            env=environment,
+            check=True,
+        )
         (repository / "tracked.txt").write_text("baseline\n", encoding="utf-8")
-        subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
-        subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repository, check=True)
+        subprocess.run(
+            ["git", "add", "tracked.txt"],
+            cwd=repository,
+            env=environment,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-qm", "baseline"],
+            cwd=repository,
+            env=environment,
+            check=True,
+        )
         return repository
 
     def _run_cli(self, *arguments: str) -> dict:
+        try:
+            data_index = arguments.index("--data-dir") + 1
+            fixture_root = Path(arguments[data_index]).resolve().parent
+        except (ValueError, IndexError) as exc:
+            raise AssertionError("CLI fixture requires an explicit temporary data root") from exc
+        environment = hermetic_subprocess_env(fixture_root)
+        probe_subprocess_runtime_roots(fixture_root, environment)
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "dev_flow.py"), *arguments],
             cwd=ROOT,
+            env=environment,
             check=True,
             capture_output=True,
             text=True,
@@ -405,6 +449,85 @@ class MCPRuntimeTests(unittest.TestCase):
         self.assertEqual(result.structured_content["error"]["code"], "INTERNAL_ERROR")
         self.assertIsNone(result.structured_content["result"])
 
+    def test_transport_rejects_invalid_nested_mutation_contracts(self) -> None:
+        tool = "dev_flow_apply_action"
+        valid_receipt = {
+            "schema": RECEIPT_SCHEMA,
+            "task_id": "task-transport-boundary",
+            "action_id": "task.preflight",
+            "committed_revision": 1,
+            "status": "ANALYZING",
+            "current_node": "impact",
+            "committed": True,
+            "workspace_freshness": {
+                "schema": WORKSPACE_FRESHNESS_SCHEMA,
+                "status": True,
+                "observed_at": "2026-08-09T00:00:00Z",
+                "reasons": [],
+            },
+            "blind_retry": False,
+            "recovery": {
+                "kind": "read-after-write",
+                "tool": "dev_flow_get_next_action",
+                "task_id": "task-transport-boundary",
+                "blind_retry": False,
+            },
+        }
+
+        def invalid_observed_at(result: dict) -> None:
+            result["receipt"]["workspace_freshness"]["observed_at"] = []
+
+        def invalid_recovery(result: dict) -> None:
+            result["receipt"]["recovery"] = {}
+
+        def invalid_current(result: dict) -> None:
+            result["current"] = {}
+
+        for label, corrupt in (
+            ("observed-at", invalid_observed_at),
+            ("recovery", invalid_recovery),
+            ("current", invalid_current),
+        ):
+            with self.subTest(field=label), tempfile.TemporaryDirectory() as data_dir:
+                structured = {
+                    "schema": "dev-flow-mcp-result/1.0.0",
+                    "ok": True,
+                    "tool": tool,
+                    "request_id": "mcp-01234567-89ab-4cde-8fab-0123456789ab",
+                    "result": {
+                        "receipt": json.loads(json.dumps(valid_receipt)),
+                        "current": None,
+                    },
+                    "error": None,
+                }
+                corrupt(structured["result"])
+                published_error = next(
+                    Draft202012Validator(OUTPUT_SCHEMAS[tool]).iter_errors(
+                        structured
+                    ),
+                    None,
+                )
+                self.assertIsNone(published_error)
+                forged = CallToolResult(
+                    content=[],
+                    structuredContent=structured,
+                    isError=False,
+                )
+                server = create_server(data_dir)
+                with mock.patch.object(
+                    MCPServer,
+                    "call_tool",
+                    new=mock.AsyncMock(return_value=forged),
+                ):
+                    result = asyncio.run(server.call_tool(tool, {}))
+
+                self.assertTrue(result.is_error)
+                self.assertEqual(
+                    result.structured_content["error"]["code"],
+                    "INTERNAL_ERROR",
+                )
+                self.assertIsNone(result.structured_content["result"])
+
     def test_first_excess_structured_result_is_rejected(self) -> None:
         oversized = {
             "task": {},
@@ -490,23 +613,27 @@ class MCPRuntimeTests(unittest.TestCase):
             ).structured_content["result"]
             binding = current["action"]["binding"]
             cancelled = False
-            original_snapshot = application.controller._snapshot
+            original_capture = application.controller._capture_snapshot
 
             def capture_then_cancel(*args, **kwargs):
                 nonlocal cancelled
-                snapshot = original_snapshot(*args, **kwargs)
+                snapshot = original_capture(*args, **kwargs)
                 cancelled = True
                 return snapshot
 
             with mock.patch.object(
                 application.controller,
-                "_snapshot",
+                "_capture_snapshot",
                 side_effect=capture_then_cancel,
             ), mock.patch.object(
                 application.controller.store,
-                "update",
-                wraps=application.controller.store.update,
-            ) as update:
+                "commit_repository_mutation",
+                wraps=application.controller.store.commit_repository_mutation,
+            ) as commit, mock.patch.object(
+                application.controller.store,
+                "_atomic_write",
+                wraps=application.controller.store._atomic_write,
+            ) as write:
                 result = application.call(
                     "dev_flow_apply_action",
                     {
@@ -523,9 +650,97 @@ class MCPRuntimeTests(unittest.TestCase):
                 result.structured_content["error"]["code"],
                 "REQUEST_CANCELLED",
             )
-            update.assert_not_called()
+            commit.assert_called_once()
+            write.assert_not_called()
             state = Controller(str(root / "data")).show("task-precommit-cancel")
             self.assertEqual(state.revision, 0)
+
+    def test_mutation_freshness_false_and_unknown_are_successful_mcp_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = self._repository(root, "repository")
+            application = MCPApplication(str(root / "data"))
+            started = application.call(
+                "dev_flow_start_task",
+                {
+                    "requirement": "adapter freshness contract",
+                    "workflow": "lite",
+                    "repositories": [str(repository)],
+                    "task_id": "task-adapter-freshness",
+                },
+            )
+            self.assertFalse(started.is_error)
+            projection = application.controller.next("task-adapter-freshness")
+            binding = projection["action"]["binding"]
+            cases = (
+                (
+                    "changed",
+                    {
+                        "status": False,
+                        "observed_at": "2026-08-09T00:00:00Z",
+                        "reasons": [
+                            "workspace_changed",
+                            "workspace_changed:repository",
+                        ],
+                    },
+                    projection,
+                    False,
+                ),
+                (
+                    "unknown",
+                    {
+                        "status": "unknown",
+                        "observed_at": None,
+                        "reasons": ["observation_failed:OBSERVATION_FAILED"],
+                    },
+                    None,
+                    True,
+                ),
+            )
+            for label, freshness, mutation_projection, current_is_null in cases:
+                with self.subTest(freshness=label):
+                    receipt = {
+                        "schema": RECEIPT_SCHEMA,
+                        "task_id": "task-adapter-freshness",
+                        "action_id": "task.preflight",
+                        "committed_revision": 1,
+                        "status": "ANALYZING",
+                        "current_node": "impact",
+                        "committed": True,
+                        "workspace_freshness": {
+                            "schema": WORKSPACE_FRESHNESS_SCHEMA,
+                            **freshness,
+                        },
+                        "blind_retry": False,
+                        "recovery": {
+                            "kind": "read-after-write",
+                            "tool": "dev_flow_get_next_action",
+                            "task_id": "task-adapter-freshness",
+                            "blind_retry": False,
+                        },
+                    }
+                    with mock.patch.object(
+                        application.controller,
+                        "apply",
+                        return_value={
+                            "receipt": receipt,
+                            "projection": mutation_projection,
+                        },
+                    ):
+                        result = application.call(
+                            "dev_flow_apply_action",
+                            {
+                                "task_id": "task-adapter-freshness",
+                                "action_id": "task.preflight",
+                                "payload": {},
+                                "binding": binding,
+                            },
+                        )
+
+                    self.assertFalse(result.is_error)
+                    content = result.structured_content["result"]
+                    self.assertEqual(content["receipt"], receipt)
+                    self.assertEqual(content["current"] is None, current_is_null)
 
     def test_invalid_cursor_fails_closed_without_inventory_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as data_dir:
@@ -745,6 +960,8 @@ class MCPRuntimeTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as data_dir:
             for invalid in invalid_messages:
+                environment = hermetic_subprocess_env(Path(data_dir))
+                probe_subprocess_runtime_roots(Path(data_dir), environment)
                 completed = subprocess.run(
                     [
                         sys.executable,
@@ -755,6 +972,7 @@ class MCPRuntimeTests(unittest.TestCase):
                         data_dir,
                     ],
                     cwd=ROOT,
+                    env=environment,
                     input=invalid + initialize,
                     capture_output=True,
                     check=False,
@@ -953,12 +1171,13 @@ class MCPRuntimeTests(unittest.TestCase):
             root = Path(temporary)
             repository = root / "repository"
             repository.mkdir()
-            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-            subprocess.run(["git", "config", "user.email", "mcp@example.invalid"], cwd=repository, check=True)
-            subprocess.run(["git", "config", "user.name", "MCP Test"], cwd=repository, check=True)
+            environment = hermetic_subprocess_env(root)
+            subprocess.run(["git", "init", "-q"], cwd=repository, env=environment, check=True)
+            subprocess.run(["git", "config", "user.email", "mcp@example.invalid"], cwd=repository, env=environment, check=True)
+            subprocess.run(["git", "config", "user.name", "MCP Test"], cwd=repository, env=environment, check=True)
             (repository / "tracked.txt").write_text("baseline\n", encoding="utf-8")
-            subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
-            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repository, check=True)
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repository, env=environment, check=True)
+            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repository, env=environment, check=True)
             data_dir = root / "data"
             server = create_server(str(data_dir))
             started = asyncio.run(server.call_tool(
@@ -984,15 +1203,25 @@ class MCPRuntimeTests(unittest.TestCase):
             root = Path(temporary)
             repository = root / "repository"
             repository.mkdir()
-            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-            subprocess.run(["git", "config", "user.email", "mcp@example.invalid"], cwd=repository, check=True)
-            subprocess.run(["git", "config", "user.name", "MCP Test"], cwd=repository, check=True)
+            environment = hermetic_subprocess_env(root)
+            subprocess.run(["git", "init", "-q"], cwd=repository, env=environment, check=True)
+            subprocess.run(["git", "config", "user.email", "mcp@example.invalid"], cwd=repository, env=environment, check=True)
+            subprocess.run(["git", "config", "user.name", "MCP Test"], cwd=repository, env=environment, check=True)
             (repository / "tracked.txt").write_text("baseline\n", encoding="utf-8")
-            subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
-            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repository, check=True)
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repository, env=environment, check=True)
+            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repository, env=environment, check=True)
             cli_data = root / "cli-data"
             mcp_data = root / "mcp-data"
             task_id = "task-parity"
+
+            def normalized_receipt(receipt: dict) -> dict:
+                normalized = json.loads(json.dumps(receipt))
+                observed_at = normalized["workspace_freshness"]["observed_at"]
+                self.assertIsInstance(observed_at, str)
+                self.assertTrue(observed_at.endswith("Z"))
+                normalized["workspace_freshness"]["observed_at"] = "<observed-at>"
+                return normalized
+
             self._run_cli(
                 "--data-dir", str(cli_data), "start", "--requirement", "parity",
                 "--workflow", "lite", "--repo", str(repository), "--task-id", task_id,
@@ -1016,9 +1245,14 @@ class MCPRuntimeTests(unittest.TestCase):
                 "task_id": task_id, "action_id": "task.preflight", "payload": {}, "binding": binding,
             }))
             self.assertFalse(mcp_applied.is_error)
+            self.assertIsNotNone(
+                mcp_applied.structured_content["result"]["current"]
+            )
             self.assertEqual(
-                mcp_applied.structured_content["result"]["receipt"],
-                cli_applied["receipt"],
+                normalized_receipt(
+                    mcp_applied.structured_content["result"]["receipt"]
+                ),
+                normalized_receipt(cli_applied["receipt"]),
             )
             replayed = asyncio.run(server.call_tool("dev_flow_apply_action", {
                 "task_id": task_id,
@@ -1052,9 +1286,14 @@ class MCPRuntimeTests(unittest.TestCase):
                 "decision": decision,
             }))
             self.assertFalse(mcp_decided.is_error)
+            self.assertIsNotNone(
+                mcp_decided.structured_content["result"]["current"]
+            )
             self.assertEqual(
-                mcp_decided.structured_content["result"]["receipt"],
-                cli_decided["receipt"],
+                normalized_receipt(
+                    mcp_decided.structured_content["result"]["receipt"]
+                ),
+                normalized_receipt(cli_decided["receipt"]),
             )
             cli_cancelled = self._run_cli(
                 "--data-dir", str(cli_data), "cancel", task_id,
@@ -1065,9 +1304,14 @@ class MCPRuntimeTests(unittest.TestCase):
                 "reason": "Parity cancellation",
             }))
             self.assertFalse(mcp_cancelled.is_error)
+            self.assertIsNotNone(
+                mcp_cancelled.structured_content["result"]["current"]
+            )
             self.assertEqual(
-                mcp_cancelled.structured_content["result"]["receipt"],
-                cli_cancelled["receipt"],
+                normalized_receipt(
+                    mcp_cancelled.structured_content["result"]["receipt"]
+                ),
+                normalized_receipt(cli_cancelled["receipt"]),
             )
             cancelled_again = asyncio.run(server.call_tool("dev_flow_cancel_task", {
                 "task_id": task_id,
@@ -1089,6 +1333,8 @@ class MCPRuntimeTests(unittest.TestCase):
 class MCPStdioProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_initialize_catalog_and_read_call_over_real_stdio(self) -> None:
         with tempfile.TemporaryDirectory() as data_dir:
+            environment = hermetic_subprocess_env(Path(data_dir))
+            probe_subprocess_runtime_roots(Path(data_dir), environment)
             parameters = StdioServerParameters(
                 command=sys.executable,
                 args=[
@@ -1099,6 +1345,7 @@ class MCPStdioProtocolTests(unittest.IsolatedAsyncioTestCase):
                     data_dir,
                 ],
                 cwd=ROOT,
+                env=environment,
             )
             async with stdio_client(parameters) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:

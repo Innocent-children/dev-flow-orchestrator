@@ -43,10 +43,10 @@ class StaleMutationTests(RepositoryTestCase):
         task_id = self.start_lite()
         self.apply_current(task_id, {})
         racing = Controller(self.data_dir)
-        original_update = self.controller.store.update
+        original_commit = self.controller.store.commit_repository_mutation
         raced = False
 
-        def update_after_competing_decision(task_id_value, expected_revision, mutation):
+        def commit_after_competing_decision(*args, **kwargs):
             nonlocal raced
             if not raced:
                 raced = True
@@ -61,10 +61,12 @@ class StaleMutationTests(RepositoryTestCase):
                         "actor_label": "test",
                     },
                 )
-            return original_update(task_id_value, expected_revision, mutation)
+            return original_commit(*args, **kwargs)
 
         with mock.patch.object(
-            self.controller.store, "update", side_effect=update_after_competing_decision
+            self.controller.store,
+            "commit_repository_mutation",
+            side_effect=commit_after_competing_decision,
         ):
             with self.assertRaises(DevFlowError) as context:
                 self.controller.cancel(task_id, reason="losing cancellation")
@@ -83,12 +85,10 @@ class StaleMutationTests(RepositoryTestCase):
         self.apply_current(task_id, {})
         projected = self.controller.next(task_id)
         racing = Controller(self.data_dir)
-        original_update = self.controller.store.update
+        original_commit = self.controller.store.commit_repository_mutation
         raced = False
 
-        def update_after_competing_decision(
-            task_id_value, expected_revision, mutation
-        ):
+        def commit_after_competing_decision(*args, **kwargs):
             nonlocal raced
             if not raced:
                 raced = True
@@ -103,10 +103,12 @@ class StaleMutationTests(RepositoryTestCase):
                         "actor_label": "test",
                     },
                 )
-            return original_update(task_id_value, expected_revision, mutation)
+            return original_commit(*args, **kwargs)
 
         with mock.patch.object(
-            self.controller.store, "update", side_effect=update_after_competing_decision
+            self.controller.store,
+            "commit_repository_mutation",
+            side_effect=commit_after_competing_decision,
         ):
             with self.assertRaises(DevFlowError) as context:
                 self.controller.apply(

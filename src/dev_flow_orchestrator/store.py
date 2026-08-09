@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
+from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Tuple
+from typing import Callable, Mapping, Optional, Tuple
 
-from ._platform.paths import canonical_data_root, paths_equal
+from ._platform.paths import (
+    canonical_data_root,
+    canonical_git_path,
+    canonical_repository_root,
+    comparison_key,
+    paths_equal,
+)
 from .engine import (
     is_terminal_state,
     validate_persisted_state,
@@ -28,6 +38,34 @@ from .model import (
 from .product import PLUGIN_DATA_NAMESPACE, PRODUCT_IDENTITY, MODEL_VERSION
 from .workflow import WorkflowDefinition
 from .workflows import load_definition, task_definition
+
+
+@dataclass(frozen=True)
+class RepositoryMutationPlan:
+    """Freeze one repository capture and pure state derivation request."""
+
+    action_id: str
+    capture: Callable[[], Mapping[str, object]]
+    derive: Callable[[Mapping[str, object]], TaskState]
+
+
+@dataclass(frozen=True)
+class RepositoryMutationCommit:
+    """Separate a durable state replacement from its live observation."""
+
+    state: TaskState
+    action_id: str
+    committed_snapshot: Mapping[str, object]
+    observation: Optional[Mapping[str, object]]
+    observed_at: Optional[str]
+    observation_error_code: Optional[str]
+
+
+@dataclass(frozen=True)
+class _RepositoryAuthority:
+    repository_id: str
+    identity: bytes
+    lock_path: Path
 
 
 class TaskStore:
@@ -79,6 +117,134 @@ class TaskStore:
         ensure_private_directory(self.tasks_root)
         ensure_private_directory(self.locks_root)
         return exclusive_file_lock(self.locks_root / "membership.lock")
+
+    @staticmethod
+    def _repository_identity(repository) -> bytes:
+        try:
+            root = canonical_repository_root(repository.path)
+            git_worktree_dir = canonical_git_path(
+                repository.git_worktree_dir,
+                repository_root=root,
+            )
+            root_key = comparison_key(root).encode("utf-8")
+            git_worktree_key = comparison_key(git_worktree_dir).encode("utf-8")
+        except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+            raise DevFlowError(
+                "REPOSITORY_INVALID",
+                "repository authority identity cannot be resolved",
+                details={"repository_id": repository.repository_id},
+            ) from exc
+        return root_key + b"\0" + git_worktree_key
+
+    def _repository_authorities(self, repositories) -> Tuple[_RepositoryAuthority, ...]:
+        seen = {}
+        authorities = []
+        lock_domain = b"dev-flow-orchestrator/repository-authority-lock/v1\0"
+        for repository in repositories:
+            identity = self._repository_identity(repository)
+            duplicate = seen.get(identity)
+            if duplicate is not None:
+                raise DevFlowError(
+                    "REPOSITORY_DUPLICATE",
+                    "task repositories resolve to the same authority identity",
+                    details={
+                        "repository_ids": [
+                            duplicate,
+                            repository.repository_id,
+                        ],
+                    },
+                )
+            seen[identity] = repository.repository_id
+            digest = hashlib.sha256(lock_domain + identity).hexdigest()
+            authorities.append(
+                _RepositoryAuthority(
+                    repository.repository_id,
+                    identity,
+                    self.locks_root / "repository-{}.lock".format(digest),
+                )
+            )
+        return tuple(sorted(authorities, key=lambda item: item.identity))
+
+    @staticmethod
+    def _same_authorities(
+        left: Tuple[_RepositoryAuthority, ...],
+        right: Tuple[_RepositoryAuthority, ...],
+    ) -> bool:
+        return tuple(
+            (item.repository_id, item.identity) for item in left
+        ) == tuple((item.repository_id, item.identity) for item in right)
+
+    @staticmethod
+    def _capture_mapping(plan: RepositoryMutationPlan) -> Mapping[str, object]:
+        snapshot = plan.capture()
+        if not isinstance(snapshot, Mapping):
+            raise DevFlowError(
+                "SNAPSHOT_INVALID",
+                "repository mutation capture must return a mapping",
+            )
+        return snapshot
+
+    @staticmethod
+    def _changed_repository_ids(
+        repositories,
+        before: Mapping[str, object],
+        after: Mapping[str, object],
+    ) -> list:
+        repository_ids = tuple(
+            sorted(
+                (repository.repository_id for repository in repositories),
+                key=lambda item: item.encode("utf-8"),
+            )
+        )
+
+        def members(snapshot: Mapping[str, object]) -> dict:
+            values = snapshot.get("repositories")
+            if not isinstance(values, (list, tuple)):
+                return {}
+            result = {}
+            for value in values:
+                if not isinstance(value, Mapping):
+                    continue
+                repository_id = value.get("repository_id")
+                if isinstance(repository_id, str):
+                    result[repository_id] = value
+            return result
+
+        before_members = members(before)
+        after_members = members(after)
+        changed = [
+            repository_id
+            for repository_id in repository_ids
+            if before_members.get(repository_id) != after_members.get(repository_id)
+        ]
+        if changed:
+            return changed[:8]
+        # A valid repository-set snapshot cannot differ only outside its member
+        # values.  Fail closed with the bounded task membership when a caller
+        # supplies another Mapping implementation or an invalid aggregate.
+        return list(repository_ids[:8])
+
+    @staticmethod
+    def _observation_error_code(exc: Exception) -> str:
+        try:
+            code = getattr(exc, "code", None)
+            if (
+                isinstance(code, str)
+                and 1 <= len(code) <= 64
+                and code[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                and all(
+                    character in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+                    for character in code
+                )
+            ):
+                return code
+        except Exception:
+            pass
+        return "OBSERVATION_FAILED"
+
+    @staticmethod
+    def _utc_now() -> str:
+        return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _read_state_with_definition(
         self,
@@ -412,3 +578,138 @@ class TaskStore:
             validate_state_transition(current, candidate, definition)
             self._atomic_write(state_path, candidate)
             return candidate
+
+    def commit_repository_mutation(
+        self,
+        task_id: str,
+        expected_revision: int,
+        prepare: Callable[
+            [TaskState, WorkflowDefinition],
+            RepositoryMutationPlan,
+        ],
+        cancellation_check: Optional[Callable[[], None]] = None,
+        phase_hook: Optional[Callable[[str], None]] = None,
+    ) -> RepositoryMutationCommit:
+        """Commit one snapshot-bound mutation under canonical repository locks."""
+        with ExitStack() as locks:
+            locks.enter_context(self.membership_lock())
+
+            inspected, _ = self.inspect_with_definition(task_id)
+            selected_authorities = self._repository_authorities(
+                inspected.repositories
+            )
+            for authority in selected_authorities:
+                locks.enter_context(exclusive_file_lock(authority.lock_path))
+
+            locks.enter_context(self._lock(task_id))
+            state_path = self._state_path(task_id)
+            current, definition = self._read_state_with_definition(task_id)
+            if current.revision != expected_revision:
+                raise DevFlowError(
+                    "REVISION_CONFLICT",
+                    "task revision is stale",
+                    details={
+                        "task_id": task_id,
+                        "expected_revision": expected_revision,
+                        "actual_revision": current.revision,
+                    },
+                )
+            if current.repositories != inspected.repositories:
+                raise DevFlowError(
+                    "REVISION_CONFLICT",
+                    "task repository membership changed while commit authority was acquired",
+                    details={
+                        "task_id": task_id,
+                        "expected_revision": expected_revision,
+                        "actual_revision": current.revision,
+                        "cause": "repository_membership_changed",
+                    },
+                )
+            current_authorities = self._repository_authorities(
+                current.repositories
+            )
+            if not self._same_authorities(
+                selected_authorities,
+                current_authorities,
+            ):
+                raise DevFlowError(
+                    "REPOSITORY_IDENTITY_MISMATCH",
+                    "repository authority identity changed while locks were acquired",
+                    details={
+                        "repository_ids": [
+                            repository.repository_id
+                            for repository in current.repositories[:8]
+                        ],
+                    },
+                )
+
+            plan = prepare(current, definition)
+            if not isinstance(plan, RepositoryMutationPlan):
+                raise DevFlowError(
+                    "STATE_WRITE_INVALID",
+                    "repository mutation prepare callback returned an invalid plan",
+                )
+            if not isinstance(plan.action_id, str) or not plan.action_id:
+                raise DevFlowError(
+                    "STATE_WRITE_INVALID",
+                    "repository mutation action identity is invalid",
+                )
+
+            committed_snapshot = self._capture_mapping(plan)
+            if cancellation_check is not None:
+                cancellation_check()
+            candidate = plan.derive(committed_snapshot)
+            if not isinstance(candidate, TaskState):
+                raise DevFlowError(
+                    "STATE_WRITE_INVALID",
+                    "repository mutation derivation returned an invalid task state",
+                )
+            if candidate.task_id != task_id:
+                raise DevFlowError(
+                    "STATE_WRITE_INVALID",
+                    "mutation changed task identity",
+                )
+            validate_state_transition(current, candidate, definition)
+
+            if phase_hook is not None:
+                phase_hook("before-revalidation")
+            revalidated_snapshot = self._capture_mapping(plan)
+            if revalidated_snapshot != committed_snapshot:
+                raise DevFlowError(
+                    "SNAPSHOT_UNSTABLE",
+                    "repository set changed before task state replacement",
+                    details={
+                        "repository_ids": self._changed_repository_ids(
+                            current.repositories,
+                            committed_snapshot,
+                            revalidated_snapshot,
+                        ),
+                        "phase": "revalidation",
+                    },
+                )
+            if phase_hook is not None:
+                phase_hook("after-revalidation")
+
+            self._atomic_write(state_path, candidate)
+
+            observation = None
+            observed_at = None
+            observation_error_code = None
+            try:
+                if phase_hook is not None:
+                    phase_hook("before-observation")
+                observation = self._capture_mapping(plan)
+                observed_at = self._utc_now()
+            except Exception as exc:
+                observation = None
+                observed_at = None
+                observation_error_code = self._observation_error_code(exc)
+
+            return RepositoryMutationCommit(
+                state=candidate,
+                action_id=plan.action_id,
+                committed_snapshot=committed_snapshot,
+                observation=observation,
+                observed_at=observed_at,
+                observation_error_code=observation_error_code,
+            )

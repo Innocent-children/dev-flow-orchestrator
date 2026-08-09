@@ -16,6 +16,7 @@ from .product import (
     PRODUCT_IDENTITY,
     MODEL_VERSION,
     RECEIPT_SCHEMA,
+    WORKSPACE_FRESHNESS_SCHEMA,
     WORKFLOW_SCHEMA,
     product_domain,
 )
@@ -461,6 +462,7 @@ class MutationReceipt:
     committed_revision: int
     status: str
     current_node: str
+    workspace_freshness: Mapping[str, object]
 
     def as_dict(self) -> dict:
         return {
@@ -470,6 +472,18 @@ class MutationReceipt:
             "committed_revision": self.committed_revision,
             "status": self.status,
             "current_node": self.current_node,
+            "committed": True,
+            "workspace_freshness": {
+                "schema": WORKSPACE_FRESHNESS_SCHEMA,
+                **json_value(self.workspace_freshness),
+            },
+            "blind_retry": False,
+            "recovery": {
+                "kind": "read-after-write",
+                "tool": "dev_flow_get_next_action",
+                "task_id": self.task_id,
+                "blind_retry": False,
+            },
         }
 
 

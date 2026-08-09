@@ -492,6 +492,16 @@ EXTERNAL_VERSION_LITERALS = {
     "src/dev_flow_orchestrator/runtime_receipt.py": (
         "dev-flow-runtime-receipt/1.0.0",
     ),
+    # Response freshness is a release-neutral wire contract, not a persisted
+    # product-model schema.
+    "src/dev_flow_orchestrator/product.py": (
+        "dev-flow-workspace-freshness/1.0.0",
+    ),
+    # This versioned domain separates repository-authority lock hashes from
+    # unrelated digests; it is not a product compatibility identifier.
+    "src/dev_flow_orchestrator/store.py": (
+        "dev-flow-orchestrator/repository-authority-lock/v1",
+    ),
     "scripts/manage_runtime.py": (
         "dev-flow-managed-runtime/1",
     ),
@@ -508,6 +518,8 @@ EXTERNAL_VERSION_LITERALS = {
         "dev-flow-mcp-guidance/1.0.0",
         "dev-flow-runtime-receipt/1.0.0",
         "dev-flow-managed-runtime/1",
+        "dev-flow-workspace-freshness/1.0.0",
+        "dev-flow-orchestrator/repository-authority-lock/v1",
     ),
     "tests/test_mcp_runtime.py": (
         "dev-flow-mcp-action/1.0.0",
@@ -2627,9 +2639,11 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
         ),
         "scripts/uninstall.ps1": (
             "[switch]$KeepSource",
-            "status', '--ignored', '--porcelain",
-            "--remotes=origin",
             "[IO.File]::Replace",
+            "OUTCOME        partial",
+            "SOURCE PATH",
+            "no verifiable exact-ownership manifest",
+            "independently confirm ownership",
             "TASK DATA",
             ".dev-flow-managed-runtime",
         ),
@@ -2643,6 +2657,24 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
                 errors,
                 relative + " does not preserve the Windows integration boundary",
             )
+
+    windows_uninstaller = root / "scripts" / "uninstall.ps1"
+    if windows_uninstaller.is_file():
+        source = windows_uninstaller.read_text(encoding="utf-8")
+        _check(
+            re.search(
+                r"(?im)^\s*Remove-Item\b[^\r\n]*\$SourceRoot\b",
+                source,
+            )
+            is None,
+            errors,
+            "scripts/uninstall.ps1 can remove the retained source target",
+        )
+        _check(
+            "[switch]$RemoveSource" not in source and "$RemoveSource" not in source,
+            errors,
+            "scripts/uninstall.ps1 exposes or executes destructive source removal",
+        )
     document_tokens = {
         "README.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "preview"),
         "README_CN.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "预览"),
@@ -2888,17 +2920,36 @@ def _validate_current_candidate(root: Path) -> dict:
             "macOS installer does not install the owned PATH launcher",
         )
     if uninstaller.is_file():
+        uninstaller_source = uninstaller.read_text(encoding="utf-8")
         _require_tokens(
-            uninstaller.read_text(encoding="utf-8"),
+            uninstaller_source,
             (
                 'select_path_bin_dir',
                 'PATH has no writable absolute directory',
                 '# dev-flow-orchestrator managed launcher',
                 'grep -Fqx "$LAUNCHER_MARKER"',
                 'rm -f -- "$LAUNCHER_PATH"',
+                'OUTCOME',
+                'SOURCE PATH',
+                'no verifiable exact-ownership manifest',
+                'independently confirm ownership',
             ),
             errors,
             "macOS uninstaller does not preserve PATH launcher ownership",
+        )
+        _check(
+            re.search(
+                r'(?m)^\s*rm\b[^\r\n]*\$\{?SOURCE_ROOT\}?',
+                uninstaller_source,
+            )
+            is None,
+            errors,
+            "scripts/uninstall.sh can remove the retained source target",
+        )
+        _check(
+            "--remove-source)" not in uninstaller_source,
+            errors,
+            "scripts/uninstall.sh exposes destructive source removal",
         )
     _validate_local_read_only_web_ui(root, errors)
     _validate_windows_product_integration(root, errors)

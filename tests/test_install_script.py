@@ -15,6 +15,14 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TESTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS))
+
+from support import (
+    assert_hermetic_subprocess_env,
+    hermetic_subprocess_env,
+    probe_subprocess_runtime_roots,
+)
 INSTALLER = ROOT / "scripts" / "install.sh"
 PACKAGE_VERSION = json.loads(
     (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
@@ -22,9 +30,20 @@ PACKAGE_VERSION = json.loads(
 
 
 def _git(*arguments: str, cwd: Optional[Path] = None) -> str:
+    if cwd is not None:
+        isolation_root = cwd.resolve()
+    else:
+        absolute = next(
+            (Path(value) for value in arguments if Path(value).is_absolute()),
+            None,
+        )
+        if absolute is None:
+            raise AssertionError("fixture Git command has no temporary path authority")
+        isolation_root = absolute.resolve().parent
     completed = subprocess.run(
         ["git", *arguments],
         cwd=cwd,
+        env=hermetic_subprocess_env(isolation_root),
         check=True,
         capture_output=True,
         text=True,
@@ -38,6 +57,7 @@ def _configure_identity(repository: Path) -> None:
 
 
 def _copy_candidate(destination: Path) -> None:
+    environment = hermetic_subprocess_env(destination.resolve().parent)
     listed = subprocess.run(
         [
             "git",
@@ -48,6 +68,7 @@ def _copy_candidate(destination: Path) -> None:
             "-z",
         ],
         cwd=ROOT,
+        env=environment,
         check=True,
         capture_output=True,
     ).stdout
@@ -186,17 +207,10 @@ class InstallerBehaviorTests(unittest.TestCase):
             | stat.S_IXOTH
         )
 
-        self.environment = os.environ.copy()
-        for name in (
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "NO_COLOR",
-            "DEV_FLOW_FORCE_COLOR",
-        ):
-            self.environment.pop(name, None)
-        self.environment.update(
-            {
+        self.environment = hermetic_subprocess_env(
+            self.test_root,
+            path_entries=(fake_bin,),
+            overrides={
                 "DEV_FLOW_REPOSITORY_URL": self.remote_url,
                 "DEV_FLOW_SOURCE_ROOT": str(self.source_root),
                 "DEV_FLOW_MARKETPLACE_FILE": str(self.marketplace),
@@ -226,15 +240,27 @@ class InstallerBehaviorTests(unittest.TestCase):
                 "DEV_FLOW_BIN_DIR": str(fake_bin),
                 "DEV_FLOW_RUNTIME_HOME": str(self.test_root / "managed runtime"),
                 "CODEX_HOME": str(self.test_root / ".codex"),
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_TERMINAL_PROMPT": "0",
-                "LANG": "C",
-                "LC_ALL": "C",
-                "PATH": str(fake_bin)
-                + os.pathsep
-                + self.environment.get("PATH", ""),
-            }
+            },
+        )
+        for authority in (
+            "HOME",
+            "USERPROFILE",
+            "LOCALAPPDATA",
+            "XDG_DATA_HOME",
+            "CODEX_HOME",
+            "DEV_FLOW_DATA_DIR",
+            "PLUGIN_DATA",
+            "DEV_FLOW_RUNTIME_HOME",
+            "DEV_FLOW_SOURCE_ROOT",
+            "DEV_FLOW_MARKETPLACE_FILE",
+            "DEV_FLOW_BIN_DIR",
+        ):
+            Path(self.environment[authority]).resolve().relative_to(
+                self.test_root.resolve()
+            )
+        self.assertEqual(
+            Path(self.environment["PATH"].split(os.pathsep)[0]).resolve(),
+            fake_bin.resolve(),
         )
 
     def tearDown(self) -> None:
@@ -247,6 +273,8 @@ class InstallerBehaviorTests(unittest.TestCase):
         environment = self.environment.copy()
         if overrides:
             environment.update(overrides)
+        assert_hermetic_subprocess_env(self.test_root, environment)
+        probe_subprocess_runtime_roots(self.test_root, environment)
         return subprocess.run(
             ["/bin/sh", str(INSTALLER)],
             cwd=self.test_root,
@@ -418,11 +446,25 @@ class InstallerBehaviorTests(unittest.TestCase):
     def test_launcher_uses_automatic_codex_data_directory(self) -> None:
         self.install_successfully()
         launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow"
+        launcher_environment = self.environment.copy()
+        launcher_environment.pop("DEV_FLOW_DATA_DIR", None)
+        launcher_environment.pop("PLUGIN_DATA", None)
+        resolved_root = probe_subprocess_runtime_roots(
+            self.test_root, launcher_environment
+        )["data"]
+        expected_root = (
+            Path(self.environment["CODEX_HOME"])
+            / "plugins"
+            / "data"
+            / "dev-flow-orchestrator-personal"
+        ).resolve()
+        self.assertEqual(resolved_root, expected_root)
+        resolved_root.relative_to(self.test_root.resolve())
 
         completed = subprocess.run(
             [str(launcher), "web", "status"],
             cwd=self.test_root,
-            env=self.environment,
+            env=launcher_environment,
             capture_output=True,
             text=True,
         )
@@ -430,13 +472,7 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         receipt = json.loads(completed.stdout)
         self.assertEqual(receipt["status"], "stopped")
-        expected = (
-            Path(self.environment["CODEX_HOME"])
-            / "plugins"
-            / "data"
-            / "dev-flow-orchestrator-personal"
-            / "0.4.0"
-        )
+        expected = resolved_root / "0.4.0"
         self.assertFalse(expected.exists())
 
     def test_launcher_defaults_to_a_writable_directory_already_on_path(self) -> None:

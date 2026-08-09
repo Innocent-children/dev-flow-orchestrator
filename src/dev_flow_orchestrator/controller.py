@@ -55,7 +55,12 @@ from .model import (
 )
 from .product import MAX_REPOSITORY_COUNT, MIN_REPOSITORY_COUNT
 from .snapshot import make_repository_set_snapshot, validate_snapshot
-from .store import TaskStore
+from .store import (
+    RepositoryMutationCommit,
+    RepositoryMutationPlan,
+    TaskStore,
+)
+from .workflow import WorkflowDefinition
 from .web_views import (
     DEFAULT_PAGE_LIMIT,
     inventory_view as web_inventory_view,
@@ -104,6 +109,8 @@ class Controller:
     ) -> None:
         self.store = TaskStore(data_dir)
         self.git = git_client or GitClient()
+        # Private deterministic seam used only by capture/commit fault tests.
+        self._mutation_test_hook: Optional[Callable[[str], None]] = None
 
     @staticmethod
     def _cancellation_checkpoint(
@@ -446,13 +453,13 @@ class Controller:
             for repository_id, requests in partitions.items()
         }
 
-    def _snapshot(
+    def _snapshot_resources(
         self,
         state: TaskState,
         *,
         additional_resources: Sequence[Mapping[str, object]] = (),
         include_current_resources: bool = True,
-    ) -> Mapping[str, object]:
+    ) -> tuple:
         current = current_resource_requests(state) if include_current_resources else ()
         task_paths = ()
         for record in reversed(state.records):
@@ -471,18 +478,25 @@ class Controller:
                     if isinstance(entry, Mapping)
                 )
                 break
-        resources = _merge_resources(current, task_paths, additional_resources)
-        partitions = self._partition_resources(state, resources)
+        return _merge_resources(current, task_paths, additional_resources)
+
+    def _capture_snapshot(
+        self,
+        state: TaskState,
+        partitions: Mapping[str, Sequence[Mapping[str, object]]],
+        *,
+        phase: str,
+    ) -> Mapping[str, object]:
         first = self._capture_members(
             state.repositories,
             partitions,
-            phase="snapshot",
+            phase=phase,
             capture_pass=1,
         )
         second = self._capture_members(
             state.repositories,
             partitions,
-            phase="snapshot",
+            phase=phase,
             capture_pass=2,
         )
         changed = self._changed_members(state.repositories, first, second)
@@ -490,9 +504,171 @@ class Controller:
             raise DevFlowError(
                 "SNAPSHOT_UNSTABLE",
                 "repository set changed between complete capture passes",
-                details={"repository_ids": changed, "phase": "snapshot"},
+                details={"repository_ids": changed, "phase": phase},
             )
         return make_repository_set_snapshot(state.repositories, second)
+
+    def _snapshot(
+        self,
+        state: TaskState,
+        *,
+        additional_resources: Sequence[Mapping[str, object]] = (),
+        include_current_resources: bool = True,
+    ) -> Mapping[str, object]:
+        resources = self._snapshot_resources(
+            state,
+            additional_resources=additional_resources,
+            include_current_resources=include_current_resources,
+        )
+        partitions = self._partition_resources(state, resources)
+        return self._capture_snapshot(state, partitions, phase="snapshot")
+
+    def _mutation_capture(
+        self,
+        state: TaskState,
+        *,
+        additional_resources: Sequence[Mapping[str, object]] = (),
+        include_current_resources: bool = True,
+    ) -> Callable[[], Mapping[str, object]]:
+        """Freeze one exact capture plan for S, S', and post-write observation."""
+        resources = self._snapshot_resources(
+            state,
+            additional_resources=additional_resources,
+            include_current_resources=include_current_resources,
+        )
+        partitions = self._partition_resources(state, resources)
+        capture_count = 0
+
+        def capture() -> Mapping[str, object]:
+            nonlocal capture_count
+            phases = ("capture", "revalidation", "observation")
+            phase = phases[min(capture_count, len(phases) - 1)]
+            capture_count += 1
+            return self._capture_snapshot(state, partitions, phase=phase)
+
+        return capture
+
+    def _mutation_phase(self, phase: str) -> None:
+        hook = self._mutation_test_hook
+        if hook is not None:
+            hook(phase)
+
+    @staticmethod
+    def _changed_snapshot_repositories(
+        expected: Mapping[str, object],
+        observed: Mapping[str, object],
+    ) -> tuple:
+        def members(value: Mapping[str, object]) -> dict:
+            entries = value.get("repositories")
+            if not isinstance(entries, list):
+                return {}
+            return {
+                str(entry.get("repository_id")): entry.get("snapshot")
+                for entry in entries
+                if isinstance(entry, Mapping)
+                and isinstance(entry.get("repository_id"), str)
+            }
+
+        expected_members = members(expected)
+        observed_members = members(observed)
+        return tuple(
+            repository_id
+            for repository_id in sorted(
+                set(expected_members) | set(observed_members),
+                key=lambda item: item.encode("utf-8"),
+            )
+            if expected_members.get(repository_id) != observed_members.get(repository_id)
+        )
+
+    def _commit_repository_mutation(
+        self,
+        task_id: str,
+        expected_revision: int,
+        prepare: Callable[
+            [TaskState, WorkflowDefinition], RepositoryMutationPlan
+        ],
+        *,
+        cancellation_check: Optional[Callable[[], None]],
+    ) -> dict:
+        definition_box = []
+
+        def remembered_prepare(
+            current: TaskState,
+            definition: WorkflowDefinition,
+        ) -> RepositoryMutationPlan:
+            definition_box.append(definition)
+            return prepare(current, definition)
+
+        try:
+            commit = self.store.commit_repository_mutation(
+                task_id,
+                expected_revision,
+                remembered_prepare,
+                cancellation_check=cancellation_check,
+                phase_hook=self._mutation_phase,
+            )
+        except DevFlowError as exc:
+            if exc.code == "REVISION_CONFLICT":
+                # Store releases membership, repository, and task locks before this
+                # fresh read and live projection are attempted.
+                raise self._conflict(task_id, exc) from exc
+            raise
+
+        definition = definition_box[-1]
+        freshness = self._workspace_freshness(commit)
+        projection = None
+        if commit.observation is not None:
+            try:
+                projection = agent_projection(
+                    commit.state,
+                    definition,
+                    commit.observation,
+                )
+            except DevFlowError:
+                # The durable commit remains authoritative. A projection failure
+                # must not turn it into an apparently retryable mutation failure.
+                projection = None
+        return {
+            "receipt": MutationReceipt(
+                commit.state.task_id,
+                commit.action_id,
+                commit.state.revision,
+                commit.state.status,
+                commit.state.current_node,
+                freshness,
+            ).as_dict(),
+            "projection": projection,
+        }
+
+    def _workspace_freshness(
+        self,
+        commit: RepositoryMutationCommit,
+    ) -> dict:
+        if commit.observation is None:
+            error_code = commit.observation_error_code or "CAPTURE_FAILED"
+            return {
+                "status": "unknown",
+                "observed_at": None,
+                "reasons": ["observation_failed:{}".format(error_code)],
+            }
+        if commit.observation == commit.committed_snapshot:
+            return {
+                "status": True,
+                "observed_at": commit.observed_at,
+                "reasons": [],
+            }
+        changed = self._changed_snapshot_repositories(
+            commit.committed_snapshot,
+            commit.observation,
+        )
+        return {
+            "status": False,
+            "observed_at": commit.observed_at,
+            "reasons": [
+                "workspace_changed",
+                *("workspace_changed:{}".format(item) for item in changed[:8]),
+            ],
+        }
 
     def _projection(self, state: TaskState, definition) -> dict:
         return agent_projection(state, definition, self._snapshot(state))
@@ -672,26 +848,35 @@ class Controller:
         cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
         """Commit one workflow action using the exact binding emitted by next."""
-        state, definition = self.store.load_with_definition(task_id)
         validated_binding = validate_action_binding(binding)
         expected_revision = validated_binding["task_revision"]
-        try:
+
+        def prepare(
+            current: TaskState,
+            definition: WorkflowDefinition,
+        ) -> RepositoryMutationPlan:
             contract, plan = plan_current_action(
-                state, definition, action_id, expected_revision
+                current,
+                definition,
+                action_id,
+                expected_revision,
             )
             validated = validate_action_payload(contract, payload)
             requested = resource_requests(
                 validated,
                 repository_ids=tuple(
-                    repository.repository_id for repository in state.repositories
+                    repository.repository_id for repository in current.repositories
                 ),
             )
-            snapshot = self._snapshot(state, additional_resources=requested)
-            self._cancellation_checkpoint(cancellation_check)
-            committed = self.store.update(
-                task_id,
-                expected_revision,
-                lambda current: apply_current_action(
+            capture = self._mutation_capture(
+                current,
+                additional_resources=requested,
+            )
+            timestamp = _utc_now()
+            return RepositoryMutationPlan(
+                action_id=plan.action_id,
+                capture=capture,
+                derive=lambda snapshot: apply_current_action(
                     current,
                     definition,
                     contract,
@@ -699,23 +884,16 @@ class Controller:
                     payload=validated,
                     binding=validated_binding,
                     snapshot=snapshot,
-                    timestamp=_utc_now(),
+                    timestamp=timestamp,
                 ),
             )
-        except DevFlowError as exc:
-            if exc.code == "REVISION_CONFLICT":
-                raise self._conflict(task_id, exc) from exc
-            raise
-        return {
-            "receipt": MutationReceipt(
-                committed.task_id,
-                plan.action_id,
-                committed.revision,
-                committed.status,
-                committed.current_node,
-            ).as_dict(),
-            "projection": agent_projection(committed, definition, snapshot),
-        }
+
+        return self._commit_repository_mutation(
+            task_id,
+            expected_revision,
+            prepare,
+            cancellation_check=cancellation_check,
+        )
 
     def revise_contract(
         self,
@@ -727,40 +905,44 @@ class Controller:
         actor_label: str,
         cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
-        state, definition = self.store.load_with_definition(task_id)
-        # A revision starts a new contract lineage, so old-contract governing
-        # resources are intentionally absent from this new source baseline.
-        snapshot = self._snapshot(state, include_current_resources=False)
-        self._cancellation_checkpoint(cancellation_check)
-        try:
-            committed = self.store.update(
-                task_id,
-                state.revision,
-                lambda current: revise_contract(
+        inspected, _definition = self.store.inspect_with_definition(task_id)
+        submitted_contract = json_value(contract)
+        submitted_claims = (
+            None if ownership_claims is None else json_value(ownership_claims)
+        )
+
+        def prepare(
+            current: TaskState,
+            definition: WorkflowDefinition,
+        ) -> RepositoryMutationPlan:
+            # A revision starts a new contract lineage, so old-contract governing
+            # resources are intentionally absent from this new source baseline.
+            capture = self._mutation_capture(
+                current,
+                include_current_resources=False,
+            )
+            timestamp = _utc_now()
+            return RepositoryMutationPlan(
+                action_id="contract.revise",
+                capture=capture,
+                derive=lambda snapshot: revise_contract(
                     current,
                     definition,
-                    new_contract=contract,
-                    ownership_claims=ownership_claims,
+                    new_contract=submitted_contract,
+                    ownership_claims=submitted_claims,
                     reason=reason,
                     actor_label=actor_label,
                     snapshot=snapshot,
-                    timestamp=_utc_now(),
+                    timestamp=timestamp,
                 ),
             )
-        except DevFlowError as exc:
-            if exc.code == "REVISION_CONFLICT":
-                raise self._conflict(task_id, exc) from exc
-            raise
-        return {
-            "receipt": MutationReceipt(
-                committed.task_id,
-                "contract.revise",
-                committed.revision,
-                committed.status,
-                committed.current_node,
-            ).as_dict(),
-            "projection": agent_projection(committed, definition, snapshot),
-        }
+
+        return self._commit_repository_mutation(
+            task_id,
+            inspected.revision,
+            prepare,
+            cancellation_check=cancellation_check,
+        )
 
     def decide(
         self,
@@ -769,34 +951,32 @@ class Controller:
         decision: Mapping[str, object],
         cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
-        state, definition = self.store.load_with_definition(task_id)
-        snapshot = self._snapshot(state)
-        self._cancellation_checkpoint(cancellation_check)
-        try:
-            committed = self.store.update(
-                task_id,
-                state.revision,
-                lambda current: record_decision(
+        inspected, _definition = self.store.inspect_with_definition(task_id)
+        submitted_decision = json_value(decision)
+
+        def prepare(
+            current: TaskState,
+            definition: WorkflowDefinition,
+        ) -> RepositoryMutationPlan:
+            capture = self._mutation_capture(current)
+            timestamp = _utc_now()
+            return RepositoryMutationPlan(
+                action_id="decision.record",
+                capture=capture,
+                derive=lambda _snapshot: record_decision(
                     current,
                     definition,
-                    decision=decision,
-                    timestamp=_utc_now(),
+                    decision=submitted_decision,
+                    timestamp=timestamp,
                 ),
             )
-        except DevFlowError as exc:
-            if exc.code == "REVISION_CONFLICT":
-                raise self._conflict(task_id, exc) from exc
-            raise
-        return {
-            "receipt": MutationReceipt(
-                committed.task_id,
-                "decision.record",
-                committed.revision,
-                committed.status,
-                committed.current_node,
-            ).as_dict(),
-            "projection": agent_projection(committed, definition, snapshot),
-        }
+
+        return self._commit_repository_mutation(
+            task_id,
+            inspected.revision,
+            prepare,
+            cancellation_check=cancellation_check,
+        )
 
     def dispose_finding(
         self,
@@ -806,40 +986,41 @@ class Controller:
         actor_authorized: bool,
         cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
-        state, definition = self.store.load_with_definition(task_id)
-        expands_contract = isinstance(disposition.get("next_contract"), Mapping)
-        snapshot = self._snapshot(
-            state,
-            include_current_resources=not expands_contract,
+        inspected, _definition = self.store.inspect_with_definition(task_id)
+        submitted_disposition = json_value(disposition)
+        expands_contract = isinstance(
+            submitted_disposition.get("next_contract"),
+            Mapping,
         )
-        self._cancellation_checkpoint(cancellation_check)
-        try:
-            committed = self.store.update(
-                task_id,
-                state.revision,
-                lambda current: record_finding_disposition(
+
+        def prepare(
+            current: TaskState,
+            definition: WorkflowDefinition,
+        ) -> RepositoryMutationPlan:
+            capture = self._mutation_capture(
+                current,
+                include_current_resources=not expands_contract,
+            )
+            timestamp = _utc_now()
+            return RepositoryMutationPlan(
+                action_id="finding.dispose",
+                capture=capture,
+                derive=lambda snapshot: record_finding_disposition(
                     current,
                     definition,
-                    disposition=disposition,
+                    disposition=submitted_disposition,
                     actor_authorized=actor_authorized,
                     snapshot=snapshot if expands_contract else None,
-                    timestamp=_utc_now(),
+                    timestamp=timestamp,
                 ),
             )
-        except DevFlowError as exc:
-            if exc.code == "REVISION_CONFLICT":
-                raise self._conflict(task_id, exc) from exc
-            raise
-        return {
-            "receipt": MutationReceipt(
-                committed.task_id,
-                "finding.dispose",
-                committed.revision,
-                committed.status,
-                committed.current_node,
-            ).as_dict(),
-            "projection": agent_projection(committed, definition, snapshot),
-        }
+
+        return self._commit_repository_mutation(
+            task_id,
+            inspected.revision,
+            prepare,
+            cancellation_check=cancellation_check,
+        )
 
     def cancel(
         self,
@@ -848,32 +1029,66 @@ class Controller:
         reason: str,
         cancellation_check: Optional[Callable[[], None]] = None,
     ) -> dict:
-        state, definition = self.store.load_with_definition(task_id)
-        if is_terminal_state(state, definition):
-            raise DevFlowError("ACTION_NOT_AVAILABLE", "task is already finished")
-        cancel = definition.cancel_for(state.current_node)
-        if cancel is None:
-            raise DevFlowError(
-                "ACTION_NOT_AVAILABLE",
-                "current workflow stage does not declare cancellation",
-                details={"current_node": state.current_node},
+        inspected, _definition = self.store.inspect_with_definition(task_id)
+
+        def prepare(
+            current: TaskState,
+            definition: WorkflowDefinition,
+        ) -> RepositoryMutationPlan:
+            if is_terminal_state(current, definition):
+                raise DevFlowError("ACTION_NOT_AVAILABLE", "task is already finished")
+            cancel_action = definition.cancel_for(current.current_node)
+            if cancel_action is None:
+                raise DevFlowError(
+                    "ACTION_NOT_AVAILABLE",
+                    "current workflow stage does not declare cancellation",
+                    details={"current_node": current.current_node},
+                )
+            contract, plan = plan_current_action(
+                current,
+                definition,
+                cancel_action.action_id,
+                current.revision,
             )
-        snapshot = self._snapshot(state)
-        contract_value = effective_contract(state.original_contract, state.records)
-        binding = make_action_binding(
-            task_id=state.task_id,
-            revision=state.revision,
-            action_id=cancel.action_id,
-            node_id=cancel.node_id,
-            contract=contract_value,
-            inputs=(),
-            current_snapshot=snapshot,
-        )
-        return self.apply(
+            validated = validate_action_payload(contract, {"reason": reason})
+            contract_value = effective_contract(
+                current.original_contract,
+                current.records,
+            )
+            capture = self._mutation_capture(current)
+            timestamp = _utc_now()
+
+            def derive(snapshot: Mapping[str, object]) -> TaskState:
+                binding = make_action_binding(
+                    task_id=current.task_id,
+                    revision=current.revision,
+                    action_id=cancel_action.action_id,
+                    node_id=cancel_action.node_id,
+                    contract=contract_value,
+                    inputs=(),
+                    current_snapshot=snapshot,
+                )
+                return apply_current_action(
+                    current,
+                    definition,
+                    contract,
+                    plan,
+                    payload=validated,
+                    binding=binding,
+                    snapshot=snapshot,
+                    timestamp=timestamp,
+                )
+
+            return RepositoryMutationPlan(
+                action_id=cancel_action.action_id,
+                capture=capture,
+                derive=derive,
+            )
+
+        return self._commit_repository_mutation(
             task_id,
-            cancel.action_id,
-            {"reason": reason},
-            binding=binding,
+            inspected.revision,
+            prepare,
             cancellation_check=cancellation_check,
         )
 

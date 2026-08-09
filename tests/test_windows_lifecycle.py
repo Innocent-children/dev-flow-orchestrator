@@ -14,6 +14,15 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TESTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS))
+
+from support import (
+    assert_hermetic_subprocess_env,
+    hermetic_subprocess_env,
+    probe_subprocess_runtime_roots,
+)
+
 PACKAGE_VERSION = json.loads(
     (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
 )["version"]
@@ -74,8 +83,23 @@ else:
 
 
 def git(*arguments: str, cwd: Path | None = None) -> str:
+    if cwd is not None:
+        isolation_root = cwd.resolve()
+    else:
+        absolute = next(
+            (Path(value) for value in arguments if Path(value).is_absolute()),
+            None,
+        )
+        if absolute is None:
+            raise AssertionError("fixture Git command has no temporary path authority")
+        isolation_root = absolute.resolve().parent
     result = subprocess.run(
-        ["git", *arguments], cwd=cwd, check=True, capture_output=True, text=True
+        ["git", *arguments],
+        cwd=cwd,
+        env=hermetic_subprocess_env(isolation_root),
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return result.stdout.strip()
 
@@ -96,6 +120,7 @@ class WindowsLifecycleTests(unittest.TestCase):
         listed = subprocess.run(
             ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             cwd=ROOT,
+            env=hermetic_subprocess_env(fixture),
             check=True,
             capture_output=True,
         ).stdout
@@ -137,24 +162,45 @@ class WindowsLifecycleTests(unittest.TestCase):
             encoding="ascii",
         )
         (fake_bin / "codex_stub.py").write_text(CODEX_STUB, encoding="utf-8")
-        self.environment = {
-            **os.environ,
-            "DEV_FLOW_REPOSITORY_URL": self.remote.as_uri(),
-            "DEV_FLOW_SOURCE_ROOT": str(self.source),
-            "DEV_FLOW_MARKETPLACE_FILE": str(self.marketplace),
-            "DEV_FLOW_PYTHON": sys.executable,
-            "DEV_FLOW_CODEX_STATE": str(self.state),
-            "DEV_FLOW_CODEX_LOG": str(self.log),
-            "DEV_FLOW_CODEX_ADD_EXIT": "0",
-            "DEV_FLOW_CODEX_ENABLED_JSON": "true",
-            "DEV_FLOW_PACKAGE_VERSION": PACKAGE_VERSION,
-            "DEV_FLOW_ACTIVE_MCP_LIST_JSON": json.dumps(CANONICAL_BUNDLED_MCP),
-            "CODEX_HOME": str(self.root / ".codex"),
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-            "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
-        }
+        self.environment = hermetic_subprocess_env(
+            self.root,
+            path_entries=(fake_bin,),
+            overrides={
+                "DEV_FLOW_REPOSITORY_URL": self.remote.as_uri(),
+                "DEV_FLOW_SOURCE_ROOT": str(self.source),
+                "DEV_FLOW_MARKETPLACE_FILE": str(self.marketplace),
+                "DEV_FLOW_PYTHON": sys.executable,
+                "DEV_FLOW_CODEX_STATE": str(self.state),
+                "DEV_FLOW_CODEX_LOG": str(self.log),
+                "DEV_FLOW_CODEX_ADD_EXIT": "0",
+                "DEV_FLOW_CODEX_ENABLED_JSON": "true",
+                "DEV_FLOW_PACKAGE_VERSION": PACKAGE_VERSION,
+                "DEV_FLOW_ACTIVE_MCP_LIST_JSON": json.dumps(CANONICAL_BUNDLED_MCP),
+                "CODEX_HOME": str(self.root / ".codex"),
+                "DEV_FLOW_RUNTIME_HOME": str(self.root / "managed runtime"),
+            },
+        )
+        for authority in (
+            "HOME",
+            "USERPROFILE",
+            "LOCALAPPDATA",
+            "XDG_DATA_HOME",
+            "CODEX_HOME",
+            "DEV_FLOW_DATA_DIR",
+            "PLUGIN_DATA",
+            "DEV_FLOW_RUNTIME_HOME",
+            "DEV_FLOW_SOURCE_ROOT",
+            "DEV_FLOW_MARKETPLACE_FILE",
+            "DEV_FLOW_BIN_DIR",
+        ):
+            Path(self.environment[authority]).resolve().relative_to(
+                self.root.resolve()
+            )
+        self.assertEqual(
+            Path(self.environment["PATH"].split(os.pathsep)[0]).resolve(),
+            fake_bin.resolve(),
+        )
+        probe_subprocess_runtime_roots(self.root, self.environment)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -163,6 +209,8 @@ class WindowsLifecycleTests(unittest.TestCase):
         environment = self.environment.copy()
         if overrides:
             environment.update(overrides)
+        assert_hermetic_subprocess_env(self.root, environment)
+        probe_subprocess_runtime_roots(self.root, environment)
         return subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / name), *arguments],
             cwd=self.root,
@@ -228,6 +276,12 @@ class WindowsLifecycleTests(unittest.TestCase):
         self.assertTrue(self.source.is_dir())
         self.assertEqual(task_data.read_text(encoding="utf-8"), "preserve")
         self.assertIn("TASK DATA", result.stdout)
+        self.assertIn("OUTCOME        partial", result.stdout)
+        self.assertIn("SOURCE         retained", result.stdout)
+        self.assertIn(f"SOURCE PATH    {self.source}", result.stdout)
+        self.assertIn("no verifiable exact-ownership manifest", result.stdout)
+        self.assertIn("Inspect and back up", result.stdout)
+        self.assertIn("independently confirm ownership", result.stdout)
 
     def test_fast_forward_install_and_default_uninstall_preserve_task_data(self) -> None:
         self.assertEqual(self.run_script("install.ps1").returncode, 0)
@@ -241,8 +295,10 @@ class WindowsLifecycleTests(unittest.TestCase):
         task_data.write_text("preserve", encoding="utf-8")
         removed = self.run_script("uninstall.ps1")
         self.assertEqual(removed.returncode, 0, removed.stderr)
-        self.assertFalse(self.source.exists())
+        self.assertTrue(self.source.is_dir())
         self.assertEqual(task_data.read_text(encoding="utf-8"), "preserve")
+        self.assertIn("OUTCOME        partial", removed.stdout)
+        self.assertIn(f"SOURCE PATH    {self.source}", removed.stdout)
 
     def test_malformed_marketplace_preserves_original_bytes(self) -> None:
         self.marketplace.parent.mkdir(parents=True)
@@ -339,7 +395,7 @@ class WindowsLifecycleTests(unittest.TestCase):
         self.assertNotEqual(diverged.returncode, 0)
         self.assertIn("diverged", diverged.stderr)
 
-    def assert_unsafe_uninstall_preserves_source(self, scenario: str) -> None:
+    def assert_contained_uninstall_preserves_source(self, scenario: str) -> None:
         self.assertEqual(self.run_script("install.ps1").returncode, 0)
         if scenario == "ignored":
             (self.source / ".git" / "info" / "exclude").write_text(
@@ -351,17 +407,73 @@ class WindowsLifecycleTests(unittest.TestCase):
             git("add", "local-commit.txt", cwd=self.source)
             git("commit", "-m", "local only", cwd=self.source)
         result = self.run_script("uninstall.ps1")
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.source.is_dir())
+        self.assertIn("OUTCOME        partial", result.stdout)
+        self.assertIn("SOURCE         retained", result.stdout)
+        self.assertIn(f"SOURCE PATH    {self.source}", result.stdout)
+        self.assertIn("no verifiable exact-ownership manifest", result.stdout)
 
-    def test_uninstaller_refuses_ignored_source(self) -> None:
-        self.assert_unsafe_uninstall_preserves_source("ignored")
+    def test_uninstaller_contains_ignored_source(self) -> None:
+        self.assert_contained_uninstall_preserves_source("ignored")
 
-    def test_uninstaller_refuses_local_only_commit(self) -> None:
-        self.assert_unsafe_uninstall_preserves_source("local-commit")
+    def test_uninstaller_contains_local_only_commit(self) -> None:
+        self.assert_contained_uninstall_preserves_source("local-commit")
 
 
 class WindowsLifecycleFixtureStaticTests(unittest.TestCase):
+    def test_uninstaller_disables_only_recursive_source_removal(self) -> None:
+        source = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
+        source_removal_lines = [
+            line
+            for line in source.splitlines()
+            if "Remove-Item" in line and "$SourceRoot" in line
+        ]
+        self.assertEqual(source_removal_lines, [])
+        self.assertNotIn("$RemoveSource", source)
+        self.assertNotIn("[switch]$RemoveSource", source)
+        self.assertNotIn("status', '--ignored', '--porcelain", source)
+        self.assertNotIn("--remotes=origin", source)
+        self.assertIn(
+            "Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force",
+            source,
+        )
+        for token in (
+            "OUTCOME        partial",
+            "SOURCE         $SourceAction",
+            "SOURCE PATH    $SourceRoot",
+            "no verifiable exact-ownership manifest",
+            "TASK DATA      preserved",
+            "MANUAL ACTION",
+            "Inspect and back up",
+            "independently confirm ownership",
+        ):
+            self.assertIn(token, source)
+
+    def test_fixture_environment_contains_every_windows_mutation_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = hermetic_subprocess_env(root)
+            resolved = assert_hermetic_subprocess_env(root, environment)
+            for authority in (
+                "HOME",
+                "USERPROFILE",
+                "LOCALAPPDATA",
+                "XDG_DATA_HOME",
+                "CODEX_HOME",
+                "DEV_FLOW_DATA_DIR",
+                "PLUGIN_DATA",
+                "DEV_FLOW_RUNTIME_HOME",
+                "DEV_FLOW_SOURCE_ROOT",
+                "DEV_FLOW_MARKETPLACE_FILE",
+                "DEV_FLOW_BIN_DIR",
+            ):
+                Path(environment[authority]).resolve().relative_to(root.resolve())
+            resolved["data"].relative_to(root.resolve())
+            resolved["runtime"].relative_to(root.resolve())
+            for redirect in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+                self.assertNotIn(redirect, environment)
+
     def test_fake_codex_supports_current_plugin_and_mcp_protocol(self) -> None:
         compile(CODEX_STUB, "codex_stub.py", "exec")
         for token in (

@@ -349,13 +349,14 @@ class MCPApplication:
             )
         if tool in FRESH_ACTION_MUTATIONS and isinstance(data, Mapping):
             current = data.get("current")
-            validate_current_action(current)
-            if current is not None and len(_canonical_bytes(current)) > MAX_COMPACT_ACTION_BYTES:
-                raise MCPRuntimeFailure(
-                    "MCP_RESULT_LIMIT",
-                    "The fresh compact current action exceeds 128 KiB.",
-                    recovery={"kind": "narrow-request", "blind_retry": False},
-                )
+            if current is not None:
+                validate_current_action(current)
+                if len(_canonical_bytes(current)) > MAX_COMPACT_ACTION_BYTES:
+                    raise MCPRuntimeFailure(
+                        "MCP_RESULT_LIMIT",
+                        "The fresh compact current action exceeds 128 KiB.",
+                        recovery={"kind": "narrow-request", "blind_retry": False},
+                    )
         if tool in {"dev_flow_list_tasks", "dev_flow_find_tasks_for_path"}:
             if len(encoded) > MAX_INVENTORY_PAGE_BYTES:
                 raise MCPRuntimeFailure(
@@ -548,8 +549,12 @@ class MCPApplication:
             raise RuntimeError("mutation result is invalid")
         receipt = value.get("receipt")
         projection = value.get("projection")
-        if not isinstance(receipt, Mapping) or not isinstance(projection, Mapping):
+        if not isinstance(receipt, Mapping) or (
+            projection is not None and not isinstance(projection, Mapping)
+        ):
             raise RuntimeError("mutation receipt or projection is invalid")
+        if projection is None:
+            return {"receipt": dict(receipt), "current": None}
         guidance = guidance_for_projection(projection)
         return {
             "receipt": dict(receipt),

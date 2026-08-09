@@ -42,7 +42,7 @@ from dev_flow_orchestrator.product import (
     WORKFLOW_IDS,
     WORKSPACE_SNAPSHOT_SCHEMA,
 )
-from support import make_repository
+from support import hermetic_subprocess_env, make_repository
 
 
 def _hold_lock(path: str, ready: multiprocessing.Event, seconds: float) -> None:
@@ -97,20 +97,27 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
             "sys.stdout.buffer.write(sys.argv[1].encode()); "
             "sys.stderr.buffer.write(sys.argv[2].encode())"
         )
-        result = run_bounded_process(
-            [sys.executable, "-c", script, "a value", "x&y"],
-            dict(os.environ), 5.0, 1024,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = run_bounded_process(
+                [sys.executable, "-c", script, "a value", "x&y"],
+                hermetic_subprocess_env(Path(directory)),
+                5.0,
+                1024,
+            )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, b"a value")
         self.assertEqual(result.stderr, b"x&y")
 
     def test_process_runner_reports_combined_overflow(self) -> None:
         script = "import sys; sys.stdout.buffer.write(b'a'*80); sys.stderr.buffer.write(b'b'*80)"
-        with self.assertRaises(ProcessFailure) as context:
-            run_bounded_process(
-                [sys.executable, "-c", script], dict(os.environ), 5.0, 100,
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ProcessFailure) as context:
+                run_bounded_process(
+                    [sys.executable, "-c", script],
+                    hermetic_subprocess_env(Path(directory)),
+                    5.0,
+                    100,
+                )
         self.assertEqual(context.exception.kind, "output-too-large")
         self.assertGreater(
             context.exception.details["stdout_bytes"]
@@ -119,40 +126,50 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
         )
 
     def test_process_runner_failure_categories_and_nonzero_result(self) -> None:
-        nonzero = run_bounded_process(
-            [sys.executable, "-c", "import sys; sys.stderr.write('no'); sys.exit(7)"],
-            dict(os.environ), 5.0, 1024,
-        )
-        self.assertEqual(nonzero.returncode, 7)
-        self.assertEqual(nonzero.stderr, b"no")
-
-        with self.assertRaises(ProcessFailure) as missing:
-            run_bounded_process(
-                [str(Path(tempfile.gettempdir()) / "missing-dev-flow-executable")],
-                dict(os.environ), 1.0, 1024,
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = hermetic_subprocess_env(root)
+            nonzero = run_bounded_process(
+                [sys.executable, "-c", "import sys; sys.stderr.write('no'); sys.exit(7)"],
+                environment,
+                5.0,
+                1024,
             )
-        self.assertEqual(missing.exception.kind, "unavailable")
+            self.assertEqual(nonzero.returncode, 7)
+            self.assertEqual(nonzero.stderr, b"no")
 
-        sleeper = "import time; time.sleep(10)"
-        with self.assertRaises(ProcessFailure) as timeout:
-            run_bounded_process(
-                [sys.executable, "-c", sleeper], dict(os.environ), 0.05, 1024,
-            )
-        self.assertEqual(timeout.exception.kind, "timeout")
-
-        cancelled = threading.Event()
-        timer = threading.Timer(0.05, cancelled.set)
-        timer.start()
-        try:
-            with self.assertRaises(ProcessFailure) as cancellation:
+            with self.assertRaises(ProcessFailure) as missing:
                 run_bounded_process(
-                    [sys.executable, "-c", sleeper], dict(os.environ), 5.0, 1024,
-                    cancelled,
+                    [str(root / "missing-dev-flow-executable")],
+                    environment,
+                    1.0,
+                    1024,
                 )
-        finally:
-            timer.cancel()
-            timer.join(timeout=1)
-        self.assertEqual(cancellation.exception.kind, "cancelled")
+            self.assertEqual(missing.exception.kind, "unavailable")
+
+            sleeper = "import time; time.sleep(10)"
+            with self.assertRaises(ProcessFailure) as timeout:
+                run_bounded_process(
+                    [sys.executable, "-c", sleeper], environment, 0.05, 1024,
+                )
+            self.assertEqual(timeout.exception.kind, "timeout")
+
+            cancelled = threading.Event()
+            timer = threading.Timer(0.05, cancelled.set)
+            timer.start()
+            try:
+                with self.assertRaises(ProcessFailure) as cancellation:
+                    run_bounded_process(
+                        [sys.executable, "-c", sleeper],
+                        environment,
+                        5.0,
+                        1024,
+                        cancelled,
+                    )
+            finally:
+                timer.cancel()
+                timer.join(timeout=1)
+            self.assertEqual(cancellation.exception.kind, "cancelled")
 
     def test_windows_runner_times_out_after_parent_exits_with_inherited_pipes(self) -> None:
         parent = (
@@ -161,17 +178,19 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
         )
         descendant = "import time; time.sleep(1)"
         started = time.monotonic()
-        with mock.patch(
-            "dev_flow_orchestrator._platform.process.TERMINATE_GRACE_SECONDS", 0.02
-        ):
-            with self.assertRaises(ProcessFailure) as context:
-                _run_windows(
-                    [sys.executable, "-c", parent, descendant],
-                    dict(os.environ),
-                    0.05,
-                    1024,
-                    None,
-                )
+        with tempfile.TemporaryDirectory() as directory:
+            environment = hermetic_subprocess_env(Path(directory))
+            with mock.patch(
+                "dev_flow_orchestrator._platform.process.TERMINATE_GRACE_SECONDS", 0.02
+            ):
+                with self.assertRaises(ProcessFailure) as context:
+                    _run_windows(
+                        [sys.executable, "-c", parent, descendant],
+                        environment,
+                        0.05,
+                        1024,
+                        None,
+                    )
         self.assertEqual(context.exception.kind, "timeout")
         self.assertLess(time.monotonic() - started, 1.5)
 
@@ -185,18 +204,20 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
             processes.append(process)
             return process
 
-        with mock.patch(
-            "dev_flow_orchestrator._platform.process.subprocess.Popen",
-            side_effect=tracked_popen,
-        ):
-            with self.assertRaises(ProcessFailure) as context:
-                _run_windows(
-                    [sys.executable, "-c", "import time; time.sleep(10)"],
-                    dict(os.environ),
-                    0.05,
-                    1024,
-                    None,
-                )
+        with tempfile.TemporaryDirectory() as directory:
+            environment = hermetic_subprocess_env(Path(directory))
+            with mock.patch(
+                "dev_flow_orchestrator._platform.process.subprocess.Popen",
+                side_effect=tracked_popen,
+            ):
+                with self.assertRaises(ProcessFailure) as context:
+                    _run_windows(
+                        [sys.executable, "-c", "import time; time.sleep(10)"],
+                        environment,
+                        0.05,
+                        1024,
+                        None,
+                    )
 
         self.assertEqual(context.exception.kind, "timeout")
         command_processes = [process for process in processes if process.stdout is not None]
@@ -207,7 +228,9 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "requires Windows taskkill")
     def test_windows_runner_timeout_terminates_live_parent_and_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            pid_path = Path(directory) / "processes.txt"
+            root = Path(directory)
+            pid_path = root / "processes.txt"
+            environment = hermetic_subprocess_env(root)
             parent = (
                 "import os, pathlib, subprocess, sys, time; "
                 "child = subprocess.Popen([sys.executable, '-c', sys.argv[2]]); "
@@ -247,7 +270,7 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
                             str(pid_path),
                             descendant,
                         ],
-                        dict(os.environ),
+                        environment,
                         2.0,
                         1024,
                         None,
@@ -330,15 +353,18 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repository = make_repository(root, "eol repository")
+            environment = hermetic_subprocess_env(root)
             (repository / ".gitattributes").write_bytes(b"*.txt text\n*.bin -text\n")
             (repository / "text.txt").write_bytes(b"first\r\nsecond\r\n")
             (repository / "binary.bin").write_bytes(b"\x00first\r\nsecond\r\n")
             subprocess.run(
                 ["git", "-C", str(repository), "add", ".gitattributes", "text.txt", "binary.bin"],
+                env=environment,
                 check=True,
             )
             subprocess.run(
                 ["git", "-C", str(repository), "commit", "-qm", "add EOL fixtures"],
+                env=environment,
                 check=True,
             )
 
@@ -397,12 +423,16 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repository = make_repository(root, "space Unicode-仓库")
+            environment = hermetic_subprocess_env(root)
             (repository / "deleted.txt").write_text("delete me\n", encoding="utf-8")
             subprocess.run(
-                ["git", "-C", str(repository), "add", "deleted.txt"], check=True
+                ["git", "-C", str(repository), "add", "deleted.txt"],
+                env=environment,
+                check=True,
             )
             subprocess.run(
                 ["git", "-C", str(repository), "commit", "-qm", "add deletion target"],
+                env=environment,
                 check=True,
             )
             clean = GitClient.snapshot(str(repository))
@@ -412,7 +442,9 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
             (repository / "untracked 文件.txt").write_text("new\n", encoding="utf-8")
             (repository / "deleted.txt").unlink()
             subprocess.run(
-                ["git", "-C", str(repository), "add", "staged.txt"], check=True
+                ["git", "-C", str(repository), "add", "staged.txt"],
+                env=environment,
+                check=True,
             )
             snapshot = GitClient.snapshot(
                 str(repository),
@@ -429,13 +461,16 @@ class NativeWindowsRuntimeTests(unittest.TestCase):
             self.assertEqual(snapshot["resources"][0]["path"], "untracked 文件.txt")
 
             subprocess.run(
-                ["git", "-C", str(repository), "checkout", "--detach", "-q"], check=True
+                ["git", "-C", str(repository), "checkout", "--detach", "-q"],
+                env=environment,
+                check=True,
             )
             self.assertIsNone(GitClient.snapshot(str(repository))["branch"])
 
             linked = root / "linked worktree-二"
             subprocess.run(
                 ["git", "-C", str(repository), "worktree", "add", "-q", str(linked), "HEAD"],
+                env=environment,
                 check=True,
             )
             linked_snapshot = GitClient.snapshot(str(linked))
