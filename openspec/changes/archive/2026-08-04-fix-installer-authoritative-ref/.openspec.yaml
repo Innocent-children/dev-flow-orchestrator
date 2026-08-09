@@ -1,4 +1,0 @@
-schema: spec-driven
-created: 2026-08-03
-goal: Ensure fresh installs and upgrades activate only the verified origin/main
-  commit without overwriting user work.

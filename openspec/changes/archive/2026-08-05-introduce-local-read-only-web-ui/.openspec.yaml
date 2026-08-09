@@ -1,4 +1,0 @@
-schema: spec-driven
-created: 2026-08-05
-goal: Provide a secure local read-only Web UI for inspecting and resuming current
-  Dev Flow tasks under the single 0.3.0 product identity.

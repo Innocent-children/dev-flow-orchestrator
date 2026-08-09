@@ -1,3 +1,0 @@
-schema: spec-driven
-created: 2026-08-06
-goal: Add the minimal native Windows x64 runtime required for core Dev Flow controller and CLI operation without a separate platform-refactor project.
