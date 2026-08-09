@@ -214,5 +214,5 @@ the checkout and independently confirm ownership. `--keep-source` and
   worktree at its canonical path and retry the read.
 
 The read-only Web UI remains available at `127.0.0.1` through
-`dev-flow web start`; it is not an MCP health substitute and has no mutation
-authority.
+`dev-flow web start`; inspect it with `dev-flow web status` and stop it with
+`dev-flow web stop`. It is not an MCP health substitute and has no mutation authority.

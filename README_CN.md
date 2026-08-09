@@ -103,6 +103,8 @@ Dossier 标识。
 ```sh
 dev-flow --help
 dev-flow web start
+dev-flow web status
+dev-flow web stop
 ```
 
 Web UI 绑定 `127.0.0.1`，默认读取存储任务视图，并且没有变更权威。MCP 是主要的

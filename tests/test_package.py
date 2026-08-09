@@ -80,6 +80,67 @@ class PackageValidationTests(unittest.TestCase):
             result["errors"],
         )
 
+    def test_public_docs_semantics_reject_missing_windows_cli_asset(self) -> None:
+        install = self.candidate / "scripts" / "install.ps1"
+        install.write_text(
+            install.read_text(encoding="utf-8").replace("dev-flow.cmd", "removed-cli.cmd"),
+            encoding="utf-8",
+        )
+        self.assert_error_contains(validate(self.candidate), "Windows CLI documentation has no installer asset")
+
+    def test_public_docs_semantics_reject_unsupported_standalone_provisioning(self) -> None:
+        install = self.candidate / "INSTALL.md"
+        install.write_text(
+            install.read_text(encoding="utf-8") + "\n    codex mcp add dev-flow -- dev-flow-mcp --stdio\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(validate(self.candidate), "documents unsupported standalone provisioning")
+
+    def test_public_docs_semantics_reject_nonexistent_installer_parameter(self) -> None:
+        readme = self.candidate / "README.md"
+        readme.write_text(readme.read_text(encoding="utf-8") + "\nUse `--standalone`.\n", encoding="utf-8")
+        self.assert_error_contains(validate(self.candidate), "unsupported installer parameter --standalone")
+
+    def test_public_docs_semantics_reject_language_mode_divergence(self) -> None:
+        install = self.candidate / "INSTALL_CN.md"
+        install.write_text(
+            install.read_text(encoding="utf-8").replace("不受支持", "完全受支持"),
+            encoding="utf-8",
+        )
+        self.assert_error_contains(validate(self.candidate), "disagree on bundled-only support")
+
+    def test_public_docs_semantics_reject_obsolete_hook_authority(self) -> None:
+        readme = self.candidate / "README.md"
+        readme.write_text(
+            readme.read_text(encoding="utf-8") + "\nHook trust is the product authority.\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(validate(self.candidate), "restores obsolete Hook authority")
+
+    def test_public_docs_semantics_reject_source_removal_claim(self) -> None:
+        install = self.candidate / "INSTALL.md"
+        install.write_text(
+            install.read_text(encoding="utf-8").replace("source checkout is retained", "source checkout is deleted"),
+            encoding="utf-8",
+        )
+        self.assert_error_contains(validate(self.candidate), "missing source-retention guidance")
+
+    def test_stale_validation_report_cannot_become_current_authority(self) -> None:
+        (self.candidate / "VALIDATION_REPORT.md").write_text("stale\n", encoding="utf-8")
+        self.assert_error_contains(validate(self.candidate), "stale VALIDATION_REPORT.md")
+
+    def test_current_specs_reject_obsolete_hook_or_standalone_authority(self) -> None:
+        spec = self.candidate / "openspec" / "specs" / "authoritative-plugin-installation" / "spec.md"
+        spec.write_text(spec.read_text(encoding="utf-8") + "\nPreToolUse Hook guards are authoritative.\n", encoding="utf-8")
+        self.assert_error_contains(validate(self.candidate), "conflicts with the current MCP-first bundled-only product")
+
+    def test_public_docs_semantic_gate_rejects_an_early_return(self) -> None:
+        validator = self.candidate / "scripts" / "validate_package.py"
+        text = validator.read_text(encoding="utf-8")
+        marker = 'def _validate_public_docs(root: Path, errors: list[str]) -> None:\n'
+        validator.write_text(text.replace(marker, marker + "    return\n", 1), encoding="utf-8")
+        self.assert_error_contains(validate(self.candidate), "semantic validation contains an early return")
+
     def test_preimport_gate_rejects_incomplete_mcp_before_candidate_execution(self) -> None:
         marker = self.candidate / "candidate-imported.marker"
         product = self.candidate / "src/dev_flow_orchestrator/product.py"

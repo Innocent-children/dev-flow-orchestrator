@@ -29,17 +29,17 @@
 
 ## 4. Release truth
 
-- [ ] 4.1 Restore reachable structured public-document semantic validation.
-- [ ] 4.2 Validate commands, launchers, support mode, bilingual parity, retention, and
+- [x] 4.1 Restore reachable structured public-document semantic validation.
+- [x] 4.2 Validate commands, launchers, support mode, bilingual parity, retention, and
   current existing specifications without requiring deleted historical OpenSpec.
-- [ ] 4.3 Prove obsolete specifications and the stale validation report are absent and
+- [x] 4.3 Prove obsolete specifications and the stale validation report are absent and
   unreferenced on the current HEAD.
-- [ ] 4.4 Add semantic mutation and current-authority tests.
+- [x] 4.4 Add semantic mutation and current-authority tests.
 
 ## 5. Verification
 
-- [ ] 5.1 Run focused groups in the mandated A–D order and record exact results.
-- [ ] 5.2 Run complete discovery, package validation, all active strict OpenSpec checks,
+- [x] 5.1 Run focused groups in the mandated A–D order and record exact results.
+- [x] 5.2 Run complete discovery, package validation, all active strict OpenSpec checks,
   and `git diff --check`.
-- [ ] 5.3 Perform one final focused implementation review after implementation is frozen.
-- [ ] 5.4 Record native Windows as `NOT RUN — native Windows host unavailable`.
+- [x] 5.3 Perform one final focused implementation review after implementation is frozen.
+- [x] 5.4 Record native Windows as `NOT RUN — native Windows host unavailable`.

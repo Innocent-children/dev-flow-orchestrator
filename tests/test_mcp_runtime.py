@@ -32,7 +32,11 @@ from dev_flow_orchestrator.mcp.results import MCPRuntimeFailure
 from dev_flow_orchestrator.mcp.server import create_server
 from dev_flow_orchestrator.mcp import runtime as mcp_runtime
 from dev_flow_orchestrator.mcp.runtime import main as mcp_main
-from dev_flow_orchestrator.mcp.schemas import OUTPUT_SCHEMAS
+from dev_flow_orchestrator.mcp.schemas import (
+    OUTPUT_SCHEMAS,
+    ResultSchemaViolation,
+    validate_current_action,
+)
 from dev_flow_orchestrator.product import (
     MODEL_VERSION,
     RECEIPT_SCHEMA,
@@ -1359,6 +1363,16 @@ class MCPRuntimeTests(unittest.TestCase):
             self.assertEqual(compact["action"]["binding"], authoritative["action"]["binding"])
             self.assertNotIn("snapshot", compact["repository_set"]["repositories"][0])
             self.assertLessEqual(len(json.dumps(compact).encode("utf-8")), 128 * 1024)
+            blocked = json.loads(json.dumps(compact))
+            blocked["action"]["binding"] = None
+            blocked["action"]["context"]["blocked"] = {
+                "code": "ARTIFACT_INPUT_MISSING",
+                "message": "required input is stale",
+            }
+            validate_current_action(blocked)
+            blocked["action"]["context"]["blocked"] = None
+            with self.assertRaises(ResultSchemaViolation):
+                validate_current_action(blocked)
 
     def test_cli_and_mcp_start_apply_have_domain_parity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

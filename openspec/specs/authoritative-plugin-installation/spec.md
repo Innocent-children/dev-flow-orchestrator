@@ -101,12 +101,12 @@ Windows guidance SHALL state the x64 client support boundary, native PowerShell 
 #### Scenario: Operator reviews installation guidance
 
 - **WHEN** an operator reads a public macOS installation entry point
-- **THEN** the operator can determine which ref is installed, which checkout states require manual intervention, and how to review the installed Hook
+- **THEN** the operator can determine which ref is installed, which checkout states require manual intervention, and how to review the bundled MCP server and tool catalog
 
 #### Scenario: Windows operator reviews installation guidance
 
 - **WHEN** an operator reads a public Windows installation entry point
-- **THEN** the operator can identify the PowerShell command, supported host boundary, source authority, upgrade refusals, Hook trust handoff, Web UI command, and uninstall data-preservation behavior
+- **THEN** the operator can identify the PowerShell command, supported host boundary, source authority, upgrade refusals, MCP approval boundary, CLI/Web commands, and uninstall data-preservation behavior
 
 ### Requirement: Supported host entry points apply one authoritative installation lifecycle
 
@@ -117,7 +117,7 @@ Platform-specific syntax and presentation MAY differ, but neither entry point SH
 #### Scenario: Fresh Windows installation succeeds
 
 - **WHEN** a supported Windows x64 client has the required tools, no source checkout, and a valid or absent personal marketplace
-- **THEN** the PowerShell installer verifies the authoritative `main` candidate, registers exactly one marketplace entry, installs the plugin, and emits a successful receipt with Hook review guidance
+- **THEN** the PowerShell installer verifies the authoritative `main` candidate, registers exactly one marketplace entry, installs the plugin and owned CLI/MCP launchers, and emits a successful receipt with MCP review guidance
 
 #### Scenario: Existing Windows installation is repaired or upgraded
 

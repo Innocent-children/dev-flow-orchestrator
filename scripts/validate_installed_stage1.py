@@ -1603,12 +1603,23 @@ async def _linked_worktree_concurrent_admission(
         start("installed-linked-secondary", linked),
     )
     task_ids = []
+    rejected_task_ids = []
     for task_id, result in zip(
         ("installed-linked-primary", "installed-linked-secondary"), results
     ):
-        started = _result(result, "dev_flow_start_task")
-        _require(started["task_id"] == task_id, "concurrent linked admission lost task identity")
-        task_ids.append(task_id)
+        envelope = result.structured_content
+        _require(isinstance(envelope, dict), "linked admission omitted structured authority")
+        if envelope.get("ok") is True:
+            started = envelope["result"]
+            _require(started["task_id"] == task_id, "concurrent linked admission lost task identity")
+            task_ids.append(task_id)
+        else:
+            _require(
+                envelope.get("error", {}).get("code") == "TASK_MEMBERSHIP_LEASED",
+                "linked-worktree conflict did not fail with membership authority",
+            )
+            rejected_task_ids.append(task_id)
+    _require(len(task_ids) == 1 and len(rejected_task_ids) == 1, "linked worktrees did not admit exactly one active owner")
     for task_id in task_ids:
         _result(
             await session.call_tool(
@@ -1619,8 +1630,9 @@ async def _linked_worktree_concurrent_admission(
         )
     return {
         "shared_git_common_dir": True,
-        "distinct_worktree_memberships": True,
+        "lease_conflict_enforced": True,
         "public_mcp_admissions": task_ids,
+        "rejected_admissions": rejected_task_ids,
         "terminal_status": "CANCELLED",
     }
 

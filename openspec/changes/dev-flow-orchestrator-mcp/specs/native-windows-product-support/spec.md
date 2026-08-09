@@ -104,12 +104,11 @@ MCP server identity and tool catalog and SHALL explain the host's approval behav
 for mutation tools. Installation SHALL NOT be represented as blanket approval and
 SHALL NOT rewrite unrelated user policy.
 
-Documentation SHALL state that removal of PreToolUse Hook guards means the MCP server
-cannot prevent an unrestricted PowerShell or other local process from searching for
-or changing files outside the MCP interface. It SHALL also state the compensating
-controls: no tool exposes the data path, all normal mutations use Controller tools,
-data and repositories are disjoint, server logs redact protected paths, and direct
-state access remains unsupported.
+Documentation SHALL state that the MCP server cannot prevent an unrestricted
+PowerShell or other local process from searching for or changing files outside the
+MCP interface. It SHALL state the current controls: no tool exposes the data path,
+all normal mutations use Controller tools, data and repositories are disjoint, server
+logs redact protected paths, and direct state access remains unsupported.
 
 #### Scenario: Codex asks for mutation approval
 
@@ -119,7 +118,7 @@ state access remains unsupported.
 #### Scenario: An arbitrary PowerShell command targets task data
 
 - **WHEN** a user or model with unrestricted local shell constructs a path outside the MCP server
-- **THEN** the product makes no claim that MCP intercepted it and documentation does not present the removed Hook as a security boundary that still exists
+- **THEN** the product makes no claim that MCP intercepted it and documentation describes only the current MCP-first security boundary
 
 ## MODIFIED Requirements
 

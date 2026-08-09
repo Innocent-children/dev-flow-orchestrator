@@ -290,7 +290,6 @@ REQUIRED_STATIC = (
     "src/dev_flow_orchestrator/__init__.py",
     "src/dev_flow_orchestrator/_version.py",
     "src/dev_flow_orchestrator/cli.py",
-    "src/dev_flow_orchestrator/capsule.py",
     "tests/test_bump_version.py",
     "src/dev_flow_orchestrator/controller.py",
     "src/dev_flow_orchestrator/delivery.py",
@@ -373,7 +372,6 @@ FORBIDDEN_SOURCE = re.compile(
 )
 PURE_MODULES = (
     "assurance",
-    "capsule",
     "delivery",
     "model",
     "product",
@@ -917,6 +915,16 @@ def _validate_foreign_candidate(root: Path) -> dict:
     validator = root / "scripts" / "validate_package.py"
     if not validator.is_file():
         return _validation_failure("missing scripts/validate_package.py")
+    try:
+        validator_tree = ast.parse(validator.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, SyntaxError):
+        return _validation_failure("candidate package validator is not readable Python")
+    public_validator = next(
+        (node for node in validator_tree.body if isinstance(node, ast.FunctionDef) and node.name == "_validate_public_docs"),
+        None,
+    )
+    if public_validator is None or any(isinstance(node, ast.Return) for node in public_validator.body):
+        return _validation_failure("public-document semantic validation contains an early return")
     try:
         completed = subprocess.run(
             [sys.executable, "-B", "-I", "-S", str(validator)],
@@ -2148,7 +2156,7 @@ def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
             )
 
 
-def _validate_public_docs(root: Path, errors: list[str]) -> None:
+def _validate_public_docs_legacy(root: Path, errors: list[str]) -> None:
     current_documents = {
         "README.md": (
             "[Simplified Chinese](README_CN.md)",
@@ -2232,8 +2240,6 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
                 errors,
                 relative + " claims unsupported Web UI mutation authority",
             )
-    return
-
     catalog_tokens = tuple(WORKFLOW_IDS)
     english_path = root / "README.md"
     if english_path.is_file():
@@ -2496,6 +2502,129 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
                     errors,
                     relative + " claims that all of Horizon 2 is delivered",
                 )
+
+
+def _validate_public_docs(root: Path, errors: list[str]) -> None:
+    """Validate the current public product contract against shipped assets."""
+
+    required_assets = (
+        "scripts/dev_flow_python_launcher",
+        "scripts/dev_flow_mcp_launcher",
+        "scripts/dev_flow_mcp_launcher.cmd",
+        "scripts/install.sh",
+        "scripts/install.ps1",
+        "scripts/uninstall.sh",
+        "scripts/uninstall.ps1",
+    )
+    for relative in required_assets:
+        _check((root / relative).is_file(), errors, "documented product asset is missing: " + relative)
+
+    documents: dict[str, str] = {}
+    for relative in ("README.md", "README_CN.md", "INSTALL.md", "INSTALL_CN.md"):
+        path = root / relative
+        if path.is_file():
+            documents[relative] = path.read_text(encoding="utf-8")
+
+    for relative, document in documents.items():
+        normalized = re.sub(r"\s+", " ", document)
+        _require_tokens(
+            normalized,
+            ("dev-flow web start", "dev-flow web status", "dev-flow web stop"),
+            errors,
+            relative + " is missing supported CLI/Web commands",
+        )
+        _check(
+            re.search(r"(?i)(?:codex\s+mcp\s+add\s+dev-flow|\[mcp_servers\.dev-flow\])", document) is None,
+            errors,
+            relative + " documents unsupported standalone provisioning",
+        )
+        _check("--standalone" not in document, errors, relative + " references unsupported installer parameter --standalone")
+        _check(
+            re.search(r"(?i)(?:PreToolUse|Hook trust|install(?:ed|s)?\s+(?:a\s+)?Hook)", document) is None,
+            errors,
+            relative + " restores obsolete Hook authority",
+        )
+        _check(
+            UNSUPPORTED_WEB_UI_CLAIM.search(normalized) is None,
+            errors,
+            relative + " claims unsupported Web UI mutation authority",
+        )
+    if "README_CN.md" in documents:
+        _require_tokens(
+            re.sub(r"\s+", " ", documents["README_CN.md"]),
+            ("只读 Web UI", "dev_flow_server_info", "只读工具"),
+            errors,
+            "README_CN.md is missing synchronized MCP-first product guidance",
+        )
+    roadmap = root / "ROADMAP.md"
+    if roadmap.is_file():
+        _require_tokens(
+            re.sub(r"\s+", " ", roadmap.read_text(encoding="utf-8")),
+            ("full unittest discovery", "native Windows"),
+            errors,
+            "ROADMAP.md is missing synchronized MCP-first product guidance",
+        )
+
+    for relative in ("INSTALL.md", "INSTALL_CN.md"):
+        if relative in documents:
+            normalized = re.sub(r"\s+", " ", documents[relative])
+            _require_tokens(
+                normalized,
+                ("dev-flow.cmd", "dev-flow-mcp.cmd", "bundled", "standalone"),
+                errors,
+                relative + " is missing the supported bundled Windows lifecycle boundary",
+            )
+            _require_any(
+                normalized,
+                ("source checkout is retained", "source checkout remains", "保留 source", "保留源码"),
+                errors,
+                relative + " is missing source-retention guidance",
+            )
+
+    english_mode = "standalone provisioning is not supported" in documents.get("INSTALL.md", "").casefold()
+    chinese_mode = "standalone provisioning" in documents.get("INSTALL_CN.md", "").casefold() and "不受支持" in documents.get("INSTALL_CN.md", "")
+    _check(english_mode and chinese_mode, errors, "English and Chinese install guides disagree on bundled-only support")
+
+    install_ps = (root / "scripts/install.ps1").read_text(encoding="utf-8") if (root / "scripts/install.ps1").is_file() else ""
+    uninstall_ps = (root / "scripts/uninstall.ps1").read_text(encoding="utf-8") if (root / "scripts/uninstall.ps1").is_file() else ""
+    integrity = (root / "scripts/runtime_integrity.py").read_text(encoding="utf-8") if (root / "scripts/runtime_integrity.py").is_file() else ""
+    _require_tokens(install_ps, ("dev-flow.cmd", "dev-flow-mcp.cmd", "Set-CliLauncher"), errors, "Windows CLI documentation has no installer asset")
+    _require_tokens(uninstall_ps, ("dev-flow.cmd", "$CliLauncherMarker"), errors, "Windows CLI documentation has no exact uninstaller path")
+    _require_tokens(integrity, ("cli_launcher_sha256", "ownership-manifest.json", "remove-owned"), errors, "runtime exact-ownership implementation is incomplete")
+    _check("--standalone" not in install_ps and "--standalone" not in (root / "scripts/install.sh").read_text(encoding="utf-8"), errors, "installer exposes unsupported standalone mode")
+
+    _check(not (root / "VALIDATION_REPORT.md").exists(), errors, "stale VALIDATION_REPORT.md must not be current authority")
+    for relative, document in documents.items():
+        _check("VALIDATION_REPORT.md" not in document, errors, relative + " references stale validation evidence")
+
+    for spec_path in sorted((root / "openspec").glob("**/spec.md")):
+        spec_text = spec_path.read_text(encoding="utf-8")
+        relative = spec_path.relative_to(root).as_posix()
+        _check(
+            re.search(r"(?i)(?:Hook trust handoff|PreToolUse Hook guards|MAY instead\s+register.*standalone)", spec_text) is None,
+            errors,
+            relative + " conflicts with the current MCP-first bundled-only product",
+        )
+
+    validator_path = root / "scripts" / "validate_package.py"
+    if validator_path.is_file():
+        try:
+            validator_source = validator_path.read_text(encoding="utf-8")
+            validator_tree = ast.parse(validator_source)
+        except (OSError, UnicodeError, SyntaxError):
+            pass
+        else:
+            public_validator = next(
+                (node for node in validator_tree.body if isinstance(node, ast.FunctionDef) and node.name == "_validate_public_docs"),
+                None,
+            )
+            _check(
+                public_validator is not None
+                and not any(isinstance(node, ast.Return) for node in public_validator.body)
+                and not re.search(r"(?m)^    return\s*$", validator_source[validator_source.find("def _validate_public_docs(root"):validator_source.find("\ndef _validate_imports", validator_source.find("def _validate_public_docs(root"))]),
+                errors,
+                "public-document semantic validation contains an early return",
+            )
 
 
 def _validate_imports(module: Path, errors: list[str]) -> None:

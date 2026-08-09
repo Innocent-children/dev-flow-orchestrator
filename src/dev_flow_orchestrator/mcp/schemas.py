@@ -218,6 +218,18 @@ ACTION_AUTHORITY_SCHEMA: dict[str, Any] = {
         "context": {"type": "object", "minProperties": 1},
     },
 }
+BLOCKED_ACTION_AUTHORITY_SCHEMA: dict[str, Any] = {
+    **ACTION_AUTHORITY_SCHEMA,
+    "properties": {
+        **ACTION_AUTHORITY_SCHEMA["properties"],
+        "binding": {"type": "null"},
+        "context": {
+            "type": "object",
+            "required": ["blocked"],
+            "properties": {"blocked": {"type": "object", "minProperties": 1}},
+        },
+    },
+}
 GUIDANCE_AUTHORITY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -228,10 +240,10 @@ GUIDANCE_AUTHORITY_SCHEMA: dict[str, Any] = {
     "properties": {
         "schema": {"type": "string", "minLength": 1},
         "objective": {"type": "string", "minLength": 1},
-        "must_read": {"type": "array", "minItems": 1},
+        "must_read": {"type": "array"},
         "allowed_effects": {"type": "string", "minLength": 1},
-        "required_evidence": {"type": "array", "minItems": 1},
-        "payload_notes": {"type": "array", "minItems": 1},
+        "required_evidence": {"type": "array"},
+        "payload_notes": {"type": "array"},
         "driver": {},
         "stale_recovery": {"type": "string", "minLength": 1},
         "completion_rule": {"type": "string", "minLength": 1},
@@ -256,7 +268,7 @@ CURRENT_ACTION_SCHEMA: dict[str, Any] = {
         "task": TASK_AUTHORITY_SCHEMA,
         "contract": OBJECT,
         "repository_set": REPOSITORY_AUTHORITY_SCHEMA,
-        "action": {"anyOf": [ACTION_AUTHORITY_SCHEMA, {"type": "null"}]},
+        "action": {"anyOf": [ACTION_AUTHORITY_SCHEMA, BLOCKED_ACTION_AUTHORITY_SCHEMA, {"type": "null"}]},
         "inputs": {"type": "array"},
         "resources": {"type": "array"},
         "guidance": GUIDANCE_AUTHORITY_SCHEMA,
@@ -270,6 +282,13 @@ CURRENT_ACTION_SCHEMA: dict[str, Any] = {
         {
             "properties": {
                 "action": ACTION_AUTHORITY_SCHEMA,
+                "terminal": {"type": "null"},
+            },
+            "required": ["action", "terminal"],
+        },
+        {
+            "properties": {
+                "action": BLOCKED_ACTION_AUTHORITY_SCHEMA,
                 "terminal": {"type": "null"},
             },
             "required": ["action", "terminal"],

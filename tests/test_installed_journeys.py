@@ -318,12 +318,11 @@ class InstalledMCPJourneyTests(unittest.TestCase):
         )
         self.assertFalse(journey["corrupt_inventory"]["partial_task_created"])
         self.assertTrue(journey["linked_worktrees"]["shared_git_common_dir"])
-        self.assertTrue(
-            journey["linked_worktrees"]["distinct_worktree_memberships"]
-        )
+        self.assertTrue(journey["linked_worktrees"]["lease_conflict_enforced"])
         self.assertEqual(
-            len(journey["linked_worktrees"]["public_mcp_admissions"]), 2
+            len(journey["linked_worktrees"]["public_mcp_admissions"]), 1
         )
+        self.assertEqual(len(journey["linked_worktrees"]["rejected_admissions"]), 1)
         exact_set = journey["exact_set_lite"]
         self.assertEqual(exact_set["repository_count"], 2)
         self.assertEqual(exact_set["terminal_status"], "DONE")

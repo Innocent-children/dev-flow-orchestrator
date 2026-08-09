@@ -101,17 +101,13 @@ virtual environment or generated dependency files as a side effect of installati
 
 ### Requirement: Bundled and standalone registration are mutually exclusive
 
-The supported default SHALL be bundled plugin registration. An operator MAY instead
-register the same installed launcher as one standalone local STDIO MCP server through
-the documented Codex MCP configuration path. The installer SHALL NOT create both
-registrations automatically and SHALL NOT modify an unrelated user MCP server.
+The supported product mode SHALL be bundled plugin registration. The installer SHALL
+NOT provision standalone registration and SHALL NOT modify an unrelated user MCP server.
 
-Installation, repair, validation, and public diagnostics SHALL detect an active
-standalone Dev Flow registration when bundled mode is being enabled, and SHALL detect
-an active bundled registration when standalone setup is requested. The operation
-SHALL fail or require the documented explicit operator resolution before claiming a
-healthy state. Detection SHALL compare the Dev Flow identity and launcher target,
-not merely a generic server name.
+Installation and repair SHALL detect an existing independently managed standalone Dev
+Flow registration before product mutation, preserve it, and require explicit operator
+resolution before claiming a healthy bundled state. Detection SHALL compare the Dev
+Flow identity and launcher target, not merely a generic server name.
 
 #### Scenario: Only bundled mode is configured
 
@@ -121,7 +117,7 @@ not merely a generic server name.
 #### Scenario: Both modes are active
 
 - **WHEN** the same product would be started from bundled and standalone registrations
-- **THEN** installation or health validation reports a duplicate, identifies the two configuration surfaces, and does not claim deterministic task authority
+- **THEN** installation stops before mutation, preserves the registration and product assets, and reports the unsupported conflict
 
 #### Scenario: An unrelated MCP server has a similar name
 

@@ -78,19 +78,6 @@ dev-flow-mcp --http
 
 ## 6. Standalone 注册
 
-先安装或构建托管 runtime 和 PATH launcher，但不要启用 bundled plugin。注册同一命令：
-
-```sh
-codex mcp add dev-flow -- dev-flow-mcp --stdio
-codex mcp list --json
-```
-
-切换到 bundled 模式前先移除：
-
-```sh
-codex mcp remove dev-flow
-```
-
 Standalone provisioning 在此版本中不受支持。已有 standalone 注册仍归操作者所有，
 产品不会静默接管或删除。
 
@@ -162,4 +149,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - mutation 完成状态不确定：调用 `dev_flow_get_task` 和 `dev_flow_get_next_action`，不得盲目重放 mutation。
 - 存储任务可见但 next action 失败：在规范路径恢复每个不可变成员 worktree 后重试读取。
 
-只读 Web UI 仍可通过 `dev-flow web start` 在 `127.0.0.1` 使用；它不能替代 MCP health 检查，也没有 mutation 权威。
+只读 Web UI 仍可通过 `dev-flow web start` 在 `127.0.0.1` 使用；使用
+`dev-flow web status` 检查状态，并用 `dev-flow web stop` 停止。它不能替代 MCP health
+检查，也没有 mutation 权威。

@@ -115,6 +115,8 @@ Controller:
 ```sh
 dev-flow --help
 dev-flow web start
+dev-flow web status
+dev-flow web stop
 ```
 
 The Web UI binds to `127.0.0.1`, reads stored task views by default, and has no
