@@ -76,6 +76,79 @@ class GitClient:
         finally:
             _GIT_CANCEL_EVENT.reset(token)
 
+    @classmethod
+    def tree_delta(
+        cls,
+        repository_path: str,
+        before_head: str,
+        after_head: str,
+        object_format: str,
+    ) -> tuple:
+        """Return the bounded final-tree delta between two commits."""
+        oid_length = 40 if object_format == "sha1" else 64
+        if object_format not in ("sha1", "sha256") or any(
+            not isinstance(value, str)
+            or len(value) != oid_length
+            or not _OBJECT_ID.fullmatch(value)
+            for value in (before_head, after_head)
+        ):
+            raise _error("GIT_OUTPUT_INVALID", "tree delta commit identity is invalid")
+        try:
+            root = canonical_repository_root(repository_path)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise _error("REPOSITORY_INVALID", "tree delta repository is invalid") from exc
+        raw = cls._run(
+            root,
+            "diff-tree",
+            "--raw",
+            "-z",
+            "--no-renames",
+            "-r",
+            before_head,
+            after_head,
+            "--",
+            output_limit_bytes=MAX_INDEX_COMMAND_OUTPUT_BYTES,
+        )
+        if raw and not raw.endswith(b"\0"):
+            raise _error("GIT_OUTPUT_INVALID", "Git tree delta is not NUL terminated")
+        records = raw.split(b"\0")[:-1]
+        if len(records) % 2:
+            raise _error("GIT_OUTPUT_INVALID", "Git tree delta framing is invalid")
+        changes = []
+        seen = set()
+        for index in range(0, len(records), 2):
+            header = records[index]
+            encoded_path = records[index + 1]
+            try:
+                fields = header.decode("ascii").split()
+                path = encoded_path.decode("utf-8")
+            except (UnicodeDecodeError, UnicodeError) as exc:
+                raise _error("GIT_OUTPUT_INVALID", "Git tree delta is not valid text") from exc
+            if len(fields) != 5 or not fields[0].startswith(":"):
+                raise _error("GIT_OUTPUT_INVALID", "Git tree delta entry is malformed")
+            old_mode = fields[0][1:]
+            new_mode, old_oid, new_oid, status = fields[1:]
+            if (
+                not _MODE.fullmatch(old_mode)
+                or not _MODE.fullmatch(new_mode)
+                or len(old_oid) != oid_length
+                or len(new_oid) != oid_length
+                or not _OBJECT_ID.fullmatch(old_oid)
+                or not _OBJECT_ID.fullmatch(new_oid)
+                or status not in ("A", "D", "M", "T")
+                or not _valid_relative_path(path)
+                or path in seen
+            ):
+                raise _error("GIT_OUTPUT_INVALID", "Git tree delta entry is invalid", path=path)
+            seen.add(path)
+            zero = "0" * oid_length
+            changes.append({
+                "path": path,
+                "before_head_entry": None if old_oid == zero else {"mode": old_mode, "oid": old_oid},
+                "after_head_entry": None if new_oid == zero else {"mode": new_mode, "oid": new_oid},
+            })
+        return tuple(sorted(changes, key=lambda item: _path_key(item["path"])))
+
     @staticmethod
     def _check_cancelled(
         cancel_event: Optional[threading.Event],

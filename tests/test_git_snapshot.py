@@ -18,13 +18,15 @@ TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
+from dev_flow_orchestrator.capsule import derive_path_changes
 from dev_flow_orchestrator.git_client import GitClient, validate_snapshot
-from dev_flow_orchestrator.model import DevFlowError
+from dev_flow_orchestrator.model import DevFlowError, RepositoryRecord
 from dev_flow_orchestrator.product import (
     OPENSPEC_TASKS_NORMALIZER,
     WORKSPACE_SNAPSHOT_SCHEMA,
 )
 from support import RepositoryTestCase, make_repository
+from dev_flow_orchestrator.snapshot import make_repository_set_snapshot
 
 
 def resource(path: str, role: str = "governing", normalizer: str = "none") -> dict:
@@ -65,6 +67,63 @@ class GitSnapshotTests(RepositoryTestCase):
         snapshot = GitClient.snapshot(str(self.repository))
         self.assertEqual(snapshot["schema"], WORKSPACE_SNAPSHOT_SCHEMA)
         self.assertEqual(validate_snapshot(snapshot), snapshot)
+
+    def test_clean_commits_and_following_dirty_work_enter_tree_delta(self) -> None:
+        initial = GitClient.snapshot(str(self.repository))
+        repository = RepositoryRecord(
+            "repo",
+            initial["repository_root"],
+            initial["git_worktree_dir"],
+            initial["git_common_dir"],
+        )
+        before = make_repository_set_snapshot(
+            (repository,),
+            {"repo": initial},
+        )
+        executable = self.repository / "executable.sh"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+        link = self.repository / "linked"
+        link.symlink_to("executable.sh")
+        tracked = self.repository / "tracked.txt"
+        tracked.write_text("committed\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repository), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repository), "commit", "-qm", "tree transition"],
+            check=True,
+        )
+        tracked.write_text("dirty after commit\n", encoding="utf-8")
+        after = make_repository_set_snapshot(
+            (repository,),
+            {"repo": GitClient.snapshot(str(self.repository))},
+        )
+
+        changes = {item["path"]: item for item in derive_path_changes(before, after, (repository,))}
+        self.assertEqual(set(changes), {"executable.sh", "linked", "tracked.txt"})
+        self.assertEqual(changes["executable.sh"]["after_head_entry"]["mode"], "100755")
+        self.assertEqual(changes["linked"]["after_head_entry"]["mode"], "120000")
+        self.assertNotEqual(changes["tracked.txt"]["after"], changes["tracked.txt"]["before"])
+
+    def test_tree_delta_rejects_branch_change(self) -> None:
+        initial = GitClient.snapshot(str(self.repository))
+        repository = RepositoryRecord(
+            "repo", initial["repository_root"], initial["git_worktree_dir"], initial["git_common_dir"]
+        )
+        before = make_repository_set_snapshot((repository,), {"repo": initial})
+        subprocess.run(
+            ["git", "-C", str(self.repository), "switch", "-qc", "other-branch"],
+            check=True,
+        )
+        (self.repository / "branch.txt").write_text("branch\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.repository), "add", "branch.txt"], check=True)
+        subprocess.run(["git", "-C", str(self.repository), "commit", "-qm", "branch"], check=True)
+        after = make_repository_set_snapshot(
+            (repository,), {"repo": GitClient.snapshot(str(self.repository))}
+        )
+
+        with self.assertRaises(DevFlowError) as context:
+            derive_path_changes(before, after, (repository,))
+        self.assertEqual(context.exception.code, "REPOSITORY_BRANCH_CHANGED")
 
     def test_repository_fsmonitor_is_not_executed(self) -> None:
         marker = self.root / "fsmonitor-ran"

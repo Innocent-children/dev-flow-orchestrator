@@ -92,6 +92,24 @@ def _manifest_keys(manifest: Mapping[str, object]) -> set:
     }
 
 
+def _canonical_locator(value: Mapping[str, object]) -> Optional[tuple]:
+    repository_id = value.get("repository_id")
+    path = value.get("path")
+    symbol = value.get("symbol")
+    label = value.get("location_label")
+    if not isinstance(repository_id, str) or not repository_id:
+        return None
+    if path is not None and not isinstance(path, str):
+        return None
+    if symbol is not None and not isinstance(symbol, str):
+        return None
+    if label is not None and not isinstance(label, str):
+        return None
+    if path is None and symbol is None and label is None:
+        return None
+    return (repository_id, "source", path, symbol, label)
+
+
 def _closure_keys(plan: Mapping[str, object]) -> set:
     result = set()
     for obligation in plan.get("obligations", ()):
@@ -103,7 +121,9 @@ def _closure_keys(plan: Mapping[str, object]) -> set:
             continue
         for item in values:
             if isinstance(item, Mapping):
-                result.add((item.get("repository_id"), item.get("path")))
+                locator = _canonical_locator(item)
+                if locator is not None:
+                    result.add(locator)
     return result
 
 
@@ -256,7 +276,15 @@ def validate_finding(
     expected_id = "finding-{}".format(fingerprint[:16])
     if value.get("fingerprint") != fingerprint or value.get("finding_id") != expected_id:
         raise _error("REVIEW_FINDING_INVALID", "finding identity is invalid")
-    impact_gap = relation == "affected" and (repository_id, path) not in _closure_keys(plan)
+    locator = _canonical_locator({
+        "repository_id": repository_id,
+        "path": path,
+        "symbol": symbol,
+        "location_label": label,
+    })
+    impact_gap = relation == "affected" and (
+        locator is None or locator not in _closure_keys(plan)
+    )
     return {
         **body,
         "finding_id": expected_id,

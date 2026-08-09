@@ -249,7 +249,17 @@ class CausalReviewTests(unittest.TestCase):
             "workspace_digest": "w" * 64,
         }
 
-    def finding(self, relation: str, blocking: bool, *, path="src/a.py", causal=False):
+    def finding(
+        self,
+        relation: str,
+        blocking: bool,
+        *,
+        path="src/a.py",
+        symbol="run",
+        location_label=None,
+        causal=False,
+    ):
+        location_reference = path or symbol or location_label
         body = {
             "schema": "dev-flow-review-finding/0.4.0",
             "severity": "high",
@@ -258,13 +268,13 @@ class CausalReviewTests(unittest.TestCase):
             "criterion_ids": ["criterion-1"],
             "repository_id": "app",
             "path": path,
-            "symbol": "run",
-            "location_label": None,
-            "evidence": [{"kind": "source", "reference": path, "summary": "confirmed", "source_confirmed": True}],
+            "symbol": symbol,
+            "location_label": location_label,
+            "evidence": [{"kind": "source", "reference": location_reference, "summary": "confirmed", "source_confirmed": True}],
             "causal_manifest_entries": [
                 {"repository_id": "app", "path": "src/a.py"}
             ] if causal or relation == "introduced" else [],
-            "causal_path": [{"kind": "call", "from": "src/a.py", "to": path, "evidence": "direct call", "source_confirmed": True}] if causal else [],
+            "causal_path": [{"kind": "call", "from": "src/a.py", "to": location_reference, "evidence": "direct call", "source_confirmed": True}] if causal else [],
             "smallest_sufficient_resolution": "Correct the bounded behavior",
             "reviewer_assurance": "independent",
             "limitations": [],
@@ -322,6 +332,18 @@ class CausalReviewTests(unittest.TestCase):
         )
         self.assertEqual(result["outcome"], "triage-required")
         self.assertEqual(result["impact_gap_fingerprints"], [finding["fingerprint"]])
+
+    def test_typed_locator_requires_symbol_and_location_label_equality(self) -> None:
+        matching = self.finding("affected", True, path="src/a.py", symbol="run", causal=True)
+        different_symbol = self.finding(
+            "affected", True, path="src/a.py", symbol="other", causal=True
+        )
+        label_only = self.finding(
+            "affected", True, path=None, symbol=None, location_label="service boundary", causal=True
+        )
+        self.assertFalse(matching["impact_gap"])
+        self.assertTrue(different_symbol["impact_gap"])
+        self.assertTrue(label_only["impact_gap"])
 
     def test_contradictory_agent_verdict_is_rejected(self) -> None:
         finding = self.finding("introduced", True)

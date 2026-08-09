@@ -728,7 +728,8 @@ class Controller:
     def show_view(self, task_id: str) -> dict:
         state, definition = self.store.load_with_definition(task_id)
         try:
-            snapshot = self._snapshot(state)
+            with self.store.repository_read(task_id) as (state, definition):
+                snapshot = self._snapshot(state)
         except DevFlowError as exc:
             return task_view(
                 state,
@@ -791,16 +792,16 @@ class Controller:
         limit: int = DEFAULT_PAGE_LIMIT,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict:
-        state, definition = self.store.inspect_with_definition(task_id)
-        snapshot = None
-        projection = None
-        snapshot_error_code = None
-        try:
-            with GitClient.cancellation(cancel_event):
-                snapshot = self._snapshot(state)
-            projection = agent_projection(state, definition, snapshot)
-        except DevFlowError as exc:
-            snapshot_error_code = exc.code
+        with self.store.repository_read(task_id) as (state, definition):
+            snapshot = None
+            projection = None
+            snapshot_error_code = None
+            try:
+                with GitClient.cancellation(cancel_event):
+                    snapshot = self._snapshot(state)
+                projection = agent_projection(state, definition, snapshot)
+            except DevFlowError as exc:
+                snapshot_error_code = exc.code
         latest, latest_definition = self.store.inspect_with_definition(task_id)
         if (
             latest.revision != state.revision
@@ -828,8 +829,8 @@ class Controller:
         )
 
     def next(self, task_id: str) -> dict:
-        state, definition = self.store.load_with_definition(task_id)
-        return self._projection(state, definition)
+        with self.store.repository_read(task_id) as (state, definition):
+            return self._projection(state, definition)
 
     def list_tasks(self) -> tuple:
         return self.store.list_states()

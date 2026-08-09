@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Tuple
@@ -354,12 +354,7 @@ class TaskStore:
                 continue
             for requested in state.repositories:
                 for owned in existing.repositories:
-                    if (
-                        paths_equal(requested.path, owned.path)
-                        or paths_equal(
-                            requested.git_worktree_dir, owned.git_worktree_dir
-                        )
-                    ):
+                    if self._repositories_overlap(requested, owned):
                         raise DevFlowError(
                             "TASK_MEMBERSHIP_LEASED",
                             "requested worktree belongs to another active task",
@@ -372,6 +367,60 @@ class TaskStore:
                             },
                         )
         return self.create(state)
+
+    @staticmethod
+    def _repositories_overlap(left, right) -> bool:
+        return any(
+            paths_equal(left_value, right_value)
+            for left_value in (left.path, left.git_worktree_dir, left.git_common_dir)
+            for right_value in (right.path, right.git_worktree_dir, right.git_common_dir)
+        )
+
+    def _assert_active_membership(self, state: TaskState) -> None:
+        conflicts = []
+        for other, definition in self.list_states_with_definitions(
+            strict=True,
+            acquire_task_locks=False,
+        ):
+            if other.task_id == state.task_id or is_terminal_state(other, definition):
+                continue
+            for current_repository in state.repositories:
+                for other_repository in other.repositories:
+                    if self._repositories_overlap(current_repository, other_repository):
+                        conflicts.append({
+                            "task_id": other.task_id,
+                            "repository_id": current_repository.repository_id,
+                            "conflicting_repository_id": other_repository.repository_id,
+                        })
+        if conflicts:
+            raise DevFlowError(
+                "LEASE_INTEGRITY_CONFLICT",
+                "active repository membership is not unique",
+                details={
+                    "task_id": state.task_id,
+                    "conflicts": conflicts[:8],
+                },
+            )
+
+    @contextmanager
+    def repository_read(self, task_id: str):
+        """Hold established authority locks for one live repository projection."""
+        with ExitStack() as locks:
+            locks.enter_context(self.membership_lock())
+            inspected, _ = self.inspect_with_definition(task_id)
+            self._assert_active_membership(inspected)
+            authorities = self._repository_authorities(inspected.repositories)
+            for authority in authorities:
+                locks.enter_context(exclusive_file_lock(authority.lock_path))
+            locks.enter_context(self._lock(task_id))
+            current, definition = self._read_state_with_definition(task_id)
+            if current.repositories != inspected.repositories:
+                raise DevFlowError(
+                    "REVISION_CONFLICT",
+                    "task membership changed while live authority was acquired",
+                    details={"task_id": task_id},
+                )
+            yield current, definition
 
     def load(self, task_id: str) -> TaskState:
         with self._lock(task_id):
@@ -482,6 +531,7 @@ class TaskStore:
         self,
         *,
         strict: bool = False,
+        acquire_task_locks: bool = True,
     ) -> Tuple[Tuple[TaskState, WorkflowDefinition], ...]:
         try:
             if not self.tasks_root.exists():
@@ -535,7 +585,11 @@ class TaskStore:
         states = []
         for task_id in sorted(task_ids, key=lambda item: item.encode("utf-8")):
             try:
-                states.append(self.load_with_definition(task_id))
+                states.append(
+                    self.load_with_definition(task_id)
+                    if acquire_task_locks
+                    else self._read_state_with_definition(task_id)
+                )
             except DevFlowError as exc:
                 if strict:
                     raise DevFlowError(
@@ -595,6 +649,7 @@ class TaskStore:
             locks.enter_context(self.membership_lock())
 
             inspected, _ = self.inspect_with_definition(task_id)
+            self._assert_active_membership(inspected)
             selected_authorities = self._repository_authorities(
                 inspected.repositories
             )

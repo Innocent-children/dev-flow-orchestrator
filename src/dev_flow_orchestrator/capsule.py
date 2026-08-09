@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Mapping, Optional, Sequence
 
+from .git_client import GitClient
 from .model import DevFlowError, canonical_json_bytes, json_value
 from .product import (
     MAX_OWNERSHIP_CLAIMS,
@@ -145,25 +146,63 @@ def derive_path_changes(
     changes = []
     for member in before["repositories"]:
         repository_id = member["repository_id"]
-        before_entries = _entry_map(before_members[repository_id])
-        after_entries = _entry_map(after_members[repository_id])
+        before_member = before_members[repository_id]
+        after_member = after_members[repository_id]
+        before_entries = _entry_map(before_member)
+        after_entries = _entry_map(after_member)
         same_head = (
-            before_members[repository_id].get("head")
-            == after_members[repository_id].get("head")
+            before_member.get("head") == after_member.get("head")
         )
+        committed = {}
+        if not same_head:
+            authority_fields = (
+                "repository_root", "git_worktree_dir", "git_common_dir", "object_format"
+            )
+            if any(before_member.get(field) != after_member.get(field) for field in authority_fields):
+                raise _error(
+                    "REPOSITORY_IDENTITY_MISMATCH",
+                    "repository authority changed during source production",
+                    repository_id=repository_id,
+                )
+            if before_member.get("branch") != after_member.get("branch"):
+                raise _error(
+                    "REPOSITORY_BRANCH_CHANGED",
+                    "repository branch changed during source production",
+                    repository_id=repository_id,
+                )
+            committed = {
+                item["path"]: item
+                for item in GitClient.tree_delta(
+                    str(after_member["repository_root"]),
+                    str(before_member["head"]),
+                    str(after_member["head"]),
+                    str(after_member["object_format"]),
+                )
+            }
         for path in sorted(
-            set(before_entries) | set(after_entries), key=lambda item: item.encode("utf-8")
+            set(before_entries) | set(after_entries) | set(committed),
+            key=lambda item: item.encode("utf-8"),
         ):
-            old = _entry_or_clean_head_identity(
-                before_entries.get(path),
-                after_entries.get(path),
-                same_head=same_head,
+            tree_change = committed.get(path, {})
+            before_head_entry = tree_change.get("before_head_entry")
+            after_head_entry = tree_change.get("after_head_entry")
+            old = (
+                path_identity(before_entries[path])
+                if path in before_entries
+                else _tracked_origin(before_head_entry) or path_identity(None)
             )
-            new = _entry_or_clean_head_identity(
-                after_entries.get(path),
-                before_entries.get(path),
-                same_head=same_head,
+            new = (
+                path_identity(after_entries[path])
+                if path in after_entries
+                else _tracked_origin(after_head_entry) or path_identity(None)
             )
+            if same_head:
+                old = _entry_or_clean_head_identity(
+                    before_entries.get(path), after_entries.get(path), same_head=True
+                )
+                new = _entry_or_clean_head_identity(
+                    after_entries.get(path), before_entries.get(path), same_head=True
+                )
             if old == new:
                 continue
             old_missing = old["worktree"]["kind"] == "missing" and not old["index_entries"]
@@ -177,10 +216,14 @@ def derive_path_changes(
                     "before": old,
                     "after": new,
                     "before_head_entry": json_value(
-                        before_entries.get(path, {}).get("head_entry")
+                        before_head_entry
+                        if not same_head
+                        else before_entries.get(path, {}).get("head_entry")
                     ),
                     "after_head_entry": json_value(
-                        after_entries.get(path, {}).get("head_entry")
+                        after_head_entry
+                        if not same_head
+                        else after_entries.get(path, {}).get("head_entry")
                     ),
                 }
             )

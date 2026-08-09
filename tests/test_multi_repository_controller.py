@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
@@ -278,6 +279,26 @@ class MultiRepositoryControllerTests(unittest.TestCase):
                     bounded.exception.code,
                     "REPOSITORY_COUNT_INVALID",
                 )
+
+    def test_live_projection_and_mutation_fail_closed_for_conflicting_active_inventory(self) -> None:
+        state = self.controller.start(
+            requirement="Unique lease",
+            workflow="lite",
+            repositories=(str(self.first),),
+            task_id="task-primary",
+        )
+        conflicting = replace(state, task_id="task-conflict")
+        self.controller.store.create(conflicting)
+
+        with self.assertRaises(DevFlowError) as projected:
+            self.controller.next(state.task_id)
+        self.assertEqual(projected.exception.code, "LEASE_INTEGRITY_CONFLICT")
+        self.assertEqual(self.controller.show(state.task_id).revision, 0)
+
+        with self.assertRaises(DevFlowError) as mutated:
+            self.controller.cancel(state.task_id, reason="must not advance")
+        self.assertEqual(mutated.exception.code, "LEASE_INTEGRITY_CONFLICT")
+        self.assertEqual(self.controller.show(state.task_id).revision, 0)
 
     def test_capture_partitions_resources_and_discovers_from_secondary_member(self) -> None:
         (self.first / "plan.md").write_text("api plan\n", encoding="utf-8")
