@@ -37,8 +37,11 @@ _PREIMPORT_REQUIRED = (
     "scripts/runtime_integrity.py",
     "scripts/validate_installed_stage1.py",
     "src/dev_flow_orchestrator/_version.py",
+    "src/dev_flow_orchestrator/_platform/storage.py",
+    "src/dev_flow_orchestrator/product.py",
     "src/dev_flow_orchestrator/review_guidance.py",
     "src/dev_flow_orchestrator/payload_contract.py",
+    "src/dev_flow_orchestrator/store.py",
     "src/dev_flow_orchestrator/runtime_paths.py",
     "src/dev_flow_orchestrator/runtime_receipt.py",
     "src/dev_flow_orchestrator/mcp/__init__.py",
@@ -60,6 +63,8 @@ _PREIMPORT_REQUIRED = (
     "tests/test_mcp_guidance.py",
     "tests/test_mcp_runtime.py",
     "tests/test_native_windows_runtime.py",
+    "tests/test_posix_storage_locking.py",
+    "tests/test_store_state_bounds.py",
 )
 
 
@@ -190,8 +195,38 @@ def _preimport_candidate_errors(root: Path) -> list[str]:
             "MutationExecutionContext",
             "capture_result",
         ),
+        "src/dev_flow_orchestrator/_platform/storage.py": (
+            "fcntl.LOCK_EX | fcntl.LOCK_NB",
+            "time.monotonic()",
+            "STATE_LOCK_TIMEOUT",
+            "maximum_bytes + 1",
+            "os_lock_held",
+            "Lock authority linearizes",
+        ),
+        "src/dev_flow_orchestrator/store.py": (
+            "MAX_STATE_FILE_BYTES",
+            "MAX_STATE_JSON_NESTING_DEPTH",
+            "_validate_state_json_nesting",
+            "_decode_persisted_state_envelope",
+            "_validated_candidate_state_payload",
+            "candidate-write",
+        ),
         "src/dev_flow_orchestrator/mcp/server.py": ("MCPServer",),
         "tests/test_mcp_runtime.py": ("unittest", "dev_flow_server_info"),
+        "tests/test_posix_storage_locking.py": (
+            'multiprocessing.get_context("spawn")',
+            "STATE_LOCK_TIMEOUT",
+            "REQUEST_CANCELLED",
+            "test_post_acquire_cancellation",
+            "test_post_acquire_deadline",
+        ),
+        "tests/test_store_state_bounds.py": (
+            "100_000",
+            "STATE_LIMIT_EXCEEDED",
+            "inspect_inventory",
+            "test_real_mutation_cannot_commit_an_unreadable_candidate_state",
+            "test_every_state_replacement_path_uses_the_shared_envelope_gate",
+        ),
     }
     for relative, tokens in required_source_tokens.items():
         source = documents.get(relative, "")
@@ -229,6 +264,7 @@ from dev_flow_orchestrator.product import (  # noqa: E402
     DRIVER_RESULT_SCHEMA,
     ASSURANCE_POLICY_SCHEMA,
     ASSURANCE_PROFILES,
+    DEFAULT_POSIX_FILE_LOCK_TIMEOUT_SECONDS,
     MAX_ACTION_PAYLOAD_BYTES,
     MAX_ASSURANCE_OBLIGATIONS,
     MAX_EVIDENCE_ITEMS,
@@ -236,6 +272,8 @@ from dev_flow_orchestrator.product import (  # noqa: E402
     MAX_INDEX_COMMAND_OUTPUT_BYTES,
     MAX_INDEX_STAGE_ENTRIES,
     MAX_OWNERSHIP_CLAIMS,
+    MAX_STATE_FILE_BYTES,
+    MAX_STATE_JSON_NESTING_DEPTH,
     IMPACT_REPORT_SCHEMA,
     MAX_REPOSITORY_COUNT,
     MAX_REVIEW_FINDINGS,
@@ -245,6 +283,7 @@ from dev_flow_orchestrator.product import (  # noqa: E402
     MAX_WORKFLOW_ACTIONS,
     MIN_REPOSITORY_COUNT,
     OPENSPEC_TASKS_NORMALIZER,
+    POSIX_FILE_LOCK_POLL_INTERVAL_SECONDS,
     PLUGIN_DATA_NAMESPACE,
     RELEASE_VERSION,
     MODEL_VERSION,
@@ -303,6 +342,7 @@ REQUIRED_STATIC = (
     "docs/PROMOTION.md",
     "src/dev_flow_orchestrator/__init__.py",
     "src/dev_flow_orchestrator/_version.py",
+    "src/dev_flow_orchestrator/_platform/storage.py",
     "src/dev_flow_orchestrator/cli.py",
     "tests/test_bump_version.py",
     "src/dev_flow_orchestrator/controller.py",
@@ -350,6 +390,8 @@ REQUIRED_STATIC = (
     "tests/test_mcp_guidance.py",
     "tests/test_mcp_runtime.py",
     "tests/test_native_windows_runtime.py",
+    "tests/test_posix_storage_locking.py",
+    "tests/test_store_state_bounds.py",
     "tests/test_windows_product_support.py",
     "tests/test_windows_lifecycle.py",
     "tests/test_uninstall_script.py",
@@ -3121,6 +3163,56 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
         )
 
 
+def _validate_macos_storage_reliability(root: Path, errors: list[str]) -> None:
+    _check(
+        DEFAULT_POSIX_FILE_LOCK_TIMEOUT_SECONDS == 30.0
+        and POSIX_FILE_LOCK_POLL_INTERVAL_SECONDS == 0.05,
+        errors,
+        "POSIX file lock deadline or polling authority is invalid",
+    )
+    _check(
+        MAX_STATE_FILE_BYTES == 64 * 1024 * 1024
+        and MAX_STATE_JSON_NESTING_DEPTH == 128,
+        errors,
+        "current state byte or nesting authority is invalid",
+    )
+    storage_source = (
+        root / "src" / "dev_flow_orchestrator" / "_platform" / "storage.py"
+    ).read_text(encoding="utf-8")
+    store_source = (
+        root / "src" / "dev_flow_orchestrator" / "store.py"
+    ).read_text(encoding="utf-8")
+    _require_tokens(
+        storage_source,
+        (
+            "fcntl.LOCK_EX | fcntl.LOCK_NB",
+            "deadline = time.monotonic()",
+            "STATE_LOCK_TIMEOUT",
+            "STATE_LIMIT_EXCEEDED",
+            "stream.read(maximum_bytes + 1)",
+        ),
+        errors,
+        "shared POSIX storage primitive is not bounded",
+    )
+    _check(
+        "fcntl.flock(descriptor, fcntl.LOCK_EX)" not in storage_source,
+        errors,
+        "shared POSIX storage primitive retains blocking LOCK_EX",
+    )
+    _require_tokens(
+        store_source,
+        (
+            "maximum_bytes=MAX_STATE_FILE_BYTES",
+            "_validate_state_json_nesting",
+            "except RecursionError",
+            '"STATE_LIMIT_EXCEEDED"',
+            "cancellation_check=cancellation_check",
+        ),
+        errors,
+        "TaskStore does not preserve bounded lock/read propagation",
+    )
+
+
 def _validate_current_candidate(root: Path) -> dict:
     errors: list[str] = []
     _validate_current_product_versions(root, errors)
@@ -3224,6 +3316,7 @@ def _validate_current_candidate(root: Path) -> dict:
             "scripts/uninstall.sh exposes destructive source removal",
         )
     _validate_local_read_only_web_ui(root, errors)
+    _validate_macos_storage_reliability(root, errors)
     _validate_windows_product_integration(root, errors)
     _validate_repository_topology(root, errors)
     _validate_adaptive_assurance_authority(root, errors)

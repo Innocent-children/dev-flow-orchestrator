@@ -704,7 +704,9 @@ class Controller:
         )
         requested_repositories = tuple(repositories)
         repository_records = self._canonical_repositories(requested_repositories)
-        with self.store.membership_lock():
+        with self.store.membership_lock(
+            cancellation_check=cancellation_check,
+        ):
             locked_records = self._canonical_repositories(requested_repositories)
             if locked_records != repository_records:
                 raise DevFlowError(
@@ -720,7 +722,10 @@ class Controller:
                 timestamp=_utc_now(),
             )
             self._cancellation_checkpoint(cancellation_check)
-            return self.store.create_admitted(state)
+            return self.store.create_admitted(
+                state,
+                cancellation_check=cancellation_check,
+            )
 
     def show(self, task_id: str) -> TaskState:
         return self.store.load(task_id)
@@ -828,16 +833,30 @@ class Controller:
             limit=limit,
         )
 
-    def next(self, task_id: str) -> dict:
-        with self.store.repository_read(task_id) as (state, definition):
+    def next(
+        self,
+        task_id: str,
+        *,
+        cancellation_check: Optional[Callable[[], object]] = None,
+    ) -> dict:
+        with self.store.repository_read(
+            task_id,
+            cancellation_check=cancellation_check,
+        ) as (state, definition):
             return self._projection(state, definition)
+
+    def list_task_inventory(self) -> tuple:
+        """Return healthy stored tasks and bounded task-local diagnostics."""
+        entries, diagnostics = self.store.inspect_inventory()
+        return tuple(state for state, _ in entries), diagnostics
 
     def list_tasks(self) -> tuple:
         return self.store.list_states()
 
     def inventory_diagnostics(self) -> tuple:
         """Return read-only corruption diagnostics for the current namespace."""
-        return self.store.inventory_diagnostics()
+        _states, diagnostics = self.list_task_inventory()
+        return diagnostics
 
     def apply(
         self,

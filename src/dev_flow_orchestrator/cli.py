@@ -202,10 +202,12 @@ def _dispatch(arguments: argparse.Namespace) -> dict:
             **controller.cancel(arguments.task_id, reason=arguments.reason),
         }
     if arguments.command == "list":
+        tasks, diagnostics = controller.list_task_inventory()
         return {
             "ok": True,
             "command": "list",
-            "tasks": [state.as_dict() for state in controller.list_tasks()],
+            "tasks": [state.as_dict() for state in tasks],
+            "diagnostics": list(diagnostics),
         }
     raise DevFlowError("ACTION_UNSUPPORTED", "command is not implemented")
 

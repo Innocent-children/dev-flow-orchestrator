@@ -89,6 +89,13 @@ MAX_WORKFLOW_ACTIONS = 256
 MAX_ACTION_PAYLOAD_BYTES = 64 * 1024
 MAX_TEXT_FIELD_BYTES = 8 * 1024
 
+# Runtime storage safety limits are deliberately excluded from product_document():
+# they bound host resource use without changing persisted 0.4.x identity or shape.
+DEFAULT_POSIX_FILE_LOCK_TIMEOUT_SECONDS = 30.0
+POSIX_FILE_LOCK_POLL_INTERVAL_SECONDS = 0.05
+MAX_STATE_FILE_BYTES = 64 * 1024 * 1024
+MAX_STATE_JSON_NESTING_DEPTH = 128
+
 ASSURANCE_PROFILES: Tuple[str, ...] = WORKFLOW_IDS
 IMPACT_CONFIDENCE_VALUES: Tuple[str, ...] = (
     "source-confirmed",

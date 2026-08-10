@@ -73,6 +73,7 @@ def _recovery_for_domain(
     code: str,
     task_id: Optional[str],
     tool: str,
+    details: Optional[Mapping[str, object]] = None,
 ) -> Optional[dict[str, object]]:
     if code in {"TASK_NOT_FOUND", "TASK_ID_INVALID"}:
         return _recovery(
@@ -98,6 +99,27 @@ def _recovery_for_domain(
         )
     if code in {"CURSOR_INVALID", "PAYLOAD_LIMIT", "VIEW_QUERY_INVALID"}:
         return _recovery("correct-request", blind_retry=False)
+    if code == "STATE_LOCK_TIMEOUT":
+        return _recovery("retry-later", blind_retry=True)
+    if (
+        code == "STATE_LIMIT_EXCEEDED"
+        and isinstance(details, Mapping)
+        and details.get("phase") == "candidate-write"
+    ):
+        if tool == "dev_flow_apply_action":
+            return _recovery(
+                "refresh-current-action",
+                tool="dev_flow_get_next_action",
+                task_id=task_id,
+                blind_retry=False,
+            )
+        return _recovery("correct-request", blind_retry=False)
+    if code in {"STATE_INVALID", "STATE_LIMIT_EXCEEDED", "STATE_READ_FAILED"}:
+        return _recovery(
+            "inspect-diagnostics",
+            task_id=task_id,
+            blind_retry=False,
+        )
     if code == "NODE_OUTPUT_INVALID" and tool == "dev_flow_apply_action":
         return _recovery(
             "correct-request",
@@ -195,7 +217,12 @@ def domain_error(
             "code": code,
             "message": bounded_message,
             "details": _bounded_json(details, MAX_ERROR_DETAILS_BYTES),
-            "recovery": _recovery_for_domain(str(code), task_id, tool),
+            "recovery": _recovery_for_domain(
+                str(code),
+                task_id,
+                tool,
+                details if isinstance(details, Mapping) else None,
+            ),
         },
     }
     text = "{}{}; request {}".format(

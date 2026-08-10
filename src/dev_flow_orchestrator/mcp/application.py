@@ -223,7 +223,11 @@ class MCPApplication:
                         with self.coordinator.capture(cancellation_check=check):
                             if check():
                                 raise cancelled_failure()
-                            data, summary = self._dispatch(tool, arguments)
+                            data, summary = self._dispatch(
+                                tool,
+                                arguments,
+                                cancellation_checkpoint=cancellation_checkpoint,
+                            )
             else:
                 data, summary = self._dispatch(tool, arguments)
 
@@ -484,7 +488,10 @@ class MCPApplication:
                 raise RuntimeError("stored task projection is invalid")
             return dict(result), "Returned the stored view for task {}.".format(arguments["task_id"])
         if tool == "dev_flow_get_next_action":
-            projection = self.controller.next(str(arguments["task_id"]))
+            projection = self.controller.next(
+                str(arguments["task_id"]),
+                cancellation_check=cancellation_checkpoint,
+            )
             guidance = guidance_for_projection(projection)
             result = compact_current_action(projection, guidance)
             action = result.get("action") if isinstance(result, Mapping) else None

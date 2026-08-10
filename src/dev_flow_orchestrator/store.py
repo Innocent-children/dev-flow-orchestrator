@@ -35,7 +35,13 @@ from .model import (
     strict_json_loads,
     validate_task_id,
 )
-from .product import PLUGIN_DATA_NAMESPACE, PRODUCT_IDENTITY, MODEL_VERSION
+from .product import (
+    MAX_STATE_FILE_BYTES,
+    MAX_STATE_JSON_NESTING_DEPTH,
+    PLUGIN_DATA_NAMESPACE,
+    PRODUCT_IDENTITY,
+    MODEL_VERSION,
+)
 from .workflow import WorkflowDefinition
 from .workflows import load_definition, task_definition
 
@@ -66,6 +72,140 @@ class _RepositoryAuthority:
     repository_id: str
     identity: bytes
     lock_path: Path
+
+
+def _validate_state_json_nesting(
+    text: str,
+    *,
+    maximum_depth: int = MAX_STATE_JSON_NESTING_DEPTH,
+    phase: Optional[str] = None,
+) -> None:
+    """Reject excessive JSON container nesting without counting string content."""
+    stack = []
+    in_string = False
+    escaped = False
+    pairs = {"}": "{", "]": "["}
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            stack.append(character)
+            if len(stack) > maximum_depth:
+                details = {"maximum_depth": maximum_depth}
+                if phase is not None:
+                    details["phase"] = phase
+                raise DevFlowError(
+                    "STATE_LIMIT_EXCEEDED",
+                    "task state exceeds the current product nesting limit",
+                    details=details,
+                )
+        elif character in "}]":
+            if not stack or stack[-1] != pairs[character]:
+                raise DevFlowError(
+                    "STATE_INVALID",
+                    "task state is not valid UTF-8 JSON",
+                )
+            stack.pop()
+
+
+def _decode_persisted_state_envelope(
+    payload: bytes,
+    *,
+    maximum_bytes: Optional[int] = None,
+    maximum_depth: Optional[int] = None,
+    phase: Optional[str] = None,
+) -> object:
+    """Validate and decode the byte/depth envelope shared by reads and writes."""
+    byte_limit = MAX_STATE_FILE_BYTES if maximum_bytes is None else maximum_bytes
+    depth_limit = (
+        MAX_STATE_JSON_NESTING_DEPTH
+        if maximum_depth is None
+        else maximum_depth
+    )
+    if len(payload) > byte_limit:
+        details = {"maximum_bytes": byte_limit}
+        if phase is not None:
+            details["phase"] = phase
+        raise DevFlowError(
+            "STATE_LIMIT_EXCEEDED",
+            "task state exceeds the current product byte limit",
+            details=details,
+        )
+    try:
+        text = payload.decode("utf-8")
+        _validate_state_json_nesting(
+            text,
+            maximum_depth=depth_limit,
+            phase=phase,
+        )
+        return strict_json_loads(text)
+    except DevFlowError:
+        raise
+    except RecursionError as exc:
+        details = {"maximum_depth": depth_limit}
+        if phase is not None:
+            details["phase"] = phase
+        raise DevFlowError(
+            "STATE_LIMIT_EXCEEDED",
+            "task state exceeds the current product nesting limit",
+            details=details,
+        ) from exc
+    except (UnicodeError, ValueError) as exc:
+        raise DevFlowError(
+            "STATE_INVALID",
+            "task state is not valid UTF-8 JSON",
+        ) from exc
+
+
+def _validated_candidate_state_payload(state: TaskState) -> bytes:
+    """Return canonical state bytes only when the read envelope accepts them."""
+    try:
+        payload = canonical_json_bytes(state.as_dict()) + b"\n"
+    except RecursionError as exc:
+        raise DevFlowError(
+            "STATE_LIMIT_EXCEEDED",
+            "candidate task state exceeds the current product nesting limit",
+            details={
+                "maximum_depth": MAX_STATE_JSON_NESTING_DEPTH,
+                "phase": "candidate-write",
+            },
+        ) from exc
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise DevFlowError(
+            "STATE_WRITE_INVALID",
+            "candidate task state is not canonical JSON",
+        ) from exc
+    value = _decode_persisted_state_envelope(
+        payload,
+        phase="candidate-write",
+    )
+    if not isinstance(value, dict):
+        raise DevFlowError(
+            "STATE_WRITE_INVALID",
+            "candidate task state must serialize as an object",
+        )
+    return payload
+
+
+def _exclusive_lock(
+    path: Path,
+    cancellation_check: Optional[Callable[[], object]],
+):
+    """Preserve the one-argument lock seam when no cancellation is supplied."""
+    if cancellation_check is None:
+        return exclusive_file_lock(path)
+    return exclusive_file_lock(
+        path,
+        cancellation_check=cancellation_check,
+    )
 
 
 class TaskStore:
@@ -101,22 +241,37 @@ class TaskStore:
     def _state_path(self, task_id: str) -> Path:
         return self._task_directory(task_id) / "state.json"
 
-    def _lock(self, task_id: str):
+    def _lock(
+        self,
+        task_id: str,
+        *,
+        cancellation_check: Optional[Callable[[], object]] = None,
+    ):
         validate_task_id(task_id)
         ensure_private_directory(self.root)
         ensure_private_directory(self.namespace_root)
         ensure_private_directory(self.tasks_root)
         ensure_private_directory(self.locks_root)
         lock_path = self.locks_root / "{}.lock".format(task_id)
-        return exclusive_file_lock(lock_path)
+        return _exclusive_lock(
+            lock_path,
+            cancellation_check,
+        )
 
-    def membership_lock(self):
+    def membership_lock(
+        self,
+        *,
+        cancellation_check: Optional[Callable[[], object]] = None,
+    ):
         """Serialize complete current-namespace membership admission."""
         ensure_private_directory(self.root)
         ensure_private_directory(self.namespace_root)
         ensure_private_directory(self.tasks_root)
         ensure_private_directory(self.locks_root)
-        return exclusive_file_lock(self.locks_root / "membership.lock")
+        return _exclusive_lock(
+            self.locks_root / "membership.lock",
+            cancellation_check,
+        )
 
     @staticmethod
     def _repository_identity(repository) -> bytes:
@@ -256,6 +411,7 @@ class TaskStore:
             raw = read_regular_file_at(
                 self.namespace_root,
                 ("tasks", expected_task_id, "state.json"),
+                maximum_bytes=MAX_STATE_FILE_BYTES,
             )
         except FileNotFoundError as exc:
             raise DevFlowError(
@@ -271,14 +427,7 @@ class TaskStore:
                 "task state could not be read",
                 details={"path": str(path), "error": str(exc)},
             ) from exc
-        try:
-            value = strict_json_loads(raw.decode("utf-8"))
-        except (UnicodeError, ValueError) as exc:
-            raise DevFlowError(
-                "STATE_INVALID",
-                "task state is not valid UTF-8 JSON",
-                details={"path": str(path)},
-            ) from exc
+        value = _decode_persisted_state_envelope(raw)
         if not isinstance(value, dict):
             raise DevFlowError("STATE_INVALID", "task state must be an object")
         if value.get("version") != MODEL_VERSION:
@@ -304,16 +453,25 @@ class TaskStore:
                     "stored_task_id": stored_task_id,
                 },
             )
-        workflow = value.get("workflow")
-        if not isinstance(workflow, dict) or not isinstance(workflow.get("id"), str):
+        try:
+            workflow = value.get("workflow")
+            if not isinstance(workflow, dict) or not isinstance(
+                workflow.get("id"), str
+            ):
+                raise DevFlowError(
+                    "STATE_INVALID",
+                    "task product selection is invalid",
+                    details={"path": str(path)},
+                )
+            definition = load_definition(workflow["id"])
+            state = TaskState.from_dict(value, definition=definition)
+            validate_persisted_state(state, definition)
+        except RecursionError as exc:
             raise DevFlowError(
-                "STATE_INVALID",
-                "task product selection is invalid",
-                details={"path": str(path)},
-            )
-        definition = load_definition(workflow["id"])
-        state = TaskState.from_dict(value, definition=definition)
-        validate_persisted_state(state, definition)
+                "STATE_LIMIT_EXCEEDED",
+                "task state exceeds the current product nesting limit",
+                details={"maximum_depth": MAX_STATE_JSON_NESTING_DEPTH},
+            ) from exc
         return state, definition
 
     def _read_state(self, task_id: str) -> TaskState:
@@ -322,11 +480,19 @@ class TaskStore:
 
     @staticmethod
     def _atomic_write(path: Path, state: TaskState) -> None:
-        payload = canonical_json_bytes(state.as_dict()) + b"\n"
+        payload = _validated_candidate_state_payload(state)
         atomic_write_bytes(path, payload)
 
-    def create(self, state: TaskState) -> TaskState:
-        with self._lock(state.task_id):
+    def create(
+        self,
+        state: TaskState,
+        *,
+        cancellation_check: Optional[Callable[[], object]] = None,
+    ) -> TaskState:
+        with self._lock(
+            state.task_id,
+            cancellation_check=cancellation_check,
+        ):
             task_directory = self._task_directory(state.task_id)
             state_path = self._state_path(state.task_id)
             ensure_private_directory(task_directory)
@@ -347,9 +513,17 @@ class TaskStore:
             self._atomic_write(state_path, state)
         return state
 
-    def create_admitted(self, state: TaskState) -> TaskState:
+    def create_admitted(
+        self,
+        state: TaskState,
+        *,
+        cancellation_check: Optional[Callable[[], object]] = None,
+    ) -> TaskState:
         """Persist revision zero after a caller-held membership lock check."""
-        for existing, definition in self.list_states_with_definitions(strict=True):
+        for existing, definition in self.list_states_with_definitions(
+            strict=True,
+            cancellation_check=cancellation_check,
+        ):
             if is_terminal_state(existing, definition):
                 continue
             for requested in state.repositories:
@@ -366,7 +540,7 @@ class TaskStore:
                                 "git_worktree_dir": requested.git_worktree_dir,
                             },
                         )
-        return self.create(state)
+        return self.create(state, cancellation_check=cancellation_check)
 
     @staticmethod
     def _repositories_overlap(left, right) -> bool:
@@ -403,16 +577,30 @@ class TaskStore:
             )
 
     @contextmanager
-    def repository_read(self, task_id: str):
+    def repository_read(
+        self,
+        task_id: str,
+        *,
+        cancellation_check: Optional[Callable[[], object]] = None,
+    ):
         """Hold established authority locks for one live repository projection."""
         with ExitStack() as locks:
-            locks.enter_context(self.membership_lock())
+            locks.enter_context(
+                self.membership_lock(cancellation_check=cancellation_check)
+            )
             inspected, _ = self.inspect_with_definition(task_id)
             self._assert_active_membership(inspected)
             authorities = self._repository_authorities(inspected.repositories)
             for authority in authorities:
-                locks.enter_context(exclusive_file_lock(authority.lock_path))
-            locks.enter_context(self._lock(task_id))
+                locks.enter_context(
+                    _exclusive_lock(
+                        authority.lock_path,
+                        cancellation_check,
+                    )
+                )
+            locks.enter_context(
+                self._lock(task_id, cancellation_check=cancellation_check)
+            )
             current, definition = self._read_state_with_definition(task_id)
             if current.repositories != inspected.repositories:
                 raise DevFlowError(
@@ -422,15 +610,22 @@ class TaskStore:
                 )
             yield current, definition
 
-    def load(self, task_id: str) -> TaskState:
-        with self._lock(task_id):
+    def load(
+        self,
+        task_id: str,
+        *,
+        cancellation_check: Optional[Callable[[], object]] = None,
+    ) -> TaskState:
+        with self._lock(task_id, cancellation_check=cancellation_check):
             return self._read_state(task_id)
 
     def load_with_definition(
         self,
         task_id: str,
+        *,
+        cancellation_check: Optional[Callable[[], object]] = None,
     ) -> Tuple[TaskState, WorkflowDefinition]:
-        with self._lock(task_id):
+        with self._lock(task_id, cancellation_check=cancellation_check):
             return self._read_state_with_definition(task_id)
 
     def inspect_with_definition(
@@ -447,6 +642,7 @@ class TaskStore:
             "DATA_PATH_UNSAFE",
             "PRODUCT_IDENTITY_MISMATCH",
             "STATE_INVALID",
+            "STATE_LIMIT_EXCEEDED",
             "STATE_READ_FAILED",
             "TASK_NOT_FOUND",
             "WORKFLOW_NOT_FOUND",
@@ -484,7 +680,13 @@ class TaskStore:
             try:
                 task_id = validate_task_id(name)
                 states.append(self._read_state_with_definition(task_id))
-            except (DevFlowError, OSError) as exc:
+            except (
+                DevFlowError,
+                OSError,
+                RecursionError,
+                UnicodeError,
+                ValueError,
+            ) as exc:
                 diagnostics.append(self._inspection_diagnostic(name, exc))
         return tuple(states), tuple(diagnostics)
 
@@ -493,45 +695,15 @@ class TaskStore:
 
     def inventory_diagnostics(self) -> Tuple[dict, ...]:
         """Describe unreadable current-namespace entries without mutating them."""
-        if not self.tasks_root.exists():
-            return ()
-        if self.tasks_root.is_symlink() or not self.tasks_root.is_dir():
-            return ({
-                "code": "DATA_PATH_UNSAFE",
-                "path": str(self.tasks_root),
-                "cause": "current tasks root is not a real directory",
-            },)
-        diagnostics = []
-        try:
-            paths = tuple(self.tasks_root.iterdir())
-        except OSError as exc:
-            return ({
-                "code": "STATE_READ_FAILED",
-                "path": str(self.tasks_root),
-                "cause": str(exc),
-            },)
-        for path in sorted(paths, key=lambda item: item.name.encode("utf-8")):
-            try:
-                task_id = validate_task_id(path.name)
-                if not path.is_dir() or path.is_symlink():
-                    raise DevFlowError(
-                        "DATA_PATH_UNSAFE",
-                        "current task entry is not a real directory",
-                    )
-                self._read_state_with_definition(task_id)
-            except (DevFlowError, OSError) as exc:
-                diagnostics.append({
-                    "code": getattr(exc, "code", "STATE_READ_FAILED"),
-                    "path": str(path),
-                    "cause": str(exc),
-                })
-        return tuple(diagnostics)
+        _entries, diagnostics = self.inspect_inventory()
+        return diagnostics
 
     def list_states_with_definitions(
         self,
         *,
         strict: bool = False,
         acquire_task_locks: bool = True,
+        cancellation_check: Optional[Callable[[], object]] = None,
     ) -> Tuple[Tuple[TaskState, WorkflowDefinition], ...]:
         try:
             if not self.tasks_root.exists():
@@ -586,7 +758,10 @@ class TaskStore:
         for task_id in sorted(task_ids, key=lambda item: item.encode("utf-8")):
             try:
                 states.append(
-                    self.load_with_definition(task_id)
+                    self.load_with_definition(
+                        task_id,
+                        cancellation_check=cancellation_check,
+                    )
                     if acquire_task_locks
                     else self._read_state_with_definition(task_id)
                 )
@@ -646,7 +821,9 @@ class TaskStore:
     ) -> RepositoryMutationCommit:
         """Commit one snapshot-bound mutation under canonical repository locks."""
         with ExitStack() as locks:
-            locks.enter_context(self.membership_lock())
+            locks.enter_context(
+                self.membership_lock(cancellation_check=cancellation_check)
+            )
 
             inspected, _ = self.inspect_with_definition(task_id)
             self._assert_active_membership(inspected)
@@ -654,9 +831,16 @@ class TaskStore:
                 inspected.repositories
             )
             for authority in selected_authorities:
-                locks.enter_context(exclusive_file_lock(authority.lock_path))
+                locks.enter_context(
+                    _exclusive_lock(
+                        authority.lock_path,
+                        cancellation_check,
+                    )
+                )
 
-            locks.enter_context(self._lock(task_id))
+            locks.enter_context(
+                self._lock(task_id, cancellation_check=cancellation_check)
+            )
             state_path = self._state_path(task_id)
             current, definition = self._read_state_with_definition(task_id)
             if current.revision != expected_revision:

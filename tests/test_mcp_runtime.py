@@ -114,6 +114,37 @@ class MCPRuntimeTests(unittest.TestCase):
         )
         return repository
 
+    def test_precommit_lock_timeout_has_retry_later_domain_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            application = MCPApplication(str(Path(temporary) / "data"))
+            with mock.patch.object(
+                application,
+                "_dispatch",
+                side_effect=DevFlowError(
+                    "STATE_LOCK_TIMEOUT",
+                    "state lock could not be acquired before the deadline",
+                    details={"timeout_seconds": 30.0},
+                ),
+            ):
+                result = application.call(
+                    "dev_flow_start_task",
+                    {
+                        "requirement": "bounded lock",
+                        "workflow": "lite",
+                        "repositories": [str(Path(temporary) / "repository")],
+                        "task_id": "task-lock-timeout",
+                    },
+                )
+
+        self.assertTrue(result.is_error)
+        error = result.structured_content["error"]
+        self.assertEqual(error["code"], "STATE_LOCK_TIMEOUT")
+        self.assertNotEqual(error["code"], "MCP_COMPLETION_UNCERTAIN")
+        self.assertEqual(error["recovery"]["kind"], "retry-later")
+        self.assertTrue(error["recovery"]["blind_retry"])
+        self.assertNotIn("path", error["details"])
+        self.assertNotIn(temporary, json.dumps(result.structured_content))
+
     def _run_cli(self, *arguments: str) -> dict:
         try:
             data_index = arguments.index("--data-dir") + 1

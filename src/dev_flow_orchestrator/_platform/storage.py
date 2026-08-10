@@ -9,9 +9,13 @@ from pathlib import Path
 import stat
 import tempfile
 import time
-from typing import Iterator, Tuple
+from typing import Callable, Iterator, Optional, Tuple
 
 from ..model import DevFlowError
+from ..product import (
+    DEFAULT_POSIX_FILE_LOCK_TIMEOUT_SECONDS,
+    POSIX_FILE_LOCK_POLL_INTERVAL_SECONDS,
+)
 
 if os.name == "nt":  # pragma: no cover - imported and exercised on Windows CI
     import msvcrt
@@ -66,7 +70,12 @@ def _windows_read_regular_file(root: Path, parts: Tuple[str, ...]) -> bytes:
         return stream.read()
 
 
-def _posix_read_regular_file(root: Path, parts: Tuple[str, ...]) -> bytes:
+def _posix_read_regular_file(
+    root: Path,
+    parts: Tuple[str, ...],
+    *,
+    maximum_bytes: Optional[int] = None,
+) -> bytes:
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow
     descriptors = []
@@ -79,10 +88,28 @@ def _posix_read_regular_file(root: Path, parts: Tuple[str, ...]) -> bytes:
             descriptors.append(descriptor)
         file_descriptor = os.open(parts[-1], os.O_RDONLY | no_follow, dir_fd=descriptor)
         descriptors.append(file_descriptor)
-        if not stat.S_ISREG(os.fstat(file_descriptor).st_mode):
+        metadata = os.fstat(file_descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
             raise _unsafe_path(target)
+        if maximum_bytes is not None and metadata.st_size > maximum_bytes:
+            raise DevFlowError(
+                "STATE_LIMIT_EXCEEDED",
+                "task state exceeds the current product byte limit",
+                details={"maximum_bytes": maximum_bytes},
+            )
         with os.fdopen(file_descriptor, "rb", closefd=False) as stream:
-            return stream.read()
+            payload = (
+                stream.read()
+                if maximum_bytes is None
+                else stream.read(maximum_bytes + 1)
+            )
+        if maximum_bytes is not None and len(payload) > maximum_bytes:
+            raise DevFlowError(
+                "STATE_LIMIT_EXCEEDED",
+                "task state exceeds the current product byte limit",
+                details={"maximum_bytes": maximum_bytes},
+            )
+        return payload
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR):
             raise _unsafe_path(target) from exc
@@ -95,12 +122,21 @@ def _posix_read_regular_file(root: Path, parts: Tuple[str, ...]) -> bytes:
                 pass
 
 
-def read_regular_file_at(root: Path, parts: Tuple[str, ...]) -> bytes:
+def read_regular_file_at(
+    root: Path,
+    parts: Tuple[str, ...],
+    *,
+    maximum_bytes: Optional[int] = None,
+) -> bytes:
     if not parts:
         raise ValueError("relative file parts are required")
     if os.name == "nt":
         return _windows_read_regular_file(root, parts)
-    return _posix_read_regular_file(root, parts)
+    return _posix_read_regular_file(
+        root,
+        parts,
+        maximum_bytes=maximum_bytes,
+    )
 
 
 def _windows_list_directory(root: Path, parts: Tuple[str, ...]) -> Tuple[str, ...]:
@@ -152,10 +188,16 @@ def _lock_contention(exc: OSError) -> bool:
 
 
 @contextlib.contextmanager
-def exclusive_file_lock(path: Path) -> Iterator[None]:
+def exclusive_file_lock(
+    path: Path,
+    *,
+    timeout_seconds: Optional[float] = None,
+    cancellation_check: Optional[Callable[[], object]] = None,
+) -> Iterator[None]:
     ensure_private_directory(path.parent)
     descriptor = None
     locked = False
+    os_lock_held = False
     try:
         if path.is_symlink():
             raise _unsafe_path(path)
@@ -182,8 +224,65 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
                     time.sleep(0.05)
         else:
             os.fchmod(descriptor, 0o600)
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            timeout = (
+                DEFAULT_POSIX_FILE_LOCK_TIMEOUT_SECONDS
+                if timeout_seconds is None
+                else timeout_seconds
+            )
+            if (
+                isinstance(timeout, bool)
+                or not isinstance(timeout, (int, float))
+                or timeout <= 0
+            ):
+                raise ValueError("POSIX file lock timeout must be positive")
+            deadline = time.monotonic() + float(timeout)
+            while True:
+                if cancellation_check is not None and cancellation_check():
+                    raise DevFlowError(
+                        "REQUEST_CANCELLED",
+                        "state lock acquisition was cancelled",
+                    )
+                try:
+                    fcntl.flock(
+                        descriptor,
+                        fcntl.LOCK_EX | fcntl.LOCK_NB,
+                    )
+                    os_lock_held = True
+                    # Lock authority linearizes only after the successful OS
+                    # acquisition is still timely and uncancelled.  Until both
+                    # checks pass, ``finally`` owns and releases the raw flock.
+                    if cancellation_check is not None and cancellation_check():
+                        raise DevFlowError(
+                            "REQUEST_CANCELLED",
+                            "state lock acquisition was cancelled",
+                        )
+                    if deadline - time.monotonic() <= 0:
+                        raise DevFlowError(
+                            "STATE_LOCK_TIMEOUT",
+                            "state lock could not be acquired before the deadline",
+                            details={"timeout_seconds": float(timeout)},
+                        )
+                    break
+                except OSError as exc:
+                    if not _lock_contention(exc):
+                        raise
+                    if cancellation_check is not None and cancellation_check():
+                        raise DevFlowError(
+                            "REQUEST_CANCELLED",
+                            "state lock acquisition was cancelled",
+                        )
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise DevFlowError(
+                            "STATE_LOCK_TIMEOUT",
+                            "state lock could not be acquired before the deadline",
+                            details={"timeout_seconds": float(timeout)},
+                        ) from exc
+                    time.sleep(
+                        min(POSIX_FILE_LOCK_POLL_INTERVAL_SECONDS, remaining)
+                    )
         locked = True
+        os_lock_held = False
         yield
     except DevFlowError:
         raise
@@ -196,7 +295,7 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
         ) from exc
     finally:
         if descriptor is not None:
-            if locked:
+            if locked or os_lock_held:
                 try:
                     if os.name == "nt":
                         os.lseek(descriptor, 0, os.SEEK_SET)
