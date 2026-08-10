@@ -11,6 +11,7 @@ from .product import (
     ASSURANCE_OBLIGATION_SCHEMA,
     ASSURANCE_PLAN_SCHEMA,
     ASSURANCE_POLICY_SCHEMA,
+    IMPACT_CONFIDENCE_VALUES,
     IMPACT_MANIFEST_SCHEMA,
     MAX_ASSURANCE_OBLIGATIONS,
     MAX_EVIDENCE_ITEMS,
@@ -83,8 +84,9 @@ def normalize_impact_report(
     *,
     repositories: Sequence[object],
     contract: Mapping[str, object],
+    historical_replay: bool = False,
 ) -> dict:
-    """Validate bounded driver evidence and normalize non-confirmed confidence."""
+    """Validate impact, preserving only the baseline confidence replay behavior."""
     fields = {
         "confidence",
         "entries",
@@ -218,6 +220,11 @@ def normalize_impact_report(
             raise _error("IMPACT_INVALID", "impact flag is invalid", field=field)
         flags[field] = value[field]
     submitted_confidence = value.get("confidence")
+    if (
+        not historical_replay
+        and submitted_confidence not in IMPACT_CONFIDENCE_VALUES
+    ):
+        raise _error("IMPACT_INVALID", "impact confidence is invalid")
     confidence = (
         "source-confirmed"
         if submitted_confidence == "source-confirmed" and not overflow

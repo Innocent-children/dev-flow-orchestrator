@@ -38,6 +38,7 @@ _PREIMPORT_REQUIRED = (
     "scripts/validate_installed_stage1.py",
     "src/dev_flow_orchestrator/_version.py",
     "src/dev_flow_orchestrator/review_guidance.py",
+    "src/dev_flow_orchestrator/payload_contract.py",
     "src/dev_flow_orchestrator/runtime_paths.py",
     "src/dev_flow_orchestrator/runtime_receipt.py",
     "src/dev_flow_orchestrator/mcp/__init__.py",
@@ -47,6 +48,7 @@ _PREIMPORT_REQUIRED = (
     "src/dev_flow_orchestrator/mcp/guidance.py",
     "src/dev_flow_orchestrator/mcp/identity.py",
     "src/dev_flow_orchestrator/mcp/logging.py",
+    "src/dev_flow_orchestrator/mcp/mutation_context.py",
     "src/dev_flow_orchestrator/mcp/projection.py",
     "src/dev_flow_orchestrator/mcp/results.py",
     "src/dev_flow_orchestrator/mcp/runtime.py",
@@ -179,6 +181,15 @@ def _preimport_candidate_errors(root: Path) -> list[str]:
             "SERVER_INSTRUCTIONS",
             "GUIDANCE_CATALOG",
         ),
+        "src/dev_flow_orchestrator/payload_contract.py": (
+            "effective_payload_contract",
+            "impact_manifest",
+            "ownership_claims",
+        ),
+        "src/dev_flow_orchestrator/mcp/mutation_context.py": (
+            "MutationExecutionContext",
+            "capture_result",
+        ),
         "src/dev_flow_orchestrator/mcp/server.py": ("MCPServer",),
         "tests/test_mcp_runtime.py": ("unittest", "dev_flow_server_info"),
     }
@@ -246,6 +257,9 @@ from dev_flow_orchestrator.product import (  # noqa: E402
     WORKFLOW_SCHEMA,
     product_schema,
 )
+from dev_flow_orchestrator.payload_contract import (  # noqa: E402
+    effective_payload_contract,
+)
 from dev_flow_orchestrator.workflow import (  # noqa: E402
     ASSURANCE_HANDLER_IDS,
     canonical_json_bytes,
@@ -297,6 +311,7 @@ REQUIRED_STATIC = (
     "src/dev_flow_orchestrator/filesystem.py",
     "src/dev_flow_orchestrator/git_client.py",
     "src/dev_flow_orchestrator/model.py",
+    "src/dev_flow_orchestrator/payload_contract.py",
     "src/dev_flow_orchestrator/runtime_paths.py",
     "src/dev_flow_orchestrator/runtime_receipt.py",
     "src/dev_flow_orchestrator/mcp/__init__.py",
@@ -306,6 +321,7 @@ REQUIRED_STATIC = (
     "src/dev_flow_orchestrator/mcp/guidance.py",
     "src/dev_flow_orchestrator/mcp/identity.py",
     "src/dev_flow_orchestrator/mcp/logging.py",
+    "src/dev_flow_orchestrator/mcp/mutation_context.py",
     "src/dev_flow_orchestrator/mcp/results.py",
     "src/dev_flow_orchestrator/mcp/runtime.py",
     "src/dev_flow_orchestrator/mcp/projection.py",
@@ -1992,6 +2008,103 @@ def _validate_official_workflow(
         )
 
 
+def _validate_effective_payload_contract(
+    selector: str,
+    definition: object,
+    errors: list[str],
+) -> None:
+    repository_ids = ("validator-repository-a", "validator-repository-b")
+    criterion_ids = ("validator-criterion",)
+    impact_fields = {
+        "confidence",
+        "entries",
+        "edges",
+        "risk_triggers",
+        "public_behavior",
+        "documentation_required",
+        "manual_evidence_required",
+        "executable_reproduction_required",
+        "overflow",
+        "limitations",
+    }
+    for node_id, node in definition.nodes.items():
+        if not node.action_id:
+            continue
+        effective = effective_payload_contract(
+            node,
+            repository_ids=repository_ids,
+            criterion_ids=criterion_ids,
+        )
+        schema = effective.schema_dict()
+        properties = schema.get("properties")
+        required = schema.get("required")
+        fields = set(effective.field_types)
+        prefix = "workflow {!r} node {} effective payload".format(
+            selector,
+            node_id,
+        )
+        _check(
+            schema.get("type") == "object"
+            and schema.get("additionalProperties") is False
+            and isinstance(properties, dict)
+            and set(properties) == fields
+            and isinstance(required, list)
+            and set(required) == fields
+            and len(required) == len(fields),
+            errors,
+            prefix + " is not one exact closed required field set",
+        )
+        needs_impact = (
+            node.artifact is not None
+            and node.artifact.artifact_type == "impact-report"
+        )
+        needs_claims = (
+            node.artifact is not None
+            and node.artifact.workspace_role == "produces-source"
+            and node.handler_id != "preflight"
+        )
+        _check(
+            ("impact_manifest" in fields) == needs_impact
+            and ("ownership_claims" in fields) == needs_claims,
+            errors,
+            prefix + " diverges from Controller domain fields",
+        )
+        if needs_impact and isinstance(properties, dict):
+            impact = properties.get("impact_manifest")
+            _check(
+                isinstance(impact, dict)
+                and impact.get("additionalProperties") is False
+                and set(impact.get("required", ())) == impact_fields
+                and set(impact.get("properties", ())) == impact_fields,
+                errors,
+                prefix + " does not publish the complete impact manifest",
+            )
+        if needs_claims and isinstance(properties, dict):
+            claims = properties.get("ownership_claims")
+            claim_properties = claims.get("properties") if isinstance(claims, dict) else None
+            claim_items = (
+                claim_properties.get("claims", {}).get("items")
+                if isinstance(claim_properties, dict)
+                else None
+            )
+            _check(
+                isinstance(claims, dict)
+                and claims.get("additionalProperties") is False
+                and set(claims.get("required", ())) == {"schema", "claims"}
+                and isinstance(claim_items, dict)
+                and set(claim_items.get("required", ()))
+                == {
+                    "repository_id",
+                    "path",
+                    "classification",
+                    "criterion_ids",
+                    "purpose",
+                },
+                errors,
+                prefix + " does not publish the complete ownership envelope",
+            )
+
+
 def _validate_skill_guidance(root: Path, errors: list[str]) -> None:
     main_path = root / "skills" / "follow-dev-flow" / "SKILL.md"
     if main_path.is_file():
@@ -3195,6 +3308,7 @@ def _validate_current_candidate(root: Path) -> dict:
                 selector, definition.workflow_id
             ))
         _validate_official_workflow(selector, definition, errors)
+        _validate_effective_payload_contract(selector, definition, errors)
         _check(
             definition.assurance_policy == ASSURANCE_POLICY_SCHEMA
             and definition.assurance_profile == selector

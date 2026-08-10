@@ -48,7 +48,8 @@ _BASE_GUIDANCE = {
         "Return only evidence required by action.payload_schema and its current provenance contracts."
     ],
     "payload_notes": [
-        "Use the closed projected payload shape; do not infer, omit, rename, or add fields.",
+        "Use only fields in action.payload_schema; every required field is present there, with no hidden fields or package-source lookup.",
+        "Do not infer, omit, rename, or add payload fields.",
         "Submit the exact unmodified binding with the current action ID.",
         "Do not read or edit Controller task-state files or package source to discover workflow semantics.",
     ],
@@ -283,8 +284,21 @@ def _payload_fields(payload: object) -> set:
     if not isinstance(payload, Mapping):
         raise DevFlowError("MCP_PROJECTION_INVALID", "current action payload contract is invalid")
     properties = payload.get("properties")
-    fields = set(properties) if payload.get("type") == "object" and isinstance(properties, Mapping) else set(payload)
-    if not all(isinstance(item, str) and item for item in fields):
+    required = payload.get("required")
+    if (
+        payload.get("type") != "object"
+        or payload.get("additionalProperties") is not False
+        or not isinstance(properties, Mapping)
+        or not isinstance(required, (list, tuple))
+    ):
+        raise DevFlowError("MCP_PROJECTION_INVALID", "current action payload contract is invalid")
+    fields = set(properties)
+    if (
+        not all(isinstance(item, str) and item for item in fields)
+        or not all(isinstance(item, str) and item for item in required)
+        or len(set(required)) != len(required)
+        or set(required) != fields
+    ):
         raise DevFlowError("MCP_PROJECTION_INVALID", "current action payload fields are invalid")
     return fields
 
@@ -297,6 +311,14 @@ def _payload_notes(payload: object) -> list:
     if "driver_result" in fields:
         notes.append(
             "driver_result must use dev-flow-driver-result/0.4.0 and truthfully report available, degraded, or unavailable provenance."
+        )
+    if "impact_manifest" in fields:
+        notes.append(
+            "impact_manifest is required and its complete confidence, closure, risk, evidence, overflow, and limitation structure is declared by payload_schema."
+        )
+    if "ownership_claims" in fields:
+        notes.append(
+            "ownership_claims is required; use the schema-declared envelope and claim every and only the task-owned observed changed path, or an empty claims array when nothing changed."
         )
     if "resources" in fields:
         notes.append(
@@ -412,6 +434,20 @@ def guidance_for_projection(projection: object) -> dict:
 
     entry = _action_entry(action)
     role = _workspace_role(action)
+    payload_fields = _payload_fields(action.get("payload"))
+    artifact = action.get("artifact")
+    produces_impact_report = (
+        isinstance(artifact, Mapping)
+        and artifact.get("type") == "impact-report"
+    )
+    if produces_impact_report and "impact_manifest" not in payload_fields:
+        raise DevFlowError("MCP_PROJECTION_INVALID", "impact payload contract is incomplete")
+    if (
+        role == "produces-source"
+        and entry != "preflight"
+        and "ownership_claims" not in payload_fields
+    ):
+        raise DevFlowError("MCP_PROJECTION_INVALID", "source payload contract is incomplete")
     obligation = action.get("current_obligation")
     obligation_kind = obligation.get("kind") if isinstance(obligation, Mapping) else None
     if obligation_kind == "independent-review":

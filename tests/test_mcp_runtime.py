@@ -19,6 +19,7 @@ from mcp.server import MCPServer
 from mcp.types import CallToolResult
 from jsonschema import Draft202012Validator
 
+from dev_flow_orchestrator import assurance as assurance_module
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator import cli as cli_module
 from dev_flow_orchestrator import git_client as git_client_module
@@ -38,6 +39,8 @@ from dev_flow_orchestrator.mcp.schemas import (
     validate_current_action,
 )
 from dev_flow_orchestrator.product import (
+    DRIVER_RESULT_SCHEMA,
+    IMPACT_CONFIDENCE_VALUES,
     MODEL_VERSION,
     RECEIPT_SCHEMA,
     WORKSPACE_FRESHNESS_SCHEMA,
@@ -654,6 +657,103 @@ class MCPRuntimeTests(unittest.TestCase):
                 result = application.call("dev_flow_get_task", {"task_id": "task-one"})
         self.assertTrue(result.is_error)
         self.assertEqual(result.structured_content["error"]["code"], "MCP_RESULT_LIMIT")
+
+    def test_auto_task_id_survives_uncertain_start_postprocessing(self) -> None:
+        failures = (
+            (
+                "result-limit",
+                MCPRuntimeFailure(
+                    "MCP_RESULT_LIMIT",
+                    "forced post-controller result limit",
+                    recovery={"kind": "narrow-request", "blind_retry": False},
+                ),
+            ),
+            (
+                "result-envelope",
+                ResultSchemaViolation("forced structured result validation failure"),
+            ),
+            (
+                "unexpected",
+                RuntimeError("forced unexpected post-controller failure"),
+            ),
+        )
+        for boundary, failure in failures:
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repository = self._repository(root, "repository")
+                data_dir = root / "data"
+                application = MCPApplication(str(data_dir))
+                failure_patch = (
+                    mock.patch(
+                        "dev_flow_orchestrator.mcp.application.success",
+                        side_effect=failure,
+                    )
+                    if boundary == "result-envelope"
+                    else mock.patch.object(
+                        application,
+                        "_enforce_result_limits",
+                        side_effect=failure,
+                    )
+                )
+                with failure_patch:
+                    result = application.call(
+                        "dev_flow_start_task",
+                        {
+                            "requirement": "retain the generated task ID",
+                            "workflow": "lite",
+                            "repositories": [str(repository)],
+                        },
+                    )
+
+                states = Controller(str(data_dir)).list_tasks()
+                self.assertEqual(len(states), 1)
+                task_id = states[0].task_id
+                self.assertTrue(result.is_error)
+                error = result.structured_content["error"]
+                self.assertEqual(error["code"], "MCP_COMPLETION_UNCERTAIN")
+                self.assertEqual(error["details"]["task_id"], task_id)
+                self.assertEqual(error["recovery"]["task_id"], task_id)
+                self.assertEqual(error["recovery"]["tool"], "dev_flow_get_task")
+                self.assertFalse(error["recovery"]["blind_retry"])
+                recovered = application.call(
+                    error["recovery"]["tool"],
+                    {"task_id": error["recovery"]["task_id"]},
+                )
+                self.assertFalse(recovered.is_error)
+
+    def test_auto_task_id_survives_server_outer_output_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = self._repository(root, "repository")
+            data_dir = root / "data"
+            server = create_server(str(data_dir))
+            with mock.patch(
+                "dev_flow_orchestrator.mcp.server.validate_structured_result",
+                side_effect=ResultSchemaViolation("forced outer output guard"),
+            ):
+                result = asyncio.run(server.call_tool(
+                    "dev_flow_start_task",
+                    {
+                        "requirement": "retain the generated task ID",
+                        "workflow": "lite",
+                        "repositories": [str(repository)],
+                    },
+                ))
+
+            states = Controller(str(data_dir)).list_tasks()
+            self.assertEqual(len(states), 1)
+            task_id = states[0].task_id
+            self.assertTrue(result.is_error)
+            error = result.structured_content["error"]
+            self.assertEqual(error["code"], "MCP_COMPLETION_UNCERTAIN")
+            self.assertEqual(error["details"]["task_id"], task_id)
+            self.assertEqual(error["recovery"]["task_id"], task_id)
+            self.assertFalse(error["recovery"]["blind_retry"])
+            recovered = asyncio.run(server.call_tool(
+                error["recovery"]["tool"],
+                {"task_id": error["recovery"]["task_id"]},
+            ))
+            self.assertFalse(recovered.is_error)
 
     def test_cancellation_before_entry_and_after_commit_are_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1373,6 +1473,257 @@ class MCPRuntimeTests(unittest.TestCase):
             blocked["action"]["context"]["blocked"] = None
             with self.assertRaises(ResultSchemaViolation):
                 validate_current_action(blocked)
+
+    def test_lite_current_action_exposes_impact_and_ownership_contracts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = self._repository(root, "repository")
+            data_dir = root / "data"
+            server = create_server(str(data_dir))
+            started = asyncio.run(server.call_tool(
+                "dev_flow_start_task",
+                {
+                    "requirement": "exercise self-contained MCP payload contracts",
+                    "workflow": "lite",
+                    "repositories": [str(repository)],
+                },
+            ))
+            task_id = started.structured_content["result"]["task_id"]
+            repository_id = started.structured_content["result"]["repository_set"]["repository_ids"][0]
+
+            current = asyncio.run(server.call_tool(
+                "dev_flow_get_next_action", {"task_id": task_id},
+            )).structured_content["result"]
+            advanced = asyncio.run(server.call_tool(
+                "dev_flow_apply_action",
+                {
+                    "task_id": task_id,
+                    "action_id": current["action"]["id"],
+                    "payload": {},
+                    "binding": current["action"]["binding"],
+                },
+            ))
+            impact = advanced.structured_content["result"]["current"]
+            impact_schema = impact["action"]["payload_schema"]
+            self.assertIn("impact_manifest", impact_schema["properties"])
+            self.assertIn("impact_manifest", impact_schema["required"])
+            omitted = asyncio.run(server.call_tool(
+                "dev_flow_apply_action",
+                {
+                    "task_id": task_id,
+                    "action_id": impact["action"]["id"],
+                    "payload": {
+                        "summary": "Hidden impact must not be inferred",
+                        "driver_result": {
+                            "schema": DRIVER_RESULT_SCHEMA,
+                            "status": "available",
+                        },
+                    },
+                    "binding": impact["action"]["binding"],
+                },
+            ))
+            self.assertTrue(omitted.is_error)
+            self.assertEqual(
+                omitted.structured_content["error"]["code"],
+                "NODE_OUTPUT_INVALID",
+            )
+            self.assertEqual(
+                omitted.structured_content["error"]["details"]["missing_fields"],
+                ["impact_manifest"],
+            )
+            before_invalid = Controller(str(data_dir)).show(task_id)
+            invalid = asyncio.run(server.call_tool(
+                "dev_flow_apply_action",
+                {
+                    "task_id": task_id,
+                    "action_id": impact["action"]["id"],
+                    "payload": {
+                        "summary": "Reject legacy confidence on a live action",
+                        "driver_result": {
+                            "schema": DRIVER_RESULT_SCHEMA,
+                            "status": "available",
+                        },
+                        "impact_manifest": {
+                            "confidence": "legacy-arbitrary-value",
+                            "entries": [],
+                            "edges": [],
+                            "risk_triggers": [],
+                            "public_behavior": False,
+                            "documentation_required": False,
+                            "manual_evidence_required": False,
+                            "executable_reproduction_required": False,
+                            "overflow": False,
+                            "limitations": [],
+                        },
+                    },
+                    "binding": impact["action"]["binding"],
+                },
+            ))
+            self.assertTrue(invalid.is_error)
+            error = invalid.structured_content["error"]
+            self.assertEqual(error["code"], "IMPACT_INVALID")
+            self.assertNotEqual(error["code"], "MCP_COMPLETION_UNCERTAIN")
+            self.assertEqual(error["recovery"]["tool"], "dev_flow_get_next_action")
+            self.assertEqual(error["recovery"]["task_id"], task_id)
+            self.assertFalse(error["recovery"]["blind_retry"])
+            recovered = asyncio.run(server.call_tool(
+                error["recovery"]["tool"],
+                {"task_id": error["recovery"]["task_id"]},
+            ))
+            self.assertFalse(recovered.is_error)
+            self.assertEqual(
+                recovered.structured_content["result"]["action"]["id"],
+                impact["action"]["id"],
+            )
+            self.assertEqual(Controller(str(data_dir)).show(task_id), before_invalid)
+            impact_payload = {
+                "summary": "Source impact is confirmed",
+                "driver_result": {
+                    "schema": DRIVER_RESULT_SCHEMA,
+                    "status": "available",
+                },
+                "impact_manifest": {
+                    "confidence": "source-confirmed",
+                    "entries": [{
+                        "repository_id": repository_id,
+                        "path": "tracked.txt",
+                        "symbol": None,
+                        "criterion_ids": ["requirement"],
+                    }],
+                    "edges": [],
+                    "risk_triggers": [],
+                    "public_behavior": False,
+                    "documentation_required": False,
+                    "manual_evidence_required": False,
+                    "executable_reproduction_required": True,
+                    "overflow": False,
+                    "limitations": [],
+                },
+            }
+            self.assertIsNone(
+                next(Draft202012Validator(impact_schema).iter_errors(impact_payload), None)
+            )
+            advanced = asyncio.run(server.call_tool(
+                "dev_flow_apply_action",
+                {
+                    "task_id": task_id,
+                    "action_id": impact["action"]["id"],
+                    "payload": impact_payload,
+                    "binding": impact["action"]["binding"],
+                },
+            ))
+            implementation = advanced.structured_content["result"]["current"]
+            implementation_schema = implementation["action"]["payload_schema"]
+            self.assertIn("ownership_claims", implementation_schema["properties"])
+            self.assertIn("ownership_claims", implementation_schema["required"])
+            claim_schema = implementation_schema["properties"]["ownership_claims"]
+            claim_item = claim_schema["properties"]["claims"]["items"]["properties"]
+            (repository / "tracked.txt").write_text(
+                "baseline\nimplemented through MCP\n",
+                encoding="utf-8",
+            )
+            exact_claims = {
+                "summary": "Implemented the bounded source change",
+                "ownership_claims": {
+                    "schema": claim_schema["properties"]["schema"]["const"],
+                    "claims": [{
+                        "repository_id": claim_item["repository_id"]["enum"][0],
+                        "path": "tracked.txt",
+                        "classification": "implementation",
+                        "criterion_ids": [claim_item["criterion_ids"]["items"]["enum"][0]],
+                        "purpose": "Implement the current acceptance criterion",
+                    }],
+                },
+            }
+            self.assertIsNone(
+                next(
+                    Draft202012Validator(implementation_schema).iter_errors(exact_claims),
+                    None,
+                )
+            )
+            advanced = asyncio.run(server.call_tool(
+                "dev_flow_apply_action",
+                {
+                    "task_id": task_id,
+                    "action_id": implementation["action"]["id"],
+                    "payload": exact_claims,
+                    "binding": implementation["action"]["binding"],
+                },
+            ))
+            self.assertFalse(advanced.is_error, advanced.structured_content)
+            assurance = advanced.structured_content["result"]["current"]["action"]["assurance"]
+            self.assertEqual(assurance["confidence"], "source-confirmed")
+            self.assertTrue(assurance["not_required"]["independent_review"])
+
+    def test_historical_non_enum_impact_is_readable_through_mcp(self) -> None:
+        legacy_confidence = "legacy-arbitrary-value"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = self._repository(root, "repository")
+            data_dir = root / "data"
+            controller = Controller(str(data_dir))
+            started = controller.start(
+                requirement="Read a historical impact through MCP",
+                workflow="lite",
+                repositories=(str(repository),),
+            )
+            task_id = started.task_id
+            preflight = controller.next(task_id)
+            controller.apply(
+                task_id,
+                preflight["action"]["action_id"],
+                {},
+                binding=preflight["action"]["binding"],
+            )
+            impact = controller.next(task_id)
+            with mock.patch.object(
+                assurance_module,
+                "IMPACT_CONFIDENCE_VALUES",
+                (*IMPACT_CONFIDENCE_VALUES, legacy_confidence),
+            ):
+                controller.apply(
+                    task_id,
+                    impact["action"]["action_id"],
+                    {
+                        "summary": "Historical non-enum impact",
+                        "driver_result": {
+                            "schema": DRIVER_RESULT_SCHEMA,
+                            "status": "degraded",
+                        },
+                        "impact_manifest": {
+                            "confidence": legacy_confidence,
+                            "entries": [],
+                            "edges": [],
+                            "risk_triggers": [],
+                            "public_behavior": False,
+                            "documentation_required": False,
+                            "manual_evidence_required": False,
+                            "executable_reproduction_required": False,
+                            "overflow": False,
+                            "limitations": ["Historical confidence provenance"],
+                        },
+                    },
+                    binding=impact["action"]["binding"],
+                )
+            state_path = data_dir / MODEL_VERSION / "tasks" / task_id / "state.json"
+            persisted = state_path.read_bytes()
+            server = create_server(str(data_dir))
+
+            task_result = asyncio.run(server.call_tool(
+                "dev_flow_get_task",
+                {"task_id": task_id},
+            ))
+            self.assertFalse(task_result.is_error, task_result.structured_content)
+            action_result = asyncio.run(server.call_tool(
+                "dev_flow_get_next_action",
+                {"task_id": task_id},
+            ))
+            self.assertFalse(action_result.is_error, action_result.structured_content)
+            self.assertEqual(
+                action_result.structured_content["result"]["action"]["id"],
+                "implementation.record",
+            )
+            self.assertEqual(state_path.read_bytes(), persisted)
 
     def test_cli_and_mcp_start_apply_have_domain_parity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -56,9 +56,40 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
             repositories=(str(self.client), str(self.api)),
         )
 
+    @staticmethod
+    def impact_payload(summary: str, status: str = "degraded") -> dict:
+        return {
+            "summary": summary,
+            "driver_result": driver_result(status),
+            "impact_manifest": {
+                "confidence": "unknown",
+                "entries": [],
+                "edges": [],
+                "risk_triggers": [],
+                "public_behavior": False,
+                "documentation_required": False,
+                "manual_evidence_required": False,
+                "executable_reproduction_required": False,
+                "overflow": False,
+                "limitations": ["Explicit aggregate uncertainty"],
+            },
+        }
+
     def apply_current(self, task_id: str, payload: dict) -> dict:
         projection = self.controller.next(task_id)
         action = projection["action"]
+        payload_properties = action["payload"]["properties"]
+        if (
+            "ownership_claims" in payload_properties
+            and "ownership_claims" not in payload
+        ):
+            payload = {
+                **payload,
+                "ownership_claims": {
+                    "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                    "claims": [],
+                },
+            }
         obligation = action.get("current_obligation")
         if isinstance(obligation, dict):
             result = {
@@ -192,10 +223,10 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
         self.apply_current(state.task_id, {})
         self.apply_current(
             state.task_id,
-            {
-                "summary": "Impact checked across both repositories",
-                "driver_result": driver_result("available"),
-            },
+            self.impact_payload(
+                "Impact checked across both repositories",
+                "available",
+            ),
         )
 
         def create_plans() -> None:
@@ -329,10 +360,7 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
         self.apply_current(state.task_id, {})
         self.apply_current(
             state.task_id,
-            {
-                "summary": "Repository-set impact recorded",
-                "driver_result": driver_result("degraded"),
-            },
+            self.impact_payload("Repository-set impact recorded"),
         )
         self.apply_after_mutation(
             state.task_id,
@@ -415,10 +443,7 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
         self.apply_current(state.task_id, {})
         self.apply_current(
             state.task_id,
-            {
-                "summary": "Impact checked",
-                "driver_result": driver_result("available"),
-            },
+            self.impact_payload("Impact checked", "available"),
         )
         def create_plans() -> None:
             (self.api / "plan.md").write_text("api plan\n", encoding="utf-8")
@@ -473,10 +498,7 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
         self.apply_current(state.task_id, {})
         self.apply_current(
             state.task_id,
-            {
-                "summary": "Revision-one impact recorded",
-                "driver_result": driver_result("degraded"),
-            },
+            self.impact_payload("Revision-one impact recorded"),
         )
         self.apply_after_mutation(
             state.task_id,
@@ -519,10 +541,7 @@ class MultiRepositoryDeliveryTests(unittest.TestCase):
         )
         self.apply_current(
             state.task_id,
-            {
-                "summary": "Revision-two impact recorded",
-                "driver_result": driver_result("degraded"),
-            },
+            self.impact_payload("Revision-two impact recorded"),
         )
         self.apply_after_mutation(
             state.task_id,

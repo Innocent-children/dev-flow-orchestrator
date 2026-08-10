@@ -18,7 +18,11 @@ from dev_flow_orchestrator.assurance import (
     validate_assurance_execution,
 )
 from dev_flow_orchestrator.model import DevFlowError, RepositoryRecord
-from dev_flow_orchestrator.product import MAX_REVIEW_FINDINGS, TASK_CHANGE_MANIFEST_SCHEMA
+from dev_flow_orchestrator.product import (
+    IMPACT_CONFIDENCE_VALUES,
+    MAX_REVIEW_FINDINGS,
+    TASK_CHANGE_MANIFEST_SCHEMA,
+)
 from dev_flow_orchestrator.review import (
     derive_review_result,
     finding_template,
@@ -81,6 +85,27 @@ def plan(profile: str, report=None):
 
 
 class AdaptiveAssuranceTests(unittest.TestCase):
+    def test_live_impact_accepts_only_current_confidence_values(self) -> None:
+        for confidence in IMPACT_CONFIDENCE_VALUES:
+            with self.subTest(confidence=confidence):
+                normalized = impact(confidence=confidence)
+                self.assertEqual(
+                    normalized["confidence"],
+                    "source-confirmed"
+                    if confidence == "source-confirmed"
+                    else "unknown",
+                )
+        for confidence in (
+            "legacy-arbitrary-value",
+            True,
+            ["legacy"],
+            {"legacy": True},
+        ):
+            with self.subTest(rejected_confidence=confidence):
+                with self.assertRaises(DevFlowError) as caught:
+                    impact(confidence=confidence)
+                self.assertEqual(caught.exception.code, "IMPACT_INVALID")
+
     def test_each_profile_has_a_focused_and_triggered_plan(self) -> None:
         for profile in ("lite", "feature", "bugfix", "investigation", "refactor", "full"):
             with self.subTest(profile=profile, mode="focused"):

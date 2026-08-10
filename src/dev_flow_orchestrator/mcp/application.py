@@ -30,6 +30,7 @@ from .concurrency import (
 from .guidance import guidance_for_projection
 from .identity import SUPPORTED_PYTHON, interface_identity
 from .logging import emit
+from .mutation_context import bind_mutation_execution, reset_mutation_execution
 from .projection import compact_current_action
 from .results import (
     MCPRuntimeFailure,
@@ -155,6 +156,10 @@ class MCPApplication:
         request_id = new_request_id()
         task_id = self._task_id(arguments)
         is_mutation = tool in MUTATION_TOOLS
+        execution = None
+        execution_token = None
+        if is_mutation:
+            execution, execution_token = bind_mutation_execution(tool, task_id)
         entered_mutation = False
         controller_returned = False
         check = cancellation_check or cooperative_cancellation_requested
@@ -212,6 +217,7 @@ class MCPApplication:
                                 arguments,
                                 cancellation_checkpoint=cancellation_checkpoint,
                             )
+                            execution.capture_result(data)
                             controller_returned = True
                     else:
                         with self.coordinator.capture(cancellation_check=check):
@@ -223,13 +229,8 @@ class MCPApplication:
 
             if check():
                 if is_mutation:
-                    task_id = task_id or (
-                        str(data.get("task_id"))
-                        if isinstance(data, Mapping) and data.get("task_id")
-                        else None
-                    )
                     raise completion_uncertain_failure(
-                        task_id=task_id,
+                        task_id=execution.task_id,
                         recovery_tool=self._recovery_tool(tool),
                     )
                 raise cancelled_failure()
@@ -249,7 +250,7 @@ class MCPApplication:
                 or exc.code in {"MCP_RESULT_LIMIT", "INTERNAL_ERROR"}
             ):
                 exc = completion_uncertain_failure(
-                    task_id=task_id,
+                    task_id=execution.task_id,
                     recovery_tool=self._recovery_tool(tool),
                 )
             emit(
@@ -270,7 +271,7 @@ class MCPApplication:
                 )
                 if is_mutation and entered_mutation:
                     failure = completion_uncertain_failure(
-                        task_id=task_id,
+                        task_id=execution.task_id,
                         recovery_tool=self._recovery_tool(tool),
                     )
                 emit(
@@ -284,7 +285,13 @@ class MCPApplication:
                 return runtime_error(tool, failure, request_id, redactions=self._redactions)
             if exc.code.startswith("MCP_"):
                 # Adapter-internal pseudo-domain codes are never exposed as domain authority.
-                return self._unexpected(tool, request_id, exc, possible_commit=is_mutation and entered_mutation, task_id=task_id)
+                return self._unexpected(
+                    tool,
+                    request_id,
+                    exc,
+                    possible_commit=is_mutation and entered_mutation,
+                    task_id=execution.task_id if execution is not None else task_id,
+                )
             emit(
                 level="warning",
                 event="tool_failed",
@@ -306,8 +313,10 @@ class MCPApplication:
                 request_id,
                 exc,
                 possible_commit=is_mutation and entered_mutation,
-                task_id=task_id,
+                task_id=execution.task_id if execution is not None else task_id,
             )
+        finally:
+            reset_mutation_execution(execution_token)
 
     def _unexpected(
         self,

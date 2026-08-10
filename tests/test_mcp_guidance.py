@@ -35,6 +35,19 @@ def _canonical(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _payload_schema(fields: dict[str, str] | None = None) -> dict:
+    declared = {} if fields is None else fields
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(declared),
+        "properties": {
+            field: {"type": field_type}
+            for field, field_type in declared.items()
+        },
+    }
+
+
 class MCPGuidanceTests(unittest.TestCase):
     def _action(
         self,
@@ -45,18 +58,19 @@ class MCPGuidanceTests(unittest.TestCase):
         workspace: str = "context",
         payload: dict | None = None,
         driver: dict | None = None,
+        artifact_type: str = "artifact",
     ) -> dict:
         return {
             "node_id": node_id,
             "action_id": action_id,
             "target": {"node": "next", "status": "ACTIVE"},
             "handler": handler,
-            "payload": {} if payload is None else payload,
+            "payload": _payload_schema(payload),
             "writes": ["artifact"],
             "driver": driver,
             "description": None,
             "artifact": {
-                "type": "artifact",
+                "type": artifact_type,
                 "workspace": workspace,
                 "inputs": [],
             },
@@ -182,7 +196,7 @@ class MCPGuidanceTests(unittest.TestCase):
         action = self._action(
             action_id="implementation.record",
             workspace="produces-source",
-            payload={"summary": "string"},
+            payload={"summary": "string", "ownership_claims": "object"},
         )
         binding = action["binding"]
         causal = {"type": "verification-result", "edge": "causal", "record_id": "r0"}
@@ -235,7 +249,12 @@ class MCPGuidanceTests(unittest.TestCase):
         impact = self._action(
             action_id="impact.record",
             node_id="impact",
-            payload={"summary": "string", "driver_result": "object"},
+            payload={
+                "summary": "string",
+                "driver_result": "object",
+                "impact_manifest": "object",
+            },
+            artifact_type="impact-report",
             driver={
                 "tool": "codebase-memory",
                 "optional": True,
@@ -266,7 +285,12 @@ class MCPGuidanceTests(unittest.TestCase):
             action_id="plan.record",
             node_id="planning",
             workspace="produces-source",
-            payload={"summary": "string", "resources": "object", "driver_result": "object"},
+            payload={
+                "summary": "string",
+                "resources": "object",
+                "driver_result": "object",
+                "ownership_claims": "object",
+            },
             driver={
                 "tool": "openspec",
                 "optional": True,
@@ -424,7 +448,7 @@ class MCPGuidanceTests(unittest.TestCase):
         oversized_action = self._action(
             action_id="implementation.record",
             workspace="produces-source",
-            payload={"summary": "string"},
+            payload={"summary": "string", "ownership_claims": "object"},
         )
         oversized_action["inputs"] = [
             {"type": "impact-report", "edge": "governing", "summary": "x" * MCP_CURRENT_ACTION_MAX_BYTES}

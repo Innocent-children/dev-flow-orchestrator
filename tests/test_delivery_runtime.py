@@ -145,6 +145,18 @@ class DeliveryRuntimeTests(RepositoryTestCase):
     def apply_current(self, task_id: str, payload: dict) -> dict:
         projection = self.controller.next(task_id)
         action = projection["action"]
+        payload_properties = action["payload"]["properties"]
+        if (
+            "ownership_claims" in payload_properties
+            and "ownership_claims" not in payload
+        ):
+            payload = {
+                **payload,
+                "ownership_claims": {
+                    "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                    "claims": [],
+                },
+            }
         return self.controller.apply(
             task_id,
             action["action_id"],
@@ -157,33 +169,50 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.assertIsInstance(obligation, Mapping)
         return str(obligation["obligation_id"])
 
+    def impact_payload(
+        self,
+        task_id: str,
+        summary: str,
+        *,
+        source_confirmed: bool = False,
+    ) -> dict:
+        projection = self.controller.next(task_id)
+        return {
+            "summary": summary,
+            "driver_result": driver_result("available"),
+            "impact_manifest": {
+                "confidence": "source-confirmed" if source_confirmed else "unknown",
+                "entries": [{
+                    "repository_id": self.repository_id(task_id),
+                    "path": "a.txt",
+                    "symbol": None,
+                    "criterion_ids": projection["contract"]["criterion_ids"],
+                }] if source_confirmed else [],
+                "edges": [],
+                "risk_triggers": [],
+                "public_behavior": False,
+                "documentation_required": False,
+                "manual_evidence_required": False,
+                "executable_reproduction_required": source_confirmed,
+                "overflow": False,
+                "limitations": (
+                    []
+                    if source_confirmed
+                    else ["Impact uncertainty is explicit for this conservative test path"]
+                ),
+            },
+        }
+
     def preflight(self, task_id: str) -> None:
         self.apply_current(task_id, {})
         if self.controller.show(task_id).workflow_id == "lite":
-            projection = self.controller.next(task_id)
             self.apply_current(
                 task_id,
-                {
-                    "summary": "Bounded source impact confirmed",
-                    "driver_result": driver_result("available"),
-                    "impact_manifest": {
-                        "confidence": "source-confirmed",
-                        "entries": [{
-                            "repository_id": self.repository_id(task_id),
-                            "path": "a.txt",
-                            "symbol": None,
-                            "criterion_ids": projection["contract"]["criterion_ids"],
-                        }],
-                        "edges": [],
-                        "risk_triggers": [],
-                        "public_behavior": False,
-                        "documentation_required": False,
-                        "manual_evidence_required": False,
-                        "executable_reproduction_required": True,
-                        "overflow": False,
-                        "limitations": [],
-                    },
-                },
+                self.impact_payload(
+                    task_id,
+                    "Bounded source impact confirmed",
+                    source_confirmed=True,
+                ),
             )
 
     def repository_id(self, task_id: str) -> str:
@@ -335,7 +364,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
     def advance_feature_to_review(self, task_id: str, marker: str) -> None:
         self.apply_current(
             task_id,
-            {"summary": "Impact checked", "driver_result": driver_result("available")},
+            self.impact_payload(task_id, "Impact checked"),
         )
         self.apply_current(
             task_id,
@@ -343,6 +372,10 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 "summary": "Plan recorded",
                 "resources": {"items": []},
                 "driver_result": driver_result("available"),
+                "ownership_claims": {
+                    "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                    "claims": [],
+                },
             },
         )
         self.source_action(
@@ -390,10 +423,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.preflight(driver_task_id)
         driver_apply = self.apply_current(
             driver_task_id,
-            {
-                "summary": "Impact checked",
-                "driver_result": driver_result("available"),
-            },
+            self.impact_payload(driver_task_id, "Impact checked"),
         )
         driver_record = self.controller.show(driver_task_id).records[-1]
 
@@ -453,6 +483,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                 {"schema": unsupported_schema, "status": "available"},
             ),
         )
+        valid_impact = self.impact_payload(task_id, "Impact checked")
 
         for case, invalid_result in invalid_results:
             with self.subTest(case=case):
@@ -460,10 +491,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
                     self.controller.apply(
                         task_id,
                         projection["action"]["action_id"],
-                        {
-                            "summary": "Impact checked",
-                            "driver_result": invalid_result,
-                        },
+                        {**valid_impact, "driver_result": invalid_result},
                         binding=projection["action"]["binding"],
                     )
                 self.assertEqual(context.exception.code, "NODE_OUTPUT_INVALID")
@@ -474,7 +502,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "Impact checked", "driver_result": driver_result("available")},
+            self.impact_payload(task_id, "Impact checked"),
         )
         planning = self.controller.next(task_id)
         binding = planning["action"]["binding"]
@@ -879,10 +907,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.controller = Controller(self.data_dir)
         self.apply_current(
             task_id,
-            {
-                "summary": "Revised impact confirmed",
-                "driver_result": driver_result("available"),
-            },
+            self.impact_payload(task_id, "Revised impact confirmed"),
         )
         self.source_action(task_id, {"summary": "Revised implementation"}, "revised")
         verification = self.controller.next(task_id)
@@ -937,7 +962,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "Impact checked", "driver_result": driver_result("available")},
+            self.impact_payload(task_id, "Impact checked"),
         )
         planning = self.controller.next(task_id)
         plan_dir = self.repository / "openspec" / "changes" / "feature"
@@ -1418,7 +1443,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "Impact", "driver_result": driver_result("degraded")},
+            self.impact_payload(task_id, "Impact"),
         )
         projection = self.controller.next(task_id)
         plan = self.repository / "plan.md"
@@ -1539,7 +1564,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "C1 impact", "driver_result": driver_result("available")},
+            self.impact_payload(task_id, "C1 impact"),
         )
         first_planning = self.controller.next(task_id)
         plan = self.repository / "plan.md"
@@ -1661,7 +1686,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
 
         self.apply_current(
             task_id,
-            {"summary": "C2 impact", "driver_result": driver_result("available")},
+            self.impact_payload(task_id, "C2 impact"),
         )
         impact_c2 = self.controller.show(task_id).records[-1]
         self.assertEqual(
@@ -1975,7 +2000,7 @@ class DeliveryRuntimeTests(RepositoryTestCase):
         self.preflight(task_id)
         self.apply_current(
             task_id,
-            {"summary": "Impact located", "driver_result": driver_result("available")},
+            self.impact_payload(task_id, "Impact located"),
         )
         self.apply_current(
             task_id,

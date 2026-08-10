@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import stat
 import sys
 from pathlib import Path
 import unittest
+from unittest import mock
 
 
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -13,20 +15,53 @@ TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(TESTS))
 
+from dev_flow_orchestrator import assurance as assurance_module
+from dev_flow_orchestrator import controller as controller_module
+from dev_flow_orchestrator import engine
 from dev_flow_orchestrator.controller import Controller
-from dev_flow_orchestrator.model import DevFlowError
+from dev_flow_orchestrator.delivery import seal_record
+from dev_flow_orchestrator.model import DevFlowError, freeze_json, json_value
 from dev_flow_orchestrator.product import (
     AGENT_PROTOCOL_SCHEMA,
     DRIVER_RESULT_SCHEMA,
+    IMPACT_CONFIDENCE_VALUES,
+    MAX_IMPACT_ENTRIES,
     PLUGIN_DATA_NAMESPACE,
     RECEIPT_SCHEMA,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
+    TASK_CHANGE_CLAIMS_SCHEMA,
     WORKSPACE_FRESHNESS_SCHEMA,
 )
 from support import RepositoryTestCase, make_repository
 
 
 class ControllerContractTests(RepositoryTestCase):
+    @staticmethod
+    def impact_payload(
+        summary: str = "Impact bounded",
+        *,
+        confidence: object = "unknown",
+    ) -> dict:
+        return {
+            "summary": summary,
+            "driver_result": {
+                "schema": DRIVER_RESULT_SCHEMA,
+                "status": "degraded",
+            },
+            "impact_manifest": {
+                "confidence": confidence,
+                "entries": [],
+                "edges": [],
+                "risk_triggers": [],
+                "public_behavior": False,
+                "documentation_required": False,
+                "manual_evidence_required": False,
+                "executable_reproduction_required": False,
+                "overflow": False,
+                "limitations": ["Explicit conservative controller test path"],
+            },
+        }
+
     def apply_current(self, task_id: str, payload: dict) -> dict:
         projection = self.controller.next(task_id)
         return self.controller.apply(
@@ -35,6 +70,49 @@ class ControllerContractTests(RepositoryTestCase):
             payload,
             binding=projection["action"]["binding"],
         )
+
+    def persist_through_impact(
+        self,
+        *,
+        confidence: object = "unknown",
+        historical: bool = False,
+    ) -> tuple[str, Path, str]:
+        task_id = self.start_lite("Persist an impact record")
+        self.apply_current(task_id, {})
+        projection = self.controller.next(task_id)
+        repository_id = self.controller.show(task_id).repositories[0].repository_id
+        payload = self.impact_payload(
+            "Persisted impact",
+            confidence=confidence,
+        )
+        compatibility = (
+            mock.patch.object(
+                assurance_module,
+                "IMPACT_CONFIDENCE_VALUES",
+                (*IMPACT_CONFIDENCE_VALUES, freeze_json(confidence)),
+            )
+            if historical
+            else mock.patch.object(
+                assurance_module,
+                "IMPACT_CONFIDENCE_VALUES",
+                IMPACT_CONFIDENCE_VALUES,
+            )
+        )
+        with compatibility:
+            self.controller.apply(
+                task_id,
+                projection["action"]["action_id"],
+                payload,
+                binding=projection["action"]["binding"],
+            )
+        state_path = (
+            Path(self.data_dir)
+            / PLUGIN_DATA_NAMESPACE
+            / "tasks"
+            / task_id
+            / "state.json"
+        )
+        return task_id, state_path, repository_id
 
     def passing_verification(self, task_id: str, command: str) -> dict:
         projection = self.controller.next(task_id)
@@ -127,6 +205,209 @@ class ControllerContractTests(RepositoryTestCase):
         self.assertEqual(state.task_id, "task-custom")
         self.assertEqual(self.controller.show("task-custom").task_id, "task-custom")
 
+    def test_current_namespace_replays_historical_effective_payload_bytes(self) -> None:
+        started = self.controller.start(
+            requirement="Replay a historical 0.4.0 task",
+            workflow="lite",
+            repositories=(str(self.repository),),
+        )
+        task_id = started.task_id
+        self.apply_current(task_id, {})
+        projection = self.controller.next(task_id)
+        historical_payload = {
+            "summary": "Historical impact record",
+            "driver_result": {
+                "schema": DRIVER_RESULT_SCHEMA,
+                "status": "degraded",
+            },
+        }
+
+        original_validate = engine.validate_action_payload
+        original_apply = engine.apply_current_action
+
+        def historical_validate(contract, payload):
+            return original_validate(
+                contract,
+                payload,
+                legacy_compatibility=True,
+            )
+
+        def historical_apply(*args, **kwargs):
+            return original_apply(
+                *args,
+                **kwargs,
+                legacy_compatibility=True,
+            )
+
+        # Reproduce bytes accepted before the effective payload contract became
+        # strict; the unpatched current reader below is the compatibility proof.
+        with mock.patch.object(
+            controller_module,
+            "validate_action_payload",
+            side_effect=historical_validate,
+        ), mock.patch.object(
+            controller_module,
+            "apply_current_action",
+            side_effect=historical_apply,
+        ):
+            self.controller.apply(
+                task_id,
+                projection["action"]["action_id"],
+                historical_payload,
+                binding=projection["action"]["binding"],
+            )
+
+        state_path = (
+            Path(self.data_dir)
+            / PLUGIN_DATA_NAMESPACE
+            / "tasks"
+            / task_id
+            / "state.json"
+        )
+        persisted = state_path.read_bytes()
+        replayed = Controller(self.data_dir).show(task_id)
+
+        self.assertEqual(state_path.read_bytes(), persisted)
+        self.assertEqual(replayed.version, "0.4.0")
+        self.assertEqual(replayed.workflow_identity, started.workflow_identity)
+        self.assertEqual(replayed.records[-1]["payload"], historical_payload)
+
+    def test_historical_non_enum_impact_replays_as_conservative_without_rewrite(self) -> None:
+        legacy_confidence = "legacy-arbitrary-value"
+        task_id, state_path, _repository_id = self.persist_through_impact(
+            confidence=legacy_confidence,
+            historical=True,
+        )
+        persisted = state_path.read_bytes()
+        stored = json.loads(persisted)
+        revision = stored["revision"]
+        record_count = len(stored["records"])
+
+        reader = Controller(self.data_dir)
+        replayed = reader.show(task_id)
+        reader.inspect_task(task_id)
+        current = reader.next(task_id)
+
+        self.assertEqual(state_path.read_bytes(), persisted)
+        self.assertEqual(replayed.revision, revision)
+        self.assertEqual(len(replayed.records), record_count)
+        impact_record = replayed.records[-1]
+        self.assertEqual(
+            impact_record["payload"]["impact_manifest"]["confidence"],
+            legacy_confidence,
+        )
+        derived = impact_record["artifact"]["body"]["impact_manifest"]
+        self.assertEqual(derived["confidence"], "unknown")
+        self.assertNotEqual(derived["confidence"], "source-confirmed")
+        self.assertTrue(
+            any(legacy_confidence in item for item in derived["limitations"])
+        )
+        self.assertEqual(current["action"]["action_id"], "implementation.record")
+
+        self.apply_current(
+            task_id,
+            {
+                "summary": "No source changes are needed for the replay proof",
+                "ownership_claims": {
+                    "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                    "claims": [],
+                },
+            },
+        )
+        assurance = self.controller.next(task_id)["action"]["assurance"]
+        self.assertEqual(assurance["confidence"], "unknown")
+        self.assertFalse(assurance["not_required"]["independent_review"])
+
+    def test_live_non_enum_impact_is_rejected_without_mutation(self) -> None:
+        task_id = self.start_lite("Reject a non-enum live confidence")
+        self.apply_current(task_id, {})
+        projection = self.controller.next(task_id)
+        before = self.controller.show(task_id)
+
+        with self.assertRaises(DevFlowError) as caught:
+            self.controller.apply(
+                task_id,
+                projection["action"]["action_id"],
+                self.impact_payload(confidence="legacy-arbitrary-value"),
+                binding=projection["action"]["binding"],
+            )
+
+        self.assertEqual(caught.exception.code, "IMPACT_INVALID")
+        after = self.controller.show(task_id)
+        self.assertEqual(after, before)
+        self.assertEqual(after.current_node, "impact")
+        self.assertEqual(len(after.records), 1)
+        self.assertEqual(
+            self.controller.next(task_id)["action"]["action_id"],
+            projection["action"]["action_id"],
+        )
+
+    def test_historical_confidence_types_keep_exact_baseline_normalization(self) -> None:
+        # The 0.4.0 baseline compared confidence only with source-confirmed and
+        # conservatively normalized every other JSON value. Replay preserves
+        # exactly that behavior; live validation remains covered separately.
+        for confidence in (True, ["legacy"], {"legacy": True}):
+            with self.subTest(confidence=confidence):
+                task_id, _state_path, _repository_id = self.persist_through_impact(
+                    confidence=confidence,
+                    historical=True,
+                )
+                replayed = Controller(self.data_dir).show(task_id)
+                derived = replayed.records[-1]["artifact"]["body"]["impact_manifest"]
+                self.assertEqual(derived["confidence"], "unknown")
+                self.controller.cancel(task_id, reason="Release the test repository")
+
+    def test_historical_impact_structural_damage_still_fails_closed(self) -> None:
+        def missing_confidence(manifest, _repository_id):
+            manifest.pop("confidence")
+
+        def invalid_entries(manifest, _repository_id):
+            manifest["entries"] = [{"unexpected": True}]
+
+        def invalid_repository(manifest, _repository_id):
+            manifest["entries"] = [{
+                "repository_id": "foreign-repository",
+                "path": "foreign.txt",
+                "symbol": None,
+                "criterion_ids": ["requirement"],
+            }]
+
+        def extra_field(manifest, _repository_id):
+            manifest["legacy_extra"] = True
+
+        def overflow(manifest, repository_id):
+            manifest["entries"] = [
+                {
+                    "repository_id": repository_id,
+                    "path": "impact-{}.txt".format(index),
+                    "symbol": None,
+                    "criterion_ids": ["requirement"],
+                }
+                for index in range(MAX_IMPACT_ENTRIES + 1)
+            ]
+
+        task_id, state_path, repository_id = self.persist_through_impact()
+        original = json.loads(state_path.read_text(encoding="utf-8"))
+        for label, corrupt in (
+            ("missing-confidence", missing_confidence),
+            ("invalid-entries", invalid_entries),
+            ("invalid-repository", invalid_repository),
+            ("extra-field", extra_field),
+            ("overflow", overflow),
+        ):
+            with self.subTest(case=label):
+                document = json.loads(json.dumps(original))
+                record = document["records"][-1]
+                corrupt(record["payload"]["impact_manifest"], repository_id)
+                document["records"][-1] = json_value(seal_record(record))
+                state_path.write_text(json.dumps(document), encoding="utf-8")
+
+                with self.assertRaises(DevFlowError) as caught:
+                    Controller(self.data_dir).show(task_id)
+                self.assertEqual(caught.exception.code, "STATE_INVALID")
+                state_path.write_text(json.dumps(original), encoding="utf-8")
+        self.assertEqual(Controller(self.data_dir).show(task_id).revision, 2)
+
     def test_wrong_action_is_rejected_without_mutation(self) -> None:
         task_id = self.start_lite()
         projection = self.controller.next(task_id)
@@ -148,17 +429,11 @@ class ControllerContractTests(RepositoryTestCase):
         self.apply_current(task_id, {})
         projection = self.controller.next(task_id)
         before = self.controller.show(task_id)
+        valid = self.impact_payload("x")
         cases = (
-            ({
-                "summary": "x",
-                "driver_result": {"schema": DRIVER_RESULT_SCHEMA, "status": "degraded"},
-                "extra": 1,
-            }, "extra"),
+            ({**valid, "extra": 1}, "extra"),
             ({}, "summary"),
-            ({
-                "summary": 42,
-                "driver_result": {"schema": DRIVER_RESULT_SCHEMA, "status": "degraded"},
-            }, None),
+            ({**valid, "summary": 42}, None),
         )
 
         for payload, detail in cases:
@@ -233,11 +508,14 @@ class ControllerContractTests(RepositoryTestCase):
     def test_cancel_is_rejected_outside_declared_stages(self) -> None:
         task_id = self.start_lite()
         self.apply_current(task_id, {})
+        self.apply_current(task_id, self.impact_payload())
         self.apply_current(task_id, {
-            "summary": "Impact bounded",
-            "driver_result": {"schema": DRIVER_RESULT_SCHEMA, "status": "degraded"},
+            "summary": "Implemented",
+            "ownership_claims": {
+                "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                "claims": [],
+            },
         })
-        self.apply_current(task_id, {"summary": "Implemented"})
         while self.controller.next(task_id)["action"]["action_id"] == "assurance.execute":
             self.apply_current(
                 task_id,

@@ -118,11 +118,27 @@ class TaskChangeCapsuleTests(unittest.TestCase):
 
     def test_claims_must_exactly_cover_observed_changes(self) -> None:
         changes = ({"repository_id": "repo", "path": "src/a.py"},)
+        self.assertEqual(
+            validate_ownership_claims(claims(), changes=(), contract=CONTRACT),
+            (),
+        )
         with self.assertRaises(DevFlowError) as context:
             validate_ownership_claims(claims(), changes=changes, contract=CONTRACT)
         self.assertEqual(context.exception.code, "OWNERSHIP_CLAIMS_INVALID")
         with self.assertRaises(DevFlowError):
             validate_ownership_claims(claims("src/a.py", "src/b.py"), changes=changes, contract=CONTRACT)
+        for invalid in (claims("src/a.py", "src/a.py"), claims("../escape.py")):
+            with self.subTest(claims=invalid["claims"]):
+                with self.assertRaises(DevFlowError) as rejected:
+                    validate_ownership_claims(
+                        invalid,
+                        changes=changes,
+                        contract=CONTRACT,
+                    )
+                self.assertEqual(
+                    rejected.exception.code,
+                    "OWNERSHIP_CLAIMS_INVALID",
+                )
 
     def test_manifest_rolls_forward_and_net_reversion_drops_entry(self) -> None:
         after_one = snapshot([

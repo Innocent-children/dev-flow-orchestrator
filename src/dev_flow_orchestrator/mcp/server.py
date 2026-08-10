@@ -18,6 +18,7 @@ from .catalog import catalog_digest, canonical_tool_projection
 from .guidance import SERVER_INSTRUCTIONS
 from .identity import SERVER_NAME
 from .logging import emit
+from .mutation_context import bind_mutation_execution, reset_mutation_execution
 from .results import (
     completion_uncertain_failure,
     internal_error,
@@ -90,50 +91,57 @@ class DevFlowMCPServer(MCPServer):
         return tools
 
     async def call_tool(self, name, arguments, context=None):
-        result = await super().call_tool(name, arguments, context)
-        if not isinstance(result, CallToolResult):
-            return result
+        task_id = (
+            arguments.get("task_id")
+            if isinstance(arguments, dict) and isinstance(arguments.get("task_id"), str)
+            else None
+        )
+        execution = None
+        execution_token = None
+        if name in MUTATION_TOOLS:
+            execution, execution_token = bind_mutation_execution(name, task_id)
         try:
-            validate_structured_result(name, result.structured_content)
-        except ResultSchemaViolation:
-            envelope = result.structured_content
-            request_id = (
-                envelope.get("request_id")
-                if isinstance(envelope, dict) and isinstance(envelope.get("request_id"), str)
-                else new_request_id()
-            )
-            emit(
-                level="error",
-                event="output_schema_violation",
-                request_id=request_id,
-                tool=name,
-                code=(
-                    "MCP_COMPLETION_UNCERTAIN"
-                    if name in MUTATION_TOOLS
-                    else "INTERNAL_ERROR"
-                ),
-            )
-            if name in MUTATION_TOOLS:
-                task_id = (
-                    arguments.get("task_id")
-                    if isinstance(arguments, dict) and isinstance(arguments.get("task_id"), str)
-                    else None
+            result = await super().call_tool(name, arguments, context)
+            if not isinstance(result, CallToolResult):
+                return result
+            try:
+                validate_structured_result(name, result.structured_content)
+            except ResultSchemaViolation:
+                envelope = result.structured_content
+                request_id = (
+                    envelope.get("request_id")
+                    if isinstance(envelope, dict) and isinstance(envelope.get("request_id"), str)
+                    else new_request_id()
                 )
-                recovery_tool = (
-                    "dev_flow_get_task"
-                    if name == "dev_flow_start_task"
-                    else "dev_flow_get_next_action"
-                )
-                return runtime_error(
-                    name,
-                    completion_uncertain_failure(
-                        task_id=task_id,
-                        recovery_tool=recovery_tool,
+                emit(
+                    level="error",
+                    event="output_schema_violation",
+                    request_id=request_id,
+                    tool=name,
+                    code=(
+                        "MCP_COMPLETION_UNCERTAIN"
+                        if name in MUTATION_TOOLS
+                        else "INTERNAL_ERROR"
                     ),
-                    request_id,
                 )
-            return internal_error(name, request_id)
-        return result
+                if name in MUTATION_TOOLS:
+                    recovery_tool = (
+                        "dev_flow_get_task"
+                        if name == "dev_flow_start_task"
+                        else "dev_flow_get_next_action"
+                    )
+                    return runtime_error(
+                        name,
+                        completion_uncertain_failure(
+                            task_id=execution.task_id,
+                            recovery_tool=recovery_tool,
+                        ),
+                        request_id,
+                    )
+                return internal_error(name, request_id)
+            return result
+        finally:
+            reset_mutation_execution(execution_token)
 
     async def run_stdio_async(self) -> None:
         """Run the official STDIO/low-level stack with a strict input preflight."""

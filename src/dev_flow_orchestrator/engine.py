@@ -52,6 +52,7 @@ from .model import (
     freeze_json,
     json_value,
 )
+from .payload_contract import effective_payload_contract
 from .product import (
     AGENT_PROTOCOL_SCHEMA,
     DRIVER_RESULT_SCHEMA,
@@ -200,8 +201,10 @@ def plan_current_action(
 def validate_action_payload(
     contract: NodeContract,
     payload: Optional[Mapping[str, object]],
+    *,
+    legacy_compatibility: bool = False,
 ) -> Mapping[str, object]:
-    """Validate one exact, bounded JSON output against its node declaration."""
+    """Validate one exact, bounded JSON output against its effective contract."""
     if payload is None:
         value = {}
     elif not isinstance(payload, Mapping):
@@ -210,19 +213,14 @@ def validate_action_payload(
         value = json_value(payload)
     if not isinstance(value, dict):
         raise _error(NODE_OUTPUT_INVALID, "node output must be an object")
-    optional_fields = (
-        {"ownership_claims": "object"}
-        if contract.artifact is not None
-        and contract.artifact.workspace_role == "produces-source"
-        and contract.handler_id != "preflight"
-        else {}
+    effective = effective_payload_contract(contract)
+    accepted_types = dict(effective.field_types)
+    required_fields = (
+        tuple(contract.payload_types)
+        if legacy_compatibility
+        else effective.required_fields
     )
-    if contract.artifact is not None and contract.artifact.artifact_type == "impact-report":
-        optional_fields["impact_manifest"] = "object"
-    if contract.handler_id == "assurance.dispatch":
-        optional_fields["assurance_result"] = "object"
-    accepted_types = {**dict(contract.payload_types), **optional_fields}
-    missing = sorted(set(contract.payload_types) - set(value))
+    missing = sorted(set(required_fields) - set(value))
     unknown = sorted(set(value) - set(accepted_types))
     if missing:
         raise _error(
@@ -1013,6 +1011,7 @@ def _artifact_for_action(
     contract_value: Mapping[str, object],
     producer: Mapping[str, object],
     adaptive: Optional[Mapping[str, object]] = None,
+    historical_replay: bool = False,
 ) -> Optional[Mapping[str, object]]:
     declared = _effective_artifact_contract(contract)
     if declared is None:
@@ -1072,6 +1071,7 @@ def _artifact_for_action(
                 submitted_impact,
                 repositories=state.repositories,
                 contract=contract_value,
+                historical_replay=historical_replay,
             ),
         }
     elif declared.workspace_role == "produces-source":
@@ -1912,6 +1912,7 @@ def _record_for_action(
     binding_value: object,
     snapshot_value: object,
     timestamp: str,
+    historical_replay: bool = False,
 ) -> Tuple[Mapping[str, object], dict]:
     snapshot = _validated_snapshot(snapshot_value, state.repositories)
     if contract.handler_id != "preflight" and snapshot_has_unmerged_entries(
@@ -2032,6 +2033,7 @@ def _record_for_action(
         contract_value,
         producer,
         adaptive,
+        historical_replay=historical_replay,
     )
     record = seal_record(
         {
@@ -2063,6 +2065,7 @@ def apply_current_action(
     binding: object,
     snapshot: object,
     timestamp: str,
+    legacy_compatibility: bool = False,
 ) -> TaskState:
     """Append one action record after exact plan, binding, and snapshot checks."""
     current_contract, current_plan = plan_current_action(
@@ -2070,7 +2073,11 @@ def apply_current_action(
     )
     if current_contract != contract or current_plan != plan:
         raise _error("PLAN_BINDING_MISMATCH", "node action plan is no longer current")
-    output = validate_action_payload(contract, payload)
+    output = validate_action_payload(
+        contract,
+        payload,
+        legacy_compatibility=legacy_compatibility,
+    )
     record, transition = _record_for_action(
         state,
         definition,
@@ -2079,6 +2086,7 @@ def apply_current_action(
         binding,
         snapshot,
         timestamp,
+        historical_replay=legacy_compatibility,
     )
     return replace(
         state,
@@ -2510,7 +2518,11 @@ def _replay_action_record(
             str(action_id),
             replay_state.revision,
         )
-        output = validate_action_payload(contract, record.get("payload"))
+        output = validate_action_payload(
+            contract,
+            record.get("payload"),
+            legacy_compatibility=True,
+        )
         expected = apply_current_action(
             replay_state,
             definition,
@@ -2520,6 +2532,7 @@ def _replay_action_record(
             binding=record.get("binding"),
             snapshot=record.get("snapshot"),
             timestamp=str(record.get("timestamp")),
+            legacy_compatibility=True,
         )
     except DevFlowError as exc:
         raise _state_invalid(
@@ -2967,8 +2980,18 @@ def agent_projection(
                 "max_attempts": retry_owner.rework.max_attempts,
                 "remaining": max(0, retry_owner.rework.max_attempts - used),
             }
+        payload_contract = effective_payload_contract(
+            node,
+            repository_ids=tuple(
+                repository.repository_id for repository in state.repositories
+            ),
+            criterion_ids=tuple(
+                item["id"] for item in contract_value["acceptance_criteria"]
+            ),
+        )
         action = {
             **node.as_dict(),
+            "payload": payload_contract.schema_dict(),
             "inputs": [json_value(item) for item in inputs],
             "binding": None if binding is None else json_value(binding),
             "blocked": blocked,

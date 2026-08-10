@@ -26,6 +26,7 @@ from dev_flow_orchestrator.product import (
     DRIVER_RESULT_SCHEMA,
     PLUGIN_DATA_NAMESPACE,
     REPOSITORY_SET_SNAPSHOT_SCHEMA,
+    TASK_CHANGE_CLAIMS_SCHEMA,
     VERIFICATION_COVERAGE_SCHEMA,
 )
 from support import (
@@ -462,11 +463,29 @@ class MultiRepositoryControllerTests(unittest.TestCase):
                     "schema": DRIVER_RESULT_SCHEMA,
                     "status": "degraded",
                 },
+                "impact_manifest": {
+                    "confidence": "unknown",
+                    "entries": [],
+                    "edges": [],
+                    "risk_triggers": [],
+                    "public_behavior": False,
+                    "documentation_required": False,
+                    "manual_evidence_required": False,
+                    "executable_reproduction_required": False,
+                    "overflow": False,
+                    "limitations": ["Explicit aggregate uncertainty"],
+                },
             },
         )
         self.apply_current(
             state.task_id,
-            {"summary": "Implemented the repository set"},
+            {
+                "summary": "Implemented the repository set",
+                "ownership_claims": {
+                    "schema": TASK_CHANGE_CLAIMS_SCHEMA,
+                    "claims": [],
+                },
+            },
         )
 
         verification = self.controller.next(state.task_id)

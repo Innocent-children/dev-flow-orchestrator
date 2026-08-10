@@ -105,6 +105,13 @@ def _recovery_for_domain(
             task_id=task_id,
             blind_retry=False,
         )
+    if code == "IMPACT_INVALID" and tool == "dev_flow_apply_action":
+        return _recovery(
+            "refresh-current-action",
+            tool="dev_flow_get_next_action",
+            task_id=task_id,
+            blind_retry=False,
+        )
     return None
 
 
