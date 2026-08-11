@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import datetime as dt
+from enum import Enum
 import http.client
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -45,6 +47,50 @@ WEB_RUNTIME_STATE = "state.json"
 WEB_RUNTIME_LOCK = "control.lock"
 WEB_RUNTIME_LOG = "server.log"
 WEB_START_TIMEOUT_SECONDS = 5.0
+WEB_STOP_TIMEOUT_SECONDS = 5.0
+WEB_CHILD_TERMINATE_TIMEOUT_SECONDS = 2.0
+WEB_METADATA_MAX_BYTES = 16 * 1024
+
+
+class RuntimeStatus(str, Enum):
+    """Managed lifecycle outcomes with distinct safety implications."""
+
+    STARTING = "starting"
+    RUNNING = "running"
+    UNREACHABLE = "unreachable"
+    IDENTITY_CONFLICT = "identity-conflict"
+    STOPPED = "stopped"
+
+
+class ProcessLiveness(str, Enum):
+    ALIVE = "alive"
+    DEAD = "dead"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class RuntimeClassification:
+    status: RuntimeStatus
+    state: Optional[Mapping[str, object]]
+    liveness: ProcessLiveness = ProcessLiveness.UNKNOWN
+    probe: RuntimeStatus = RuntimeStatus.UNREACHABLE
+
+    @property
+    def identity_is_exact(self) -> bool:
+        return self.probe is RuntimeStatus.RUNNING
+
+    @property
+    def can_signal_process(self) -> bool:
+        """Require independent identity and liveness evidence for PID mutation."""
+        return (
+            self.state is not None
+            and self.identity_is_exact
+            and self.liveness is ProcessLiveness.ALIVE
+        )
+
+    @property
+    def can_clear_state_as_stopped(self) -> bool:
+        return self.state is not None and self.liveness is ProcessLiveness.DEAD
 
 
 class _CancellationSignal:
@@ -96,10 +142,12 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
         *,
         controller: Controller,
         token: str,
+        managed_instance_id: Optional[str] = None,
         handler_limit: int = DEFAULT_HANDLER_LIMIT,
     ) -> None:
         self.controller = controller
         self.token = token
+        self.managed_instance_id = managed_instance_id
         self.cancel_event = threading.Event()
         self._handlers = threading.BoundedSemaphore(handler_limit)
         super().__init__(server_address, handler_class, bind_and_activate=True)
@@ -352,7 +400,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/meta":
             if query:
                 raise DevFlowError("VIEW_QUERY_INVALID", "metadata view has no query fields")
-            self._send_json(HTTPStatus.OK, self.server.controller.inspect_product())
+            metadata = dict(self.server.controller.inspect_product())
+            metadata["managed_runtime"] = {
+                "managed": self.server.managed_instance_id is not None,
+                "instance_id": self.server.managed_instance_id,
+                "pid": os.getpid(),
+            }
+            self._send_json(HTTPStatus.OK, metadata)
             return
         if path == "/api/tasks":
             values = self._query(
@@ -476,6 +530,7 @@ def create_server(
     *,
     port: int = 0,
     token: Optional[str] = None,
+    managed_instance_id: Optional[str] = None,
     handler_limit: int = DEFAULT_HANDLER_LIMIT,
 ) -> BoundedThreadingHTTPServer:
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
@@ -483,12 +538,21 @@ def create_server(
     authority = token or secrets.token_urlsafe(32)
     if not isinstance(authority, str) or len(authority) < 32:
         raise DevFlowError("WEB_TOKEN_INVALID", "Web UI authority is invalid")
+    if managed_instance_id is not None and (
+        not isinstance(managed_instance_id, str)
+        or len(managed_instance_id) < 24
+    ):
+        raise DevFlowError(
+            "WEB_RUNTIME_INVALID",
+            "managed Web UI instance identity is invalid",
+        )
     try:
         return BoundedThreadingHTTPServer(
             (SERVER_HOST, port),
             WebRequestHandler,
             controller=Controller(data_dir),
             token=authority,
+            managed_instance_id=managed_instance_id,
             handler_limit=handler_limit,
         )
     except OSError as exc:
@@ -600,51 +664,225 @@ def _write_runtime_state(path: Path, value: Mapping[str, object]) -> None:
     atomic_write_bytes(path, _json_bytes(value) + b"\n")
 
 
-def _remove_runtime_state(path: Path, instance_id: Optional[str] = None) -> None:
+def _remove_runtime_state(
+    path: Path,
+    instance_id: Optional[str] = None,
+    pid: Optional[int] = None,
+) -> bool:
     state = _read_runtime_state(path)
-    if state is None or (instance_id is not None and state["instance_id"] != instance_id):
-        return
+    if state is None:
+        return True
+    if instance_id is not None and state["instance_id"] != instance_id:
+        return False
+    if pid is not None and state["pid"] != pid:
+        return False
     try:
         path.unlink()
     except FileNotFoundError:
-        pass
+        return True
     except OSError as exc:
         raise DevFlowError("WEB_RUNTIME_WRITE_FAILED", "Web UI runtime state could not be removed") from exc
+    return True
 
 
-def _probe_runtime(state: Mapping[str, object]) -> bool:
+def _supports_non_destructive_pid_probe() -> bool:
+    """Return whether signal zero is a non-destructive PID existence probe."""
+    return os.name == "posix"
+
+
+def _process_liveness(pid: int) -> ProcessLiveness:
+    """Classify process existence only when the host provides a safe probe."""
+    if not _supports_non_destructive_pid_probe():
+        return ProcessLiveness.UNKNOWN
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return ProcessLiveness.DEAD
+    except PermissionError:
+        # POSIX EPERM still proves that a process occupies the PID.
+        return ProcessLiveness.ALIVE
+    except (OSError, OverflowError):
+        return ProcessLiveness.UNKNOWN
+    return ProcessLiveness.ALIVE
+
+
+def _probe_runtime(state: Mapping[str, object]) -> RuntimeStatus:
+    """Classify HTTP reachability and exact identity, never process death."""
     if state.get("status") != "running":
-        return False
+        return RuntimeStatus.UNREACHABLE
     port = state.get("port")
     token = state.get("token")
     if not isinstance(port, int) or not isinstance(token, str):
-        return False
+        return RuntimeStatus.UNREACHABLE
     connection = http.client.HTTPConnection(SERVER_HOST, port, timeout=0.4)
     try:
         connection.request("GET", "/api/meta", headers={"Authorization": "Bearer " + token})
         response = connection.getresponse()
-        payload = response.read()
+        payload = response.read(WEB_METADATA_MAX_BYTES + 1)
+        if len(payload) > WEB_METADATA_MAX_BYTES:
+            return RuntimeStatus.UNREACHABLE
+        if response.status in {
+            HTTPStatus.REQUEST_TIMEOUT,
+            HTTPStatus.TOO_MANY_REQUESTS,
+        } or 500 <= response.status <= 599:
+            return RuntimeStatus.UNREACHABLE
         if response.status != HTTPStatus.OK:
-            return False
+            return RuntimeStatus.IDENTITY_CONFLICT
         body = json.loads(payload.decode("utf-8"))
-        return body.get("product_identity") == PRODUCT_IDENTITY
-    except (OSError, UnicodeError, ValueError):
-        return False
+        if not isinstance(body, dict):
+            return RuntimeStatus.UNREACHABLE
+        if body.get("product_identity") != PRODUCT_IDENTITY:
+            return RuntimeStatus.IDENTITY_CONFLICT
+        runtime = body.get("managed_runtime")
+        if not isinstance(runtime, dict):
+            return RuntimeStatus.UNREACHABLE
+        if runtime.get("managed") is not True:
+            return RuntimeStatus.IDENTITY_CONFLICT
+        if runtime.get("instance_id") != state.get("instance_id"):
+            return RuntimeStatus.IDENTITY_CONFLICT
+        if runtime.get("pid") != state.get("pid"):
+            return RuntimeStatus.IDENTITY_CONFLICT
+        return RuntimeStatus.RUNNING
+    except (http.client.HTTPException, OSError, UnicodeError, ValueError):
+        return RuntimeStatus.UNREACHABLE
     finally:
         connection.close()
 
 
-def _runtime_view(state: Optional[Mapping[str, object]], *, action: str) -> dict:
-    running = state is not None and _probe_runtime(state)
+def _classify_runtime(
+    state: Optional[Mapping[str, object]],
+) -> RuntimeClassification:
+    """Combine state, process, reachability, and identity without collapsing facts."""
+    if state is None:
+        return RuntimeClassification(RuntimeStatus.STOPPED, None)
+    liveness = _process_liveness(int(state["pid"]))
+    if liveness is ProcessLiveness.DEAD:
+        return RuntimeClassification(
+            RuntimeStatus.STOPPED,
+            state,
+            liveness=liveness,
+        )
+    if state.get("status") == "starting":
+        if liveness is ProcessLiveness.ALIVE:
+            return RuntimeClassification(
+                RuntimeStatus.STARTING,
+                state,
+                liveness=liveness,
+            )
+        return RuntimeClassification(
+            RuntimeStatus.UNREACHABLE,
+            state,
+            liveness=liveness,
+        )
+    probe = _probe_runtime(state)
+    if probe in {RuntimeStatus.RUNNING, RuntimeStatus.IDENTITY_CONFLICT}:
+        return RuntimeClassification(
+            probe,
+            state,
+            liveness=liveness,
+            probe=probe,
+        )
+    return RuntimeClassification(
+        RuntimeStatus.UNREACHABLE,
+        state,
+        liveness=liveness,
+        probe=probe,
+    )
+
+
+def _signal_authority_error(
+    classification: RuntimeClassification,
+) -> DevFlowError:
+    if classification.liveness is ProcessLiveness.UNKNOWN:
+        return DevFlowError(
+            "WEB_PROCESS_LIVENESS_UNKNOWN",
+            "managed Web UI identity is verified, but this platform cannot safely prove PID liveness; state was retained and no signal was sent",
+        )
+    return DevFlowError(
+        "WEB_STOP_UNVERIFIED",
+        "managed Web UI identity and process liveness do not jointly authorize a signal; state was retained",
+    )
+
+
+def _classification_error(
+    classification: RuntimeClassification,
+    *,
+    action: str,
+) -> DevFlowError:
+    if classification.status is RuntimeStatus.STARTING:
+        return DevFlowError(
+            "WEB_INSTANCE_STARTING",
+            "managed Web UI is still starting; retry status later",
+        )
+    if classification.status is RuntimeStatus.UNREACHABLE:
+        return DevFlowError(
+            "WEB_INSTANCE_UNREACHABLE",
+            "managed Web UI process liveness or exact HTTP identity is unavailable; retry status or inspect retained state",
+        )
+    if classification.status is RuntimeStatus.IDENTITY_CONFLICT:
+        return DevFlowError(
+            "WEB_INSTANCE_IDENTITY_CONFLICT",
+            "managed Web UI endpoint identity conflicts with retained state; inspect it manually",
+        )
+    return DevFlowError(
+        "WEB_NOT_RUNNING",
+        "managed Web UI is not running" if action == "open" else "managed Web UI is stopped",
+    )
+
+
+def _clear_stale_runtime_state(
+    state_path: Path,
+    expected_state: Mapping[str, object],
+) -> None:
+    """Revalidate exact state identity and proven death before stale cleanup."""
+    expected_instance_id = str(expected_state["instance_id"])
+    expected_pid = int(expected_state["pid"])
+    current = _read_runtime_state(state_path)
+    if current is None:
+        return
+    if (
+        current.get("instance_id") != expected_instance_id
+        or current.get("pid") != expected_pid
+    ):
+        raise DevFlowError(
+            "WEB_INSTANCE_IDENTITY_CONFLICT",
+            "managed Web UI state changed before stale cleanup; inspect current status",
+        )
+    classification = _classify_runtime(current)
+    if not classification.can_clear_state_as_stopped:
+        raise DevFlowError(
+            "WEB_STOP_UNVERIFIED",
+            "managed Web UI process death is no longer proven; state was retained",
+        )
+    if not _remove_runtime_state(
+        state_path,
+        expected_instance_id,
+        expected_pid,
+    ):
+        raise DevFlowError(
+            "WEB_INSTANCE_IDENTITY_CONFLICT",
+            "managed Web UI state changed during stale cleanup; inspect current status",
+        )
+
+
+def _runtime_view(
+    classification: RuntimeClassification,
+    *,
+    action: str,
+) -> dict:
+    state = classification.state
     result = {
         "ok": True,
         "command": "web",
         "action": action,
-        "status": "running" if running else "stopped",
+        "status": classification.status.value,
         "version": RELEASE_VERSION,
         "product_identity": PRODUCT_IDENTITY,
     }
-    if running:
+    if state is not None and classification.status is not RuntimeStatus.STOPPED:
+        for key in ("pid", "started_at"):
+            result[key] = state[key]
+    if state is not None and classification.status is RuntimeStatus.RUNNING:
         for key in ("pid", "host", "port", "url", "started_at"):
             result[key] = state[key]
     return result
@@ -682,84 +920,179 @@ def _open_runtime_log(path: Path) -> object:
         raise DevFlowError("WEB_RUNTIME_WRITE_FAILED", "Web UI runtime log could not be opened") from exc
 
 
+def _reap_owned_child(process: subprocess.Popen) -> bool:
+    """Boundedly terminate the exact child owned by this start attempt."""
+    if process.poll() is not None:
+        return True
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return process.poll() is not None
+    except OSError:
+        return process.poll() is not None
+    try:
+        process.wait(timeout=WEB_CHILD_TERMINATE_TIMEOUT_SECONDS)
+        return True
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return process.poll() is not None
+    except OSError:
+        return process.poll() is not None
+    try:
+        process.wait(timeout=WEB_CHILD_TERMINATE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
+
+
+def _cleanup_start_attempt(
+    process: subprocess.Popen,
+    state_path: Path,
+    lock_path: Path,
+    instance_id: str,
+) -> bool:
+    """Remove only an exact failed reservation after owned-child death proof."""
+    if not _reap_owned_child(process):
+        return False
+    with exclusive_file_lock(lock_path):
+        _remove_runtime_state(state_path, instance_id)
+    return True
+
+
 def _start_web(data_dir: str, port: int) -> dict:
     if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
         raise DevFlowError("WEB_PORT_INVALID", "--port must be between 0 and 65535")
     root, state_path, lock_path, log_path = _runtime_paths(data_dir)
     ensure_private_directory(root)
     instance_id = secrets.token_urlsafe(24)
-    with exclusive_file_lock(lock_path):
-        current = _read_runtime_state(state_path)
-        if current is not None and _probe_runtime(current):
-            result = _runtime_view(current, action="start")
-            result["already_running"] = True
-            return result
-        _remove_runtime_state(state_path)
-        with _open_runtime_log(log_path) as log:
-            kwargs = {
-                "stdin": subprocess.DEVNULL,
-                "stdout": log,
-                "stderr": log,
-                "close_fds": True,
-            }
-            if os.name == "nt":
-                kwargs["creationflags"] = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    process = None
+    try:
+        with exclusive_file_lock(lock_path):
+            current = _read_runtime_state(state_path)
+            classification = _classify_runtime(current)
+            if classification.status is RuntimeStatus.RUNNING:
+                result = _runtime_view(classification, action="start")
+                result["already_running"] = True
+                return result
+            if classification.status is not RuntimeStatus.STOPPED:
+                raise _classification_error(classification, action="start")
+            if current is not None:
+                _clear_stale_runtime_state(state_path, current)
+            with _open_runtime_log(log_path) as log:
+                kwargs = {
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": log,
+                    "stderr": log,
+                    "close_fds": True,
+                }
+                if os.name == "nt":
+                    kwargs["creationflags"] = (
+                        subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+                    )
+                else:
+                    kwargs["start_new_session"] = True
+                process = subprocess.Popen(
+                    _child_command(data_dir, port, instance_id),
+                    **kwargs,
                 )
-            else:
-                kwargs["start_new_session"] = True
-            process = subprocess.Popen(_child_command(data_dir, port, instance_id), **kwargs)
-        _write_runtime_state(state_path, {
-            "schema": WEB_RUNTIME_SCHEMA,
-            "instance_id": instance_id,
-            "pid": process.pid,
-            "status": "starting",
-            "started_at": _utc_now(),
-        })
+            _write_runtime_state(state_path, {
+                "schema": WEB_RUNTIME_SCHEMA,
+                "instance_id": instance_id,
+                "pid": process.pid,
+                "status": "starting",
+                "started_at": _utc_now(),
+            })
+    except Exception as exc:
+        if process is not None and not _cleanup_start_attempt(
+            process,
+            state_path,
+            lock_path,
+            instance_id,
+        ):
+            raise DevFlowError(
+                "WEB_START_UNVERIFIED",
+                "managed Web UI child exit could not be confirmed; retained state blocks another start",
+            ) from exc
+        raise
     deadline = time.monotonic() + WEB_START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         time.sleep(0.05)
         state = _read_runtime_state(state_path)
-        if state is not None and state.get("instance_id") == instance_id and _probe_runtime(state):
-            return _runtime_view(state, action="start")
+        if state is not None and state.get("instance_id") == instance_id:
+            classification = _classify_runtime(state)
+            if classification.status is RuntimeStatus.RUNNING:
+                return _runtime_view(classification, action="start")
+            if classification.status is RuntimeStatus.IDENTITY_CONFLICT:
+                break
+        else:
+            break
         if process.poll() is not None:
             break
-    with exclusive_file_lock(lock_path):
-        _remove_runtime_state(state_path, instance_id)
+    if not _cleanup_start_attempt(process, state_path, lock_path, instance_id):
+        raise DevFlowError(
+            "WEB_START_UNVERIFIED",
+            "managed Web UI child exit could not be confirmed; retained state blocks another start",
+        )
     raise DevFlowError(
         "WEB_START_FAILED",
         "managed Web UI did not become ready",
-        details={"log": str(log_path)},
     )
 
 
 def _stop_web(data_dir: str) -> dict:
     root, state_path, lock_path, _ = _runtime_paths(data_dir)
     if not root.exists():
-        return _runtime_view(None, action="stop")
+        return _runtime_view(
+            RuntimeClassification(RuntimeStatus.STOPPED, None),
+            action="stop",
+        )
     with exclusive_file_lock(lock_path):
         state = _read_runtime_state(state_path)
-        if state is None or not _probe_runtime(state):
-            _remove_runtime_state(state_path)
-            return _runtime_view(None, action="stop")
-        pid = state["pid"]
-        instance_id = state["instance_id"]
+        classification = _classify_runtime(state)
+        if classification.status is RuntimeStatus.STOPPED:
+            if state is not None:
+                _clear_stale_runtime_state(state_path, state)
+            return _runtime_view(
+                RuntimeClassification(RuntimeStatus.STOPPED, None),
+                action="stop",
+            )
+        if classification.status is not RuntimeStatus.RUNNING:
+            raise _classification_error(classification, action="stop")
+        if not classification.can_signal_process:
+            raise _signal_authority_error(classification)
+        pid = int(state["pid"])
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
-            _remove_runtime_state(state_path, instance_id)
-            return _runtime_view(None, action="stop")
+            _clear_stale_runtime_state(state_path, state)
+            return _runtime_view(
+                RuntimeClassification(RuntimeStatus.STOPPED, None),
+                action="stop",
+            )
         except OSError as exc:
-            raise DevFlowError("WEB_STOP_FAILED", "managed Web UI could not be stopped") from exc
-    deadline = time.monotonic() + WEB_START_TIMEOUT_SECONDS
+            raise DevFlowError(
+                "WEB_STOP_UNVERIFIED",
+                "managed Web UI signal authority could not be exercised; retained state requires inspection",
+            ) from exc
+    deadline = time.monotonic() + WEB_STOP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
-        current = _read_runtime_state(state_path)
-        if current is None or current.get("instance_id") != instance_id or not _probe_runtime(current):
-            with exclusive_file_lock(lock_path):
-                _remove_runtime_state(state_path, instance_id)
-            return _runtime_view(None, action="stop")
+        if _process_liveness(pid) is ProcessLiveness.DEAD:
+            break
         time.sleep(0.05)
-    raise DevFlowError("WEB_STOP_TIMEOUT", "managed Web UI did not stop in time")
+    else:
+        raise DevFlowError(
+            "WEB_STOP_TIMEOUT",
+            "managed Web UI process death was not confirmed; retained state requires inspection",
+        )
+    with exclusive_file_lock(lock_path):
+        _clear_stale_runtime_state(state_path, state)
+    return _runtime_view(
+        RuntimeClassification(RuntimeStatus.STOPPED, None),
+        action="stop",
+    )
 
 
 def manage_web(data_dir: str, *, action: str, port: int = 0) -> dict:
@@ -772,15 +1105,14 @@ def manage_web(data_dir: str, *, action: str, port: int = 0) -> dict:
         result = _start_web(data_dir, port)
         result["action"] = "restart"
         return result
-    root, state_path, _, _ = _runtime_paths(data_dir)
-    state = _read_runtime_state(state_path) if root.exists() else None
-    if state is not None and not _probe_runtime(state):
-        state = None
-    result = _runtime_view(state, action=action)
-    if action == "open" and state is None:
-        raise DevFlowError("WEB_NOT_RUNNING", "managed Web UI is not running")
     if action not in ("status", "open"):
         raise DevFlowError("ACTION_UNSUPPORTED", "Web UI action is not implemented")
+    root, state_path, _, _ = _runtime_paths(data_dir)
+    state = _read_runtime_state(state_path) if root.exists() else None
+    classification = _classify_runtime(state)
+    if action == "open" and classification.status is not RuntimeStatus.RUNNING:
+        raise _classification_error(classification, action="open")
+    result = _runtime_view(classification, action=action)
     return result
 
 
@@ -789,7 +1121,11 @@ def run_web_worker(data_dir: str, *, port: int, instance_id: Optional[str]) -> i
         raise DevFlowError("WEB_RUNTIME_INVALID", "managed Web UI instance identity is invalid")
     root, state_path, lock_path, _ = _runtime_paths(data_dir)
     ensure_private_directory(root)
-    server = create_server(data_dir, port=port)
+    server = create_server(
+        data_dir,
+        port=port,
+        managed_instance_id=instance_id,
+    )
     receipt = startup_receipt(server)
     state = {
         "schema": WEB_RUNTIME_SCHEMA,

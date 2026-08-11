@@ -90,6 +90,21 @@ class WebServerTests(RepositoryTestCase):
             ),
         )
 
+        status, _, metadata = self.json_request(
+            "GET",
+            "/api/meta",
+            authorize=True,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            metadata["managed_runtime"],
+            {
+                "managed": False,
+                "instance_id": None,
+                "pid": os.getpid(),
+            },
+        )
+
     def test_static_assets_are_allowlisted_no_store_and_headable(self) -> None:
         for path, content_type in (
             ("/", "text/html"),

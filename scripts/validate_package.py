@@ -65,6 +65,7 @@ _PREIMPORT_REQUIRED = (
     "tests/test_native_windows_runtime.py",
     "tests/test_posix_storage_locking.py",
     "tests/test_store_state_bounds.py",
+    "tests/test_web_lifecycle.py",
 )
 
 
@@ -396,6 +397,7 @@ REQUIRED_STATIC = (
     "tests/test_windows_lifecycle.py",
     "tests/test_uninstall_script.py",
     "tests/test_read_only_inspection.py",
+    "tests/test_web_lifecycle.py",
     "tests/test_web_read_models.py",
     "tests/test_web_server.py",
     "tests/test_web_ui_product_identity.py",
@@ -3035,9 +3037,40 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
             "LIVE_CAPTURE_SLOT.acquire(blocking=False)",
             '"Cache-Control", "no-store"',
             '"Content-Security-Policy"',
+            "class RuntimeStatus(str, Enum)",
+            'IDENTITY_CONFLICT = "identity-conflict"',
+            '"managed_runtime"',
+            '"WEB_INSTANCE_UNREACHABLE"',
+            '"WEB_INSTANCE_IDENTITY_CONFLICT"',
+            "def _supports_non_destructive_pid_probe() -> bool:",
+            'return os.name == "posix"',
+            "return ProcessLiveness.UNKNOWN",
+            "def can_signal_process(self) -> bool:",
+            "self.identity_is_exact",
+            "self.liveness is ProcessLiveness.ALIVE",
+            "if not classification.can_signal_process:",
+            '"WEB_PROCESS_LIVENESS_UNKNOWN"',
+            "def _clear_stale_runtime_state(",
+            "classification.can_clear_state_as_stopped",
+            "expected_instance_id",
+            "expected_pid",
+            "_reap_owned_child(process)",
+            "_remove_runtime_state(state_path, instance_id)",
         ),
         errors,
         "src/dev_flow_orchestrator/web.py is not the bounded loopback authority",
+    )
+    classifier_start = web.find("def _classify_runtime(")
+    classifier_end = web.find("\ndef _signal_authority_error", classifier_start)
+    classifier = web[classifier_start:classifier_end]
+    dead_gate = classifier.find("if liveness is ProcessLiveness.DEAD:")
+    http_probe = classifier.find("probe = _probe_runtime(state)")
+    _check(
+        classifier_start >= 0
+        and classifier_end > classifier_start
+        and 0 <= dead_gate < http_probe,
+        errors,
+        "src/dev_flow_orchestrator/web.py does not prioritize proven process death before HTTP probing",
     )
     _require_tokens(
         views,
@@ -3108,7 +3141,9 @@ def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
     allowed_runtime_imports = {
         "__future__",
         "collections",
+        "dataclasses",
         "datetime",
+        "enum",
         "http",
         "importlib",
         "json",
