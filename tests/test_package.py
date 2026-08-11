@@ -129,11 +129,6 @@ class PackageValidationTests(unittest.TestCase):
         (self.candidate / "VALIDATION_REPORT.md").write_text("stale\n", encoding="utf-8")
         self.assert_error_contains(validate(self.candidate), "stale VALIDATION_REPORT.md")
 
-    def test_current_specs_reject_obsolete_hook_or_standalone_authority(self) -> None:
-        spec = self.candidate / "openspec" / "specs" / "authoritative-plugin-installation" / "spec.md"
-        spec.write_text(spec.read_text(encoding="utf-8") + "\nPreToolUse Hook guards are authoritative.\n", encoding="utf-8")
-        self.assert_error_contains(validate(self.candidate), "conflicts with the current MCP-first bundled-only product")
-
     def test_public_docs_semantic_gate_rejects_an_early_return(self) -> None:
         validator = self.candidate / "scripts" / "validate_package.py"
         text = validator.read_text(encoding="utf-8")
@@ -501,52 +496,11 @@ class PackageValidationTests(unittest.TestCase):
             "MCP context budget authority is invalid: src/dev_flow_orchestrator/mcp/results.py",
         )
 
-    def test_openspec_traceability_requires_every_requirement_and_scenario(self) -> None:
-        manifest_path = self.candidate / "openspec/changes/dev-flow-orchestrator-mcp/traceability.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        removed = manifest["entries"].pop()
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        self.assert_error_contains(
-            validate(self.candidate),
-            "OpenSpec traceability is missing: " + removed["id"],
-        )
-
-    def test_openspec_traceability_rejects_missing_test_symbol(self) -> None:
-        manifest_path = self.candidate / "openspec/changes/dev-flow-orchestrator-mcp/traceability.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["entries"][0]["tests"] = [
-            "tests/test_package.py::PackageValidationTests.test_does_not_exist"
-        ]
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        self.assert_error_contains(
-            validate(self.candidate),
-            "traceability references a missing test:",
-        )
-
-    def test_stable_mcp_tool_requires_traceable_protocol_coverage(self) -> None:
-        manifest_path = self.candidate / "openspec/changes/dev-flow-orchestrator-mcp/traceability.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        unrelated = (
-            "tests/test_bump_version.py::"
-            "BumpVersionTests.test_patch_release_changes_only_four_metadata_files"
-        )
-        for entry in manifest["entries"]:
-            if entry["id"].startswith("mcp-controller-tools::"):
-                entry["tests"] = [unrelated]
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        self.assert_error_contains(
-            validate(self.candidate),
-            "stable MCP tool lacks traceable test coverage: dev_flow_server_info",
-        )
+    def test_openspec_development_artifacts_are_outside_package_validation(self) -> None:
+        openspec = self.candidate / "openspec" / "changes" / "in-progress"
+        openspec.mkdir(parents=True)
+        (openspec / "traceability.json").write_text("not package metadata\n", encoding="utf-8")
+        self.assertEqual(validate(self.candidate)["errors"], [])
 
     def test_manifest_uses_only_the_mcp_server_catalog(self) -> None:
         manifest = json.loads((self.candidate / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
@@ -707,24 +661,6 @@ class PackageValidationTests(unittest.TestCase):
             "current product asset contains non-current dev-flow numeric schema: "
             "README.md",
         )
-
-    def test_historical_openspec_assets_are_outside_version_scan(self) -> None:
-        generation_marker = "V" + "6"
-        numeric_version = ".".join(("0", "1", "0"))
-        archive = (
-            self.candidate
-            / "openspec"
-            / "changes"
-            / "archive"
-            / ("historical-" + generation_marker)
-            / "spec.md"
-        )
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        archive.write_text(
-            generation_marker + " dev-flow-agent/" + numeric_version + "\n",
-            encoding="utf-8",
-        )
-        self.assertEqual(validate(self.candidate)["errors"], [])
 
     def test_mcp_registration_command_is_exact(self) -> None:
         registration = self.candidate / ".mcp.json"

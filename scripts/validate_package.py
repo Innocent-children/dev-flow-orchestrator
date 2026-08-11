@@ -402,8 +402,6 @@ REQUIRED_STATIC = (
     "tests/test_web_server.py",
     "tests/test_web_ui_product_identity.py",
     "uv.lock",
-    "openspec/changes/dev-flow-orchestrator-mcp/TRACEABILITY.md",
-    "openspec/changes/dev-flow-orchestrator-mcp/traceability.json",
 )
 FORBIDDEN_PATHS = (
     "hooks",
@@ -1243,165 +1241,6 @@ def _markdown_section(document: str, heading: str) -> str:
     if end < 0:
         return document[start:]
     return document[start:end]
-
-
-def _traceability_spec_entries(root: Path, errors: list[str]) -> tuple[str, ...]:
-    specs_root = root / "openspec" / "changes" / "dev-flow-orchestrator-mcp" / "specs"
-    entries: list[str] = []
-    if not specs_root.is_dir():
-        errors.append("OpenSpec MCP capability specs are missing")
-        return ()
-    for path in sorted(specs_root.glob("*/spec.md")):
-        capability = path.parent.name
-        try:
-            document = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            errors.append("cannot read OpenSpec capability spec {}: {}".format(capability, exc))
-            continue
-        requirement: Optional[str] = None
-        for line in document.splitlines():
-            if line.startswith("### Requirement: "):
-                requirement = line[len("### Requirement: "):].strip()
-                entries.append("{}::requirement::{}".format(capability, requirement))
-            elif line.startswith("#### Scenario: "):
-                scenario = line[len("#### Scenario: "):].strip()
-                if requirement is None:
-                    errors.append(
-                        "OpenSpec scenario has no requirement in {}: {}".format(
-                            capability, scenario
-                        )
-                    )
-                    continue
-                entries.append(
-                    "{}::scenario::{}::{}".format(
-                        capability, requirement, scenario
-                    )
-                )
-    return tuple(entries)
-
-
-def _traceability_test_symbols(root: Path, relative: str, errors: list[str]) -> set[str]:
-    path = root / relative
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, UnicodeError, SyntaxError) as exc:
-        errors.append("cannot inspect traceability test {}: {}".format(relative, exc))
-        return set()
-    symbols: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
-            symbols.add("{}::{}".format(relative, node.name))
-        elif isinstance(node, ast.ClassDef):
-            for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name.startswith("test_"):
-                    symbols.add("{}::{}.{}".format(relative, node.name, child.name))
-    return symbols
-
-
-def _validate_openspec_traceability(root: Path, errors: list[str]) -> None:
-    change_root = root / "openspec" / "changes" / "dev-flow-orchestrator-mcp"
-    manifest_path = change_root / "traceability.json"
-    table_path = change_root / "TRACEABILITY.md"
-    manifest = _json_object(manifest_path, errors, "OpenSpec traceability manifest")
-    if not isinstance(manifest, dict):
-        return
-    _check(
-        set(manifest) == {"schema", "change", "entries"}
-        and manifest.get("schema") == "dev-flow-openspec-traceability/1.0.0"
-        and manifest.get("change") == "dev-flow-orchestrator-mcp"
-        and isinstance(manifest.get("entries"), list),
-        errors,
-        "OpenSpec traceability manifest identity or fields are invalid",
-    )
-    raw_entries = manifest.get("entries")
-    if not isinstance(raw_entries, list):
-        return
-    declared: dict[str, tuple[str, ...]] = {}
-    referenced_files: dict[str, set[str]] = {}
-    for entry in raw_entries:
-        if (
-            not isinstance(entry, dict)
-            or set(entry) != {"id", "tests"}
-            or not isinstance(entry.get("id"), str)
-            or not isinstance(entry.get("tests"), list)
-            or not entry["tests"]
-            or not all(isinstance(item, str) and item for item in entry["tests"])
-            or len(set(entry["tests"])) != len(entry["tests"])
-        ):
-            errors.append("OpenSpec traceability entry is invalid")
-            continue
-        entry_id = entry["id"]
-        if entry_id in declared:
-            errors.append("duplicate OpenSpec traceability id: " + entry_id)
-            continue
-        declared[entry_id] = tuple(entry["tests"])
-        for reference in entry["tests"]:
-            relative = reference.split("::", 1)[0]
-            referenced_files.setdefault(relative, set()).add(reference)
-
-    expected = _traceability_spec_entries(root, errors)
-    missing = sorted(set(expected) - set(declared))
-    extra = sorted(set(declared) - set(expected))
-    _check(not missing, errors, "OpenSpec traceability is missing: " + "; ".join(missing[:8]))
-    _check(not extra, errors, "OpenSpec traceability has stale entries: " + "; ".join(extra[:8]))
-
-    source_by_reference: dict[str, str] = {}
-    for relative, references in referenced_files.items():
-        if not re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", relative):
-            errors.append("traceability reference is outside the test suite: " + relative)
-            continue
-        symbols = _traceability_test_symbols(root, relative, errors)
-        for reference in sorted(references):
-            if reference not in symbols:
-                errors.append("traceability references a missing test: " + reference)
-                continue
-            try:
-                source_by_reference[reference] = (root / relative).read_text(encoding="utf-8")
-            except (OSError, UnicodeError):
-                source_by_reference[reference] = ""
-
-    controller_prefix = "mcp-controller-tools::"
-    controller_references = {
-        reference
-        for entry_id, references in declared.items()
-        if entry_id.startswith(controller_prefix)
-        for reference in references
-    }
-    for tool_name in (
-        "dev_flow_server_info", "dev_flow_list_tasks", "dev_flow_find_tasks_for_path",
-        "dev_flow_get_task", "dev_flow_get_next_action", "dev_flow_start_task",
-        "dev_flow_apply_action", "dev_flow_revise_contract", "dev_flow_record_decision",
-        "dev_flow_dispose_finding", "dev_flow_cancel_task",
-    ):
-        _check(
-            any(tool_name in source_by_reference.get(reference, "") for reference in controller_references),
-            errors,
-            "stable MCP tool lacks traceable test coverage: " + tool_name,
-        )
-
-    canonical = json.dumps(
-        manifest,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    digest = hashlib.sha256(canonical).hexdigest()
-    try:
-        table = table_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        errors.append("cannot read OpenSpec traceability table: {}".format(exc))
-        return
-    _check(
-        "Manifest SHA-256: `{}`".format(digest) in table,
-        errors,
-        "OpenSpec traceability table does not match its manifest",
-    )
-    for entry_id in declared:
-        _check(
-            table.count("`{}`".format(entry_id)) == 1,
-            errors,
-            "OpenSpec traceability table omits or duplicates: " + entry_id,
-        )
 
 
 def _static_int(node: ast.AST) -> Optional[int]:
@@ -2754,15 +2593,6 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
     for relative, document in documents.items():
         _check("VALIDATION_REPORT.md" not in document, errors, relative + " references stale validation evidence")
 
-    for spec_path in sorted((root / "openspec").glob("**/spec.md")):
-        spec_text = spec_path.read_text(encoding="utf-8")
-        relative = spec_path.relative_to(root).as_posix()
-        _check(
-            re.search(r"(?i)(?:Hook trust handoff|PreToolUse Hook guards|MAY instead\s+register.*standalone)", spec_text) is None,
-            errors,
-            relative + " conflicts with the current MCP-first bundled-only product",
-        )
-
     validator_path = root / "scripts" / "validate_package.py"
     if validator_path.is_file():
         try:
@@ -3301,7 +3131,6 @@ def _validate_current_candidate(root: Path) -> dict:
     )
     _validate_manifest(root, manifest, errors)
     _validate_mcp_package(root, errors)
-    _validate_openspec_traceability(root, errors)
     _validate_package_versions(root, manifest, errors)
     installer = root / "scripts" / "install.sh"
     uninstaller = root / "scripts" / "uninstall.sh"
