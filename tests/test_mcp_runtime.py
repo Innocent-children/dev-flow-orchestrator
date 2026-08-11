@@ -187,7 +187,7 @@ class MCPRuntimeTests(unittest.TestCase):
             result = asyncio.run(create_server(data_dir).call_tool("dev_flow_server_info", {}))
         self.assertFalse(result.is_error)
         data = result.structured_content["result"]
-        self.assertEqual(data["release_version"], "0.5.0")
+        self.assertEqual(data["release_version"], "0.5.1")
         self.assertEqual(data["model_version"], MODEL_VERSION)
         self.assertEqual(data["model_namespace"], MODEL_VERSION)
         self.assertEqual(data["repository_count"], {"minimum": 1, "maximum": 8})
@@ -1173,7 +1173,7 @@ class MCPRuntimeTests(unittest.TestCase):
             return "3.0.0" if package == "mcp" else actual_version(package)
 
         def release_drift(package: str) -> str:
-            return "0.5.1" if package == "dev-flow-orchestrator" else actual_version(package)
+            return "0.5.2" if package == "dev-flow-orchestrator" else actual_version(package)
 
         cases = (
             ("python-3.9", ((mcp_runtime.sys, "version_info", (3, 9, 19)),)),
@@ -1909,7 +1909,7 @@ class MCPStdioProtocolTests(unittest.IsolatedAsyncioTestCase):
                 async with ClientSession(read_stream, write_stream) as session:
                     initialized = await session.initialize()
                     self.assertEqual(initialized.server_info.name, "dev-flow")
-                    self.assertEqual(initialized.server_info.version, "0.5.0")
+                    self.assertEqual(initialized.server_info.version, "0.5.1")
                     self.assertEqual(initialized.instructions, SERVER_INSTRUCTIONS)
                     self.assertIsNotNone(initialized.capabilities.tools)
                     self.assertIsNone(initialized.capabilities.resources)

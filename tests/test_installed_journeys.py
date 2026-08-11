@@ -185,7 +185,7 @@ class InstalledMCPJourneyTests(unittest.TestCase):
         self.assertEqual(evidence["plugin_digest_before"], evidence["plugin_digest_after"])
         journey = evidence["journey"]
         self.assertEqual(journey["initialize"]["server"], "dev-flow")
-        self.assertEqual(journey["initialize"]["release"], "0.5.0")
+        self.assertEqual(journey["initialize"]["release"], "0.5.1")
         self.assertEqual(len(journey["initialize"]["instructions_sha256"]), 64)
         self.assertEqual(tuple(journey["catalog"]), acceptance.EXPECTED_TOOLS)
         self.assertTrue(journey["read_smoke"])

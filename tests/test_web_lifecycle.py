@@ -93,6 +93,12 @@ class ManagedWebLifecycleTests(unittest.TestCase):
                     process.wait(timeout=2.0)
         self.temporary.cleanup()
 
+    def test_child_command_preserves_dash_prefixed_instance_id(self) -> None:
+        command = web_module._child_command(self.data_dir, 0, "-dash-prefixed")
+
+        self.assertIn("--instance-id=-dash-prefixed", command)
+        self.assertNotIn("--instance-id", command)
+
     def _spawn_sleeper(self) -> subprocess.Popen:
         environment = hermetic_subprocess_env(self.root)
         process = subprocess.Popen(

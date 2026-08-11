@@ -2,7 +2,7 @@
 
 [Simplified Chinese](INSTALL_CN.md)
 
-This guide installs release `0.5.0` with its local MCP-first interface. The
+This guide installs release `0.5.1` with its local MCP-first interface. The
 persisted model and task-data namespace remain `0.4.0`.
 
 ## 1. Supported registration mode
@@ -102,7 +102,7 @@ dev-flow-mcp --http
 The second command must fail with `MCP_RUNTIME_UNAVAILABLE` and must not open
 a listening socket. In Codex, inspect the enabled plugin and confirm one
 `dev-flow` server. Ask Codex to call `dev_flow_server_info`; it should report
-release `0.5.0`, model `0.4.0`, STDIO transport, six workflows, and catalog
+release `0.5.1`, model `0.4.0`, STDIO transport, six workflows, and catalog
 digests. Then list tools and confirm exactly eleven `dev_flow_*` tools.
 
 The server is a long-lived STDIO protocol process, so do not run

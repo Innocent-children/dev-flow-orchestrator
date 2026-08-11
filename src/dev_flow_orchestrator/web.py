@@ -896,7 +896,7 @@ def _child_command(data_dir: str, port: int, instance_id: str) -> list:
         prefix = [sys.executable, "-m", "dev_flow_orchestrator.cli"]
     return prefix + [
         "--data-dir", str(Path(data_dir).expanduser().resolve()),
-        "web", "_serve", "--port", str(port), "--instance-id", instance_id,
+        "web", "_serve", "--port", str(port), "--instance-id=" + instance_id,
     ]
 
 
