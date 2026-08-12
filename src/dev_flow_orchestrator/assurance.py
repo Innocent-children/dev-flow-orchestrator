@@ -6,6 +6,7 @@ import hashlib
 from typing import Mapping, Optional, Sequence
 
 from .model import DevFlowError, canonical_json_bytes, json_value
+from .payload_contract import ASSURANCE_EVIDENCE_FIELDS
 from .product import (
     ASSURANCE_EXECUTION_SCHEMA,
     ASSURANCE_OBLIGATION_SCHEMA,
@@ -904,7 +905,9 @@ def validate_assurance_execution(
         )
     normalized_evidence = []
     for item in evidence:
-        if not isinstance(item, Mapping) or set(item) != {"kind", "reference", "summary"}:
+        if not isinstance(item, Mapping) or set(item) != set(
+            ASSURANCE_EVIDENCE_FIELDS
+        ):
             raise _error("ASSURANCE_EXECUTION_INVALID", "assurance evidence item is invalid")
         normalized_evidence.append(
             {

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dev Flow"
+  short_description: "Drive resumable repository work through Dev Flow"
+  default_prompt: "Use $dev-flow to start or resume this repository task through the authoritative Dev Flow Controller."
+policy:
+  allow_implicit_invocation: true

@@ -16,6 +16,7 @@
     "developer-workflow",
     "multi-repository"
   ],
+  "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Dev Flow Orchestrator",

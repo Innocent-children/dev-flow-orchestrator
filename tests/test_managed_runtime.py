@@ -153,12 +153,38 @@ class ManagedRuntimeTests(unittest.TestCase):
             self.assertEqual(receipt["source_tree"], self.source_tree)
             self.assertEqual(receipt["release_id"], self.release_id)
             self.assertEqual(Path(created["plugin_root"]).parent, Path(created["runtime_dir"]))
+            installed_plugin = Path(created["plugin_root"])
+            skill_files = (
+                "skills/dev-flow/SKILL.md",
+                "skills/dev-flow/agents/openai.yaml",
+                "skills/dev-flow/references/activation-and-routing.md",
+            )
+            for relative in skill_files:
+                self.assertEqual(
+                    (installed_plugin / relative).read_bytes(),
+                    (ROOT / relative).read_bytes(),
+                )
             self.assertEqual(len(receipt["wheel_sha256"]), 64)
             self.assertEqual(len(receipt["launcher_sha256"]), 64)
             self.assertEqual(len(receipt["ownership_manifest_sha256"]), 64)
             self.assertEqual(receipt["dev_flow"]["name"], "dev-flow-orchestrator")
             self.assertGreater(len(receipt["dev_flow"]["files"]), 10)
             self.assertGreater(len(receipt["dependencies"]), 0)
+            ownership = runtime_integrity.validate_ownership_manifest(
+                runtime_integrity.read_json(Path(created["ownership_manifest_path"])),
+                self.release_id,
+            )
+            ownership_paths = {
+                str(entry["path"])
+                for entry in ownership["entries"]
+                if entry.get("type") == "file"
+            }
+            self.assertTrue(
+                {
+                    "plugin/" + relative
+                    for relative in skill_files
+                }.issubset(ownership_paths)
+            )
             self.assertEqual(sentinel.read_bytes(), b"unchanged\n")
             self.assertNotIn(str(data_root), json.dumps(created["receipt"]))
             package_file = next(

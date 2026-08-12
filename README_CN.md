@@ -3,9 +3,11 @@
 [English](README.md)
 
 Dev Flow Orchestrator 让跨一个至八个用户预先准备的 Git 工作树的长期 Codex
-开发任务保持可恢复、上下文有界且可验证。`0.5.0` 版本把主要 Codex 接口改为
-本地 MCP 服务器，同时保留持久化 `0.4.0` 模型和任务数据命名空间。
+开发任务保持可恢复、上下文有界且可验证。`0.5.1` 版本在本地 MCP 服务器旁
+捆绑名为 `dev-flow` 的正式 Codex Skill，同时保留持久化 `0.4.0` 模型和任务数据
+命名空间。
 
+Skill 负责激活 Codex 并将其路由到 MCP 工作流，它不是另一套工作流协议。
 Controller 仍是唯一的状态转换权威。MCP、CLI 和只读 Web UI 都是同一 Controller
 之上的适配器；它们不会创建或切换分支/工作树、发布 Git 改动、运行并行执行器，
 也不会调度外部 CI、Pull Request 或 Release。
@@ -14,7 +16,8 @@ Controller 仍是唯一的状态转换权威。MCP、CLI 和只读 Web UI 都是
 
 要求：
 
-- macOS、Git、`uv`、支持插件的 Codex，以及 64 位 CPython 3.10–3.14；
+- macOS、Git、`uv`、支持插件、Skill 和 MCP 的 Codex，以及 64 位 CPython
+  3.10–3.14；
 - Windows 10 22H2 x64 或 Windows 11 x64 使用 PowerShell 预览路径，发布证据仍需
   原生 Windows 验证；
 - 一个至八个现有且由用户预先准备的 Git 工作树根目录。
@@ -34,11 +37,21 @@ git clone --branch main --single-branch \
 sh "$HOME/plugins/dev-flow-orchestrator/scripts/install.sh"
 ```
 
-安装器会验证候选包，在源码和任务数据之外构建精确锁定的 MCP 运行时，将受支持的
-bundled 命令安装到 `PATH`，然后激活插件。Windows、修复、回滚、卸载及
-bundled-only 注册边界参见 [INSTALL_CN.md](INSTALL_CN.md)。
+安装器会验证候选包，在密封插件快照中保留 Skill，在源码和任务数据之外构建精确
+锁定的 MCP 运行时，将受支持的 bundled 命令安装到 `PATH`，然后激活插件。
+Windows、修复、回滚、卸载及 bundled-only 注册边界参见
+[INSTALL_CN.md](INSTALL_CN.md)。
 
-在 Codex 中要求发现或启动 Dev Flow 任务。正常顺序是：
+安装后启动一个新的 Codex 任务。可以显式调用 Skill：
+
+```text
+$dev-flow 在当前仓库实现这个需求并完成验证。
+```
+
+对于需要多步骤处理的实现、缺陷修复、重构、调查、审核和验证工作，Codex 也可依据
+description 隐式激活它。目标项目无需额外添加 `AGENTS.md` 规则。
+
+Skill 驱动以下由 Controller 掌权的顺序：
 
 1. 使用 `dev_flow_find_tasks_for_path` 或 `dev_flow_list_tasks` 发现任务；
 2. 显式选择或启动一个任务；
@@ -46,6 +59,26 @@ bundled-only 注册边界参见 [INSTALL_CN.md](INSTALL_CN.md)。
 4. 只在精确仓库集合上执行投影的当前动作；
 5. 提交精确动作 ID、封闭 payload 和未经修改的 binding；
 6. 重复执行，直到任务生成终止 Delivery Dossier。
+
+如果发现多个可能匹配的活动任务，Skill 会让用户选择，而不是按时间擅自决定。如果
+mutation 响应状态不确定，它会先读取任务并刷新当前动作，再判断是否能安全重试。
+
+## Codex Skill
+
+插件 manifest 注册 `./skills/`。捆绑的 Skill 位于 `skills/dev-flow/`，包含：
+
+- `SKILL.md`：description 支持 `$dev-flow` 和隐式匹配；
+- `agents/openai.yaml`：包含 Codex interface 元数据及
+  `policy.allow_implicit_invocation: true`；
+- `references/activation-and-routing.md`：覆盖适用性、精确仓库集合发现、任务歧义和
+  mutation 响应不确定的处理。
+
+agent 元数据有意不声明 MCP dependency。受支持的 MCP dependency 形式基于 URL，
+而本插件提供本地 STDIO server；因此 `.codex-plugin/plugin.json` 与 `.mcp.json`
+是该 server 的唯一注册路径。
+
+Skill 绝不定义 Controller action、payload schema、状态转换、review obligation 或
+终止规则。它从实时 MCP 结果获取这些内容，并提交精确的当前 binding。
 
 ## MCP 接口
 
@@ -115,6 +148,8 @@ Codex 执行接口。
 - Controller、Store 锁、仓库成员、snapshot、binding 和修订 CAS 保持权威。
 - MCP 不提供通用 shell、原始状态、分支/工作树、发布、CI、PR、Release 或并行 Agent
   工具。
+- 正式 `dev-flow` Skill 只提供激活和路由，不是第二个状态写入者，也不能替代
+  Controller 校验。
 - 移除旧的失败开放 Hook 后，不再存在 pre-tool 写入 guard。仍需宿主审批、仓库权限和
   用户审查。
 - 插件不会授予宽泛的变更审批。宿主支持时，应把审批限定到 `dev-flow` 服务器和精确工具。
@@ -127,7 +162,7 @@ Codex 执行接口。
 uv sync --locked
 uv run python -m unittest discover -s tests -p 'test_*.py'
 uv run python scripts/validate_package.py
-openspec validate dev-flow-orchestrator-mcp --strict
+openspec validate add-dev-flow-skill --strict
 ```
 
 开发过程中可以使用聚焦测试；仓库允许完整 unittest discovery，它是完整回归的标准命令。

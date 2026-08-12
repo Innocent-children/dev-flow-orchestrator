@@ -6,6 +6,15 @@ import hashlib
 from typing import Mapping, Optional, Sequence
 
 from .model import DevFlowError, canonical_json_bytes, json_value
+from .payload_contract import (
+    REVIEW_CAUSAL_MANIFEST_FIELDS,
+    REVIEW_CAUSAL_PATH_FIELDS,
+    REVIEW_CAUSAL_RELATIONS,
+    REVIEW_FINDING_EVIDENCE_FIELDS,
+    REVIEW_FINDING_FIELDS,
+    REVIEW_OUTCOMES,
+    REVIEW_SEVERITIES,
+)
 from .product import (
     FINDING_DISPOSITION_SCHEMA,
     MAX_REVIEW_FINDINGS,
@@ -15,21 +24,9 @@ from .product import (
 )
 
 
-CAUSAL_RELATIONS = (
-    "introduced",
-    "affected",
-    "pre-existing",
-    "out-of-scope",
-    "unknown",
-)
-SEVERITIES = ("critical", "high", "medium", "low", "advisory")
+CAUSAL_RELATIONS = REVIEW_CAUSAL_RELATIONS
+SEVERITIES = REVIEW_SEVERITIES
 DISPOSITIONS = ("accepted-risk", "confirmed-out-of-scope", "expand-contract")
-REVIEW_OUTCOMES = (
-    "approved",
-    "changes-requested",
-    "triage-required",
-    "unavailable",
-)
 
 _FINDING_DOMAIN = product_domain("review-finding")
 _REVIEW_DOMAIN = product_domain("independent-review")
@@ -147,15 +144,7 @@ def validate_finding(
     workspace_digest: str,
 ) -> dict:
     """Validate one finding and derive impact-gap/triage authority."""
-    fields = {
-        "schema", "finding_id", "fingerprint", "severity", "blocking",
-        "causal_relation", "criterion_ids", "repository_id", "path", "symbol",
-        "location_label", "evidence", "causal_manifest_entries", "causal_path",
-        "smallest_sufficient_resolution", "reviewer_assurance", "limitations",
-        "task_id", "contract_digest", "plan_digest", "manifest_digest",
-        "review_scope_digest", "guidance_digest", "reviewer_digest",
-        "workspace_digest",
-    }
+    fields = set(REVIEW_FINDING_FIELDS)
     if not isinstance(value, Mapping) or set(value) != fields:
         raise _error("REVIEW_FINDING_INVALID", "review finding fields are invalid")
     relation = value.get("causal_relation")
@@ -186,7 +175,9 @@ def validate_finding(
         raise _error("REVIEW_FINDING_INVALID", "finding evidence is unavailable")
     normalized_evidence = []
     for item in evidence:
-        if not isinstance(item, Mapping) or set(item) != {"kind", "reference", "summary", "source_confirmed"}:
+        if not isinstance(item, Mapping) or set(item) != set(
+            REVIEW_FINDING_EVIDENCE_FIELDS
+        ):
             raise _error("REVIEW_FINDING_INVALID", "finding evidence item is invalid")
         if not isinstance(item.get("source_confirmed"), bool):
             raise _error("REVIEW_FINDING_INVALID", "finding evidence confidence is invalid")
@@ -203,7 +194,9 @@ def validate_finding(
     normalized_causal_entries = []
     manifest_keys = _manifest_keys(manifest)
     for item in causal_entries:
-        if not isinstance(item, Mapping) or set(item) != {"repository_id", "path"}:
+        if not isinstance(item, Mapping) or set(item) != set(
+            REVIEW_CAUSAL_MANIFEST_FIELDS
+        ):
             raise _error("REVIEW_FINDING_INVALID", "causal manifest reference is invalid")
         key = (item.get("repository_id"), _safe_path(item.get("path")))
         if key not in manifest_keys:
@@ -211,7 +204,9 @@ def validate_finding(
         normalized_causal_entries.append({"repository_id": key[0], "path": key[1]})
     normalized_causal_path = []
     for item in causal_path:
-        if not isinstance(item, Mapping) or set(item) != {"kind", "from", "to", "evidence", "source_confirmed"}:
+        if not isinstance(item, Mapping) or set(item) != set(
+            REVIEW_CAUSAL_PATH_FIELDS
+        ):
             raise _error("REVIEW_FINDING_INVALID", "causal path step is invalid")
         if not isinstance(item.get("source_confirmed"), bool):
             raise _error("REVIEW_FINDING_INVALID", "causal path confidence is invalid")

@@ -4,19 +4,22 @@
 
 Dev Flow Orchestrator keeps long-running Codex development tasks resumable,
 bounded, and verifiable across an exact set of one to eight user-prepared Git
-worktrees. Release `0.5.0` changes the primary Codex interface to a local MCP
-server while preserving the persisted `0.4.0` model and task-data namespace.
+worktrees. Release `0.5.1` bundles a formal Codex Skill named `dev-flow`
+alongside the local MCP server while preserving the persisted `0.4.0` model and
+task-data namespace.
 
-The Controller remains the only state-transition authority. MCP, CLI, and the
-read-only Web UI are adapters over the same Controller; they do not create or
-switch branches/worktrees, publish Git changes, run parallel executors, or
-dispatch external CI, pull requests, or releases.
+The Skill activates and routes Codex into the MCP workflow; it is not another
+workflow protocol. The Controller remains the only state-transition authority.
+MCP, CLI, and the read-only Web UI are adapters over the same Controller; they
+do not create or switch branches/worktrees, publish Git changes, run parallel
+executors, or dispatch external CI, pull requests, or releases.
 
 ## Quick start
 
 Requirements:
 
-- macOS with Git, `uv`, Codex plugin support, and 64-bit CPython 3.10–3.14;
+- macOS with Git, `uv`, Codex plugin, Skill, and MCP support, and 64-bit
+  CPython 3.10–3.14;
 - Windows 10 22H2 x64 or Windows 11 x64 uses the PowerShell preview path and
   requires native Windows verification for release evidence;
 - one to eight existing, user-prepared Git worktree roots.
@@ -36,12 +39,23 @@ git clone --branch main --single-branch \
 sh "$HOME/plugins/dev-flow-orchestrator/scripts/install.sh"
 ```
 
-The installer validates the candidate, builds an exact locked MCP runtime
-outside source and task data, installs the supported bundled commands on
-`PATH`, and activates the plugin. See [INSTALL.md](INSTALL.md) for Windows,
-repair, rollback, uninstall, and the bundled-only registration boundary.
+The installer validates the candidate, preserves the Skill in the sealed plugin
+snapshot, builds an exact locked MCP runtime outside source and task data,
+installs the supported bundled commands on `PATH`, and activates the plugin.
+See [INSTALL.md](INSTALL.md) for Windows, repair, rollback, uninstall, and the
+bundled-only registration boundary.
 
-In Codex, ask to discover or start a Dev Flow task. The normal sequence is:
+Start a new Codex task after installation. Invoke the Skill explicitly:
+
+```text
+$dev-flow Implement this requirement in the current repository and verify it.
+```
+
+Codex can also activate it implicitly from its description for substantive
+multi-step implementation, bug-fix, refactoring, investigation, review, and
+verification work. No extra `AGENTS.md` rule is required in target projects.
+
+The Skill drives this Controller-owned sequence:
 
 1. discover with `dev_flow_find_tasks_for_path` or `dev_flow_list_tasks`;
 2. explicitly select or start a task;
@@ -49,6 +63,31 @@ In Codex, ask to discover or start a Dev Flow task. The normal sequence is:
 4. execute only the projected action over the exact repository set;
 5. submit the exact action ID, closed payload, and unchanged binding;
 6. repeat until the task has a terminal Delivery Dossier.
+
+If discovery returns several plausible active tasks, the Skill asks the user to
+choose instead of selecting by recency. If a mutation response is uncertain, it
+reads the task and refreshes the current action before deciding whether any
+retry is safe.
+
+## Codex Skill
+
+The plugin manifest registers `./skills/`. The bundled Skill is located at
+`skills/dev-flow/` and contains:
+
+- `SKILL.md`, whose description supports `$dev-flow` and implicit matching;
+- `agents/openai.yaml`, with Codex interface metadata and
+  `policy.allow_implicit_invocation: true`;
+- `references/activation-and-routing.md`, which covers applicability, exact
+  repository-set discovery, ambiguous tasks, and uncertain mutation responses.
+
+The agent metadata deliberately has no MCP dependency block. The supported MCP
+dependency form is URL-based, while this plugin supplies a local STDIO server;
+`.codex-plugin/plugin.json` and `.mcp.json` are therefore the single
+registration path for that server.
+
+The Skill never defines Controller actions, payload schemas, state transitions,
+review obligations, or terminal rules. It obtains each of those from the live
+MCP result and submits the exact current binding.
 
 ## MCP interface
 
@@ -128,6 +167,8 @@ mutation authority. MCP is the primary Codex execution interface.
   revision compare-and-swap remain authoritative.
 - MCP has no generic shell, raw-state, branch/worktree, publication, CI, PR,
   release, or parallel-agent tool.
+- The formal `dev-flow` Skill is activation and routing guidance only; it is not
+  a second state writer or a substitute for Controller validation.
 - Removal of the legacy fail-open Hook means there is no pre-tool write guard.
   Host approvals, repository permissions, and user review remain necessary.
 - The plugin never grants blanket mutation approval. Scope approvals to the
@@ -141,7 +182,7 @@ Use the project environment and package checks:
 uv sync --locked
 uv run python -m unittest discover -s tests -p 'test_*.py'
 uv run python scripts/validate_package.py
-openspec validate dev-flow-orchestrator-mcp --strict
+openspec validate add-dev-flow-skill --strict
 ```
 
 Focused tests are convenient during iteration; full unittest discovery is

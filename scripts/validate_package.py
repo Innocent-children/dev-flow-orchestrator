@@ -28,6 +28,9 @@ _PREIMPORT_REQUIRED = (
     ".codex-plugin/plugin.json",
     "pyproject.toml",
     "uv.lock",
+    "skills/dev-flow/SKILL.md",
+    "skills/dev-flow/agents/openai.yaml",
+    "skills/dev-flow/references/activation-and-routing.md",
     "scripts/dev_flow_mcp.py",
     "scripts/dev_flow_mcp_launcher",
     "scripts/dev_flow_mcp_launcher.cmd",
@@ -127,8 +130,8 @@ def _preimport_candidate_errors(root: Path) -> list[str]:
     if not (
         isinstance(manifest, dict)
         and manifest.get("version") == release_version
+        and manifest.get("skills") == "./skills/"
         and manifest.get("mcpServers") == "./.mcp.json"
-        and "skills" not in manifest
         and "hooks" not in manifest
     ):
         errors.append("pre-import plugin manifest is invalid")
@@ -182,6 +185,27 @@ def _preimport_candidate_errors(root: Path) -> list[str]:
             "dev-flow-runtime-receipt/2.0.0",
             "verify-runtime",
             "remove-owned",
+        ),
+        "skills/dev-flow/SKILL.md": (
+            "name: dev-flow",
+            "$dev-flow",
+            "dev_flow_server_info",
+            "dev_flow_find_tasks_for_path",
+            "dev_flow_get_next_action",
+            "dev_flow_apply_action",
+            "sole task-state writer",
+        ),
+        "skills/dev-flow/agents/openai.yaml": (
+            'display_name: "Dev Flow"',
+            "$dev-flow",
+            "allow_implicit_invocation: true",
+        ),
+        "skills/dev-flow/references/activation-and-routing.md": (
+            "No matching active task",
+            "One compatible active task",
+            "Several plausible tasks",
+            "Inventory unavailable or inconsistent",
+            "dev_flow_get_task",
         ),
         "src/dev_flow_orchestrator/mcp/guidance.py": (
             "SERVER_INSTRUCTIONS",
@@ -305,6 +329,7 @@ from dev_flow_orchestrator.workflow import (  # noqa: E402
     canonical_json_bytes,
     workflow_identity,
 )
+from dev_flow_orchestrator.yaml_subset import load as load_yaml_subset  # noqa: E402
 
 
 PUBLIC_BOOTSTRAPS = (
@@ -325,6 +350,9 @@ REQUIRED_STATIC = (
     "README_CN.md",
     "ROADMAP.md",
     "ROADMAP_CN.md",
+    "skills/dev-flow/SKILL.md",
+    "skills/dev-flow/agents/openai.yaml",
+    "skills/dev-flow/references/activation-and-routing.md",
     "scripts/bump_version.py",
     "scripts/dev_flow.py",
     "scripts/dev_flow_mcp.py",
@@ -614,6 +642,43 @@ EXTERNAL_VERSION_LITERALS = {
     ),
 }
 MAIN_SKILL_AGENT = "skills/follow-dev-flow/agents/openai.yaml"
+DEV_FLOW_SKILL_ROOT = "skills/dev-flow"
+DEV_FLOW_SKILL_FILES = (
+    "skills/dev-flow/SKILL.md",
+    "skills/dev-flow/agents/openai.yaml",
+    "skills/dev-flow/references/activation-and-routing.md",
+)
+EXPECTED_DEV_FLOW_SKILL_AGENT = {
+    "interface": {
+        "display_name": "Dev Flow",
+        "short_description": "Drive resumable repository work through Dev Flow",
+        "default_prompt": (
+            "Use $dev-flow to start or resume this repository task through the "
+            "authoritative Dev Flow Controller."
+        ),
+    },
+    "policy": {"allow_implicit_invocation": True},
+}
+# These prose files are intentionally closed and audit-pinned.  Heuristic
+# detection below gives focused diagnostics for common protocol copies, while
+# these digests make alternate headings, unheaded definitions, fabricated
+# transports, and non-canonical tool names fail closed as well.  Any deliberate
+# guidance edit therefore requires reviewing the complete replacement text and
+# updating its audited digest in the same change.
+AUDITED_DEV_FLOW_SKILL_GUIDANCE_SHA256 = {
+    "skills/dev-flow/SKILL.md": (
+        "16fb192427e5e24b3d86973ecf0b95bb42ae22207a7703b3eac6c51bd5e66946"
+    ),
+    "skills/dev-flow/references/activation-and-routing.md": (
+        "ad96dd571c1337d0f5209aca146037b5b23c7b352a53326e12b80ea3b8784cfb"
+    ),
+}
+SKILL_PROTOCOL_DEFINITION = re.compile(
+    r"(?im)^\s*(?:#{1,6}\s*)?"
+    r"(?:action catalog|payload schema|state machine|transition table)\s*:?[ \t]*$|"
+    r"^\s*(?:actions|states|transitions|payload_schema)\s*:\s*$|"
+    r"\bdev-flow-(?:workflow|agent|action-binding|payload-contract)/[0-9]"
+)
 UNSUPPORTED_LATER_STAGE_CLAIM = re.compile(
     r"automatically (?:creates?|manages?) (?:branches?|worktrees?)|"
     r"runs? (?:each )?repositor(?:y|ies) in parallel|"
@@ -1035,6 +1100,222 @@ def _quoted_yaml_string(document: str, key: str) -> Optional[str]:
     except ValueError:
         return None
     return value if isinstance(value, str) else None
+
+
+def _yaml_mapping(document: str, errors: list[str], label: str) -> Optional[dict]:
+    try:
+        parsed = load_yaml_subset(document)
+    except ValueError as exc:
+        errors.append("{} is invalid YAML: {}".format(label, exc))
+        return None
+    if not isinstance(parsed, dict):
+        errors.append(label + " must be a YAML mapping")
+        return None
+    return parsed
+
+
+def _validate_dev_flow_skill(root: Path, errors: list[str]) -> None:
+    skill_root = root / DEV_FLOW_SKILL_ROOT
+    expected_entries = {
+        "SKILL.md",
+        "agents",
+        "agents/openai.yaml",
+        "references",
+        "references/activation-and-routing.md",
+    }
+    observed_entries: set[str] = set()
+    _check(
+        skill_root.is_dir() and not skill_root.is_symlink(),
+        errors,
+        "dev-flow Skill root is missing or unsafe",
+    )
+    if skill_root.is_dir() and not skill_root.is_symlink():
+        try:
+            for path in skill_root.rglob("*"):
+                relative = path.relative_to(skill_root).as_posix()
+                observed_entries.add(relative)
+                _check(
+                    not path.is_symlink(),
+                    errors,
+                    "dev-flow Skill contains a symlink: " + relative,
+                )
+        except OSError as exc:
+            errors.append("dev-flow Skill topology is unreadable: {}".format(exc))
+    _check(
+        observed_entries == expected_entries,
+        errors,
+        "dev-flow Skill package must contain only the canonical Skill, agent, and routing reference files",
+    )
+
+    documents: dict[str, str] = {}
+    for relative in DEV_FLOW_SKILL_FILES:
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            documents[relative] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append("{} is not readable UTF-8: {}".format(relative, exc))
+
+    for relative, expected_digest in AUDITED_DEV_FLOW_SKILL_GUIDANCE_SHA256.items():
+        document = documents.get(relative)
+        if document is not None:
+            observed_digest = hashlib.sha256(document.encode("utf-8")).hexdigest()
+            _check(
+                observed_digest == expected_digest,
+                errors,
+                relative + " differs from its audited canonical guidance",
+            )
+
+    skill_document = documents.get("skills/dev-flow/SKILL.md")
+    if skill_document is not None:
+        frontmatter_match = re.match(
+            r"\A---\r?\n(?P<frontmatter>.*?)\r?\n---(?:\r?\n|\Z)",
+            skill_document,
+            re.DOTALL,
+        )
+        _check(
+            frontmatter_match is not None,
+            errors,
+            "dev-flow Skill frontmatter delimiters are invalid",
+        )
+        frontmatter = (
+            _yaml_mapping(
+                frontmatter_match.group("frontmatter"),
+                errors,
+                "dev-flow Skill frontmatter",
+            )
+            if frontmatter_match is not None
+            else None
+        )
+        description = (
+            frontmatter.get("description")
+            if isinstance(frontmatter, dict)
+            else None
+        )
+        _check(
+            isinstance(frontmatter, dict)
+            and set(frontmatter) == {"name", "description"}
+            and frontmatter.get("name") == "dev-flow"
+            and isinstance(description, str)
+            and bool(description.strip()),
+            errors,
+            "dev-flow Skill frontmatter must contain only name and description",
+        )
+        description_folded = description.casefold() if isinstance(description, str) else ""
+        _check(
+            len(description_folded) <= 1024
+            and all(
+                token in description_folded
+                for token in (
+                    "$dev-flow",
+                    "bundled dev-flow mcp",
+                    "implement",
+                    "fix",
+                    "refactor",
+                    "investigate",
+                    "review",
+                    "verify",
+                    "substantive multi-step repository work",
+                    "resumable",
+                )
+            ),
+            errors,
+            "dev-flow Skill description does not support explicit and implicit activation",
+        )
+        _require_tokens(
+            skill_document,
+            (
+                "references/activation-and-routing.md",
+                "dev_flow_server_info",
+                "dev_flow_find_tasks_for_path",
+                "dev_flow_start_task",
+                "dev_flow_get_next_action",
+                "dev_flow_apply_action",
+                "dev_flow_get_task",
+                "exact current binding",
+                "returned closed schema",
+                "sole task-state writer",
+                "Never blindly replay a mutation",
+                "generic shell MCP tool",
+                "repository_set.repositories[].path",
+                "set equality",
+                "cardinality",
+                "same number of canonical roots",
+                "do not execute or apply",
+            ),
+            errors,
+            "dev-flow Skill is missing activation, routing, or Controller-bound execution guidance",
+        )
+        _check(
+            SKILL_PROTOCOL_DEFINITION.search(skill_document) is None,
+            errors,
+            "dev-flow Skill duplicates Controller protocol authority",
+        )
+
+    agent_document = documents.get("skills/dev-flow/agents/openai.yaml")
+    if agent_document is not None:
+        agent = _yaml_mapping(
+            agent_document,
+            errors,
+            "dev-flow Skill agent metadata",
+        )
+        interface = agent.get("interface") if isinstance(agent, dict) else None
+        _check(
+            agent == EXPECTED_DEV_FLOW_SKILL_AGENT
+            and isinstance(interface, dict)
+            and 25 <= len(str(interface.get("short_description", ""))) <= 64
+            and "$dev-flow" in str(interface.get("default_prompt", "")),
+            errors,
+            "dev-flow Skill agent metadata must use the supported interface and implicit policy without an MCP dependency",
+        )
+
+    routing_document = documents.get(
+        "skills/dev-flow/references/activation-and-routing.md"
+    )
+    if routing_document is not None:
+        _require_tokens(
+            routing_document,
+            (
+                "Explicit invocation always wins",
+                "exact repository set",
+                "No matching active task",
+                "One compatible active task",
+                "One unrelated active task",
+                "Several plausible tasks",
+                "Inventory unavailable or inconsistent",
+                "dev_flow_find_tasks_for_path",
+                "dev_flow_get_task",
+                "dev_flow_get_next_action",
+                "repository_set.repositories[].path",
+                "set equality and cardinality",
+                "Do not execute work or call `dev_flow_apply_action`",
+                "Do not use legacy fail-open Hooks",
+            ),
+            errors,
+            "dev-flow Skill routing reference is incomplete",
+        )
+        _check(
+            SKILL_PROTOCOL_DEFINITION.search(routing_document) is None,
+            errors,
+            "dev-flow Skill routing reference duplicates Controller protocol authority",
+        )
+
+    installed_runner = root / "scripts" / "validate_installed_stage1.py"
+    if installed_runner.is_file():
+        _require_tokens(
+            installed_runner.read_text(encoding="utf-8"),
+            (
+                "def _installed_skill(",
+                '"skill": None',
+                'evidence["skill"] = _installed_skill(plugin_root)',
+                '"explicit_invocation": "$dev-flow"',
+                '"implicit_invocation": True',
+                '"mcp_server": "dev-flow"',
+            ),
+            errors,
+            "installed validation does not prove the bundled dev-flow Skill and MCP registration",
+        )
 
 
 def _is_exact_repository_set_guidance(value: str) -> bool:
@@ -1578,7 +1859,12 @@ def _validate_manifest(
         errors,
         "plugin author metadata is invalid",
     )
-    _check("skills" not in manifest, errors, "plugin manifest retains legacy Skills authority")
+    _check(
+        manifest.get("skills") == "./skills/"
+        and (root / "skills" / "dev-flow").is_dir(),
+        errors,
+        "plugin manifest Skill companion is invalid",
+    )
     _check(
         manifest.get("mcpServers") == "./.mcp.json"
         and (root / ".mcp.json").is_file()
@@ -2521,6 +2807,80 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
         if path.is_file():
             documents[relative] = path.read_text(encoding="utf-8")
 
+    skill_document_requirements = {
+        "README.md": (
+            "formal Codex Skill named `dev-flow`",
+            "$dev-flow",
+            "activate it implicitly",
+            "manifest registers `./skills/`",
+            "skills/dev-flow/",
+            ".mcp.json",
+            "Controller remains the only state-transition authority",
+            "preserves the Skill in the sealed plugin snapshot",
+        ),
+        "README_CN.md": (
+            "名为 `dev-flow` 的正式 Codex Skill",
+            "$dev-flow",
+            "description 隐式激活",
+            "manifest 注册 `./skills/`",
+            "skills/dev-flow/",
+            ".mcp.json",
+            "Controller 仍是唯一的状态转换权威",
+            "在密封插件快照中保留 Skill",
+        ),
+        "INSTALL.md": (
+            "formal `dev-flow` Codex Skill",
+            "$dev-flow",
+            "implicit_invocation: true",
+            "manifest registers `./skills/`",
+            "root `.mcp.json`",
+            "preserves the exact `skills/dev-flow/` tree",
+            "installed-stage validator",
+            "It does not authorize a mutation by itself",
+        ),
+        "INSTALL_CN.md": (
+            "正式 `dev-flow` Codex Skill",
+            "$dev-flow",
+            "implicit_invocation: true",
+            "manifest 注册 `./skills/`",
+            "根 `.mcp.json`",
+            "保留精确的 `skills/dev-flow/` 目录树",
+            "installed-stage validator",
+            "Skill 本身不能授权 mutation",
+        ),
+        "ARCHITECTURE.md": (
+            "formal Codex Skill named `dev-flow`",
+            "implicit-matching surface",
+            "explicit `$dev-flow` route",
+            'skills: "./skills/"',
+            "skills/dev-flow/",
+            'mcpServers: "./.mcp.json"',
+            "Controller is the only state-transition writer",
+            "This content is not a protocol authority",
+        ),
+        "ARCHITECTURE_CN.md": (
+            "名为 `dev-flow` 的正式 Codex Skill",
+            "隐式匹配 surface",
+            "显式 `$dev-flow`",
+            'skills: "./skills/"',
+            "skills/dev-flow/",
+            'mcpServers: "./.mcp.json"',
+            "Controller 是唯一的状态转换",
+            "这些内容不是协议权威",
+        ),
+    }
+    for relative, tokens in skill_document_requirements.items():
+        path = root / relative
+        if path.is_file():
+            _require_tokens(
+                re.sub(r"\s+", " ", path.read_text(encoding="utf-8")),
+                tokens,
+                errors,
+                relative
+                + " is missing formal dev-flow Skill activation, registration, "
+                "authority, or installation evidence",
+            )
+
     for relative, document in documents.items():
         normalized = re.sub(r"\s+", " ", document)
         _require_tokens(
@@ -3130,6 +3490,7 @@ def _validate_current_candidate(root: Path) -> dict:
         ".codex-plugin/plugin.json",
     )
     _validate_manifest(root, manifest, errors)
+    _validate_dev_flow_skill(root, errors)
     _validate_mcp_package(root, errors)
     _validate_package_versions(root, manifest, errors)
     installer = root / "scripts" / "install.sh"

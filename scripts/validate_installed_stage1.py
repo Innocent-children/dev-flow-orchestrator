@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,18 @@ EXPECTED_ALLOWANCE = {
     "refactor": 2,
 }
 EVIDENCE_SCHEMA = "dev-flow-mcp-installed-evidence/1.0.0"
+INSTALLED_SKILL_FILES = (
+    "skills/dev-flow/SKILL.md",
+    "skills/dev-flow/agents/openai.yaml",
+    "skills/dev-flow/references/activation-and-routing.md",
+)
+EXPECTED_SKILL_AGENT = """interface:
+  display_name: "Dev Flow"
+  short_description: "Drive resumable repository work through Dev Flow"
+  default_prompt: "Use $dev-flow to start or resume this repository task through the authoritative Dev Flow Controller."
+policy:
+  allow_implicit_invocation: true
+"""
 RESULT_SCHEMA = "dev-flow-mcp-result/1.0.0"
 ACTION_SCHEMA = "dev-flow-mcp-action/1.0.0"
 DOSSIER_SCHEMA = "dev-flow-delivery-dossier/0.4.0"
@@ -134,6 +147,115 @@ def _tree_digest(root: Path) -> str:
         elif path.is_dir():
             digest.update(b"D")
     return digest.hexdigest()
+
+
+def _installed_skill(plugin_root: Path) -> dict[str, Any]:
+    resolved_root = plugin_root.resolve(strict=True)
+    assets: dict[str, Path] = {}
+    for relative in INSTALLED_SKILL_FILES:
+        path = plugin_root / relative
+        _require(path.is_file(), "installed plugin is missing " + relative)
+        _require(not path.is_symlink(), "installed Skill asset is a symlink: " + relative)
+        resolved = path.resolve(strict=True)
+        _require(
+            resolved.is_relative_to(resolved_root),
+            "installed Skill asset escapes the plugin root: " + relative,
+        )
+        assets[relative] = path
+
+    manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
+    registration_path = plugin_root / ".mcp.json"
+    _require(manifest_path.is_file(), "installed plugin manifest is missing")
+    _require(registration_path.is_file(), "installed MCP registration is missing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    registration = json.loads(registration_path.read_text(encoding="utf-8"))
+    _require(
+        isinstance(manifest, dict)
+        and manifest.get("skills") == "./skills/"
+        and manifest.get("mcpServers") == "./.mcp.json"
+        and "hooks" not in manifest,
+        "installed plugin manifest does not register the canonical Skill and MCP companions",
+    )
+    _require(
+        registration
+        == {
+            "mcpServers": {
+                "dev-flow": {"command": "dev-flow-mcp", "args": ["--stdio"]}
+            }
+        },
+        "installed plugin MCP registration is invalid",
+    )
+
+    skill_document = assets["skills/dev-flow/SKILL.md"].read_text(encoding="utf-8")
+    frontmatter = re.match(
+        r"\A---\r?\n(?P<body>.*?)\r?\n---(?:\r?\n|\Z)",
+        skill_document,
+        re.DOTALL,
+    )
+    _require(frontmatter is not None, "installed dev-flow Skill frontmatter is invalid")
+    frontmatter_lines = [
+        line.strip()
+        for line in frontmatter.group("body").splitlines()
+        if line.strip()
+    ]
+    _require(
+        len(frontmatter_lines) == 2
+        and frontmatter_lines[0] == "name: dev-flow"
+        and frontmatter_lines[1].startswith("description: ")
+        and "$dev-flow" in frontmatter_lines[1]
+        and "bundled dev-flow MCP" in frontmatter_lines[1],
+        "installed dev-flow Skill identity or activation description is invalid",
+    )
+    _require(
+        all(
+            token in skill_document
+            for token in (
+                "dev_flow_server_info",
+                "dev_flow_find_tasks_for_path",
+                "dev_flow_get_next_action",
+                "dev_flow_apply_action",
+                "sole task-state writer",
+            )
+        ),
+        "installed dev-flow Skill routing or authority guidance is incomplete",
+    )
+
+    agent_document = assets["skills/dev-flow/agents/openai.yaml"].read_text(
+        encoding="utf-8"
+    )
+    _require(
+        agent_document.replace("\r\n", "\n") == EXPECTED_SKILL_AGENT,
+        "installed dev-flow Skill agent metadata is invalid",
+    )
+    routing_document = assets[
+        "skills/dev-flow/references/activation-and-routing.md"
+    ].read_text(encoding="utf-8")
+    _require(
+        all(
+            token in routing_document
+            for token in (
+                "No matching active task",
+                "One compatible active task",
+                "Several plausible tasks",
+                "Inventory unavailable or inconsistent",
+                "dev_flow_get_task",
+            )
+        ),
+        "installed dev-flow Skill routing reference is incomplete",
+    )
+
+    return {
+        "name": "dev-flow",
+        "path": "skills/dev-flow",
+        "explicit_invocation": "$dev-flow",
+        "implicit_invocation": True,
+        "mcp_server": "dev-flow",
+        "mcp_transport": "stdio",
+        "files": {
+            relative: hashlib.sha256(path.read_bytes()).hexdigest()
+            for relative, path in assets.items()
+        },
+    }
 
 
 def _make_repository(root: Path, name: str) -> Path:
@@ -1981,6 +2103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "platform": sys.platform,
         "plugin_digest_before": None,
         "plugin_digest_after": None,
+        "skill": None,
         "journey": None,
         "errors": [],
     }
@@ -1992,6 +2115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _require(launcher_path.is_file(), "configured dev-flow-mcp launcher is missing")
         before = _tree_digest(plugin_root)
         evidence["plugin_digest_before"] = before
+        evidence["skill"] = _installed_skill(plugin_root)
         with tempfile.TemporaryDirectory(prefix="dev-flow-installed-mcp-") as temporary:
             scratch = Path(temporary).resolve()
             if arguments.smoke_only:

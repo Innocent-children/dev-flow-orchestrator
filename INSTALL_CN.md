@@ -2,18 +2,22 @@
 
 [English](INSTALL.md)
 
-本指南安装带本地 MCP-first 接口的 `0.5.1`。持久化模型和任务数据命名空间仍为 `0.4.0`。
+本指南安装带正式 `dev-flow` Codex Skill 及本地 MCP-first 接口的 `0.5.1`。
+持久化模型和任务数据命名空间仍为 `0.4.0`。
 
 ## 1. 支持的注册模式
 
-Bundled Codex 插件/MCP 安装是唯一受支持模式。manifest 引用根 `.mcp.json`；
-安装器不提供 standalone 注册。若已存在独立管理的 standalone 注册，安装会在
-修改源码、runtime、marketplace、插件或 launcher 前停止，并提示人工检查。
-卸载时无法证明属于 bundled 安装的注册会被保留。
+Bundled Codex 插件/Skill/MCP 安装是唯一受支持模式。manifest 注册 `./skills/`
+并引用根 `.mcp.json`；安装器不提供 standalone 注册。Skill 的
+`agents/openai.yaml` 不会为本地 STDIO server 声明 URL 形式的 dependency。若已
+存在独立管理的 standalone 注册，安装会在修改源码、runtime、marketplace、插件或
+launcher 前停止，并提示人工检查。卸载时无法证明属于 bundled 安装的注册会被保留。
 
 ## 2. 要求
 
-Bundled macOS 安装要求 macOS、Git、`uv`、支持插件和 MCP server 的 Codex、一个已在 `PATH` 中且可写的绝对目录，以及 64 位 CPython 3.10、3.11、3.12、3.13 或 3.14。
+Bundled macOS 安装要求 macOS、Git、`uv`、支持插件、Skill 和 MCP server 的
+Codex、一个已在 `PATH` 中且可写的绝对目录，以及 64 位 CPython 3.10、3.11、
+3.12、3.13 或 3.14。
 
 Windows 预览安装要求 Windows 10 22H2 x64 或 Windows 11 x64、Git for Windows、`uv`、Codex、64 位 CPython 3.10–3.14，以及 Windows PowerShell 5.1 或 PowerShell 7。发布候选只有取得原生 Windows 证据后才能视为在 Windows 已验证。Windows Server 和 POSIX 兼容层不在支持承诺范围。
 
@@ -54,10 +58,12 @@ sh scripts/install.sh
 3. 检查是否存在重复启用的 standalone `dev-flow` 注册；
 4. 查找受支持的 64 位 Python，并要求 `uv`；
 5. 导出精确 `uv.lock` 并安装到源码和任务数据之外的临时虚拟环境；
-6. 构建并安装项目 wheel，再检查 import、initialization、instructions、恰好十一个工具的目录和一次读取调用；
-7. 写入包含 release、source commit、Python 身份、架构、lock digest、launcher 身份和激活时间的 runtime receipt；
-8. 原子发布版本化 runtime 与 `dev-flow-mcp` launcher；
-9. 保留无关 marketplace 条目并激活插件。
+6. 在密封插件快照中保留精确的 `skills/dev-flow/` 目录树；
+7. 构建并安装项目 wheel，再检查 import、initialization、instructions、恰好十一个工具的目录和一次读取调用；
+8. 校验已安装 `dev-flow` Skill 的身份、显式 `$dev-flow` 调用元数据、已启用的隐式调用、路由参考，以及配对的 `dev-flow` STDIO 注册；
+9. 写入包含 release、source commit、Python 身份、架构、lock digest、launcher 身份和激活时间的 runtime receipt；
+10. 原子发布版本化 runtime 与 `dev-flow-mcp` launcher；
+11. 保留无关 marketplace 条目并激活插件。
 
 Runtime 构建失败不会替换先前的版本化 runtime 或 launcher。只有 receipt 仍与已验证 source commit、dependency lock、launcher 和 interpreter digest 匹配时才复用 runtime 版本。
 
@@ -72,7 +78,18 @@ command -v dev-flow-mcp
 dev-flow-mcp --http
 ```
 
-第二条命令必须以 `MCP_RUNTIME_UNAVAILABLE` 失败，且不得打开监听 socket。在 Codex 中检查已启用插件并确认只有一个 `dev-flow` server。让 Codex 调用 `dev_flow_server_info`；它应报告 release `0.5.1`、model `0.4.0`、STDIO transport、六种 workflow 和 catalog digests。然后列出工具并确认恰好十一个 `dev_flow_*` 工具。
+第二条命令必须以 `MCP_RUNTIME_UNAVAILABLE` 失败，且不得打开监听 socket。在 Codex
+中检查已启用插件，并确认有一个名为 `dev-flow` 的 Skill 和一个同名 MCP server。
+启动新的 Codex 任务，调用 `$dev-flow`，再确认一个实质性仓库实现请求也能隐式选择
+该 Skill。让 Codex 调用 `dev_flow_server_info`；它应报告 release `0.5.1`、model
+`0.4.0`、STDIO transport、六种 workflow 和 catalog digests。然后列出工具并确认
+恰好十一个 `dev_flow_*` 工具。
+
+installed-stage validator 会记录三个 Skill 文件的 hash，以及
+`explicit_invocation: "$dev-flow"`、`implicit_invocation: true`、
+`mcp_server: "dev-flow"` 和 `mcp_transport: "stdio"`，并与实时 MCP journey 一同
+输出。这能证明密封安装副本同时包含两个 surface；检查 host 侧隐式选择仍需使用新的
+Codex 任务。
 
 服务器是长生命周期 STDIO 协议进程，因此除非使用 MCP client 或 inspector，不要在交互终端直接运行 `dev-flow-mcp --stdio`。
 
@@ -101,6 +118,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ## 8. 审批与剩余边界
 
 MCP annotations 是描述，不是强制机制。每项审批都应保留用户权威。在 host 支持时，对读取工具单独审批，并把 mutation 审批限定到 `dev-flow` server、确切工具和当前任务。不要授予通用 shell 或 blanket mutation 审批。
+
+Skill 同样不具有权威：它的文字只决定激活与任务路由，之后服从 Controller 返回的
+action、payload schema、binding 和 transition。Skill 本身不能授权 mutation。
 
 `0.5.0` 移除旧 fail-open Hook 及其 pre-tool 数据目录 guard。剩余保护来自 Controller 校验、Store locks、revision CAS、精确 bindings、仓库权限、host 审批和用户复核。不得把 tool annotations 描述成替代安全边界。
 

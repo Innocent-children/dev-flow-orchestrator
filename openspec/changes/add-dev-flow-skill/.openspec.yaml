@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-12
+goal: Installed Dev Flow Orchestrator exposes both the dev-flow skill and the
+  existing dev-flow MCP.

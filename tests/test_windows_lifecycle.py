@@ -251,6 +251,20 @@ class WindowsLifecycleTests(unittest.TestCase):
             Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).resolve()
         )
         self.assertNotEqual(plugin_root, self.source.resolve())
+        installed_manifest = json.loads(
+            (plugin_root / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(installed_manifest["skills"], "./skills/")
+        self.assertEqual(installed_manifest["mcpServers"], "./.mcp.json")
+        for relative in (
+            "skills/dev-flow/SKILL.md",
+            "skills/dev-flow/agents/openai.yaml",
+            "skills/dev-flow/references/activation-and-routing.md",
+        ):
+            self.assertEqual(
+                (plugin_root / relative).read_bytes(),
+                (ROOT / relative).read_bytes(),
+            )
         receipt = json.loads(
             (plugin_root.parent / "runtime-receipt.json").read_text(encoding="utf-8")
         )

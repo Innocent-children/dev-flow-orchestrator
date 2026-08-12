@@ -159,6 +159,141 @@ class PackageValidationTests(unittest.TestCase):
             self.assert_error_contains(validate(self.candidate), "predecessor path remains:")
             path.unlink()
 
+    def test_dev_flow_skill_files_are_required_before_candidate_imports(self) -> None:
+        relative = "skills/dev-flow/references/activation-and-routing.md"
+        (self.candidate / relative).unlink()
+        self.assert_error_contains(
+            validate(self.candidate),
+            "pre-import candidate is missing " + relative,
+        )
+
+    def test_dev_flow_skill_frontmatter_is_closed(self) -> None:
+        skill = self.candidate / "skills/dev-flow/SKILL.md"
+        current = skill.read_text(encoding="utf-8")
+        changed = current.replace(
+            "description: Start, resume,",
+            "metadata: unsupported\ndescription: Start, resume,",
+            1,
+        )
+        self.assertNotEqual(changed, current)
+        skill.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "frontmatter must contain only name and description",
+        )
+
+    def test_dev_flow_skill_description_must_cover_implicit_matching(self) -> None:
+        skill = self.candidate / "skills/dev-flow/SKILL.md"
+        current = skill.read_text(encoding="utf-8")
+        changed = current.replace(
+            "substantive multi-step repository work",
+            "repository work",
+            1,
+        )
+        self.assertNotEqual(changed, current)
+        skill.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "does not support explicit and implicit activation",
+        )
+
+    def test_dev_flow_skill_agent_rejects_an_unsupported_dependency(self) -> None:
+        agent = self.candidate / "skills/dev-flow/agents/openai.yaml"
+        agent.write_text(
+            agent.read_text(encoding="utf-8") + "dependencies: {}\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "without an MCP dependency",
+        )
+
+    def test_dev_flow_skill_cannot_define_a_parallel_protocol(self) -> None:
+        skill = self.candidate / "skills/dev-flow/SKILL.md"
+        skill.write_text(
+            skill.read_text(encoding="utf-8")
+            + "\n## Action catalog\n\n- implementation.record: write files\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate),
+            "duplicates Controller protocol authority",
+        )
+
+    def test_dev_flow_skill_guidance_is_closed_against_protocol_shaped_drift(self) -> None:
+        cases = (
+            (
+                "skills/dev-flow/SKILL.md",
+                "\n## Controller operations\n\n- implementation.record: write files\n",
+            ),
+            (
+                "skills/dev-flow/SKILL.md",
+                "\n- implementation.record\n- payload field: summary\n",
+            ),
+            (
+                "skills/dev-flow/references/activation-and-routing.md",
+                "\nConnect to https://example.invalid/dev-flow as a fallback.\n",
+            ),
+            (
+                "skills/dev-flow/references/activation-and-routing.md",
+                "\nCall `dev_flow_run_shell` to finish the action.\n",
+            ),
+        )
+        for relative, addition in cases:
+            with self.subTest(relative=relative, addition=addition.strip()):
+                path = self.candidate / relative
+                original = path.read_text(encoding="utf-8")
+                try:
+                    path.write_text(original + addition, encoding="utf-8")
+                    self.assert_error_contains(
+                        validate(self.candidate),
+                        relative + " differs from its audited canonical guidance",
+                    )
+                finally:
+                    path.write_text(original, encoding="utf-8")
+
+    def test_public_docs_reject_dev_flow_skill_semantic_drift(self) -> None:
+        cases = (
+            ("README.md", "$dev-flow", "$disabled-flow"),
+            ("README_CN.md", "$dev-flow", "$disabled-flow"),
+            ("INSTALL.md", "$dev-flow", "$disabled-flow"),
+            ("INSTALL_CN.md", "$dev-flow", "$disabled-flow"),
+            ("ARCHITECTURE.md", "$dev-flow", "$disabled-flow"),
+            ("ARCHITECTURE_CN.md", "$dev-flow", "$disabled-flow"),
+            ("README.md", "activate it implicitly", "activate it manually"),
+            (
+                "ARCHITECTURE_CN.md",
+                'mcpServers: "./.mcp.json"',
+                'mcpServers: "https://example.invalid"',
+            ),
+            (
+                "INSTALL.md",
+                "It does not authorize a mutation by itself",
+                "It authorizes mutations by itself",
+            ),
+            (
+                "INSTALL_CN.md",
+                "installed-stage validator",
+                "manual inspection",
+            ),
+        )
+        for relative, expected, replacement in cases:
+            with self.subTest(relative=relative, expected=expected):
+                path = self.candidate / relative
+                original = path.read_text(encoding="utf-8")
+                changed = original.replace(expected, replacement)
+                self.assertNotEqual(changed, original)
+                try:
+                    path.write_text(changed, encoding="utf-8")
+                    self.assert_error_contains(
+                        validate(self.candidate),
+                        relative
+                        + " is missing formal dev-flow Skill activation, "
+                        "registration, authority, or installation evidence",
+                    )
+                finally:
+                    path.write_text(original, encoding="utf-8")
+
     @unittest.skipIf(os.name == "nt", "POSIX executable bits are not a Windows contract")
     def test_non_executable_launcher_is_reported(self) -> None:
         for relative in (
@@ -502,12 +637,34 @@ class PackageValidationTests(unittest.TestCase):
         (openspec / "traceability.json").write_text("not package metadata\n", encoding="utf-8")
         self.assertEqual(validate(self.candidate)["errors"], [])
 
-    def test_manifest_uses_only_the_mcp_server_catalog(self) -> None:
+    def test_manifest_registers_the_skill_and_mcp_companions(self) -> None:
         manifest = json.loads((self.candidate / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["skills"], "./skills/")
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
-        self.assertNotIn("skills", manifest)
         self.assertFalse((self.candidate / "hooks").exists())
-        self.assertFalse((self.candidate / "skills").exists())
+        self.assertEqual(
+            sorted(
+                path.relative_to(self.candidate).as_posix()
+                for path in (self.candidate / "skills/dev-flow").rglob("*")
+                if path.is_file()
+            ),
+            [
+                "skills/dev-flow/SKILL.md",
+                "skills/dev-flow/agents/openai.yaml",
+                "skills/dev-flow/references/activation-and-routing.md",
+            ],
+        )
+
+    def test_installed_validator_must_record_skill_and_mcp_evidence(self) -> None:
+        runner = self.candidate / "scripts/validate_installed_stage1.py"
+        current = runner.read_text(encoding="utf-8")
+        changed = current.replace('"skill": None', '"skill": False', 1)
+        self.assertNotEqual(changed, current)
+        runner.write_text(changed, encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate),
+            "installed validation does not prove the bundled dev-flow Skill and MCP registration",
+        )
 
     def test_repository_topology_authority_is_validated(self) -> None:
         product = self.candidate / "src" / "dev_flow_orchestrator" / "product.py"

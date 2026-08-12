@@ -2,14 +2,17 @@
 
 [Simplified Chinese](INSTALL_CN.md)
 
-This guide installs release `0.5.1` with its local MCP-first interface. The
-persisted model and task-data namespace remain `0.4.0`.
+This guide installs release `0.5.1` with a formal `dev-flow` Codex Skill and its
+local MCP-first interface. The persisted model and task-data namespace remain
+`0.4.0`.
 
 ## 1. Supported registration mode
 
-Bundled Codex plugin/MCP installation is the only supported mode. The manifest
-references the root `.mcp.json`; the installer does not provision standalone
-registrations. If an independently managed standalone registration already
+Bundled Codex plugin/Skill/MCP installation is the only supported mode. The
+manifest registers `./skills/` and references the root `.mcp.json`; the
+installer does not provision standalone registrations. The Skill's
+`agents/openai.yaml` does not declare a URL-shaped dependency for the local
+STDIO server. If an independently managed standalone registration already
 exists, installation stops before source, runtime, marketplace, plugin, or
 launcher mutation and tells the operator to inspect it manually. Uninstallation
 preserves registrations it cannot prove belong to the bundled installation.
@@ -21,7 +24,7 @@ Bundled macOS installation requires:
 - macOS;
 - Git;
 - `uv`;
-- Codex with plugin and MCP server support;
+- Codex with plugin, Skill, and MCP server support;
 - a writable absolute directory already on `PATH`;
 - 64-bit CPython 3.10, 3.11, 3.12, 3.13, or 3.14.
 
@@ -71,12 +74,16 @@ In order, the installer:
 4. locates supported 64-bit Python and requires `uv`;
 5. exports and installs the exact `uv.lock` runtime into a temporary virtual
    environment outside source and task data;
-6. builds and installs the project wheel, then checks import, initialization,
+6. preserves the exact `skills/dev-flow/` tree in the sealed plugin snapshot;
+7. builds and installs the project wheel, then checks import, initialization,
    instructions, the exact eleven-tool catalog, and a read call;
-7. writes a runtime receipt with release, source commit, Python identity,
+8. validates installed `dev-flow` Skill identity, explicit `$dev-flow`
+   invocation metadata, enabled implicit invocation, routing reference, and the
+   paired `dev-flow` STDIO registration;
+9. writes a runtime receipt with release, source commit, Python identity,
    architecture, lock digest, launcher identity, and activation timestamp;
-8. atomically publishes the versioned runtime and `dev-flow-mcp` launcher;
-9. preserves unrelated marketplace entries and activates the plugin.
+10. atomically publishes the versioned runtime and `dev-flow-mcp` launcher;
+11. preserves unrelated marketplace entries and activates the plugin.
 
 A failed runtime build never replaces the previous versioned runtime or
 launcher. A runtime version is reused only when its receipt still matches the
@@ -100,10 +107,19 @@ dev-flow-mcp --http
 ```
 
 The second command must fail with `MCP_RUNTIME_UNAVAILABLE` and must not open
-a listening socket. In Codex, inspect the enabled plugin and confirm one
-`dev-flow` server. Ask Codex to call `dev_flow_server_info`; it should report
-release `0.5.1`, model `0.4.0`, STDIO transport, six workflows, and catalog
-digests. Then list tools and confirm exactly eleven `dev_flow_*` tools.
+a listening socket. In Codex, inspect the enabled plugin and confirm one Skill
+named `dev-flow` and one MCP server named `dev-flow`. Start a new Codex task,
+invoke `$dev-flow`, and confirm that the Skill can also be selected implicitly
+for a substantive repository implementation request. Ask Codex to call
+`dev_flow_server_info`; it should report release `0.5.1`, model `0.4.0`, STDIO
+transport, six workflows, and catalog digests. Then list tools and confirm
+exactly eleven `dev_flow_*` tools.
+
+The installed-stage validator records hashes for the three Skill files plus
+`explicit_invocation: "$dev-flow"`, `implicit_invocation: true`,
+`mcp_server: "dev-flow"`, and `mcp_transport: "stdio"` alongside the live MCP
+journey. This proves the sealed installed copy contains both surfaces; it does
+not replace a fresh Codex task when checking host-side implicit selection.
 
 The server is a long-lived STDIO protocol process, so do not run
 `dev-flow-mcp --stdio` directly in an interactive terminal unless using an MCP
@@ -138,6 +154,10 @@ MCP annotations are descriptive, not enforcement. Keep user authority over
 every approval. When supported by the host, approve read tools separately and
 scope mutation approval to the `dev-flow` server, the exact tool, and the
 current task. Do not grant generic shell or blanket mutation approval.
+
+The Skill is equally non-authoritative: its prose decides activation and task
+routing, then follows the action, payload schema, binding, and transitions
+returned by the Controller. It does not authorize a mutation by itself.
 
 Release `0.5.0` removes the legacy fail-open Hook and its pre-tool data-directory
 guard. The remaining protection comes from Controller validation, Store locks,

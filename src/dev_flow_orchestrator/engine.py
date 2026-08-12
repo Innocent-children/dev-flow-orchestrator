@@ -52,7 +52,11 @@ from .model import (
     freeze_json,
     json_value,
 )
-from .payload_contract import effective_payload_contract
+from .payload_contract import (
+    ASSURANCE_RESULT_FIELDS,
+    INDEPENDENT_REVIEW_FIELDS,
+    effective_payload_contract,
+)
 from .product import (
     AGENT_PROTOCOL_SCHEMA,
     DRIVER_RESULT_SCHEMA,
@@ -1772,7 +1776,7 @@ def _adaptive_execution(
             "evidence": evidence,
             "limitations": [],
         }
-    expected_fields = {"obligation_id", "passed", "evidence", "limitations"}
+    expected_fields = set(ASSURANCE_RESULT_FIELDS)
     if obligation["kind"] == "independent-review":
         expected_fields.add("review")
     if not isinstance(submitted, Mapping) or set(submitted) != expected_fields:
@@ -1784,11 +1788,7 @@ def _adaptive_execution(
     passed = submitted.get("passed")
     if obligation["kind"] == "independent-review":
         review = submitted.get("review")
-        review_fields = {
-            "reviewer_available", "independent", "reviewer_digest",
-            "review_scope_digest", "guidance_digest", "workspace_digest",
-            "findings", "claimed_outcome",
-        }
+        review_fields = set(INDEPENDENT_REVIEW_FIELDS)
         if not isinstance(review, Mapping) or set(review) != review_fields:
             raise _error("REVIEW_INVALID", "independent review result fields are invalid")
         scope_digest = hashlib.sha256(canonical_json_bytes({
@@ -2980,6 +2980,26 @@ def agent_projection(
                 "max_attempts": retry_owner.rework.max_attempts,
                 "remaining": max(0, retry_owner.rework.max_attempts - used),
             }
+        assurance_obligation = None
+        assurance_review_contract = None
+        if node.handler_id == "assurance.dispatch":
+            adaptive = adaptive_projection
+            selected = adaptive["selected"]
+            assurance_obligation = selected["obligation"]
+            if assurance_obligation["kind"] == "independent-review":
+                assurance_review_contract = {
+                    "task_id": state.task_id,
+                    "plan_digest": adaptive["plan"]["digest"],
+                    "review_scope_digest": hashlib.sha256(canonical_json_bytes({
+                        "plan_digest": adaptive["plan"]["digest"],
+                        "obligation_fingerprint": assurance_obligation["fingerprint"],
+                        "task_change_slice": assurance_obligation["task_change_slice"],
+                    })).hexdigest(),
+                    "guidance_digest": INDEPENDENT_REVIEW_GUIDANCE_DIGEST,
+                    "workspace_digest": snapshot["digest"],
+                    "manifest_digest": adaptive["manifest"]["digest"],
+                    "contract_digest": adaptive["plan"]["contract_digest"],
+                }
         payload_contract = effective_payload_contract(
             node,
             repository_ids=tuple(
@@ -2988,6 +3008,8 @@ def agent_projection(
             criterion_ids=tuple(
                 item["id"] for item in contract_value["acceptance_criteria"]
             ),
+            assurance_obligation=assurance_obligation,
+            assurance_review_bindings=assurance_review_contract,
         )
         action = {
             **node.as_dict(),
@@ -3019,17 +3041,12 @@ def agent_projection(
                 "reuse_decisions": json_value(adaptive["reuse_decisions"]),
             }
             action["retry_budget"] = selected["state"]
-            if selected["obligation"]["kind"] == "independent-review":
+            if assurance_review_contract is not None:
                 action["review_contract"] = {
-                    "review_scope_digest": hashlib.sha256(canonical_json_bytes({
-                        "plan_digest": adaptive["plan"]["digest"],
-                        "obligation_fingerprint": selected["obligation"]["fingerprint"],
-                        "task_change_slice": selected["obligation"]["task_change_slice"],
-                    })).hexdigest(),
-                    "guidance_digest": INDEPENDENT_REVIEW_GUIDANCE_DIGEST,
-                    "workspace_digest": snapshot["digest"],
-                    "manifest_digest": adaptive["manifest"]["digest"],
-                    "contract_digest": adaptive["plan"]["contract_digest"],
+                    key: value
+                    for key, value in assurance_review_contract.items()
+                    if key not in ("task_id", "plan_digest")
+                } | {
                     "finding_schema": "dev-flow-review-finding/0.4.0",
                     "causal_relations": [
                         "introduced", "affected", "pre-existing",

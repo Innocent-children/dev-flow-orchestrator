@@ -28,6 +28,118 @@ def _value(field: str, field_type: str) -> object:
 
 
 class EffectivePayloadContractTests(unittest.TestCase):
+    def test_assurance_schema_exposes_the_exact_current_result_shape(self) -> None:
+        node = load_definition("lite").nodes["verify"]
+        effective = effective_payload_contract(
+            node,
+            repository_ids=("repository-a",),
+            criterion_ids=("criterion-a",),
+            assurance_obligation={
+                "obligation_id": "obligation-current",
+                "kind": "repository-check",
+            },
+        )
+        schema = effective.schema_dict()["properties"]["assurance_result"]
+        Draft202012Validator.check_schema(schema)
+        self.assertEqual(
+            set(schema["required"]),
+            {"obligation_id", "passed", "evidence", "limitations"},
+        )
+        self.assertIs(schema["additionalProperties"], False)
+        self.assertEqual(
+            schema["properties"]["obligation_id"],
+            {"const": "obligation-current"},
+        )
+        evidence = schema["properties"]["evidence"]
+        self.assertEqual(
+            set(evidence["items"]["required"]),
+            {"kind", "reference", "summary"},
+        )
+        payload = {
+            "obligation_id": "obligation-current",
+            "passed": True,
+            "evidence": [{
+                "kind": "command",
+                "reference": "git diff --check",
+                "summary": "Command passed",
+            }],
+            "limitations": [],
+        }
+        validator = Draft202012Validator(schema)
+        self.assertEqual(list(validator.iter_errors(payload)), [])
+        self.assertTrue(list(validator.iter_errors({**payload, "status": "passed"})))
+        incomplete = dict(payload)
+        del incomplete["limitations"]
+        self.assertTrue(list(validator.iter_errors(incomplete)))
+
+    def test_independent_review_schema_exposes_closed_review_and_finding_shapes(
+        self,
+    ) -> None:
+        node = load_definition("full").nodes["verify"]
+        bindings = {
+            "task_id": "task-current",
+            "plan_digest": "a" * 64,
+            "contract_digest": "b" * 64,
+            "manifest_digest": "c" * 64,
+            "review_scope_digest": "d" * 64,
+            "guidance_digest": "e" * 64,
+            "workspace_digest": "f" * 64,
+        }
+        effective = effective_payload_contract(
+            node,
+            repository_ids=("repository-a",),
+            criterion_ids=("criterion-a",),
+            assurance_obligation={
+                "obligation_id": "obligation-review",
+                "kind": "independent-review",
+            },
+            assurance_review_bindings=bindings,
+        )
+        schema = effective.schema_dict()["properties"]["assurance_result"]
+        Draft202012Validator.check_schema(schema)
+        self.assertEqual(
+            set(schema["required"]),
+            {"obligation_id", "passed", "evidence", "limitations", "review"},
+        )
+        review = schema["properties"]["review"]
+        self.assertIs(review["additionalProperties"], False)
+        self.assertEqual(
+            set(review["required"]),
+            {
+                "reviewer_available",
+                "independent",
+                "reviewer_digest",
+                "review_scope_digest",
+                "guidance_digest",
+                "workspace_digest",
+                "findings",
+                "claimed_outcome",
+            },
+        )
+        finding = review["properties"]["findings"]["items"]
+        self.assertIs(finding["additionalProperties"], False)
+        self.assertEqual(set(finding["required"]), set(finding["properties"]))
+        payload = {
+            "obligation_id": "obligation-review",
+            "passed": True,
+            "evidence": [],
+            "limitations": [],
+            "review": {
+                "reviewer_available": True,
+                "independent": True,
+                "reviewer_digest": "r" * 64,
+                "review_scope_digest": bindings["review_scope_digest"],
+                "guidance_digest": bindings["guidance_digest"],
+                "workspace_digest": bindings["workspace_digest"],
+                "findings": [],
+                "claimed_outcome": "approved",
+            },
+        }
+        validator = Draft202012Validator(schema)
+        self.assertEqual(list(validator.iter_errors(payload)), [])
+        del payload["review"]["claimed_outcome"]
+        self.assertTrue(list(validator.iter_errors(payload)))
+
     def test_every_official_node_shares_one_closed_payload_field_set(self) -> None:
         nodes = []
         for workflow_id in WORKFLOW_IDS:

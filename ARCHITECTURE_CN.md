@@ -4,26 +4,52 @@
 
 ## 产品身份
 
-`0.5.0` 引入 MCP 接口，但不改变持久化模型身份。`MODEL_VERSION`、任务数据命名空间、workflow、policy、binding、record、finding、snapshot 和 Delivery Dossier 均保持 `0.4.0`。
+`0.5.1` 在 MCP 接口旁捆绑名为 `dev-flow` 的正式 Codex Skill，但不改变持久化
+模型身份。`MODEL_VERSION`、任务数据命名空间、workflow、policy、binding、record、
+finding、snapshot 和 Delivery Dossier 均保持 `0.4.0`。
 
 非持久化传输身份为：`dev-flow-mcp/1.0.0`、`dev-flow-mcp-result/1.0.0`、`dev-flow-mcp-action/1.0.0` 和 `dev-flow-mcp-guidance/1.0.0`。
 
 ## 分层
 
 ```text
-Codex / MCP client        CLI                 只读 Web UI
-        |                  |                         |
-        v                  v                         v
-   MCP adapter -------- Controller -----------------+
-        |                  |
-        |                  +--> Engine --> Delivery --> Model
-        |                  +--> Store / locks / revision CAS
-        |                  +--> GitClient / complete-set capture
-        |
-        +--> schemas, results, guidance, concurrency, stderr logging
+Codex Skill               CLI                 只读 Web UI
+     |                      |                         |
+     v                      v                         v
+MCP adapter ----------- Controller -----------------+
+     |                      |
+     |                      +--> Engine --> Delivery --> Model
+     |                      +--> Store / locks / revision CAS
+     |                      +--> GitClient / complete-set capture
+     |
+     +--> schemas, results, guidance, concurrency, stderr logging
 ```
 
-Controller 是唯一的状态转换写入者。MCP 包导入 Controller，但 Controller、Engine、Store、GitClient、workflow、assurance、delivery、review、snapshot 和 model 模块绝不导入 MCP SDK 或其框架依赖。核心与 CLI 运行时代码仍只使用标准库；第三方 SDK 由托管 MCP 环境持有。
+Skill 负责激活和路由并调用 MCP，不写入任务状态。Controller 是唯一的状态转换
+写入者。MCP 包导入 Controller，但 Controller、Engine、Store、GitClient、workflow、
+assurance、delivery、review、snapshot 和 model 模块绝不导入 MCP SDK 或其框架依赖。
+核心与 CLI 运行时代码仍只使用标准库；第三方 SDK 由托管 MCP 环境持有。
+
+## Codex Skill
+
+`.codex-plugin/plugin.json` 通过 `skills: "./skills/"` 注册 Skill。规范 Skill
+目录树限定为 `skills/dev-flow/` 下的 `SKILL.md`、`agents/openai.yaml` 和
+`references/activation-and-routing.md`。
+
+`SKILL.md` 的 description 是 host 的隐式匹配 surface，也声明显式 `$dev-flow`
+入口。`agents/openai.yaml` 包含 interface 元数据并启用
+`policy.allow_implicit_invocation`。它有意省略 `dependencies`：受支持的 dependency
+schema 基于 URL，而本插件的本地 STDIO server 已由
+`mcpServers: "./.mcp.json"` 注册，因此不会伪造 URL 或其他 transport。
+
+运行时，Skill 先检查 server 身份，再为每个精确仓库根发现任务，恢复一个明确且兼容
+的任务，或启动新任务，然后重复实时 `get_next_action`/执行/apply 循环。任务选择有
+歧义时交还用户决定。mutation 状态不确定时，先执行 read-after-write 恢复再考虑重试。
+
+这些内容不是协议权威。包校验会拒绝嵌入 action catalog、payload schema、state
+machine、transition table 或带版本 Controller 协议定义的 Skill。当前 MCP 响应仍是
+action id、闭合 payload、精确 binding、review/verification obligation、transition
+和终止结果的来源。
 
 ## MCP 服务器
 
@@ -59,7 +85,11 @@ Mutation 非幂等。commit 后断连或取消可能使完成状态不确定，�
 
 ## 运行时与安装
 
-源码 checkout、托管 MCP runtime 和任务数据根目录彼此分离。安装器使用精确 `uv.lock` 构建版本化虚拟环境，安装 wheel，运行启动/目录/读取 smoke check，并写入 `dev-flow-runtime-receipt/1.0.0` receipt。Receipt 绑定 release、source commit、解释器身份与架构、lock digest、launcher 身份和激活时间，且不暴露数据根目录。
+源码 checkout、密封插件快照、托管 MCP runtime 和任务数据根目录彼此分离。安装器
+在密封插件快照中保留完整 Skill 目录树，使用精确 `uv.lock` 构建版本化虚拟环境，
+安装 wheel，运行已安装 Skill 校验及 MCP 启动/目录/读取 smoke check，并写入 runtime
+receipt。Receipt 和 ownership manifest 绑定 release、source commit、解释器身份与
+架构、lock digest、launcher 及每个已安装 Skill asset，且不暴露数据根目录。
 
 插件 manifest 指向根 `.mcp.json`；后者声明一个 `dev-flow` server，调用自有 PATH launcher `dev-flow-mcp --stdio`。Bundled 与 standalone 注册互斥。Runtime 发布和 launcher 替换采用分阶段方式，使构建失败后原运行时仍可用。
 
@@ -67,7 +97,10 @@ Mutation 非幂等。commit 后断连或取消可能使完成状态不确定，�
 
 工具目录没有通用命令、原始状态、分支/工作树、发布、外部 CI/PR/Release 或并行 executor 能力。Tool annotations 是 host 提示，不授予权威。
 
-旧 fail-open Hook、Skills、Hook bootstrap 和 Hook 专用 Windows launcher 不在发布包中，因此不再存在 PreToolUse 数据目录 guard。安全性依赖 Controller 校验、Store 完整性、host 审批、仓库与操作系统权限以及用户复核。这个剩余边界被明确说明，而不是被描述成 MCP 强制机制。
+旧 fail-open Hook、前代 Skills、Hook bootstrap 和 Hook 专用 Windows launcher 不在
+发布包中。正式 `dev-flow` Skill 存在，但只负责激活和路由。因此不再存在 PreToolUse
+数据目录 guard。安全性依赖 Controller 校验、Store 完整性、host 审批、仓库与操作
+系统权限以及用户复核。这个剩余边界被明确说明，而不是被描述成 Skill 或 MCP 强制机制。
 
 ## 兼容性
 

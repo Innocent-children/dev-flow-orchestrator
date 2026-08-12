@@ -4,9 +4,10 @@
 
 ## Product identities
 
-Release `0.5.0` introduces an MCP interface without changing persisted model
-identity. `MODEL_VERSION`, the task-data namespace, workflows, policies,
-bindings, records, findings, snapshots, and Delivery Dossiers remain `0.4.0`.
+Release `0.5.1` bundles a formal Codex Skill named `dev-flow` alongside the MCP
+interface without changing persisted model identity. `MODEL_VERSION`, the
+task-data namespace, workflows, policies, bindings, records, findings,
+snapshots, and Delivery Dossiers remain `0.4.0`.
 
 The non-persisted transport identities are:
 
@@ -18,23 +19,49 @@ The non-persisted transport identities are:
 ## Layers
 
 ```text
-Codex / MCP client        CLI                 Read-only Web UI
-        |                  |                         |
-        v                  v                         v
-   MCP adapter -------- Controller -----------------+
-        |                  |
-        |                  +--> Engine --> Delivery --> Model
-        |                  +--> Store / locks / revision CAS
-        |                  +--> GitClient / complete-set capture
-        |
-        +--> schemas, results, guidance, concurrency, stderr logging
+Codex Skill               CLI                 Read-only Web UI
+     |                      |                         |
+     v                      v                         v
+MCP adapter ----------- Controller -----------------+
+     |                      |
+     |                      +--> Engine --> Delivery --> Model
+     |                      +--> Store / locks / revision CAS
+     |                      +--> GitClient / complete-set capture
+     |
+     +--> schemas, results, guidance, concurrency, stderr logging
 ```
 
-The Controller is the only state-transition writer. The MCP package imports the
-Controller, but Controller, Engine, Store, GitClient, workflow, assurance,
-delivery, review, snapshot, and model modules never import the MCP SDK or its
-framework dependencies. Core and CLI runtime code remains standard-library
-only; the managed MCP environment owns the third-party SDK.
+The Skill provides activation and routing and calls the MCP; it does not write
+task state. The Controller is the only state-transition writer. The MCP package
+imports the Controller, but Controller, Engine, Store, GitClient, workflow,
+assurance, delivery, review, snapshot, and model modules never import the MCP
+SDK or its framework dependencies. Core and CLI runtime code remains
+standard-library only; the managed MCP environment owns the third-party SDK.
+
+## Codex Skill
+
+`.codex-plugin/plugin.json` registers `skills: "./skills/"`. The canonical
+Skill tree is closed to `SKILL.md`, `agents/openai.yaml`, and
+`references/activation-and-routing.md` under `skills/dev-flow/`.
+
+The `SKILL.md` description is the host's implicit-matching surface and also
+names the explicit `$dev-flow` route. `agents/openai.yaml` carries interface
+metadata and enables `policy.allow_implicit_invocation`. It intentionally omits
+`dependencies`: the supported dependency schema is URL-based, while this
+plugin's local STDIO server is already registered by `mcpServers: "./.mcp.json"`.
+No URL or alternate transport is synthesized.
+
+At runtime the Skill checks server identity, discovers tasks for each exact
+repository root, resumes one unambiguous compatible task or starts a new one,
+and then repeats the live `get_next_action`/execute/apply loop. Ambiguous task
+selection returns to the user. Uncertain mutations use read-after-write recovery
+before any retry.
+
+This content is not a protocol authority. Package validation rejects a Skill
+that embeds an action catalog, payload schema, state machine, transition table,
+or versioned Controller protocol definition. The current MCP response remains
+the source for the action id, closed payload, exact binding, review and
+verification obligations, transitions, and terminal result.
 
 ## MCP server
 
@@ -118,12 +145,14 @@ loop replays mutations automatically.
 
 ## Runtime and installation
 
-The source checkout, managed MCP runtime, and task-data root are disjoint. The
-installer builds a versioned virtual environment using the exact `uv.lock`,
-installs a wheel, runs startup/catalog/read smoke checks, and writes a
-`dev-flow-runtime-receipt/1.0.0` receipt. The receipt binds release, source
-commit, interpreter identity and architecture, lock digest, launcher identity,
-and activation time without exposing the data root.
+The source checkout, sealed plugin snapshot, managed MCP runtime, and task-data
+root are disjoint. The installer preserves the complete Skill tree in the
+sealed plugin snapshot, builds a versioned virtual environment using the exact
+`uv.lock`, installs a wheel, runs installed Skill validation plus MCP
+startup/catalog/read smoke checks, and writes a runtime receipt. The receipt and
+ownership manifest bind the release, source commit, interpreter identity and
+architecture, lock digest, launchers, and every installed Skill asset without
+exposing the data root.
 
 The plugin manifest points to root `.mcp.json`, which declares one `dev-flow`
 server invoking the owned `dev-flow-mcp --stdio` PATH launcher. Bundled and
@@ -137,12 +166,13 @@ The tool catalog has no generic command, raw-state, branch/worktree,
 publication, external CI/PR/release, or parallel-executor capability. Tool
 annotations are host hints and do not grant authority.
 
-The legacy fail-open Hook, Skills, Hook bootstrap, and Hook-specific Windows
-launcher are absent from the release package. Consequently there is no
-PreToolUse data-directory guard. Safety relies on Controller validation, Store
-integrity, host approvals, repository and operating-system permissions, and
-user review. This residual boundary is explicit rather than represented as MCP
-enforcement.
+The legacy fail-open Hook, predecessor Skills, Hook bootstrap, and Hook-specific
+Windows launcher are absent from the release package. The formal `dev-flow`
+Skill is present, but supplies only activation and routing. Consequently there
+is no PreToolUse data-directory guard. Safety relies on Controller validation,
+Store integrity, host approvals, repository and operating-system permissions,
+and user review. This residual boundary is explicit rather than represented as
+Skill or MCP enforcement.
 
 ## Compatibility
 

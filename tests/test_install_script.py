@@ -505,8 +505,38 @@ class InstallerBehaviorTests(unittest.TestCase):
         self.assertEqual(receipt["source_commit"], _git("rev-parse", "HEAD", cwd=self.source_root))
         self.assertEqual(receipt["source_tree"], _git("rev-parse", "HEAD^{tree}", cwd=self.source_root))
         self.assertEqual(Path(receipt["plugin_path"]), self.active_plugin_root())
-        self.assertTrue((self.active_plugin_root() / "release-manifest.json").is_file())
-        self.assertTrue((releases[0] / "ownership-manifest.json").is_file())
+        installed_plugin = self.active_plugin_root()
+        self.assertTrue((installed_plugin / "release-manifest.json").is_file())
+        installed_manifest = json.loads(
+            (installed_plugin / ".codex-plugin/plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(installed_manifest["skills"], "./skills/")
+        self.assertEqual(installed_manifest["mcpServers"], "./.mcp.json")
+        skill_files = (
+            "skills/dev-flow/SKILL.md",
+            "skills/dev-flow/agents/openai.yaml",
+            "skills/dev-flow/references/activation-and-routing.md",
+        )
+        for relative in skill_files:
+            self.assertEqual(
+                (installed_plugin / relative).read_bytes(),
+                (ROOT / relative).read_bytes(),
+            )
+        ownership_path = releases[0] / "ownership-manifest.json"
+        self.assertTrue(ownership_path.is_file())
+        ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
+        ownership_paths = {
+            str(entry["path"])
+            for entry in ownership["entries"]
+            if entry.get("type") == "file"
+        }
+        self.assertTrue(
+            {"plugin/" + relative for relative in skill_files}.issubset(
+                ownership_paths
+            )
+        )
         transaction = self.transaction_records()[-1]
         self.assertEqual(
             set(transaction),

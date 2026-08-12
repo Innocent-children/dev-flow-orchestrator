@@ -63,6 +63,39 @@ def _git(repository: Path, *arguments: str) -> str:
 
 
 class InstalledMCPJourneyTests(unittest.TestCase):
+    def test_installed_skill_evidence_binds_explicit_implicit_and_stdio_surfaces(self) -> None:
+        evidence = acceptance._installed_skill(ROOT)
+        self.assertEqual(evidence["name"], "dev-flow")
+        self.assertEqual(evidence["explicit_invocation"], "$dev-flow")
+        self.assertIs(evidence["implicit_invocation"], True)
+        self.assertEqual(evidence["mcp_server"], "dev-flow")
+        self.assertEqual(evidence["mcp_transport"], "stdio")
+        self.assertEqual(set(evidence["files"]), set(acceptance.INSTALLED_SKILL_FILES))
+        self.assertTrue(
+            all(len(digest) == 64 for digest in evidence["files"].values())
+        )
+
+    def test_installed_skill_evidence_rejects_dependency_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "plugin"
+            (candidate / ".codex-plugin").mkdir(parents=True)
+            shutil.copy2(
+                ROOT / ".codex-plugin" / "plugin.json",
+                candidate / ".codex-plugin" / "plugin.json",
+            )
+            shutil.copy2(ROOT / ".mcp.json", candidate / ".mcp.json")
+            shutil.copytree(ROOT / "skills", candidate / "skills")
+            agent = candidate / "skills/dev-flow/agents/openai.yaml"
+            agent.write_text(
+                agent.read_text(encoding="utf-8") + "dependencies: {}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                acceptance.AcceptanceFailure,
+                "agent metadata is invalid",
+            ):
+                acceptance._installed_skill(candidate)
+
     def test_tree_digest_is_stable_and_content_sensitive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -183,6 +216,11 @@ class InstalledMCPJourneyTests(unittest.TestCase):
         )
         self.assertTrue(evidence["ok"])
         self.assertEqual(evidence["plugin_digest_before"], evidence["plugin_digest_after"])
+        self.assertEqual(evidence["skill"]["name"], "dev-flow")
+        self.assertEqual(evidence["skill"]["explicit_invocation"], "$dev-flow")
+        self.assertIs(evidence["skill"]["implicit_invocation"], True)
+        self.assertEqual(evidence["skill"]["mcp_server"], "dev-flow")
+        self.assertEqual(evidence["skill"]["mcp_transport"], "stdio")
         journey = evidence["journey"]
         self.assertEqual(journey["initialize"]["server"], "dev-flow")
         self.assertEqual(journey["initialize"]["release"], "0.5.1")

@@ -182,6 +182,28 @@ class MCPRuntimeTests(unittest.TestCase):
             self.assertIs(tool.annotations.open_world_hint, False)
             self.assertEqual(tool.meta.get("dev-flow/taskSupport"), "forbidden")
 
+    def test_bundled_skill_does_not_change_the_mcp_catalog_or_registration(self) -> None:
+        manifest = json.loads(
+            (ROOT / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
+        )
+        registration = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["skills"], "./skills/")
+        self.assertEqual(manifest["mcpServers"], "./.mcp.json")
+        self.assertEqual(
+            registration,
+            {
+                "mcpServers": {
+                    "dev-flow": {
+                        "command": "dev-flow-mcp",
+                        "args": ["--stdio"],
+                    }
+                }
+            },
+        )
+        with tempfile.TemporaryDirectory() as data_dir:
+            tools = asyncio.run(create_server(data_dir).list_tools())
+        self.assertEqual(tuple(sorted(tool.name for tool in tools)), EXPECTED_TOOLS)
+
     def test_server_info_keeps_release_and_model_authorities_separate(self) -> None:
         with tempfile.TemporaryDirectory() as data_dir:
             result = asyncio.run(create_server(data_dir).call_tool("dev_flow_server_info", {}))
@@ -1682,9 +1704,58 @@ class MCPRuntimeTests(unittest.TestCase):
                 },
             ))
             self.assertFalse(advanced.is_error, advanced.structured_content)
-            assurance = advanced.structured_content["result"]["current"]["action"]["assurance"]
+            refreshed = asyncio.run(server.call_tool(
+                "dev_flow_get_next_action",
+                {"task_id": task_id},
+            ))
+            self.assertFalse(refreshed.is_error, refreshed.structured_content)
+            assurance_action = refreshed.structured_content["result"]["action"]
+            assurance = assurance_action["assurance"]
             self.assertEqual(assurance["confidence"], "source-confirmed")
             self.assertTrue(assurance["not_required"]["independent_review"])
+            assurance_result_schema = assurance_action["payload_schema"]["properties"][
+                "assurance_result"
+            ]
+            self.assertEqual(
+                set(assurance_result_schema["required"]),
+                {"obligation_id", "passed", "evidence", "limitations"},
+            )
+            obligation_id = assurance_action["current_obligation"]["obligation_id"]
+            self.assertEqual(
+                assurance_result_schema["properties"]["obligation_id"],
+                {"const": obligation_id},
+            )
+            assurance_result = {
+                "obligation_id": obligation_id,
+                "passed": True,
+                "evidence": [{
+                    "kind": "command",
+                    "reference": "git diff --check",
+                    "summary": "Repository check passed",
+                }],
+                "limitations": [],
+            }
+            self.assertIsNone(
+                next(
+                    Draft202012Validator(assurance_result_schema).iter_errors(
+                        assurance_result
+                    ),
+                    None,
+                )
+            )
+            completed = asyncio.run(server.call_tool(
+                "dev_flow_apply_action",
+                {
+                    "task_id": task_id,
+                    "action_id": assurance_action["id"],
+                    "payload": {
+                        "summary": "Executed the projected repository check",
+                        "assurance_result": assurance_result,
+                    },
+                    "binding": assurance_action["binding"],
+                },
+            ))
+            self.assertFalse(completed.is_error, completed.structured_content)
 
     def test_historical_non_enum_impact_is_readable_through_mcp(self) -> None:
         legacy_confidence = "legacy-arbitrary-value"

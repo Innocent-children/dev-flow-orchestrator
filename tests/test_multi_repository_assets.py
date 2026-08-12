@@ -222,7 +222,21 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
                 "Do not blindly retry a mutation",
             ),
         )
-        self.assertFalse((ROOT / "skills").exists())
+        skill = _read("skills/dev-flow/SKILL.md")
+        self.assert_contains_all(
+            skill,
+            (
+                "dev_flow_server_info",
+                "dev_flow_find_tasks_for_path",
+                "dev_flow_get_next_action",
+                "exact current binding",
+                "sole task-state writer",
+                "Never blindly replay a mutation",
+            ),
+        )
+        self.assertFalse((ROOT / "skills/analyze-change-impact").exists())
+        self.assertFalse((ROOT / "skills/follow-dev-flow").exists())
+        self.assertFalse((ROOT / "skills/review-dev-flow-change").exists())
         self.assertFalse((ROOT / "hooks").exists())
 
     def test_public_assets_contain_only_the_current_product_model(self) -> None:
