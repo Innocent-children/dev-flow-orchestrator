@@ -3,87 +3,113 @@
 [English](README.md)
 
 Dev Flow Orchestrator 让跨一个至八个用户预先准备的 Git 工作树的长期 Codex
-开发任务保持可恢复、上下文有界且可验证。`0.6.0` 版本在本地 MCP 服务器旁
-捆绑名为 `dev-flow` 的正式 Codex Skill，同时保留持久化 `0.4.0` 模型和任务数据
+开发任务保持可恢复、上下文有界且可验证。`0.6.0` 版本捆绑名为 `dev-flow` 的正式
+Codex Skill 和本地 STDIO MCP 服务器，同时保留持久化 `0.4.0` 模型与任务数据
 命名空间。
 
 Skill 负责激活 Codex 并将其路由到 MCP 工作流，它不是另一套工作流协议。
 Controller 仍是唯一的状态转换权威。MCP、CLI 和只读 Web UI 都是同一 Controller
-之上的适配器；它们不会创建或切换分支/工作树、发布 Git 改动、运行并行执行器，
+之上的适配器。它们不会创建或切换分支/工作树、发布 Git 改动、运行并行执行器，
 也不会调度外部 CI、Pull Request 或 Release。
 
 ## 快速开始
 
-要求：
+最终用户安装需要受支持的 64 位 CPython 3.10–3.14、`uv`、支持插件/Skill/MCP 的
+Codex、平台 HTTPS 下载工具，以及一个已经位于 `PATH` 上的可写绝对目录。受支持的
+Windows 客户端是原生 Windows 10 22H2 x64 与 Windows 11 x64。Git 不是安装前提。
+目标仓库仍需提供一至八个现有且由用户预先准备的 Git 工作树根目录，因为它们是产品
+所控制的工作对象。
 
-- macOS、Git、`uv`、支持插件、Skill 和 MCP 的 Codex，以及 64 位 CPython
-  3.10–3.14；
-- Windows 10 22H2 x64 或 Windows 11 x64 使用 PowerShell 预览路径，发布证据仍需
-  原生 Windows 验证；
-- 一个至八个现有且由用户预先准备的 Git 工作树根目录。
-
-在 macOS 上安装捆绑模式：
+下载并运行所选精确版本所附带的 bootstrap：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Innocent-children/dev-flow-orchestrator/main/scripts/install.sh | sh
+VERSION=0.6.0
+curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
+  -o /tmp/dev-flow-install.sh
+sh /tmp/dev-flow-install.sh
 ```
 
-或克隆权威分支后运行安装器：
+在原生 Windows 上，下载同一版本的 `install.ps1` 资产，并从 PowerShell 5.1 或
+PowerShell 7 运行：
 
-```sh
-git clone --branch main --single-branch \
-  https://github.com/Innocent-children/dev-flow-orchestrator.git \
-  "$HOME/plugins/dev-flow-orchestrator"
-sh "$HOME/plugins/dev-flow-orchestrator/scripts/install.sh"
+```powershell
+$Version = '0.6.0'
+$Installer = Join-Path $env:TEMP 'dev-flow-install.ps1'
+Invoke-WebRequest -UseBasicParsing `
+  -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `
+  -OutFile $Installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Installer
 ```
 
-安装器会验证候选包，在密封插件快照中保留 Skill，在源码和任务数据之外构建精确
-锁定的 MCP 运行时，将受支持的 bundled 命令安装到 `PATH`，然后激活插件。
-Windows、修复、回滚、卸载及 bundled-only 注册边界参见
+版本匹配的 bootstrap 会固定规范仓库、版本、制品名称和 `release-index.json`
+digest。在执行任何制品代码或修改任何产品状态之前，其内嵌的标准库 Phase A verifier
+会检查 index、archive、tar member、内嵌 manifest 的原始字节、完整 inventory、资源
+限制和所需包拓扑。随后 Phase B 使用随附的 pure-Python wheel 与哈希锁定、仅 wheel
+依赖构建隔离的 managed release，运行 staged health，并以事务方式激活。它会在
+密封插件快照中保留 Skill。整个过程不创建或保留源码 checkout。
+
+信任边界、修复、升级、激活失败自动回滚、迁移、终态、持久路径与源码无关卸载参见
 [INSTALL_CN.md](INSTALL_CN.md)。
 
-安装后启动一个新的 Codex 任务。可以显式调用 Skill：
+安装后启动一个新的 Codex 任务，并显式调用 Skill：
 
 ```text
 $dev-flow 在当前仓库实现这个需求并完成验证。
 ```
 
-对于需要多步骤处理的实现、缺陷修复、重构、调查、审核和验证工作，Codex 也可依据
-description 隐式激活它。目标项目无需额外添加 `AGENTS.md` 规则。
+对于需要多步骤处理的实现、缺陷修复、重构、调查、审核和验证工作，Codex 也可隐式
+激活它。目标项目无需额外添加 `AGENTS.md` 规则。
 
 Skill 驱动以下由 Controller 掌权的顺序：
 
 1. 使用 `dev_flow_find_tasks_for_path` 或 `dev_flow_list_tasks` 发现任务；
-2. 显式选择或启动一个任务；
+2. 显式选择任务，必要时使用 `dev_flow_start_task` 启动任务；
 3. 调用 `dev_flow_get_next_action`；
 4. 只在精确仓库集合上执行投影的当前动作；
-5. 提交精确动作 ID、封闭 payload 和未经修改的 binding；
+5. 提交精确动作 ID、闭合 payload 和未经修改的精确 binding；
 6. 重复执行，直到任务生成终止 Delivery Dossier。
 
 如果发现多个可能匹配的活动任务，Skill 会让用户选择，而不是按时间擅自决定。如果
 mutation 响应状态不确定，它会先读取任务并刷新当前动作，再判断是否能安全重试。
 
-## Codex Skill
+## 已安装 release 模型
 
-插件 manifest 注册 `./skills/`。捆绑的 Skill 位于 `skills/dev-flow/`，包含：
+每个 release archive 都是平台中立的，包含完整 sealed plugin tree、
+`.codex-plugin/plugin.json`、`.mcp.json`、`skills/dev-flow/**`、一个 pure-Python
+项目 wheel、`runtime-requirements.txt`、生成它所用的 `uv.lock`、版本化
+`lifecycle/**` helper 和 `release-manifest.json`。Manifest inventory 覆盖除自身
+以外的所有后代；外部 index 固定 manifest 的原始 UTF-8 字节。
 
-- `SKILL.md`：description 支持 `$dev-flow` 和隐式匹配；
-- `agents/openai.yaml`：包含 Codex interface 元数据及
-  `policy.allow_implicit_invocation: true`；
-- `references/activation-and-routing.md`：覆盖适用性、精确仓库集合发现、任务歧义和
-  mutation 响应不确定的处理。
+Active record 是本地选择 active release 的唯一权威。它包含单调递增 generation、
+release ID、contained 的绝对 managed-release path、receipt digest、dispatcher
+protocol 和执行提交的 transaction ID。Runtime receipt 对完整已安装 release 做证明。
+产品自有的小型 `dev-flow`、`dev-flow-mcp` 和 `dev-flow-uninstall` dispatcher 在普通
+修复、升级与自动回滚期间保持稳定；版本化验证和生命周期代码位于每个 managed
+release 内。
 
-agent 元数据有意不声明 MCP dependency。受支持的 MCP dependency 形式基于 URL，
-而本插件提供本地 STDIO server；因此 `.codex-plugin/plugin.json` 与 `.mcp.json`
-是该 server 的唯一注册路径。
+每个 lifecycle operation 都持有同一把 installation-wide lock，并且只会以以下一种
+状态结束：
 
-Skill 绝不定义 Controller action、payload schema、状态转换、review obligation 或
-终止规则。它从实时 MCP 结果获取这些内容，并提交精确的当前 binding。
+- `committed`：请求的权威已被读回并证明；
+- `rolled_back`：candidate 不再具有权威，并且 immediate previous authority（对于
+  失败的全新安装则是无权威状态）已恢复并证明；
+- `partial`：无法精确证明请求的权威或 previous authority，因此保留不确定内容，并
+  停止 identity-specific mutation。
 
-## MCP 接口
+没有面向任意历史版本的公共 rollback 命令。本版本中的 rollback 只是在当前激活事务
+尚未终结时，自动恢复 immediate previous authority。
+
+## Codex Skill 与 MCP 接口
+
+插件 manifest 注册 `./skills/`。捆绑 Skill 位于 `skills/dev-flow/`，包含
+`SKILL.md`、`agents/openai.yaml` 和
+`references/activation-and-routing.md`。它支持显式 `$dev-flow` 调用与依据 description
+隐式激活。
+它绝不定义 Controller action、payload schema、状态转换、review obligation 或
+终止规则；这些内容来自实时 MCP 结果。
 
 捆绑的 `.mcp.json` 只暴露一个名为 `dev-flow` 的本地 STDIO 服务器，调用
-`dev-flow-mcp --stdio`。HTTP、SSE、监听套接字、token 和 OAuth 传输会被拒绝。
+`dev-flow-mcp --stdio`。不支持 HTTP、SSE、监听 socket、token 或 OAuth transport。
 
 只读工具：
 
@@ -102,36 +128,26 @@ Skill 绝不定义 Controller action、payload schema、状态转换、review ob
 - `dev_flow_dispose_finding`
 - `dev_flow_cancel_task`
 
-每个工具都具有封闭输入 schema、结构化成功/错误 envelope、一个简短文本摘要、
-有界结果、请求 ID、封闭世界注解，并禁用 MCP task augmentation。注解只描述意图，
-不是授权或操作系统强制边界。
+每个工具都具有闭合输入 schema、结构化成功/错误 envelope、有界结果、请求 ID、闭世界
+annotation，并禁用 MCP task augmentation。Annotation 只描述意图，不是授权或操作
+系统强制边界。
 
-## 工作流与状态
+## Workflow 与任务数据
 
-正式工作流目录为 `lite`、`feature`、`bugfix`、`investigation`、`refactor` 和
-`full`。它们继续使用未改变的 `dev-flow-workflow/0.4.0`、
+正式 workflow catalog 为 `lite`、`feature`、`bugfix`、`investigation`、`refactor`
+和 `full`。它们继续使用 `dev-flow-workflow/0.4.0`、
 `dev-flow-agent/0.4.0`、action binding、record、assurance、review 和 Delivery
 Dossier 标识。
 
-任务成员是不可变的规范仓库数组。实时下一动作捕获覆盖完整集合，并返回下一次变更
-所需的精确 binding。从第二成员仓库发现任务会返回同一任务；多个活动声明造成的歧义
-会失败关闭。
-
-任务数据位于每个目标仓库之外的模型 `0.4.0` 命名空间。MCP 适配器不会在正常结果
-或安装收据中暴露 Controller 数据根路径。现有 0.4.x 任务无需状态迁移即可恢复。
-
-## 引导与恢复
-
-服务器初始化文本只包含发现、获取下一动作、执行和应用循环。当前动作引导从版本化、
-有界的目录中选择，只包含适用的目标、必须读取的字段、允许的影响、必需证据、payload
-说明、driver 规则、过期恢复、完成规则和规范 guidance digest。
-
-在取消或响应丢失后，绝不能盲目重试变更。先读取存储任务和当前动作，比较已提交修订
-与 binding，再判断是否需要新的变更。
+任务成员是不可变的规范仓库数组。任务数据位于每个目标仓库之外的模型 `0.4.0`
+命名空间，也位于 managed release 与 lifecycle state 之外。实时下一动作捕获覆盖完整
+集合，并返回下一次 mutation 所需的精确 binding。从第二成员仓库发现任务会返回同一
+任务；多个活动声明造成的歧义会失败关闭。现有 0.4.x 任务无需状态迁移即可恢复。
+修复、升级、迁移和卸载都不会删除或修改 Controller task data。
 
 ## CLI 与只读 Web UI
 
-现有 CLI 和本地 Web UI 继续作为同一 Controller 的受支持视图：
+CLI 和本地 Web UI 继续作为同一 Controller 的视图：
 
 ```sh
 dev-flow --help
@@ -140,32 +156,38 @@ dev-flow web status
 dev-flow web stop
 ```
 
-Web UI 绑定 `127.0.0.1`，默认读取存储任务视图，并且没有变更权威。MCP 是主要的
-Codex 执行接口。
+Web UI 绑定 `127.0.0.1`，默认读取存储任务视图，没有 mutation authority。MCP 是
+Codex 的主要执行接口。
 
-## 安全边界
+## 信任与证据边界
 
-- Controller、Store 锁、仓库成员、snapshot、binding 和修订 CAS 保持权威。
-- MCP 不提供通用 shell、原始状态、分支/工作树、发布、CI、PR、Release 或并行 Agent
-  工具。
-- 正式 `dev-flow` Skill 只提供激活和路由，不是第二个状态写入者，也不能替代
-  Controller 校验。
-- 移除旧的失败开放 Hook 后，不再存在 pre-tool 写入 guard。仍需宿主审批、仓库权限和
-  用户审查。
-- 插件不会授予宽泛的变更审批。宿主支持时，应把审批限定到 `dev-flow` 服务器和精确工具。
+规范 GitHub 仓库及其 Release 发布权限是 release provenance 的一部分。Bootstrap
+固定 repository、version、asset 和 index digest。SHA-256 证明下载到的字节与
+bootstrap、index 和 manifest 所固定的字节一致；它能检测损坏及跨 release 混用。
+SHA-256 不是独立数字签名，也不能证明 GitHub 账户从未被攻破。Source commit 与 tree
+值是 release builder 验证并记录的 publication assertion，而不是最终用户机器从
+checkout 重建的 source provenance。
+
+此设计不声称能抵御可一致替换同一用户全部本地 trust input 的攻击者。它不增加签名、
+Sigstore、transparency log、third-party mirror、offline fresh install、更新 channel 或
+后台更新。
+
+原生 Windows final-artifact 证据、对真实 Codex host 的 release-candidate 证据，以及
+最终 promotion/re-download 证据都必须在对应的真实环境中取得。macOS 测试、
+deterministic fake 和静态 PowerShell 检查都不能证明这些结果。在取得记录之前，这些
+门禁必须报告为未验证，不能靠推断得出。
 
 ## 开发
 
-使用项目环境和包校验：
+使用项目环境及仓库检查：
 
 ```sh
 uv sync --locked
 uv run python -m unittest discover -s tests -p 'test_*.py'
 uv run python scripts/validate_package.py
-openspec validate add-dev-flow-skill --strict
+openspec validate install-versioned-release-artifact --strict
 ```
 
-开发过程中可以使用聚焦测试；仓库允许完整 unittest discovery，它是完整回归的标准命令。
 参见 [CONTRIBUTING_CN.md](CONTRIBUTING_CN.md)、
 [ARCHITECTURE_CN.md](ARCHITECTURE_CN.md) 和 [ROADMAP_CN.md](ROADMAP_CN.md)。
 
