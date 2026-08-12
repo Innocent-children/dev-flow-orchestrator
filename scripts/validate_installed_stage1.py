@@ -548,6 +548,45 @@ async def _smoke(
     }
 
 
+async def _candidate_smoke(
+    launcher: str,
+    launcher_args: Sequence[str],
+    plugin_root: Path,
+    scratch: Path,
+) -> dict[str, Any]:
+    """Prove the staged Skill and MCP without requiring a Git repository.
+
+    End-user artifact installation intentionally has no Git prerequisite.  The
+    fuller installed acceptance journey still exercises task mutations against
+    real repositories, while this candidate-only gate verifies the exact
+    plugin, server identity, catalog, isolated data root, and read path.
+    """
+
+    data_dir = scratch / "candidate data 雪's"
+    parameters = _launcher_parameters(launcher, launcher_args, plugin_root, data_dir)
+    async with stdio_client(parameters) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            identity = await _initialize(session)
+            info = _result(
+                await session.call_tool("dev_flow_server_info", {}),
+                "dev_flow_server_info",
+            )
+            _require(info.get("model_version") == "0.4.0", "persisted model changed")
+            _require(str(data_dir) not in _json(info), "server-info exposed the data root")
+            empty = _result(
+                await session.call_tool("dev_flow_list_tasks", {"limit": 1}),
+                "dev_flow_list_tasks",
+            )
+            _require(empty.get("tasks") == [], "isolated candidate data root is not empty")
+    return {
+        "initialize": identity,
+        "read_smoke": True,
+        "candidate_smoke": True,
+        "mutation_smoke": False,
+        "terminal_status": None,
+    }
+
+
 class _ReadAudit:
     """Process-local executor guard; server imports occur in a separate process."""
 
@@ -2089,6 +2128,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run initialize/catalog/read/isolated-mutation activation smoke only",
     )
+    parser.add_argument(
+        "--candidate-smoke-only",
+        action="store_true",
+        help="run the checkout-free staged Skill and MCP read-health gate",
+    )
     return parser
 
 
@@ -2099,7 +2143,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     evidence: dict[str, Any] = {
         "schema": EVIDENCE_SCHEMA,
         "ok": False,
-        "evidence_class": "native-installed" if arguments.smoke_only is False else "staged-or-installed-smoke",
+        "evidence_class": (
+            "candidate-staged-smoke"
+            if arguments.candidate_smoke_only
+            else "staged-or-installed-smoke"
+            if arguments.smoke_only
+            else "native-installed"
+        ),
         "platform": sys.platform,
         "plugin_digest_before": None,
         "plugin_digest_after": None,
@@ -2118,7 +2168,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         evidence["skill"] = _installed_skill(plugin_root)
         with tempfile.TemporaryDirectory(prefix="dev-flow-installed-mcp-") as temporary:
             scratch = Path(temporary).resolve()
-            if arguments.smoke_only:
+            _require(
+                not (arguments.smoke_only and arguments.candidate_smoke_only),
+                "select only one smoke mode",
+            )
+            if arguments.candidate_smoke_only:
+                evidence["journey"] = asyncio.run(
+                    _candidate_smoke(
+                        str(launcher),
+                        tuple(arguments.launcher_arg),
+                        plugin_root,
+                        scratch,
+                    )
+                )
+            elif arguments.smoke_only:
                 evidence["journey"] = asyncio.run(
                     _smoke(str(launcher), tuple(arguments.launcher_arg), plugin_root, scratch)
                 )

@@ -1,0 +1,8 @@
+{
+  "build_backend": "hatchling==1.27.0",
+  "gzip_profile": "python-stdlib-mtime-zero",
+  "python": "3.14.4",
+  "schema": "dev-flow-release-builder/1.0.0",
+  "tar_format": "python-stdlib-ustar",
+  "uv": "0.11.29"
+}

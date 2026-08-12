@@ -10,7 +10,7 @@ dependencies = [
 dev-flow-mcp = "dev_flow_orchestrator.mcp.runtime:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

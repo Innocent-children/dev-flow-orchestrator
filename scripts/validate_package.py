@@ -27,6 +27,7 @@ _PREIMPORT_REQUIRED = (
     ".mcp.json",
     ".codex-plugin/plugin.json",
     "pyproject.toml",
+    "release-builder.json",
     "uv.lock",
     "skills/dev-flow/SKILL.md",
     "skills/dev-flow/agents/openai.yaml",
@@ -36,8 +37,18 @@ _PREIMPORT_REQUIRED = (
     "scripts/dev_flow_mcp_launcher.cmd",
     "scripts/dev_flow_python_launcher",
     "scripts/manage_runtime.py",
+    "scripts/build_release.py",
+    "scripts/legacy_migration.py",
+    "scripts/legacy_predecessor.json",
+    "scripts/lifecycle_machine.py",
+    "scripts/lifecycle_state.py",
+    "scripts/promote_release.py",
+    "scripts/release_artifact.py",
+    "scripts/release_lifecycle.py",
+    "scripts/render_dispatchers.py",
     "scripts/runtime_integrity.py",
-    "scripts/runtime_integrity.py",
+    "scripts/stable_dispatcher.py",
+    "scripts/uninstall_driver.py",
     "scripts/validate_installed_stage1.py",
     "src/dev_flow_orchestrator/_version.py",
     "src/dev_flow_orchestrator/_platform/storage.py",
@@ -180,11 +191,67 @@ def _preimport_candidate_errors(root: Path) -> list[str]:
             "__DEV_FLOW_RUNTIME_VERIFIER__",
             "launch-mcp",
         ),
-        "scripts/manage_runtime.py": ("uv", "runtime_integrity", "build-receipt"),
+        "scripts/manage_runtime.py": (
+            "build_artifact_candidate",
+            "--require-hashes",
+            "--only-binary",
+            "--candidate-smoke-only",
+        ),
         "scripts/runtime_integrity.py": (
             "dev-flow-runtime-receipt/2.0.0",
-            "verify-runtime",
-            "remove-owned",
+            "dev-flow-runtime-receipt/3.0.0",
+            "verify-artifact-runtime",
+            "remove-owned-release",
+        ),
+        "scripts/release_artifact.py": (
+            "dev-flow-release-index/1.0.0",
+            "dev-flow-release-artifact/1.0.0",
+            "CANONICAL_REPOSITORY",
+            "inspect_and_extract_artifact",
+        ),
+        "scripts/build_release.py": (
+            "release-index.json",
+            "render_bootstrap_assets",
+            "runtime-requirements.txt",
+        ),
+        "scripts/promote_release.py": (
+            "validate_asset_set",
+            "release-index.json",
+            "redownload",
+        ),
+        "scripts/lifecycle_state.py": (
+            "dev-flow-active-release/1.0.0",
+            "dev-flow-lifecycle-transaction/1.0.0",
+            "expected_active",
+            "generation",
+            "digest",
+        ),
+        "scripts/lifecycle_machine.py": (
+            "staged_health",
+            "public_proof",
+            "rolled_back",
+            "partial",
+        ),
+        "scripts/release_lifecycle.py": (
+            "dev-flow-lifecycle-installation/1.0.0",
+            "dev-flow-uninstall",
+            "build_artifact_candidate",
+        ),
+        "scripts/stable_dispatcher.py": (
+            "dev-flow-dispatcher/1.0.0",
+            "dev-flow-runtime-receipt/3.0.0",
+            "uninstall_driver_sha256",
+        ),
+        "scripts/uninstall_driver.py": (
+            "DurableUninstaller",
+            "dev-flow-uninstall",
+            "committed",
+            "partial",
+        ),
+        "scripts/legacy_migration.py": (
+            "legacy_predecessor.json",
+            "ambiguous",
+            "checkout",
         ),
         "skills/dev-flow/SKILL.md": (
             "name: dev-flow",
@@ -346,6 +413,7 @@ REQUIRED_STATIC = (
     "INSTALL_CN.md",
     "LICENSE",
     "pyproject.toml",
+    "release-builder.json",
     "README.md",
     "README_CN.md",
     "ROADMAP.md",
@@ -354,6 +422,8 @@ REQUIRED_STATIC = (
     "skills/dev-flow/agents/openai.yaml",
     "skills/dev-flow/references/activation-and-routing.md",
     "scripts/bump_version.py",
+    "scripts/build_release.py",
+    "scripts/ci_release_smoke.py",
     "scripts/dev_flow.py",
     "scripts/dev_flow_mcp.py",
     "scripts/dev_flow_mcp_launcher",
@@ -361,8 +431,19 @@ REQUIRED_STATIC = (
     "scripts/dev_flow_python_launcher",
     "scripts/install.sh",
     "scripts/install.ps1",
+    "scripts/legacy_migration.py",
+    "scripts/legacy_predecessor.json",
+    "scripts/lifecycle_machine.py",
+    "scripts/lifecycle_state.py",
     "scripts/manage_runtime.py",
+    "scripts/promote_release.py",
+    "scripts/release_artifact.py",
+    "scripts/release_lifecycle.py",
+    "scripts/render_dispatchers.py",
+    "scripts/runtime_integrity.py",
+    "scripts/stable_dispatcher.py",
     "scripts/uninstall.sh",
+    "scripts/uninstall_driver.py",
     "scripts/uninstall.ps1",
     "scripts/validate_installed_stage1.py",
     "scripts/validate_package.py",
@@ -374,6 +455,7 @@ REQUIRED_STATIC = (
     "src/dev_flow_orchestrator/_platform/storage.py",
     "src/dev_flow_orchestrator/cli.py",
     "tests/test_bump_version.py",
+    "tests/test_artifact_managed_runtime.py",
     "src/dev_flow_orchestrator/controller.py",
     "src/dev_flow_orchestrator/delivery.py",
     "src/dev_flow_orchestrator/engine.py",
@@ -415,15 +497,24 @@ REQUIRED_STATIC = (
     "templates/personal-marketplace.example.json",
     "tests/test_install_script.py",
     "tests/test_installed_journeys.py",
+    "tests/test_legacy_migration.py",
+    "tests/test_lifecycle_machine.py",
+    "tests/test_lifecycle_state.py",
     "tests/test_managed_runtime.py",
     "tests/test_mcp_guidance.py",
     "tests/test_mcp_runtime.py",
     "tests/test_native_windows_runtime.py",
     "tests/test_posix_storage_locking.py",
+    "tests/test_release_artifact.py",
+    "tests/test_release_builder.py",
+    "tests/test_release_lifecycle.py",
+    "tests/test_render_dispatchers.py",
+    "tests/test_stable_dispatcher.py",
     "tests/test_store_state_bounds.py",
     "tests/test_windows_product_support.py",
     "tests/test_windows_lifecycle.py",
     "tests/test_uninstall_script.py",
+    "tests/test_uninstall_driver.py",
     "tests/test_read_only_inspection.py",
     "tests/test_web_lifecycle.py",
     "tests/test_web_read_models.py",
@@ -589,9 +680,11 @@ EXTERNAL_VERSION_LITERALS = {
         "dev-flow-runtime-receipt/2.0.0",
     ),
     "scripts/runtime_integrity.py": (
+        "v3 managed release",
         "dev-flow-managed-runtime/1",
         "dev-flow-plugin-release/1.0.0",
         "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-runtime-receipt/3.0.0",
         "dev-flow-runtime-ownership/1.0.0",
     ),
     # Response freshness is a release-neutral wire contract, not a persisted
@@ -606,6 +699,63 @@ EXTERNAL_VERSION_LITERALS = {
     ),
     "scripts/manage_runtime.py": (
         "dev-flow-managed-runtime/1",
+        "dev-flow-release-index/1.0.0",
+        "dev-flow-release-artifact/1.0.0",
+    ),
+    "scripts/build_release.py": (
+        "--porcelain=" + "v" + "1",
+        "dev-flow-release-builder/1.0.0",
+        "dev-flow-plugin-release/1.0.0",
+    ),
+    "scripts/promote_release.py": (
+        "dev-flow-release-promotion/1.0.0",
+    ),
+    "scripts/release_artifact.py": (
+        "dev-flow-release-index/1.0.0",
+        "dev-flow-release-artifact/1.0.0",
+        "dev-flow-release-bootstrap/1.0.0",
+        "dev-flow-bootstrap/1",
+    ),
+    "scripts/lifecycle_state.py": (
+        "dev-flow-active-release/1.0.0",
+        "dev-flow-active-generation/1.0.0",
+        "dev-flow-dispatcher/1.0.0",
+        "dev-flow-lifecycle-transaction/1.0.0",
+    ),
+    "scripts/release_lifecycle.py": (
+        "v3 release",
+        "dev-flow-lifecycle-installation/1.0.0",
+        "dev-flow-infrastructure-backup/1.0.0",
+        "dev-flow-managed-runtime/1",
+    ),
+    "scripts/render_dispatchers.py": (
+        "dev-flow-stable-dispatchers/1.0.0",
+        "dev-flow-dispatcher/1.0.0",
+    ),
+    "scripts/stable_dispatcher.py": (
+        "dev-flow-active-release/1.0.0",
+        "dev-flow-runtime-receipt/3.0.0",
+        "dev-flow-lifecycle-installation/1.0.0",
+        "dev-flow-dispatcher/1.0.0",
+    ),
+    "scripts/legacy_migration.py": (
+        "dev-flow-legacy-predecessor-fixture/1.0.0",
+        "dev-flow-proven-predecessor/1.0.0",
+    ),
+    "scripts/legacy_predecessor.json": (
+        "dev-flow-legacy-predecessor-fixture/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-runtime-ownership/1.0.0",
+        "dev-flow-install-transaction/0.4.0",
+    ),
+    "scripts/uninstall_driver.py": (
+        "_RECEIPT_" + "V" + "2_FIELDS",
+        "_RECEIPT_" + "V" + "3_FIELDS",
+        "dev-flow-lifecycle-installation/1.0.0",
+        "dev-flow-dispatcher/1.0.0",
+        "dev-flow-runtime-ownership/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-runtime-receipt/3.0.0",
     ),
     "scripts/uninstall.sh": (
         "dev-flow-managed-runtime/1",
@@ -614,17 +764,44 @@ EXTERNAL_VERSION_LITERALS = {
         "dev-flow-managed-runtime/1",
     ),
     "scripts/validate_package.py": (
+        "v3 managed release",
+        "v3 receipt",
+        "supports_v3_and_retains_drift",
+        "v3 release",
+        "v0.6.0-1234567890abcdef-tx123",
+        "v1.2.3-",
+        "v1.2.3^{commit}",
+        "v1.2.3",
         "dev-flow-mcp/1.0.0",
         "dev-flow-mcp-result/1.0.0",
         "dev-flow-mcp-action/1.0.0",
         "dev-flow-mcp-guidance/1.0.0",
         "dev-flow-runtime-receipt/1.0.0",
         "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-runtime-receipt/3.0.0",
         "dev-flow-plugin-release/1.0.0",
         "dev-flow-runtime-ownership/1.0.0",
         "dev-flow-managed-runtime/1",
         "dev-flow-workspace-freshness/1.0.0",
         "dev-flow-orchestrator/repository-authority-lock/v1",
+        "dev-flow-release-builder/1.0.0",
+        "dev-flow-release-index/1.0.0",
+        "dev-flow-release-artifact/1.0.0",
+        "dev-flow-release-bootstrap/1.0.0",
+        "dev-flow-release-promotion/1.0.0",
+        "dev-flow-active-release/1.0.0",
+        "dev-flow-active-generation/1.0.0",
+        "dev-flow-dispatcher/1.0.0",
+        "dev-flow-dispatcher/2.0.0",
+        "dev-flow-lifecycle-installation/1.0.0",
+        "dev-flow-lifecycle-transaction/1.0.0",
+        "dev-flow-infrastructure-backup/1.0.0",
+        "dev-flow-stable-dispatchers/1.0.0",
+        "dev-flow-legacy-predecessor-fixture/1.0.0",
+        "dev-flow-proven-predecessor/1.0.0",
+        "dev-flow-install-transaction/0.4.0",
+        "dev-flow-runtime-receipt/99.0.0",
+        "dev-flow-bootstrap/1",
     ),
     "tests/test_mcp_runtime.py": (
         "dev-flow-mcp-action/1.0.0",
@@ -636,6 +813,33 @@ EXTERNAL_VERSION_LITERALS = {
     "tests/test_managed_runtime.py": (
         "dev-flow-managed-runtime/1",
         "dev-flow-runtime-receipt/2.0.0",
+    ),
+    "tests/test_artifact_managed_runtime.py": (
+        "v3 receipt",
+        "test_" + "v" + "3_receipt_is_closed_and_binds_dispatcher_minimum",
+        "supports_" + "v" + "3_and_retains_drift",
+        "v0.6.0-1234567890abcdef-tx123",
+        "dev-flow-release-artifact/1.0.0",
+        "dev-flow-release-index/1.0.0",
+    ),
+    "tests/test_release_artifact.py": (
+        "v1.2.3-",
+    ),
+    "tests/test_release_builder.py": (
+        "v1.2.3^{commit}",
+        "v1.2.3",
+    ),
+    "tests/test_legacy_migration.py": (
+        "dev-flow-runtime-ownership/1.0.0",
+        "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-runtime-receipt/99.0.0",
+        "dev-flow-install-transaction/0.4.0",
+    ),
+    "tests/test_lifecycle_state.py": (
+        "dev-flow-dispatcher/2.0.0",
+    ),
+    "tests/test_render_dispatchers.py": (
+        "dev-flow-dispatcher/1.0.0",
     ),
     "tests/test_uninstall_script.py": (
         "dev-flow-managed-runtime/1",
@@ -856,10 +1060,25 @@ def _without_external_version_literals(relative: str, document: str) -> str:
         "dev-flow-mcp-guidance/1.0.0",
         "dev-flow-runtime-receipt/1.0.0",
         "dev-flow-runtime-receipt/2.0.0",
+        "dev-flow-runtime-receipt/3.0.0",
         "dev-flow-plugin-release/1.0.0",
         "dev-flow-runtime-ownership/1.0.0",
         "dev-flow-mcp-installed-evidence/1.0.0",
         "dev-flow-openspec-traceability/1.0.0",
+        "dev-flow-release-builder/1.0.0",
+        "dev-flow-release-index/1.0.0",
+        "dev-flow-release-artifact/1.0.0",
+        "dev-flow-release-bootstrap/1.0.0",
+        "dev-flow-release-promotion/1.0.0",
+        "dev-flow-active-release/1.0.0",
+        "dev-flow-active-generation/1.0.0",
+        "dev-flow-dispatcher/1.0.0",
+        "dev-flow-lifecycle-installation/1.0.0",
+        "dev-flow-lifecycle-transaction/1.0.0",
+        "dev-flow-infrastructure-backup/1.0.0",
+        "dev-flow-stable-dispatchers/1.0.0",
+        "dev-flow-legacy-predecessor-fixture/1.0.0",
+        "dev-flow-proven-predecessor/1.0.0",
     ):
         document = document.replace(literal, "<external-version>")
     return document
@@ -2826,7 +3045,7 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
             "skills/dev-flow/",
             ".mcp.json",
             "Controller 仍是唯一的状态转换权威",
-            "在密封插件快照中保留 Skill",
+            "密封插件快照中保留 Skill",
         ),
         "INSTALL.md": (
             "formal `dev-flow` Codex Skill",
@@ -2926,28 +3145,64 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
             normalized = re.sub(r"\s+", " ", documents[relative])
             _require_tokens(
                 normalized,
-                ("dev-flow.cmd", "dev-flow-mcp.cmd", "bundled", "standalone"),
+                ("dev-flow-uninstall", "bundled", "standalone", "active record"),
                 errors,
                 relative + " is missing the supported bundled Windows lifecycle boundary",
             )
             _require_any(
                 normalized,
-                ("source checkout is retained", "source checkout remains", "保留 source", "保留源码"),
+                (
+                    "every legacy checkout",
+                    "legacy source checkout remains",
+                    "每个 legacy checkout",
+                    "legacy source checkout 都保持不变",
+                ),
                 errors,
-                relative + " is missing source-retention guidance",
+                relative + " is missing legacy-checkout preservation guidance",
             )
 
     english_mode = "standalone provisioning is not supported" in documents.get("INSTALL.md", "").casefold()
     chinese_mode = "standalone provisioning" in documents.get("INSTALL_CN.md", "").casefold() and "不受支持" in documents.get("INSTALL_CN.md", "")
     _check(english_mode and chinese_mode, errors, "English and Chinese install guides disagree on bundled-only support")
 
+    install_sh = (root / "scripts/install.sh").read_text(encoding="utf-8") if (root / "scripts/install.sh").is_file() else ""
     install_ps = (root / "scripts/install.ps1").read_text(encoding="utf-8") if (root / "scripts/install.ps1").is_file() else ""
-    uninstall_ps = (root / "scripts/uninstall.ps1").read_text(encoding="utf-8") if (root / "scripts/uninstall.ps1").is_file() else ""
+    dispatcher = (root / "scripts/stable_dispatcher.py").read_text(encoding="utf-8") if (root / "scripts/stable_dispatcher.py").is_file() else ""
+    lifecycle = (root / "scripts/release_lifecycle.py").read_text(encoding="utf-8") if (root / "scripts/release_lifecycle.py").is_file() else ""
     integrity = (root / "scripts/runtime_integrity.py").read_text(encoding="utf-8") if (root / "scripts/runtime_integrity.py").is_file() else ""
-    _require_tokens(install_ps, ("dev-flow.cmd", "dev-flow-mcp.cmd", "Set-CliLauncher"), errors, "Windows CLI documentation has no installer asset")
-    _require_tokens(uninstall_ps, ("dev-flow.cmd", "$CliLauncherMarker"), errors, "Windows CLI documentation has no exact uninstaller path")
-    _require_tokens(integrity, ("cli_launcher_sha256", "ownership-manifest.json", "remove-owned"), errors, "runtime exact-ownership implementation is incomplete")
+    _require_tokens(
+        install_ps,
+        ("@DEV_FLOW_RELEASE_VERSION@", "@DEV_FLOW_INDEX_SHA256@", "@DEV_FLOW_PHASE_A_B64@"),
+        errors,
+        "Windows release bootstrap template is incomplete",
+    )
+    _require_tokens(
+        dispatcher,
+        ("dev-flow.cmd", "dev-flow-mcp.cmd", "dev-flow-uninstall.cmd", "uninstall_driver_sha256"),
+        errors,
+        "stable Windows dispatcher contract is incomplete",
+    )
+    _require_tokens(
+        lifecycle,
+        ("dev-flow", "dev-flow-mcp", "dev-flow-uninstall", "installation.json"),
+        errors,
+        "release lifecycle does not own all stable dispatchers",
+    )
+    _require_tokens(
+        integrity,
+        ("dev-flow-runtime-receipt/3.0.0", "ownership-manifest.json", "remove-owned-release"),
+        errors,
+        "artifact runtime exact-ownership implementation is incomplete",
+    )
     _check("--standalone" not in install_ps and "--standalone" not in (root / "scripts/install.sh").read_text(encoding="utf-8"), errors, "installer exposes unsupported standalone mode")
+    for label, source in (("scripts/install.sh", install_sh), ("scripts/install.ps1", install_ps)):
+        _check(
+            "DEV_FLOW_SOURCE_ROOT" in source
+            and "not supported" in source
+            and re.search(r"(?i)\\bgit\\b|refs/heads|--ff-only", source) is None,
+            errors,
+            label + " does not reject checkout-driven installation",
+        )
 
     _check(not (root / "VALIDATION_REPORT.md").exists(), errors, "stale VALIDATION_REPORT.md must not be current authority")
     for relative, document in documents.items():
@@ -3134,24 +3389,16 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
     required_tokens = {
         "scripts/install.ps1": (
             "Set-StrictMode -Version Latest",
-            "refs/heads/$RepositoryRef",
-            "--ff-only",
-            "--no-overwrite-ignore",
-            "scripts\\validate_package.py",
-            "[IO.File]::Replace",
-            "scripts\\manage_runtime.py",
-            "dev-flow-mcp.cmd",
+            "@DEV_FLOW_RELEASE_VERSION@",
+            "@DEV_FLOW_INDEX_SHA256@",
+            "@DEV_FLOW_PHASE_A_B64@",
+            "DEV_FLOW_SOURCE_ROOT is not supported",
+            "-I -S $PhaseAPath bootstrap",
         ),
         "scripts/uninstall.ps1": (
-            "[switch]$KeepSource",
-            "[IO.File]::Replace",
-            "OUTCOME        partial",
-            "SOURCE PATH",
-            "no verifiable exact-ownership manifest",
-            "independently confirm ownership",
-            "TASK DATA",
-            "runtime_integrity.py",
-            "remove-owned",
+            "Set-StrictMode -Version Latest",
+            "dev-flow-uninstall",
+            "requires neither Git nor a source checkout",
         ),
     }
     for relative, tokens in required_tokens.items():
@@ -3181,11 +3428,24 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
             errors,
             "scripts/uninstall.ps1 exposes or executes destructive source removal",
         )
+        _check(
+            "[switch]$KeepSource" not in source and "$KeepSource" not in source,
+            errors,
+            "scripts/uninstall.ps1 retains the checkout-era KeepSource interface",
+        )
+    windows_installer = root / "scripts" / "install.ps1"
+    if windows_installer.is_file():
+        source = windows_installer.read_text(encoding="utf-8")
+        _check(
+            not re.search(r"(?i)\\bgit(?:\\.exe)?\\b|refs/heads|--ff-only", source),
+            errors,
+            "scripts/install.ps1 depends on a Git checkout",
+        )
     document_tokens = {
-        "README.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "preview"),
-        "README_CN.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "预览"),
-        "INSTALL.md": ("install.ps1", "uninstall.ps1", "-KeepSource", "127.0.0.1"),
-        "INSTALL_CN.md": ("install.ps1", "uninstall.ps1", "-KeepSource", "127.0.0.1"),
+        "README.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "unverified"),
+        "README_CN.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "未验证"),
+        "INSTALL.md": ("install.ps1", "dev-flow-uninstall", "native Windows evidence"),
+        "INSTALL_CN.md": ("install.ps1", "dev-flow-uninstall", "原生 Windows"),
         "ARCHITECTURE.md": ("dev-flow-mcp", "PowerShell", "x64"),
         "ARCHITECTURE_CN.md": ("dev-flow-mcp", "PowerShell", "x64"),
         "ROADMAP.md": ("Windows 11 x64", "Windows 10 22H2 x64", "Server"),
@@ -3202,6 +3462,43 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
                 errors,
                 relative + " is missing the bounded Windows integration guidance",
             )
+
+
+def _validate_release_ci_contract(root: Path, errors: list[str]) -> None:
+    path = root / ".github" / "workflows" / "focused.yml"
+    if not path.is_file():
+        return
+    source = path.read_text(encoding="utf-8")
+    _require_tokens(
+        source,
+        (
+            "repository-regression:",
+            "installed-python-smoke:",
+            "simulated-lifecycle-contract:",
+            'python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]',
+            "uv run python scripts/ci_release_smoke.py",
+            "Hash-locked wheel-only install, import, and MCP startup",
+            "not native final-artifact or real Codex evidence",
+        ),
+        errors,
+        "focused CI does not preserve the layered release-artifact strategy",
+    )
+    _check(
+        source.count('uv run python -m unittest discover -s tests -p "test_*.py"') == 1,
+        errors,
+        "focused CI must run full unittest discovery exactly once",
+    )
+    _check(
+        re.search(r"(?m)^\s+run:\s+python(?:3)?\b", source) is None,
+        errors,
+        "focused CI bypasses the project uv environment",
+    )
+    _check(
+        "Complete supported source regression" not in source
+        and "supported-source-matrix" not in source,
+        errors,
+        "focused CI still repeats the checkout-era full lifecycle matrix",
+    )
 
 
 def _validate_local_read_only_web_ui(root: Path, errors: list[str]) -> None:
@@ -3496,35 +3793,34 @@ def _validate_current_candidate(root: Path) -> dict:
     installer = root / "scripts" / "install.sh"
     uninstaller = root / "scripts" / "uninstall.sh"
     if installer.is_file():
+        installer_source = installer.read_text(encoding="utf-8")
         _require_tokens(
-            installer.read_text(encoding="utf-8"),
+            installer_source,
             (
-                'select_path_bin_dir',
-                'PATH has no writable absolute directory',
-                '# dev-flow-orchestrator managed launcher',
-                'os.replace(str(temporary), str(target))',
-                'dev-flow web start',
+                '@DEV_FLOW_RELEASE_VERSION@',
+                '@DEV_FLOW_INDEX_SHA256@',
+                '@DEV_FLOW_PHASE_A_B64@',
+                'DEV_FLOW_SOURCE_ROOT is not supported',
+                '-I -S "$phase_a_path" bootstrap',
             ),
             errors,
-            "macOS installer does not install the owned PATH launcher",
+            "POSIX bootstrap template does not preserve the pinned Phase A boundary",
+        )
+        _check(
+            re.search(r"(?i)\\bgit\\b|refs/heads|--ff-only", installer_source) is None,
+            errors,
+            "scripts/install.sh depends on a Git checkout",
         )
     if uninstaller.is_file():
         uninstaller_source = uninstaller.read_text(encoding="utf-8")
         _require_tokens(
             uninstaller_source,
             (
-                'select_path_bin_dir',
-                'PATH has no writable absolute directory',
-                '# dev-flow-orchestrator managed launcher',
-                'grep -Fqx "$LAUNCHER_MARKER"',
-                'rm -f -- "$LAUNCHER_PATH"',
-                'OUTCOME',
-                'SOURCE PATH',
-                'no verifiable exact-ownership manifest',
-                'independently confirm ownership',
+                'dev-flow-uninstall',
+                'requires neither Git nor a source checkout',
             ),
             errors,
-            "macOS uninstaller does not preserve PATH launcher ownership",
+            "repository uninstaller does not delegate users to the stable dispatcher",
         )
         _check(
             re.search(
@@ -3540,9 +3836,15 @@ def _validate_current_candidate(root: Path) -> dict:
             errors,
             "scripts/uninstall.sh exposes destructive source removal",
         )
+        _check(
+            "--keep-source)" not in uninstaller_source,
+            errors,
+            "scripts/uninstall.sh retains the checkout-era keep-source interface",
+        )
     _validate_local_read_only_web_ui(root, errors)
     _validate_macos_storage_reliability(root, errors)
     _validate_windows_product_integration(root, errors)
+    _validate_release_ci_contract(root, errors)
     _validate_repository_topology(root, errors)
     _validate_adaptive_assurance_authority(root, errors)
     _check(

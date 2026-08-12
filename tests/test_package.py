@@ -80,13 +80,65 @@ class PackageValidationTests(unittest.TestCase):
             result["errors"],
         )
 
-    def test_public_docs_semantics_reject_missing_windows_cli_asset(self) -> None:
+    def test_public_docs_semantics_reject_incomplete_windows_bootstrap(self) -> None:
         install = self.candidate / "scripts" / "install.ps1"
         install.write_text(
-            install.read_text(encoding="utf-8").replace("dev-flow.cmd", "removed-cli.cmd"),
+            install.read_text(encoding="utf-8").replace(
+                "@DEV_FLOW_INDEX_SHA256@", "@REMOVED_INDEX_DIGEST@"
+            ),
             encoding="utf-8",
         )
-        self.assert_error_contains(validate(self.candidate), "Windows CLI documentation has no installer asset")
+        self.assert_error_contains(
+            validate(self.candidate), "Windows release bootstrap template is incomplete"
+        )
+
+    def test_release_bootstraps_reject_checkout_dependencies(self) -> None:
+        install = self.candidate / "scripts" / "install.ps1"
+        install.write_text(
+            install.read_text(encoding="utf-8") + "\ngit fetch --ff-only\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate), "scripts/install.ps1 depends on a Git checkout"
+        )
+
+    def test_uninstaller_rejects_checkout_era_keep_source_interface(self) -> None:
+        uninstall = self.candidate / "scripts" / "uninstall.ps1"
+        uninstall.write_text(
+            uninstall.read_text(encoding="utf-8") + "\nparam([switch]$KeepSource)\n",
+            encoding="utf-8",
+        )
+        self.assert_error_contains(
+            validate(self.candidate), "retains the checkout-era KeepSource interface"
+        )
+
+    def test_ci_runs_full_discovery_once_and_keeps_matrix_lightweight(self) -> None:
+        workflow = self.candidate / ".github" / "workflows" / "focused.yml"
+        source = workflow.read_text(encoding="utf-8")
+        discovery = 'uv run python -m unittest discover -s tests -p "test_*.py"'
+        workflow.write_text(source + "\n      - run: " + discovery + "\n", encoding="utf-8")
+        self.assert_error_contains(
+            validate(self.candidate), "full unittest discovery exactly once"
+        )
+
+    def test_preimport_gate_requires_artifact_receipt_and_dispatcher_contracts(self) -> None:
+        probes = (
+            ("scripts/release_artifact.py", "dev-flow-release-index/1.0.0"),
+            ("scripts/runtime_integrity.py", "dev-flow-runtime-receipt/3.0.0"),
+            ("scripts/stable_dispatcher.py", "uninstall_driver_sha256"),
+        )
+        for relative, token in probes:
+            with self.subTest(relative=relative):
+                path = self.candidate / relative
+                original = path.read_text(encoding="utf-8")
+                changed = original.replace(token, "removed-contract-token")
+                self.assertNotEqual(changed, original)
+                path.write_text(changed, encoding="utf-8")
+                self.assert_error_contains(
+                    validate(self.candidate),
+                    "pre-import candidate source is incomplete: " + relative,
+                )
+                path.write_text(original, encoding="utf-8")
 
     def test_public_docs_semantics_reject_unsupported_standalone_provisioning(self) -> None:
         install = self.candidate / "INSTALL.md"
@@ -117,13 +169,17 @@ class PackageValidationTests(unittest.TestCase):
         )
         self.assert_error_contains(validate(self.candidate), "restores obsolete Hook authority")
 
-    def test_public_docs_semantics_reject_source_removal_claim(self) -> None:
+    def test_public_docs_semantics_require_legacy_checkout_preservation(self) -> None:
         install = self.candidate / "INSTALL.md"
         install.write_text(
-            install.read_text(encoding="utf-8").replace("source checkout is retained", "source checkout is deleted"),
+            install.read_text(encoding="utf-8")
+            .replace("every legacy checkout", "all predecessor material")
+            .replace("The legacy source checkout remains untouched and retained", "The predecessor is unspecified"),
             encoding="utf-8",
         )
-        self.assert_error_contains(validate(self.candidate), "missing source-retention guidance")
+        self.assert_error_contains(
+            validate(self.candidate), "missing legacy-checkout preservation guidance"
+        )
 
     def test_stale_validation_report_cannot_become_current_authority(self) -> None:
         (self.candidate / "VALIDATION_REPORT.md").write_text("stale\n", encoding="utf-8")
@@ -354,7 +410,7 @@ class PackageValidationTests(unittest.TestCase):
         current = roadmap.read_text(encoding="utf-8")
         roadmap.write_text(
             current.replace(
-                "full unittest discovery",
+                "Full unittest discovery",
                 "partial module list",
             ),
             encoding="utf-8",

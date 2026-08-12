@@ -1,0 +1,15 @@
+{
+  "schema": "dev-flow-legacy-predecessor-fixture/1.0.0",
+  "plugin_id": "dev-flow-orchestrator@personal",
+  "runtime_receipt_schema": "dev-flow-runtime-receipt/2.0.0",
+  "ownership_schema": "dev-flow-runtime-ownership/1.0.0",
+  "transaction_schema": "dev-flow-install-transaction/0.4.0",
+  "transaction_outcome": "committed",
+  "transaction_step": "committed",
+  "launcher_markers": {
+    "posix_cli": "# dev-flow-orchestrator managed launcher",
+    "posix_mcp": "# dev-flow-orchestrator managed MCP launcher",
+    "windows_cli": "rem dev-flow-orchestrator managed CLI launcher",
+    "windows_mcp": "rem dev-flow-orchestrator managed MCP launcher"
+  }
+}

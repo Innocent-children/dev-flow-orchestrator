@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+from email.parser import BytesParser
+from email.policy import compat32
 import importlib.util
 import json
 import os
@@ -19,6 +21,7 @@ import sys
 import tempfile
 import time
 from typing import Any
+import zipfile
 
 
 sys.dont_write_bytecode = True
@@ -45,20 +48,29 @@ def _run(
     *,
     cwd: Path,
     extra_environment: dict[str, str] | None = None,
+    timeout: float = 180.0,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     if extra_environment:
         environment.update(extra_environment)
-    completed = subprocess.run(
-        arguments,
-        cwd=cwd,
-        env=environment,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            arguments,
+            cwd=cwd,
+            env=environment,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeBuildError(
+            "command could not complete within its bounded execution: {}".format(
+                Path(arguments[0]).name
+            )
+        ) from exc
     if completed.returncode:
         raise RuntimeBuildError(
             "command failed with exit status {}: {}; {}".format(
@@ -98,6 +110,180 @@ def _target_exists(path: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+def _regular_file(path: Path, label: str) -> Path:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise RuntimeBuildError("{} is unavailable".format(label)) from exc
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise RuntimeBuildError("{} must be a regular file".format(label))
+    return path
+
+
+def _regular_directory(path: Path, label: str) -> Path:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise RuntimeBuildError("{} is unavailable".format(label)) from exc
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise RuntimeBuildError("{} must be a regular directory".format(label))
+    return path
+
+
+def _strict_index_identity(
+    index_path: Path,
+    expected_index_sha256: str,
+) -> dict[str, object]:
+    if integrity.sha256_file(_regular_file(index_path, "verified release index")) != expected_index_sha256:
+        raise RuntimeBuildError("release index digest differs from Phase A evidence")
+    value = integrity.read_json(index_path)
+    fields = {
+        "schema", "artifact_schema", "repository", "version", "source_commit",
+        "source_tree", "archive", "manifest_sha256", "limits",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise RuntimeBuildError("release index fields are invalid")
+    if value.get("schema") != "dev-flow-release-index/1.0.0":
+        raise RuntimeBuildError("release index schema is incompatible")
+    if value.get("artifact_schema") != "dev-flow-release-artifact/1.0.0":
+        raise RuntimeBuildError("release artifact schema is incompatible")
+    if value.get("repository") != integrity.CANONICAL_REPOSITORY:
+        raise RuntimeBuildError("release index repository is invalid")
+    version = value.get("version")
+    if not isinstance(version, str) or not integrity._VERSION.fullmatch(version):
+        raise RuntimeBuildError("release index version is invalid")
+    try:
+        integrity._validate_hex(value.get("source_commit"), label="source commit", length=40)
+        integrity._validate_hex(value.get("source_tree"), label="source tree", length=40)
+        integrity._validate_hex(value.get("manifest_sha256"), label="artifact manifest digest")
+        integrity._validate_hex(expected_index_sha256, label="release index digest")
+    except integrity.IntegrityError as exc:
+        raise RuntimeBuildError(str(exc)) from exc
+    archive = value.get("archive")
+    if not isinstance(archive, dict) or set(archive) != {"name", "size", "sha256"}:
+        raise RuntimeBuildError("release index archive identity is invalid")
+    expected_archive_name = "dev-flow-orchestrator-{}.tar.gz".format(version)
+    if archive.get("name") != expected_archive_name:
+        raise RuntimeBuildError("release index archive name is invalid")
+    if (
+        isinstance(archive.get("size"), bool)
+        or not isinstance(archive.get("size"), int)
+        or int(archive["size"]) <= 0
+    ):
+        raise RuntimeBuildError("release index archive size is invalid")
+    try:
+        integrity._validate_hex(archive.get("sha256"), label="release archive digest")
+    except integrity.IntegrityError as exc:
+        raise RuntimeBuildError(str(exc)) from exc
+    limit_fields = {
+        "index_bytes", "manifest_bytes", "archive_bytes", "entry_count",
+        "component_length", "path_length", "nesting_depth", "file_bytes", "total_bytes",
+    }
+    limits = value.get("limits")
+    if not isinstance(limits, dict) or set(limits) != limit_fields:
+        raise RuntimeBuildError("release index resource limits are invalid")
+    if any(
+        isinstance(limits[field], bool)
+        or not isinstance(limits[field], int)
+        or int(limits[field]) <= 0
+        for field in limit_fields
+    ):
+        raise RuntimeBuildError("release index resource limits are invalid")
+    return value
+
+
+def _artifact_manifest_identity(
+    artifact_root: Path,
+    index: dict[str, object],
+) -> Path:
+    manifest_path = _regular_file(
+        artifact_root / "release-manifest.json", "artifact release manifest"
+    )
+    if integrity.sha256_file(manifest_path) != index["manifest_sha256"]:
+        raise RuntimeBuildError("artifact release manifest differs from the release index")
+    value = integrity.read_json(manifest_path)
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "version", "entries"}
+        or value.get("schema") != "dev-flow-release-artifact/1.0.0"
+        or value.get("version") != index["version"]
+        or not isinstance(value.get("entries"), list)
+    ):
+        raise RuntimeBuildError("artifact release manifest identity is invalid")
+    return manifest_path
+
+
+def _project_wheel(artifact_root: Path, version: str) -> Path:
+    wheels_root = _regular_directory(artifact_root / "wheels", "artifact wheels directory")
+    try:
+        entries = list(wheels_root.iterdir())
+    except OSError as exc:
+        raise RuntimeBuildError("artifact wheels directory cannot be enumerated") from exc
+    expected_name = "dev_flow_orchestrator-{}-py3-none-any.whl".format(version)
+    if len(entries) != 1 or entries[0].name != expected_name:
+        raise RuntimeBuildError("artifact must contain exactly one version-matched pure-Python wheel")
+    wheel = _regular_file(entries[0], "supplied project wheel")
+    try:
+        with zipfile.ZipFile(wheel, "r") as archive:
+            wheel_metadata_names = [
+                name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")
+            ]
+            project_metadata_names = [
+                name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+            ]
+            if len(wheel_metadata_names) != 1 or len(project_metadata_names) != 1:
+                raise RuntimeBuildError("supplied project wheel metadata topology is invalid")
+            wheel_metadata = BytesParser(policy=compat32).parsebytes(
+                archive.read(wheel_metadata_names[0])
+            )
+            project_metadata = BytesParser(policy=compat32).parsebytes(
+                archive.read(project_metadata_names[0])
+            )
+    except (OSError, KeyError, zipfile.BadZipFile) as exc:
+        raise RuntimeBuildError("supplied project wheel is malformed") from exc
+    if (
+        wheel_metadata.get("Root-Is-Purelib", "").casefold() != "true"
+        or "py3-none-any" not in wheel_metadata.get_all("Tag", [])
+        or project_metadata.get("Name") != "dev-flow-orchestrator"
+        or project_metadata.get("Version") != version
+    ):
+        raise RuntimeBuildError("supplied project wheel identity is invalid")
+    return wheel
+
+
+def _copy_regular_tree(source: Path, destination: Path, label: str) -> None:
+    _regular_directory(source, label)
+    if _target_exists(destination):
+        raise RuntimeBuildError("{} destination already exists".format(label))
+    destination.mkdir(mode=0o700)
+    pending = [(source, destination)]
+    while pending:
+        source_parent, destination_parent = pending.pop()
+        try:
+            children = sorted(source_parent.iterdir(), key=lambda item: item.name)
+        except OSError as exc:
+            raise RuntimeBuildError("{} cannot be enumerated".format(label)) from exc
+        directories: list[tuple[Path, Path]] = []
+        for source_child in children:
+            destination_child = destination_parent / source_child.name
+            try:
+                metadata = source_child.lstat()
+            except OSError as exc:
+                raise RuntimeBuildError("{} entry cannot be inspected".format(label)) from exc
+            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                destination_child.mkdir(mode=stat.S_IMODE(metadata.st_mode))
+                directories.append((source_child, destination_child))
+            elif stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                with source_child.open("rb") as input_stream, destination_child.open("xb") as output_stream:
+                    shutil.copyfileobj(input_stream, output_stream, length=128 * 1024)
+                destination_child.chmod(stat.S_IMODE(metadata.st_mode))
+                if integrity.sha256_file(source_child) != integrity.sha256_file(destination_child):
+                    raise RuntimeBuildError("{} changed while it was copied".format(label))
+            else:
+                raise RuntimeBuildError("{} contains a linked or special entry".format(label))
+        pending.extend(reversed(directories))
 
 
 def _python_probe(runtime_python: Path, scratch: Path) -> dict[str, Any]:
@@ -153,7 +339,7 @@ def _smoke(plugin_root: Path, runtime_python: Path, scratch: Path) -> None:
             "--launcher-arg=-I",
             "--launcher-arg=-m",
             "--launcher-arg=dev_flow_orchestrator.mcp",
-            "--smoke-only",
+            "--candidate-smoke-only",
         ],
         cwd=scratch,
     )
@@ -162,10 +348,11 @@ def _smoke(plugin_root: Path, runtime_python: Path, scratch: Path) -> None:
     if (
         not isinstance(journey, dict)
         or journey.get("read_smoke") is not True
-        or journey.get("mutation_smoke") is not True
-        or journey.get("terminal_status") != "CANCELLED"
+        or journey.get("candidate_smoke") is not True
+        or journey.get("mutation_smoke") is not False
+        or journey.get("terminal_status") is not None
     ):
-        raise RuntimeBuildError("staged MCP STDIO initialize/catalog/read/mutation smoke failed")
+        raise RuntimeBuildError("checkout-free staged Skill/MCP health check failed")
 
 
 def _render_launcher(target: Path, staging: Path, release_id: str) -> Path:
@@ -248,6 +435,66 @@ def _verify_with_runtime(
     return receipt
 
 
+def _verify_artifact_with_runtime(
+    *,
+    runtime_dir: Path,
+    recorded_target: Path,
+    helper: Path,
+    release_id: str,
+    transaction_id: str,
+    allow_staging: bool,
+) -> dict[str, object]:
+    arguments = [
+        str(_python(runtime_dir / "venv")),
+        "-B",
+        "-I",
+        str(helper),
+        "verify-artifact-runtime",
+        "--runtime-dir",
+        str(runtime_dir),
+        "--release-id",
+        release_id,
+        "--transaction-id",
+        transaction_id,
+    ]
+    if allow_staging:
+        arguments.append("--allow-staging")
+    result = _json_output(
+        _run(arguments, cwd=runtime_dir), "managed artifact runtime verifier"
+    )
+    receipt = result.get("receipt")
+    if not isinstance(receipt, dict) or receipt.get("runtime_path") != str(recorded_target):
+        raise RuntimeBuildError("managed artifact verifier returned the wrong release")
+    return receipt
+
+
+def _artifact_runtime_result(
+    target: Path,
+    receipt: dict[str, object],
+) -> dict[str, object]:
+    receipt_path = target / RUNTIME_RECEIPT_NAME
+    return {
+        "ok": True,
+        "reused": False,
+        "release_id": receipt["release_id"],
+        "version": receipt["version"],
+        "transaction_id": receipt["transaction_id"],
+        "runtime_dir": str(target),
+        "plugin_root": str(target / "plugin"),
+        "receipt": receipt,
+        "receipt_path": str(receipt_path),
+        "receipt_sha256": integrity.sha256_file(receipt_path),
+        "ownership_manifest_path": str(target / OWNERSHIP_MANIFEST_NAME),
+        "ownership_manifest_sha256": receipt["ownership_manifest_sha256"],
+        "verifier_path": str(target / "integrity" / "runtime_integrity.py"),
+        "verifier_sha256": receipt["verifier_sha256"],
+        "lifecycle_root": str(target / "lifecycle"),
+        "artifact_sha256": receipt["archive_sha256"],
+        "staged_health": True,
+        "retained_paths": [],
+    }
+
+
 def _runtime_result(
     target: Path,
     receipt: dict[str, object],
@@ -276,6 +523,299 @@ def _runtime_result(
         "cli_launcher_sha256": receipt["cli_launcher_sha256"],
         "retained_paths": retained_paths,
     }
+
+
+def build_artifact_candidate(
+    artifact_root: Path,
+    runtime_root: Path,
+    release_index_path: Path,
+    release_index_sha256: str,
+    transaction_id: str,
+    data_root: Path | None = None,
+    *,
+    expected_release_id: str | None = None,
+) -> dict[str, object]:
+    """Build one transaction-owned candidate from a Phase-A-verified artifact.
+
+    This Phase B entry point never builds project source.  It installs only the
+    supplied pure-Python wheel plus hash-locked, wheel-only requirements, then
+    fully attests and smoke-tests the candidate without reading public active
+    authority.
+    """
+
+    selected_artifact = artifact_root.expanduser()
+    _regular_directory(selected_artifact, "verified artifact root")
+    artifact_root = selected_artifact.resolve()
+    index = _strict_index_identity(
+        release_index_path.expanduser(), release_index_sha256
+    )
+    version = str(index["version"])
+    expected_artifact_name = "dev-flow-orchestrator-{}".format(version)
+    if artifact_root.name != expected_artifact_name:
+        raise RuntimeBuildError("verified artifact root name is invalid")
+    manifest_path = _artifact_manifest_identity(artifact_root, index)
+    manifest_digest = str(index["manifest_sha256"])
+    transaction_id = integrity._validate_transaction_id(transaction_id)
+    release_id = "v{}-{}-{}".format(
+        version, manifest_digest[:16], transaction_id
+    )
+    try:
+        release_id = integrity._validate_release_id(release_id)
+    except integrity.IntegrityError as exc:
+        raise RuntimeBuildError(
+            "transaction_id cannot form the required candidate release_id"
+        ) from exc
+    if expected_release_id is not None and expected_release_id != release_id:
+        raise RuntimeBuildError("candidate release_id differs from its artifact and transaction")
+    source_commit = str(index["source_commit"])
+    source_tree = str(index["source_tree"])
+    plugin_source = artifact_root / "plugin"
+    try:
+        sealed_plugin = integrity.verify_plugin_release(
+            plugin_source,
+            source_commit=source_commit,
+            source_tree=source_tree,
+        )
+    except integrity.IntegrityError as exc:
+        raise RuntimeBuildError(str(exc)) from exc
+    plugin_manifest = integrity.read_json(
+        plugin_source / ".codex-plugin" / "plugin.json"
+    )
+    if (
+        not isinstance(plugin_manifest, dict)
+        or plugin_manifest.get("name") != "dev-flow-orchestrator"
+        or plugin_manifest.get("version") != version
+    ):
+        raise RuntimeBuildError("artifact plugin identity differs from the release index")
+    wheel_source = _project_wheel(artifact_root, version)
+    requirements_source = _regular_file(
+        artifact_root / "runtime-requirements.txt", "runtime requirements"
+    )
+    lock_source = _regular_file(artifact_root / "uv.lock", "artifact uv.lock")
+    lifecycle_source = _regular_directory(
+        artifact_root / "lifecycle", "versioned lifecycle helpers"
+    )
+    required_lifecycle = {
+        "manage_runtime.py",
+        "release_artifact.py",
+        "release_lifecycle.py",
+        "runtime_integrity.py",
+        "validate_installed_stage1.py",
+    }
+    if not all(
+        _regular_file(lifecycle_source / name, "versioned lifecycle helper").is_file()
+        for name in required_lifecycle
+    ):
+        raise RuntimeBuildError("required versioned lifecycle helpers are missing")
+
+    selected_runtime_root = runtime_root.expanduser()
+    if selected_runtime_root.is_symlink():
+        raise RuntimeBuildError("managed runtime root must not be a symbolic link")
+    runtime_root_existed = selected_runtime_root.exists()
+    runtime_root = selected_runtime_root.resolve()
+    if _inside(runtime_root, artifact_root) or _inside(artifact_root, runtime_root):
+        raise RuntimeBuildError("managed runtime and artifact root must be disjoint")
+    if data_root is not None:
+        selected_data_root = data_root.expanduser().resolve()
+        if _inside(runtime_root, selected_data_root) or _inside(selected_data_root, runtime_root):
+            raise RuntimeBuildError("managed runtime and task data must be disjoint")
+    if not ((3, 10) <= sys.version_info[:2] < (3, 15)) or struct.calcsize("P") != 8:
+        raise RuntimeBuildError("managed runtime requires 64-bit Python 3.10 through 3.14")
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeBuildError("uv is required to install the exact artifact runtime")
+    marker = runtime_root / ROOT_MARKER
+    if runtime_root_existed:
+        _regular_directory(runtime_root, "managed runtime root")
+        if (
+            not marker.is_file()
+            or marker.is_symlink()
+            or marker.read_bytes() != b"dev-flow-managed-runtime/1\n"
+        ):
+            raise RuntimeBuildError("existing managed runtime root has no valid ownership marker")
+    else:
+        runtime_root.mkdir(parents=True, exist_ok=False)
+        marker.write_bytes(b"dev-flow-managed-runtime/1\n")
+        marker.chmod(0o600)
+    releases = runtime_root / "releases"
+    if _target_exists(releases):
+        _regular_directory(releases, "managed releases path")
+    else:
+        releases.mkdir(mode=0o700)
+    target = releases / release_id
+    if _target_exists(target):
+        raise RuntimeBuildError("transaction-owned candidate release path already exists")
+
+    with tempfile.TemporaryDirectory(
+        prefix=".candidate-{}-".format(transaction_id), dir=str(releases)
+    ) as transaction_text:
+        transaction = Path(transaction_text)
+        staging = transaction / "runtime"
+        staging.mkdir(mode=0o700)
+        try:
+            staged_plugin = staging / "plugin"
+            staged_plugin_manifest = integrity.copy_plugin_release(
+                plugin_source, staged_plugin
+            )
+        except integrity.IntegrityError as exc:
+            raise RuntimeBuildError(str(exc)) from exc
+        lifecycle = staging / "lifecycle"
+        _copy_regular_tree(lifecycle_source, lifecycle, "versioned lifecycle helpers")
+        verifier_directory = staging / "integrity"
+        verifier_directory.mkdir(mode=0o700)
+        verifier = verifier_directory / "runtime_integrity.py"
+        shutil.copyfile(lifecycle / "runtime_integrity.py", verifier)
+        verifier.chmod(0o644)
+        evidence = staging / "artifact"
+        evidence.mkdir(mode=0o700)
+        evidence_wheels = evidence / "wheels"
+        evidence_wheels.mkdir(mode=0o700)
+        copied_manifest = evidence / "release-manifest.json"
+        copied_requirements = evidence / "runtime-requirements.txt"
+        copied_lock = evidence / "uv.lock"
+        copied_wheel = evidence_wheels / wheel_source.name
+        for source, destination in (
+            (manifest_path, copied_manifest),
+            (requirements_source, copied_requirements),
+            (lock_source, copied_lock),
+            (wheel_source, copied_wheel),
+        ):
+            shutil.copyfile(source, destination)
+            destination.chmod(0o644)
+            if integrity.sha256_file(source) != integrity.sha256_file(destination):
+                raise RuntimeBuildError("artifact evidence changed while it was copied")
+        venv = staging / "venv"
+        cache = transaction / "uv-cache"
+        uv_environment = {"UV_CACHE_DIR": str(cache)}
+        _run(
+            [uv, "venv", "--python", sys.executable, str(venv)],
+            cwd=transaction,
+            extra_environment=uv_environment,
+        )
+        runtime_python = _python(venv)
+        _run(
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(runtime_python),
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                str(copied_requirements),
+            ],
+            cwd=transaction,
+            extra_environment=uv_environment,
+        )
+        _run(
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(runtime_python),
+                "--no-deps",
+                "--only-binary",
+                ":all:",
+                str(copied_wheel),
+            ],
+            cwd=transaction,
+            extra_environment=uv_environment,
+        )
+        _python_probe(runtime_python, transaction)
+        try:
+            integrity.verify_plugin_release(
+                plugin_source, source_commit=source_commit, source_tree=source_tree
+            )
+            staged_plugin_manifest = integrity.verify_plugin_release(
+                staged_plugin, source_commit=source_commit, source_tree=source_tree
+            )
+        except integrity.IntegrityError as exc:
+            raise RuntimeBuildError(str(exc)) from exc
+        ownership = integrity.build_ownership_manifest(staging, release_id)
+        ownership_path = staging / OWNERSHIP_MANIFEST_NAME
+        ownership_path.write_bytes(integrity.pretty_json_bytes(ownership))
+        receipt_result = _json_output(
+            _run(
+                [
+                    str(runtime_python),
+                    "-B",
+                    "-I",
+                    str(verifier),
+                    "build-artifact-receipt",
+                    "--physical-runtime",
+                    str(staging),
+                    "--recorded-runtime",
+                    str(target),
+                    "--release-id",
+                    release_id,
+                    "--version",
+                    version,
+                    "--transaction-id",
+                    transaction_id,
+                    "--source-commit",
+                    source_commit,
+                    "--source-tree",
+                    source_tree,
+                    "--release-index-sha256",
+                    release_index_sha256,
+                    "--archive-sha256",
+                    str(index["archive"]["sha256"]),
+                    "--artifact-manifest",
+                    str(copied_manifest),
+                    "--wheel",
+                    str(copied_wheel),
+                    "--runtime-requirements",
+                    str(copied_requirements),
+                    "--uv-lock",
+                    str(copied_lock),
+                    "--plugin-release-manifest-sha256",
+                    str(staged_plugin_manifest["manifest_sha256"]),
+                    "--verifier",
+                    str(verifier),
+                    "--ownership-manifest",
+                    str(ownership_path),
+                ],
+                cwd=transaction,
+            ),
+            "artifact runtime receipt builder",
+        )
+        receipt = receipt_result.get("receipt")
+        if not isinstance(receipt, dict):
+            raise RuntimeBuildError("artifact runtime receipt builder returned no receipt")
+        try:
+            receipt = integrity.validate_artifact_runtime_receipt(receipt)
+        except integrity.IntegrityError as exc:
+            raise RuntimeBuildError(str(exc)) from exc
+        (staging / RUNTIME_RECEIPT_NAME).write_bytes(
+            integrity.pretty_json_bytes(receipt)
+        )
+        _verify_artifact_with_runtime(
+            runtime_dir=staging,
+            recorded_target=target,
+            helper=verifier,
+            release_id=release_id,
+            transaction_id=transaction_id,
+            allow_staging=True,
+        )
+        _smoke(staged_plugin, runtime_python, transaction)
+        os.replace(staging, target)
+        final_helper = target / "integrity" / "runtime_integrity.py"
+        receipt = _verify_artifact_with_runtime(
+            runtime_dir=target,
+            recorded_target=target,
+            helper=final_helper,
+            release_id=release_id,
+            transaction_id=transaction_id,
+            allow_staging=False,
+        )
+        return _artifact_runtime_result(target, receipt)
+
+
+# Short public name used by versioned lifecycle helpers.
+build_artifact = build_artifact_candidate
 
 
 def build(
@@ -520,22 +1060,45 @@ def build(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source-root", required=True)
+    parser.add_argument("--source-root")
+    parser.add_argument("--artifact-root")
+    parser.add_argument("--release-index")
+    parser.add_argument("--release-index-sha256")
+    parser.add_argument("--transaction-id")
     parser.add_argument("--runtime-root", required=True)
-    parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--source-tree", required=True)
-    parser.add_argument("--release-id", required=True)
+    parser.add_argument("--source-commit")
+    parser.add_argument("--source-tree")
+    parser.add_argument("--release-id")
     parser.add_argument("--data-root")
     arguments = parser.parse_args(argv)
     try:
-        result = build(
-            Path(arguments.source_root),
-            Path(arguments.runtime_root),
-            arguments.source_commit,
-            arguments.source_tree,
-            arguments.release_id,
-            Path(arguments.data_root) if arguments.data_root else None,
-        )
+        if "DEV_FLOW_SOURCE_ROOT" in os.environ:
+            raise RuntimeBuildError(
+                "DEV_FLOW_SOURCE_ROOT is unsupported; rerun the exact-version artifact bootstrap"
+            )
+        if arguments.artifact_root is not None:
+            if arguments.source_root is not None:
+                raise RuntimeBuildError("artifact and checkout runtime inputs are mutually exclusive")
+            if (
+                arguments.release_index is None
+                or arguments.release_index_sha256 is None
+                or arguments.transaction_id is None
+            ):
+                raise RuntimeBuildError("artifact runtime inputs are incomplete")
+            result = build_artifact_candidate(
+                Path(arguments.artifact_root),
+                Path(arguments.runtime_root),
+                Path(arguments.release_index),
+                arguments.release_index_sha256,
+                arguments.transaction_id,
+                Path(arguments.data_root) if arguments.data_root else None,
+                expected_release_id=arguments.release_id,
+            )
+        else:
+            raise RuntimeBuildError(
+                "checkout-driven runtime construction is unsupported; "
+                "rerun the exact-version artifact bootstrap"
+            )
     except (OSError, RuntimeBuildError, ValueError, integrity.IntegrityError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
         return 1
