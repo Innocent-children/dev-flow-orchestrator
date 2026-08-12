@@ -1,4 +1,5 @@
 schema: spec-driven
 created: 2026-08-12
-goal: Install and maintain Dev Flow Orchestrator from a verified versioned release
-  artifact without retaining a Git checkout.
+goal: Replace persistent Git-checkout installation with a verified versioned release
+  artifact and a bounded lifecycle that preserves existing plugin, runtime,
+  task-data, and Controller authority boundaries.

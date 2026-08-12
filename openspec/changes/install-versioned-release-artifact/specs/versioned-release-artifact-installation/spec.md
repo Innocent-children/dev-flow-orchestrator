@@ -1,180 +1,153 @@
 ## ADDED Requirements
 
-### Requirement: Release production emits one complete immutable artifact
-For every published product version, release production SHALL build one platform-neutral `dev-flow-orchestrator-<version>.tar.gz`, one `release-index.json`, and version-matched macOS and Windows bootstrap installers from an exact clean tagged commit. The archive SHALL contain the complete sealed Codex plugin tree, one project wheel, hash-locked runtime requirements, lifecycle and integrity helpers, and a closed embedded release manifest.
+### Requirement: Release production emits one closed version-addressed artifact
+For each `MAJOR.MINOR.PATCH` release, production SHALL build one platform-neutral archive, one `release-index.json`, and version-matched macOS and Windows bootstraps from an exact clean `v<version>` tag.
 
-The release index SHALL bind the product version, canonical repository, source commit and tree, exact archive name, archive SHA-256, archive size bound, and embedded-manifest SHA-256. The embedded manifest SHALL inventory every payload member by normalized relative path, type, mode, size, and SHA-256. Product version and component identity SHALL agree across the tag, index, plugin manifest, wheel metadata, requirements provenance, and embedded manifest.
+The archive SHALL contain one top-level directory with the complete `plugin/**` tree, exactly one pure-Python project wheel, `runtime-requirements.txt`, the `uv.lock` used to produce it, versioned `lifecycle/**` helpers, and `release-manifest.json`. The plugin tree SHALL include `.codex-plugin/plugin.json`, `.mcp.json`, and `skills/dev-flow/**`.
 
-The archive SHALL have one top-level directory and SHALL contain only declared regular files and directories. Release validation SHALL reject duplicate or case-colliding normalized paths, absolute paths, parent traversal, links, devices, FIFOs, undeclared members, missing members, and local paths or credentials. Archive construction SHALL normalize ordering, timestamps, ownership, permissions, and compression metadata so repeated builds from the same inputs produce identical archive and manifest digests.
+The closed index SHALL bind repository, version, source commit and tree as builder assertions, archive name, size and SHA-256, raw manifest SHA-256, and schema. The closed manifest SHALL inventory every descendant except itself; file entries bind path, type, mode, size and SHA-256, while directory entries bind path, type and mode.
 
-#### Scenario: Valid release artifact is produced
-- **WHEN** release automation builds an artifact from an exact clean tagged commit whose version metadata agrees
-- **THEN** the published index, archive, embedded manifest, plugin tree, wheel, requirements, and lifecycle helpers pass package and release validation with one shared version and immutable content identity
+Member paths SHALL use `/` and a portable ASCII component grammar. Validation SHALL reject traversal, absolute or drive paths, backslashes, colons, control characters, case collisions, trailing dots or spaces, Windows device names, links, sparse or special entries, unsupported tar features, resource-limit violations, and missing, extra or undeclared members. Dependencies SHALL be hash-locked and wheel-only. A pinned builder and closed input allow-list SHALL produce identical payload digests and archive bytes in two clean builds.
 
-#### Scenario: Component version or content disagrees
-- **WHEN** the tag, plugin manifest, wheel metadata, requirements provenance, embedded manifest, or archive bytes disagree with the release index
-- **THEN** publication fails and no asset set is reported as a valid product release
+#### Scenario: Valid release set is produced
+- **WHEN** version, topology, wheel, lock, requirements, manifest and source assertions agree
+- **THEN** all four assets pass validation with one release identity
 
-#### Scenario: Archive contains an unsafe or undeclared member
-- **WHEN** a candidate archive contains a path collision, traversal, link, special member, undeclared entry, or entry outside its single top-level directory
-- **THEN** release validation rejects the archive before publication
+#### Scenario: Manifest avoids self-reference
+- **WHEN** the manifest is generated
+- **THEN** it excludes itself and the index pins its raw UTF-8 bytes
 
-#### Scenario: Release build is repeated
-- **WHEN** the same tagged source and locked dependency inputs are assembled twice in clean release environments
-- **THEN** the logical manifest, archive SHA-256, and every payload digest are identical
+#### Scenario: Existing version would be replaced
+- **WHEN** promotion finds assets for the same version
+- **THEN** promotion refuses replacement rather than redefining that version
 
-### Requirement: Bootstrap verifies the official release before executing artifact code
-The public bootstrap installer SHALL select one exact version and accept release assets only from the canonical HTTPS GitHub Release path for the configured official repository and that version. A bootstrap obtained through the `latest` release route SHALL carry the selected version and SHALL use version-specific asset locators thereafter. Redirects SHALL remain HTTPS and preserve the exact expected asset names.
+### Requirement: Bootstrap verifies release bytes before artifact code or product mutation
+Each bootstrap SHALL hard-code the canonical repository, exact version, archive name, expected raw index SHA-256, and bootstrap schema. Production options SHALL NOT select another origin. A bootstrap reached through `latest` SHALL use only version-specific release URLs after execution begins.
 
-The bootstrap SHALL download the release index and archive into a newly created installer-owned temporary directory. Before executing any artifact-provided helper or mutating runtime, lifecycle, launcher, marketplace, plugin, MCP, or Codex state, it SHALL validate the closed index schema and source identity, enforce download and declared-size bounds, verify the archive SHA-256, inspect every archive header and normalized member path, extract without following links or overwriting existing paths, verify the embedded-manifest digest, and verify the complete extracted inventory.
+Both bootstraps SHALL embed the same standard-library Phase A verifier. Under fixed hard caps it SHALL verify the index digest before parsing, parse strict closed JSON, verify repository and version, verify the archive before extraction, inspect every member, extract exclusively into a new empty installer-owned directory without following links or reparse ancestors, verify the raw manifest digest, compare the complete inventory, and statically validate package topology.
 
-Temporary acquisition and extraction paths SHALL NOT become installed authorities. The installer SHALL remove its temporary content after every success or handled failure and SHALL report any cleanup limitation without claiming a clean result.
+Only after Phase A succeeds MAY Phase B execute artifact helpers, import artifact modules, run artifact subprocesses, install wheel-only locked dependencies, or build a candidate runtime. No runtime, lifecycle, dispatcher, marketplace, plugin, MCP, Codex, active-record, or transaction authority SHALL change before Phase A succeeds. Temporary acquisition paths SHALL never become installed or rollback authority.
 
-#### Scenario: Official versioned artifact passes verification
-- **WHEN** the selected version's canonical release index, archive digest, archive members, embedded manifest, and extracted inventory all agree
-- **THEN** the bootstrap may pass the verified artifact root to package validation and managed-runtime staging
+#### Scenario: Verified artifact enters Phase B
+- **WHEN** index, archive, members, manifest, inventory and topology agree
+- **THEN** the verified artifact root may enter semantic validation and candidate construction
 
-#### Scenario: Archive digest or manifest digest mismatches
-- **WHEN** downloaded archive bytes do not match the index or the embedded manifest does not match the digest pinned by the index
-- **THEN** installation fails before executing artifact code or mutating any installed component
+#### Scenario: Any pinned digest differs
+- **WHEN** index, archive or manifest bytes fail the expected digest
+- **THEN** installation stops before artifact code executes or product state changes
 
-#### Scenario: Downloaded archive is unsafe
-- **WHEN** archive inspection finds an oversized, duplicate, case-colliding, absolute, traversing, linked, special, undeclared, or out-of-root member
-- **THEN** extraction and installation fail with the existing installation unchanged
+#### Scenario: Extraction boundary is unsafe
+- **WHEN** a member, destination, ancestor, inventory or resource bound violates Phase A
+- **THEN** installation fails with prior authority unchanged
 
-#### Scenario: Release locator is not canonical
-- **WHEN** a public installation attempts to acquire the index or archive from a non-HTTPS, different-repository, different-version, or unexpected asset locator
-- **THEN** the bootstrap rejects the locator before downloading or mutating product state
+### Requirement: Installation requires no checkout and has one active authority
+macOS and native Windows SHALL install without Git, repository cloning, `.git`, or retained source. Supported Python, `uv`, Codex, a writable absolute `PATH` directory, and the platform download facility remain prerequisites. `DEV_FLOW_SOURCE_ROOT` and checkout-driven lifecycle invocation SHALL fail before mutation.
 
-#### Scenario: Installation attempt terminates
-- **WHEN** installation succeeds or reaches a handled failure after creating acquisition staging
-- **THEN** no bootstrap download or extraction directory is retained as a product, marketplace, launcher, receipt, or rollback authority
+A managed release SHALL contain the isolated environment, sealed plugin, runtime receipt, installed-content verifier, and versioned lifecycle entry points. The receipt SHALL bind the complete artifact and installed identity. The active record SHALL be the only local selector of the active release and SHALL bind a closed schema, monotonic generation, release ID, contained release path, receipt digest, stable-dispatcher protocol, and committing transaction ID.
 
-### Requirement: Fresh installation requires no Git checkout
-The macOS and native Windows installation paths SHALL install from the verified release artifact without requiring the `git` executable, cloning a repository, creating a `.git` directory, or retaining project source. Supported Python, `uv`, Codex, a writable absolute `PATH` directory, and the platform download facility SHALL remain explicit prerequisites.
+`dev-flow`, `dev-flow-mcp`, and `dev-flow-uninstall` SHALL be small stable product-owned dispatchers. Ordinary repair, upgrade and automatic rollback SHALL reuse them; versioned verification and lifecycle behavior SHALL live inside managed releases. The personal marketplace SHALL point only to the exact plugin root inside the active managed release.
 
-The durable installation set SHALL be limited to content-addressed managed runtime releases, owned lifecycle support, owned launchers, the personal-marketplace member and installed plugin state, bounded transaction and active records, and Controller task data. `DEV_FLOW_SOURCE_ROOT` and checkout-driven lifecycle invocation SHALL fail before mutation with artifact-migration guidance.
+#### Scenario: Fresh host has no Git
+- **WHEN** all other prerequisites and the selected artifact are valid
+- **THEN** installation succeeds with the bundled Skill and STDIO MCP and creates no checkout
 
-#### Scenario: Fresh host has no Git executable
-- **WHEN** all supported prerequisites except Git are available and the official release artifact is valid
-- **THEN** fresh installation succeeds and exposes the bundled Skill and MCP without creating or retaining a source checkout
+#### Scenario: Candidate passes staged health
+- **WHEN** wheel, dependencies, plugin, Skill, MCP, receipt, verifier and helpers share one identity
+- **THEN** it may enter provisional host activation without yet becoming active authority
 
-#### Scenario: Legacy source-root option is supplied
-- **WHEN** an operator supplies `DEV_FLOW_SOURCE_ROOT` to the artifact installer
-- **THEN** the installer makes no product mutation and reports that release selection is artifact-based with migration guidance
+#### Scenario: Temporary path is proposed as authority
+- **WHEN** a download, extraction, checkout or staging path would become marketplace or active authority
+- **THEN** activation is rejected
 
-#### Scenario: Fresh installation completes
-- **WHEN** a verified candidate is committed successfully
-- **THEN** every durable product path belongs to the declared installation set and neither the downloaded archive nor an extracted source tree remains
+### Requirement: Lifecycle mutation is serialized and has explicit terminal outcomes
+Install, repair, upgrade, migration, recovery and uninstall SHALL acquire one installation-wide lock before reading active or transaction authority and SHALL hold it until a terminal outcome is durable. Each operation SHALL create or resume one bounded journal recording expected active generation and digest, target and previous authority, exact external observations, provisional effects, transaction-owned paths, phase and outcome. Active creation, replacement, restoration and removal SHALL use generation-and-digest compare-and-swap.
 
-### Requirement: Managed runtime activates the complete artifact identity
-Managed-runtime construction SHALL consume only the verified artifact root. It SHALL install the supplied hash-locked requirements and prebuilt project wheel into an isolated environment, copy and verify the sealed plugin tree, run installed Skill and MCP health checks, generate owned launchers, and atomically publish a release-specific runtime directory.
+Activation SHALL complete candidate-specific staged health, provision and read back marketplace and Codex plugin state, commit the active record by CAS, and then run real public CLI and MCP startup proof while still holding the lock. It SHALL record `committed` only after public proof succeeds. Failure SHALL restore and prove the immediate previous authority and record `rolled_back`, or preserve uncertainty, stop identity-specific mutation and record `partial`.
 
-The runtime receipt and active installation record SHALL bind the release-index digest, archive digest, embedded-manifest digest, source commit and tree, project-wheel digest, requirements digest, plugin-release digest, installed distribution inventory, Python identity, lifecycle-helper digest, launcher digests, transaction identity, and release path. The personal marketplace SHALL point to the exact managed plugin root. No bootstrap, download, extraction, checkout, or mutable shared directory SHALL be recorded as the plugin source or runtime authority.
+The immediate previous runtime SHALL remain until the activation transaction is terminal; automatic rollback SHALL require neither network nor checkout. This change SHALL NOT expose arbitrary historical rollback. Repair MAY reuse only a fully attested active runtime; drift SHALL build a verified same-version candidate. Repair SHALL reject a different digest envelope for an already installed version. Upgrade SHALL run the target version's bootstrap. A new lifecycle request SHALL first recover or classify any non-terminal journal and SHALL NOT retry indefinitely or broaden cleanup.
 
-The installed plugin SHALL retain the `dev-flow` Skill, `.mcp.json` registration for `dev-flow-mcp --stdio`, existing plugin ID, expected MCP tool catalog, and installed validation evidence.
+#### Scenario: Competing lifecycle operations start
+- **WHEN** two upgrades, or upgrade and uninstall, target one installation
+- **THEN** lock and generation CAS prevent provisional effects from interleaving
 
-#### Scenario: Candidate runtime passes installed health
-- **WHEN** the verified artifact is staged and its wheel, requirements, plugin, Skill, MCP registration, launchers, and receipt all match one release identity
-- **THEN** the runtime may be promoted and the marketplace may name its managed plugin root
+#### Scenario: Candidate fails before active commit
+- **WHEN** acquisition, verification, construction, staged health or provisional read-back fails
+- **THEN** previous authority is restored or unchanged and the transaction becomes `rolled_back`
 
-#### Scenario: Installed component differs from the artifact
-- **WHEN** any installed dependency, wheel, plugin member, Skill file, MCP registration, lifecycle helper, launcher, receipt field, or marketplace path differs from the verified artifact identity
-- **THEN** activation and active-record commit fail and no receipt claims those bytes as the selected release
+#### Scenario: Public proof fails after active commit
+- **WHEN** the real public CLI or MCP path fails after target generation commit
+- **THEN** the installer CAS-restores and revalidates previous authority or records `partial`
 
-#### Scenario: Temporary path is proposed as installed authority
-- **WHEN** activation would record a bootstrap, download, extraction, checkout, or transaction-staging path as the marketplace or runtime source
-- **THEN** validation rejects the candidate before plugin activation
+#### Scenario: Prior transaction was interrupted
+- **WHEN** a new lifecycle command finds a non-terminal journal
+- **THEN** it first recovers or classifies that journal and refuses new mutation while authority is unresolved
 
-### Requirement: Repair, upgrade, and rollback use verified runtime releases
-Repair of the exact active version SHALL reuse a managed runtime only after complete receipt, ownership, plugin, distribution, launcher, lifecycle, and startup attestation. Any mismatch SHALL rebuild a candidate from a newly acquired and verified artifact.
+### Requirement: Runtime startup attests before project import
+Stable CLI and MCP dispatchers SHALL minimally validate the active record, contained release path, receipt digest, dispatcher protocol, and versioned verifier digest before invoking the active verifier. The active verifier SHALL validate the complete receipt and installed identity before importing Dev Flow code or initializing MCP.
 
-Upgrade SHALL acquire, verify, build, and smoke-test the candidate before changing the active plugin, marketplace, launchers, or lifecycle support. The previous conforming managed runtime and receipt SHALL be the complete rollback source. Rollback SHALL NOT require network acquisition, Git, or a source checkout and SHALL be complete only after previous plugin read-back and installed health succeed.
-
-If a provisional external effect cannot be classified exactly, the transaction SHALL prohibit active commit and identity-specific cleanup, preserve uncertain content, record a truthful `partial` result, and provide bounded recovery guidance.
-
-#### Scenario: Exact active release is healthy
-- **WHEN** repair observes that the complete active runtime and artifact attestation still match
-- **THEN** it may reuse that runtime after installed health succeeds and SHALL NOT create a checkout
-
-#### Scenario: Exact active release has drifted
-- **WHEN** repair finds a receipt, owned file, dependency, plugin, launcher, lifecycle, or startup mismatch
-- **THEN** it stages a fresh candidate from the verified artifact and does not claim reuse of the drifted runtime
-
-#### Scenario: Candidate build fails before activation
-- **WHEN** artifact acquisition, verification, runtime construction, or staged health fails
-- **THEN** the previous active release remains unchanged and usable
-
-#### Scenario: Candidate activation fails after provisional effects
-- **WHEN** marketplace, launcher, lifecycle, or plugin activation changes began but candidate read-back or health fails
-- **THEN** the installer restores and revalidates the retained previous runtime or records a truthful partial result if exact restoration cannot be proven
-
-#### Scenario: Rollback occurs without acquisition inputs
-- **WHEN** the candidate fails after the previous artifact download and any source checkout are unavailable
-- **THEN** rollback succeeds from the retained previous runtime, plugin assets, receipt, lifecycle support, and launcher evidence alone
-
-### Requirement: Runtime startup attests the installed release before import
-The managed MCP and CLI launch paths SHALL invoke an installer-owned verifier before importing project runtime code. The verifier SHALL validate the active record, receipt schema, release path, artifact and plugin manifest digests, wheel and installed distribution inventory, exact runtime dependencies, Python identity, lifecycle and launcher identity, and complete owned-file inventory. Missing, malformed, incompatible, changed, or cross-release evidence SHALL fail closed before project import or MCP initialization.
+Startup attestation SHALL be described as protection against corruption, drift and cross-release mixing, not against coherent replacement of all same-user trust inputs.
 
 #### Scenario: Installed release is intact
-- **WHEN** a managed launcher starts and every active-record, receipt, artifact, runtime, plugin, dependency, Python, and launcher claim matches installed content
-- **THEN** the verifier permits the selected CLI or `dev-flow-mcp --stdio` entry point to run
+- **WHEN** active, receipt, runtime, plugin, dependency, Python, verifier and owned-file evidence agree
+- **THEN** the selected CLI or `dev-flow-mcp --stdio` entry point may run
 
 #### Scenario: Installed release has drifted
-- **WHEN** startup finds a missing, malformed, incompatible, changed, or mismatched receipt, file, dependency, interpreter, plugin, lifecycle helper, or launcher
-- **THEN** startup fails before importing Dev Flow project code and reports repair guidance
+- **WHEN** required active or installed evidence is missing, malformed, changed or cross-release
+- **THEN** startup fails before project import and reports exact-version repair guidance
 
 ### Requirement: Uninstall is source-independent and ownership-bounded
-Installation SHALL provide an owned `dev-flow-uninstall` command and lifecycle helper whose digests are bound by the active record. Before product mutation, uninstall SHALL validate current installed authority, copy the minimal standard-library removal helper to a newly created temporary directory, verify that copy, and execute it with a supported system Python so removal does not depend on the managed runtime or a checkout remaining present.
+`dev-flow-uninstall` SHALL validate stable infrastructure and current authority, verify a copied minimal standard-library removal driver, and create or resume a durable uninstall transaction under the lifecycle lock.
 
-Uninstall SHALL remove only entries matching exact ownership manifests and empty owned directories, with lifecycle support and uninstall launchers removed last. It SHALL preserve and report changed, unknown, concurrent, symlinked, reparse, special, or unprovable content. It SHALL preserve Controller task data, unrelated marketplace members, unrelated plugins, unrelated launchers, standalone MCP registrations, and every source checkout.
+Uninstall SHALL remove only exact compare-and-remove matches and empty owned directories. It SHALL read back plugin and marketplace state, remove the active record by generation CAS, remove managed releases before stable CLI and MCP dispatchers, remove lifecycle support and the uninstall dispatcher last, and perform no product mutation after lock removal. Rerun after interruption SHALL resume or classify the journal without a checkout or removed runtime.
 
-#### Scenario: Exact owned installation is uninstalled
-- **WHEN** active authority and every product-owned entry match their ownership evidence
-- **THEN** plugin state, marketplace member, managed runtime, lifecycle support, and owned launchers are removed without a source checkout and uninstall reports complete success
+Changed, unknown, concurrent, linked, reparse, special or unprovable content SHALL be retained and reported. Controller task data, unrelated Codex state, unrelated launchers, standalone MCP registrations, and every checkout SHALL remain outside the removal set.
 
-#### Scenario: Unknown or changed content is encountered
-- **WHEN** an owned root contains an entry that is changed, unknown, concurrent, linked, special, or not covered by exact ownership evidence
-- **THEN** uninstall retains that content, avoids broad recursive deletion, reports a partial result and exact retained paths, and preserves unrelated state
+#### Scenario: Exact owned installation is removed
+- **WHEN** all product-owned state matches exact ownership evidence
+- **THEN** uninstall removes product authority without repository files and records `committed`
 
-#### Scenario: Controller task data exists
-- **WHEN** uninstall removes an otherwise exact installation
-- **THEN** Controller task data and its model namespace remain unchanged
+#### Scenario: Unknown content is encountered
+- **WHEN** an owned root or external component contains changed or unprovable content
+- **THEN** uninstall retains it, avoids broad deletion, reports exact paths, and records `partial` when needed
 
-#### Scenario: Legacy checkout exists
-- **WHEN** a source checkout from an older installation remains on disk
-- **THEN** uninstall neither reads nor deletes it and reports it, when known, as external user-owned content
+#### Scenario: Uninstall is interrupted
+- **WHEN** the process terminates after recording a removal phase
+- **THEN** rerun resumes or classifies the journal without a checkout or removed runtime
 
-### Requirement: Checkout-based installations migrate transactionally
-The artifact installer SHALL classify an existing Dev Flow installation using plugin observations, managed launcher markers, runtime receipts, marketplace state, and transaction records. It SHALL NOT inspect, fetch, fast-forward, clean, seal, or execute a source checkout during migration.
+### Requirement: Legacy migration is bounded to the known predecessor
+The artifact installer SHALL migrate only installations matching frozen fixtures for the immediately preceding conforming checkout installer. Fixtures SHALL define accepted plugin observations, launcher markers, receipt and ownership schemas, marketplace shape and transaction outcomes. Older, future, malformed or ambiguous installations SHALL fail before identity-specific mutation.
 
-A conforming previous runtime MAY serve as rollback authority while the artifact candidate is staged. The artifact release SHALL become active only after exact plugin read-back, bundled Skill and MCP validation, installed health, and active-record commit. Successful migration SHALL install the source-independent lifecycle bootstrap. Failed migration SHALL leave the prior installation usable or report a truthful partial result under the normal transaction rules.
+Migration SHALL classify previous authority only from installed observations. It SHALL NOT read, execute, update, clean, seal or delete a checkout, and the checkout SHALL NOT be rollback input. A conforming previous runtime MAY serve as immediate rollback authority while the artifact candidate is unsettled.
 
-#### Scenario: Conforming checkout-based installation is migrated
-- **WHEN** a previous managed runtime is provable and the new artifact candidate passes activation and health
-- **THEN** the artifact release becomes active, future lifecycle operations require no checkout, and the legacy checkout remains untouched for manual disposition
+#### Scenario: Known predecessor is migrated
+- **WHEN** fixtures prove one previous authority and the candidate passes activation and public proof
+- **THEN** the artifact release becomes authoritative and the checkout remains untouched
 
-#### Scenario: Migration candidate fails before activation
-- **WHEN** artifact verification, runtime construction, or staged health fails during migration
-- **THEN** the previous installation and any existing checkout remain unchanged
+#### Scenario: Migration fails before host effects
+- **WHEN** Phase A, Phase B, construction or staged health fails
+- **THEN** previous installation and checkout remain unchanged and the transaction becomes `rolled_back`
 
-#### Scenario: Previous installation identity is ambiguous
-- **WHEN** plugin, launcher, receipt, marketplace, or transaction observations do not prove one previous authority
-- **THEN** migration fails before identity-specific mutation and reports the conflicting observations
+#### Scenario: Previous installation is unsupported or ambiguous
+- **WHEN** observations do not match fixtures or prove one authority
+- **THEN** migration fails before identity-specific mutation and reports conflicts
 
-### Requirement: Delivery evidence and documentation describe the artifact lifecycle
-Release validation SHALL cover deterministic artifact construction, malformed index and archive cases, pre-execution failure boundaries, fresh install without Git, exact-version repair, drift rebuild, upgrade, activation rollback, startup attestation, checkout-free uninstall, legacy migration, and installed Skill/MCP coexistence. macOS and native Windows evidence SHALL be recorded independently; static or simulated PowerShell evidence SHALL NOT be reported as native Windows verification.
+### Requirement: Delivery evidence has a bounded completion gate
+Shared verifier and state-machine behavior SHALL be tested primarily through unit and deterministic simulated integration tests. Native macOS and native Windows SHALL each run one final-artifact lifecycle on one supported Python version covering fresh install, healthy and drift repair, successful upgrade, one failed-activation rollback, one interrupted transaction, startup, predecessor migration, uninstall and task-data preservation.
 
-The English source documentation and corresponding Simplified Chinese translations SHALL describe the artifact-based prerequisites, commands, version selection, durable paths, integrity boundary, upgrade and rollback behavior, migration, uninstall, retained task data, and platform evidence with equivalent scope and constraints.
+The supported Python matrix SHALL run lightweight wheel-only installation and import or MCP smoke checks rather than repeat the full lifecycle matrix. Concurrency evidence SHALL cover only upgrade-versus-upgrade and upgrade-versus-uninstall. A release candidate SHALL use a real Codex host for plugin read-back, bundled Skill discovery, STDIO MCP startup and uninstall; ordinary pull requests MAY use deterministic fakes.
 
-#### Scenario: Candidate is assessed for release
-- **WHEN** implementation verification is performed
-- **THEN** package validation, focused lifecycle tests, complete repository tests, installed journeys, strict OpenSpec validation, and supported-platform evidence report their actual results and limitations
+Static or simulated PowerShell SHALL NOT count as native Windows evidence. Completion SHALL require re-downloaded final assets, both native gates, all Requirements and tasks, aligned English and Simplified Chinese documentation, and only `committed`, `rolled_back`, or `partial` lifecycle results.
+
+Signing, offline fresh install, automatic updates, arbitrary historical rollback, broader legacy migration, general Unicode artifact members, or dispatcher-protocol migration SHALL require separate OpenSpec changes.
+
+#### Scenario: Candidate satisfies the completion target
+- **WHEN** final assets, native gates, Python smoke matrix, real Codex evidence, strict OpenSpec validation and repository checks pass
+- **THEN** the change may be marked complete with actual digests, evidence and limitations recorded
 
 #### Scenario: Native Windows evidence is unavailable
-- **WHEN** validation runs only on macOS or through static or simulated PowerShell checks
-- **THEN** Windows lifecycle status remains explicitly unverified rather than inferred from non-native evidence
+- **WHEN** validation uses only macOS or static or simulated PowerShell
+- **THEN** the change remains incomplete for Windows and Windows is reported unverified
 
-#### Scenario: Public documentation is validated
-- **WHEN** package validation inspects installation documentation
-- **THEN** English and Simplified Chinese documents contain aligned artifact commands, paths, prerequisites, compatibility behavior, and safety boundaries and no supported path requires a persistent clone
+#### Scenario: A non-goal is requested
+- **WHEN** implementation would add a listed non-goal
+- **THEN** that work is excluded and requires a separate OpenSpec proposal
