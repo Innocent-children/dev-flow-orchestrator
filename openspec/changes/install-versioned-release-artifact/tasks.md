@@ -1,56 +1,59 @@
-## 1. Release Artifact Contract and Builder
+## 1. Close the Release Artifact Contract
 
-- [ ] 1.1 Define closed standard-library models and validators for `dev-flow-release-index/1.0.0` and `dev-flow-release-artifact/1.0.0`, including canonical paths, size limits, component identities, complete inventory, and digest rules.
-- [ ] 1.2 Add a deterministic release builder that validates an exact clean tagged commit, builds the pure-Python wheel, exports hash-locked runtime requirements, assembles the complete plugin and lifecycle payload, and emits the normalized `tar.gz`, embedded manifest, and external release index.
-- [ ] 1.3 Extend package validation to require version agreement, exact bundled Skill/MCP/plugin topology, one wheel, locked requirements, lifecycle helpers, deterministic metadata, and the absence of secrets, personal paths, undeclared members, and unsafe archive entry types.
-- [ ] 1.4 Integrate the version-matched archive, index, `install.sh`, and `install.ps1` into release promotion tooling, recording their digests while keeping actual publication an explicit release operation.
+- [ ] 1.1 Define closed standard-library models for `dev-flow-release-index/1.0.0` and `dev-flow-release-artifact/1.0.0`, including strict JSON parsing, raw-manifest digest semantics, manifest self-exclusion, file-versus-directory entry fields, fixed hard caps, and rejection of unknown fields and duplicate keys.
+- [ ] 1.2 Define and enforce the exact top-level artifact layout, one pure-Python project wheel, bundled `.codex-plugin/plugin.json`, `.mcp.json`, `skills/dev-flow/**`, `runtime-requirements.txt`, `uv.lock`, and versioned `lifecycle/**` helpers.
+- [ ] 1.3 Implement the portable ASCII member-path contract, ASCII case-collision key, Windows device-name rejection, fixed mode profile, supported tar profile, and no-link/no-special-member policy in both release production and the shared verifier.
+- [ ] 1.4 Pin the release-builder environment and implement deterministic assembly from an exact clean `vMAJOR.MINOR.PATCH` tag, wheel-only hash-locked dependency export, closed payload allow-list, known-secret/local-path checks, and double-build comparison inside that pinned environment.
+- [ ] 1.5 Implement explicit release promotion that builds all four assets before upload, refuses same-version overwrite, re-downloads the final version-specific assets, and records index, archive, manifest, wheel, requirements, lock, plugin, lifecycle, and bootstrap digests.
 
-## 2. Verified Acquisition and Managed Runtime
+## 2. Implement the Two-Phase Verification Boundary
 
-- [ ] 2.1 Implement one shared standard-library acquisition verifier for both bootstraps that validates the canonical versioned HTTPS locator, closed index, size bounds, archive digest, all headers and normalized paths, safe extraction, embedded-manifest digest, and complete extracted inventory before artifact code executes.
-- [ ] 2.2 Change managed-runtime construction to consume a verified artifact root, install supplied hash-locked requirements and the prebuilt wheel, copy the sealed plugin tree, and preserve the existing installed Skill/MCP smoke checks and atomic release promotion.
-- [ ] 2.3 Extend runtime receipts, active installation records, ownership manifests, and verification to bind index, archive, embedded manifest, source provenance, wheel, requirements, plugin, installed distributions, Python, lifecycle helpers, launchers, transaction, and release path.
-- [ ] 2.4 Update CLI and MCP startup launchers to fail closed through the extended receipt and installed-content attestation before importing Dev Flow project code.
+- [ ] 2.1 Generate version-matched `install.sh` and `install.ps1` bootstraps containing the exact repository, product version, archive filename, and expected raw `release-index.json` SHA-256, with no production alternate-origin option.
+- [ ] 2.2 Embed one byte-identical standard-library Phase A verifier in both bootstraps and make it verify the index digest before parsing, enforce fixed streaming limits, verify the archive before extraction, inspect all headers and paths, extract exclusively without following links or reparse ancestors, verify the manifest and complete inventory, and perform static package-topology checks before artifact code executes.
+- [ ] 2.3 Separate Phase B semantic validation from Phase A so artifact lifecycle helpers, project imports, subprocesses, dependency installation, and candidate-runtime construction cannot run until Phase A has completed successfully.
+- [ ] 2.4 Force candidate dependency installation to use exact hashes and wheels only, validate the supplied project wheel without building source, and retain the existing installed Skill and STDIO MCP health checks.
+- [ ] 2.5 Bound and clean acquisition and extraction staging after every handled outcome, reporting exact retained paths without adopting them as installed or rollback authority.
 
-## 3. macOS Artifact Lifecycle
+## 3. Reduce Lifecycle Authority and Serialize Mutation
 
-- [ ] 3.1 Replace Git clone, fetch, branch, checkout, and source-inventory handling in `scripts/install.sh` with exact-version artifact acquisition in bounded temporary staging and remove Git from installer prerequisites.
-- [ ] 3.2 Preserve standalone-registration conflict checks, marketplace compare-and-replace, plugin read-back, bundled Skill/MCP health, launcher ownership, transaction commit, and compensating rollback while ensuring every installed path resolves to the managed release.
-- [ ] 3.3 Implement exact-version reuse, drift-triggered repair, verified-version upgrade, and offline rollback from the retained previous managed runtime without consulting a checkout.
-- [ ] 3.4 Add transactional migration of conforming checkout-based installations and reject `DEV_FLOW_SOURCE_ROOT` or checkout-driven lifecycle invocation before mutation with explicit artifact-migration guidance.
-- [ ] 3.5 Remove acquisition staging after every handled outcome and report any retained temporary path or uncertain external effect truthfully.
+- [ ] 3.1 Define the closed runtime-receipt schema for the complete artifact and installed identity, and define the smaller active-record schema containing only generation, release ID, contained release path, receipt digest, dispatcher protocol, and committing transaction ID.
+- [ ] 3.2 Install stable product-owned `dev-flow`, `dev-flow-mcp`, and `dev-flow-uninstall` dispatchers that are reused across ordinary releases; move versioned runtime verification and lifecycle entry points into each managed release.
+- [ ] 3.3 Implement one installation-wide lifecycle lock acquired before reading active or transaction state, plus bounded transaction journals and generation-and-record-digest CAS for active creation, replacement, restoration, and removal.
+- [ ] 3.4 Implement candidate-specific staged health, provisional marketplace and Codex plugin activation with read-back, active-record CAS, real public CLI/MCP post-commit proof, and exact compensating restoration to `committed`, `rolled_back`, or `partial`.
+- [ ] 3.5 Implement interrupted-transaction recovery before any new lifecycle mutation and stop with `partial` when requested or previous authority cannot be proven exactly; do not add indefinite retry or broad cleanup.
+- [ ] 3.6 Reject same-version repair when the newly downloaded index, archive, or manifest digest differs from the active receipt instead of silently adopting replaced bytes.
 
-## 4. Native Windows Artifact Lifecycle
+## 4. Implement the Bounded Product Lifecycle
 
-- [ ] 4.1 Replace Git checkout handling in `scripts/install.ps1` with the same exact-version index, archive, and inventory verification contract using native PowerShell download orchestration and supported Python validation.
-- [ ] 4.2 Port managed activation, repair, upgrade, previous-runtime rollback, lifecycle replacement, migration, temporary cleanup, and partial-result semantics without POSIX dependencies.
-- [ ] 4.3 Validate Windows path case-folding, reserved names, reparse points, long paths, spaces, Unicode, apostrophes, launcher replacement, and process-lock cleanup against the shared artifact identity.
+- [ ] 4.1 Replace Git acquisition in `scripts/install.sh` with exact-version artifact acquisition and implement fresh install, healthy reuse, drift rebuild, target-version upgrade, automatic immediate-previous rollback, and recovery through the shared lifecycle state machine.
+- [ ] 4.2 Implement the equivalent native PowerShell lifecycle in `scripts/install.ps1` without POSIX dependencies, preserving the same lock, generation, transaction, Phase A, Phase B, activation, rollback, and terminal-outcome contract.
+- [ ] 4.3 Freeze fixtures for the immediately preceding conforming checkout installer and implement migration using only installed plugin, launcher, receipt, marketplace, ownership, and transaction observations; reject older, future, or ambiguous layouts before identity-specific mutation.
+- [ ] 4.4 Reject `DEV_FLOW_SOURCE_ROOT` and checkout-driven lifecycle invocation before mutation, and never read, execute, update, or delete a legacy checkout during install, migration, rollback, or uninstall.
+- [ ] 4.5 Implement source-independent uninstall with the stable minimal removal driver, uninstall transaction, exact compare-and-remove behavior, active-generation CAS, resumable interruption handling, stable dispatcher removal after runtime authority, and lifecycle support removal last.
+- [ ] 4.6 Preserve Controller task data, unknown or changed content, unrelated marketplace and plugin state, unrelated launchers, standalone MCP registrations, and every legacy checkout; report exact retained paths and truthful terminal outcomes.
 
-## 5. Source-Independent Uninstall
+## 5. Add Focused Automated Evidence
 
-- [ ] 5.1 Install an owned lifecycle support directory and `dev-flow-uninstall` launcher whose exact digests participate in active-record commit, repair, upgrade, and rollback.
-- [ ] 5.2 Rework the macOS uninstaller to verify and copy its minimal helper into bounded temporary storage, remove only exact owned entries and empty owned directories, remove lifecycle support last, and complete without repository files.
-- [ ] 5.3 Implement equivalent Windows temporary-helper and final self-cleanup behavior while preserving unknown, changed, concurrent, linked, reparse, special, or unprovable content.
-- [ ] 5.4 Preserve Controller task data, unrelated marketplace and plugin entries, unrelated launchers, standalone MCP registrations, and every legacy checkout; report precise retained paths and partial outcomes.
+- [ ] 5.1 Add shared verifier unit tests for strict JSON, index-before-parse digest verification, manifest self-exclusion, missing and extra inventory, digest mismatch, fixed hard caps, portable paths, case collisions, Windows device names, links, sparse and special entries, unsupported tar headers, reparse ancestors, and exclusive extraction.
+- [ ] 5.2 Add release-builder and package-validator tests for exact layout, one pure-Python wheel, bundled Skill/MCP/plugin topology, wheel-only locked dependencies, version disagreement, source-provenance assertion mismatch, closed input allow-list, known-secret/local-path findings, and deterministic double-build output in the pinned builder environment.
+- [ ] 5.3 Add lifecycle state-machine tests for lock acquisition before observation, generation CAS, stale transaction rejection, `A -> B -> A` protection, staged health, failure before provisional effects, failure after host effects, failure after active commit, exact rollback, `partial`, and interrupted-transaction recovery.
+- [ ] 5.4 Add only the two authority-relevant concurrency tests: upgrade versus upgrade and upgrade versus uninstall.
+- [ ] 5.5 Rewrite uninstall tests around the durable uninstall journal and cover exact removal, interruption and rerun, unknown-content preservation, task-data preservation, unrelated-state preservation, legacy-checkout non-ownership, and no mutation after lifecycle-lock removal.
+- [ ] 5.6 Keep ordinary pull-request integration deterministic with fake Codex observations; do not require a real Codex host or full lifecycle matrix on every Python minor.
 
-## 6. Automated and Platform Evidence
+## 6. Obtain Native Platform and Release-Candidate Evidence
 
-- [ ] 6.1 Add release-builder and package-validator tests for reproducibility, version disagreement, wrong source provenance, archive or manifest digest mismatch, missing and extra members, size overflow, path traversal, duplicates, case collisions, links, special files, and credential or local-path leakage.
-- [ ] 6.2 Rewrite macOS installer fixtures around versioned artifact downloads and cover fresh install without Git, exact reuse, drift repair, candidate-build failure, activation rollback, uncertain read-back, temporary cleanup, and checkout-based migration.
-- [ ] 6.3 Extend managed-runtime, runtime-integrity, package, and installed-journey tests to prove one artifact identity across the wheel, dependencies, plugin, Skill, MCP registration, receipt, launchers, lifecycle helper, marketplace, startup, and rollback.
-- [ ] 6.4 Rewrite uninstall tests to begin with no checkout and cover complete removal, helper self-removal, unknown-content preservation, task-data preservation, unrelated-state preservation, and legacy-checkout non-ownership.
-- [ ] 6.5 Add PowerShell/static fixtures for the shared release contract and run equivalent fresh install, repair, failed upgrade rollback, launch, migration, and uninstall journeys on a native supported Windows host.
+- [ ] 6.1 On a clean isolated macOS profile and one supported Python version, install from the final archive without Git, prove bundled Skill and STDIO MCP startup, run healthy and drift repair, complete one successful upgrade, force one failed activation rollback, recover one interrupted transaction, migrate the frozen predecessor, and uninstall while preserving task data and legacy checkout content.
+- [ ] 6.2 Run the same bounded final-artifact lifecycle on a native supported Windows host, including native path roots with spaces, apostrophes, and Unicode, plus native reparse and locked-file behavior; static or simulated PowerShell evidence remains non-native.
+- [ ] 6.3 Across every supported Python minor on macOS and Windows, run lightweight wheel-only dependency installation and project import or STDIO MCP smoke checks instead of duplicating the full lifecycle and failure matrix.
+- [ ] 6.4 For the release candidate only, use a real Codex host to read back the exact managed plugin root, discover the bundled `dev-flow` Skill, start `dev-flow-mcp --stdio`, and complete uninstall.
+- [ ] 6.5 Verify the final promotion assets after re-download from their exact version-specific official locators and record all failures, skips, retained paths, degradations, and platform limitations truthfully.
 
-## 7. Documentation and Compatibility Guidance
+## 7. Documentation and Completion Gate
 
-- [ ] 7.1 Update the applicable English source documents, including `README.md`, `INSTALL.md`, `ARCHITECTURE.md`, and release-promotion guidance, with artifact prerequisites, commands, version selection, durable paths, trust and integrity boundaries, lifecycle behavior, migration, uninstall, and evidence limitations.
-- [ ] 7.2 Translate and synchronize every affected public-document change into the corresponding Simplified Chinese document with identical product scope, commands, paths, versions, links, and safety constraints.
-- [ ] 7.3 Remove supported-product claims that require Git, `DEV_FLOW_SOURCE_ROOT`, a retained checkout, source-based repair, or checkout-invoked uninstall, and document manual disposition of legacy checkouts without claiming product ownership.
-
-## 8. Release Verification
-
-- [ ] 8.1 Run focused release, installer, runtime, integrity, migration, uninstall, package, and installed-journey tests through the project `uv` environment.
-- [ ] 8.2 Run complete unittest discovery, package validation, deterministic double-build comparison, strict OpenSpec validation, and all repository-defined release checks; record every failure, skip, degradation, and platform limitation truthfully.
-- [ ] 8.3 Install the candidate from its final archive into an isolated clean macOS profile without Git, exercise Skill and MCP discovery plus repair, failed-upgrade rollback, startup, and uninstall, and verify that no checkout or acquisition staging remains.
-- [ ] 8.4 Obtain native Windows evidence for the same final artifact lifecycle before marking Windows verified; static or simulated PowerShell results remain explicitly non-native evidence.
-- [ ] 8.5 Verify the final promotion assets from their version-specific official release locators and record index, archive, manifest, wheel, requirements, plugin, and bootstrap digests without publishing or changing external state as part of ordinary implementation verification.
+- [ ] 7.1 Update the applicable English source documents, including `README.md`, `INSTALL.md`, `ARCHITECTURE.md`, and release-promotion guidance, with artifact prerequisites, exact-version install/repair/upgrade interfaces, trust and SHA-256 boundaries, stable dispatchers, durable paths, terminal outcomes, migration scope, uninstall, and task-data preservation.
+- [ ] 7.2 Synchronize every affected public change into the corresponding Simplified Chinese document with identical commands, paths, versions, links, scope, and safety constraints.
+- [ ] 7.3 Remove supported-product claims requiring Git, `DEV_FLOW_SOURCE_ROOT`, a retained checkout, source-driven repair, repository-invoked uninstall, independent signing, or public arbitrary-history rollback.
+- [ ] 7.4 Run focused tests, complete unittest discovery, package validation, pinned-environment deterministic build comparison, strict OpenSpec validation, and repository-defined release checks through the project `uv` environment.
+- [ ] 7.5 Mark this change complete only after Sections 1 through 7 pass for the final artifact, both native platform gates are available, every lifecycle result is classifiable as `committed`, `rolled_back`, or `partial`, and all evidence limitations are recorded.
+- [ ] 7.6 Open a separate OpenSpec change rather than extending this implementation when work requires signing, offline fresh install, automatic update channels, arbitrary historical rollback, broader legacy migration, general Unicode archive members, or a dispatcher-protocol migration.
