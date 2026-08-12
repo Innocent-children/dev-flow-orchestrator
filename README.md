@@ -4,7 +4,7 @@
 
 Dev Flow Orchestrator keeps long-running Codex development tasks resumable,
 bounded, and verifiable across an exact set of one to eight user-prepared Git
-worktrees. Release `0.5.1` bundles a formal Codex Skill named `dev-flow`
+worktrees. Release `0.6.0` bundles a formal Codex Skill named `dev-flow`
 alongside the local MCP server while preserving the persisted `0.4.0` model and
 task-data namespace.
 

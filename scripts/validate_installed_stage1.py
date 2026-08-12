@@ -453,7 +453,7 @@ def _disconnect_proxy_main(arguments: Sequence[str]) -> int:
 async def _initialize(session: ClientSession) -> dict[str, Any]:
     initialized = await session.initialize()
     _require(initialized.server_info.name == "dev-flow", "installed server name is invalid")
-    _require(initialized.server_info.version == "0.5.1", "installed release is not 0.5.1")
+    _require(initialized.server_info.version == "0.6.0", "installed release is not 0.6.0")
     _require(initialized.capabilities.tools is not None, "tools capability is absent")
     _require(initialized.capabilities.resources is None, "resources capability must be absent")
     _require(initialized.capabilities.prompts is None, "prompts capability must be absent")

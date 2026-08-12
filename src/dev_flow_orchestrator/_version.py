@@ -1,3 +1,3 @@
 """Single source of truth for the distributable release version."""
 
-RELEASE_VERSION = "0.5.1"
+RELEASE_VERSION = "0.6.0"

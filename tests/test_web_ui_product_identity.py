@@ -44,7 +44,7 @@ def javascript_function(source: str, name: str) -> str:
 class WebUiProductIdentityTests(unittest.TestCase):
     def test_current_product_identity_remains_exactly_pinned(self) -> None:
         self.assertEqual(MODEL_VERSION, "0.4.0")
-        self.assertEqual(RELEASE_VERSION, "0.5.1")
+        self.assertEqual(RELEASE_VERSION, "0.6.0")
         self.assertEqual(PLUGIN_DATA_NAMESPACE, "0.4.0")
         self.assertEqual(
             PRODUCT_IDENTITY,

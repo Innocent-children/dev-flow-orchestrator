@@ -2,7 +2,7 @@
 
 [English](INSTALL.md)
 
-本指南安装带正式 `dev-flow` Codex Skill 及本地 MCP-first 接口的 `0.5.1`。
+本指南安装带正式 `dev-flow` Codex Skill 及本地 MCP-first 接口的 `0.6.0`。
 持久化模型和任务数据命名空间仍为 `0.4.0`。
 
 ## 1. 支持的注册模式
@@ -81,7 +81,7 @@ dev-flow-mcp --http
 第二条命令必须以 `MCP_RUNTIME_UNAVAILABLE` 失败，且不得打开监听 socket。在 Codex
 中检查已启用插件，并确认有一个名为 `dev-flow` 的 Skill 和一个同名 MCP server。
 启动新的 Codex 任务，调用 `$dev-flow`，再确认一个实质性仓库实现请求也能隐式选择
-该 Skill。让 Codex 调用 `dev_flow_server_info`；它应报告 release `0.5.1`、model
+该 Skill。让 Codex 调用 `dev_flow_server_info`；它应报告 release `0.6.0`、model
 `0.4.0`、STDIO transport、六种 workflow 和 catalog digests。然后列出工具并确认
 恰好十一个 `dev_flow_*` 工具。
 

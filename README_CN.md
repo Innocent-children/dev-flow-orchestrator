@@ -3,7 +3,7 @@
 [English](README.md)
 
 Dev Flow Orchestrator 让跨一个至八个用户预先准备的 Git 工作树的长期 Codex
-开发任务保持可恢复、上下文有界且可验证。`0.5.1` 版本在本地 MCP 服务器旁
+开发任务保持可恢复、上下文有界且可验证。`0.6.0` 版本在本地 MCP 服务器旁
 捆绑名为 `dev-flow` 的正式 Codex Skill，同时保留持久化 `0.4.0` 模型和任务数据
 命名空间。
 

@@ -2,7 +2,7 @@
 
 [Simplified Chinese](INSTALL_CN.md)
 
-This guide installs release `0.5.1` with a formal `dev-flow` Codex Skill and its
+This guide installs release `0.6.0` with a formal `dev-flow` Codex Skill and its
 local MCP-first interface. The persisted model and task-data namespace remain
 `0.4.0`.
 
@@ -111,7 +111,7 @@ a listening socket. In Codex, inspect the enabled plugin and confirm one Skill
 named `dev-flow` and one MCP server named `dev-flow`. Start a new Codex task,
 invoke `$dev-flow`, and confirm that the Skill can also be selected implicitly
 for a substantive repository implementation request. Ask Codex to call
-`dev_flow_server_info`; it should report release `0.5.1`, model `0.4.0`, STDIO
+`dev_flow_server_info`; it should report release `0.6.0`, model `0.4.0`, STDIO
 transport, six workflows, and catalog digests. Then list tools and confirm
 exactly eleven `dev_flow_*` tools.
 
