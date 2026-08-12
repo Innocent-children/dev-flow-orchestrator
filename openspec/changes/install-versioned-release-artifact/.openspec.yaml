@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-12
+goal: Install and maintain Dev Flow Orchestrator from a verified versioned release
+  artifact without retaining a Git checkout.
