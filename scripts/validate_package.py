@@ -43,6 +43,7 @@ _PREIMPORT_REQUIRED = (
     "scripts/lifecycle_machine.py",
     "scripts/lifecycle_state.py",
     "scripts/promote_release.py",
+    "scripts/publish_release.py",
     "scripts/release_artifact.py",
     "scripts/release_lifecycle.py",
     "scripts/render_dispatchers.py",
@@ -437,6 +438,7 @@ REQUIRED_STATIC = (
     "scripts/lifecycle_state.py",
     "scripts/manage_runtime.py",
     "scripts/promote_release.py",
+    "scripts/publish_release.py",
     "scripts/release_artifact.py",
     "scripts/release_lifecycle.py",
     "scripts/render_dispatchers.py",
@@ -710,6 +712,9 @@ EXTERNAL_VERSION_LITERALS = {
     "scripts/promote_release.py": (
         "dev-flow-release-promotion/1.0.0",
     ),
+    "scripts/publish_release.py": (
+        "--porcelain=" + "v" + "1",
+    ),
     "scripts/release_artifact.py": (
         "dev-flow-release-index/1.0.0",
         "dev-flow-release-artifact/1.0.0",
@@ -826,6 +831,7 @@ EXTERNAL_VERSION_LITERALS = {
         "v1.2.3-",
     ),
     "tests/test_release_builder.py": (
+        "--porcelain=" + "v" + "1",
         "v1.2.3^{commit}",
         "v1.2.3",
     ),

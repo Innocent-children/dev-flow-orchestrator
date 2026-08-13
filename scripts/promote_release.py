@@ -336,8 +336,13 @@ class GitHubReleaseAPI:
             self.runner,
             [
                 "gh",
-                "api",
-                "repos/{}/releases/tags/{}".format(self.repository, tag),
+                "release",
+                "view",
+                tag,
+                "--repo",
+                self.repository,
+                "--json",
+                "databaseId",
             ],
             cwd=self.cwd,
         )
@@ -355,7 +360,21 @@ class GitHubReleaseAPI:
             raise PromotionError("same-version release lookup returned invalid JSON") from exc
         if not isinstance(value, dict):
             raise PromotionError("same-version release lookup returned a non-object")
-        return value
+        release_id = value.get("databaseId")
+        if (
+            isinstance(release_id, bool)
+            or not isinstance(release_id, int)
+            or release_id <= 0
+        ):
+            raise PromotionError("same-version release lookup returned an invalid ID")
+        return self._json(
+            [
+                "gh",
+                "api",
+                "repos/{}/releases/{}".format(self.repository, release_id),
+            ],
+            "same-version release ID lookup",
+        )
 
     def create_draft(self, tag: str, commit: str, title: str) -> None:
         completed = _run(

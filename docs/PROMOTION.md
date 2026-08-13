@@ -20,6 +20,38 @@ The clean tagged checkout is a release-builder input only. It is never shipped
 as installed authority and is not used by end-user install, repair, upgrade,
 rollback, migration, or uninstall.
 
+## One-command release
+
+After committing the version metadata and all intended source changes, run the
+one-command publisher from the repository. The version is mandatory:
+
+```sh
+uv run python scripts/publish_release.py --version 0.6.7
+```
+
+The publisher requires a clean tracked and untracked worktree, validates the
+canonical `origin` and authenticated `gh` session, and builds twice from an
+exact temporary clean checkout. It compares all four asset sets byte for byte
+before it creates or reuses the local `v<version>` tag. It then pushes that
+exact tag only when the canonical remote does not already have it and runs the
+journaled Draft, upload, authenticated re-download, and publication workflow.
+It never moves an existing local or remote tag and never force-pushes or
+overwrites a same-version Release.
+
+The default promotion journal is
+`<system-temp>/dev-flow-promotion-<version>.json`. Use `--record` to select a
+different path outside the repository when durable operator policy requires
+one:
+
+```sh
+uv run python scripts/publish_release.py \
+  --version 0.6.7 \
+  --record /tmp/dev-flow-promotion-0.6.7.json
+```
+
+The lower-level build and promotion commands below remain available for manual
+evidence collection and recovery.
+
 ## Build and deterministic comparison
 
 From the exact tagged source, build twice into two new empty directories:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -23,6 +25,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import build_release  # noqa: E402
 import promote_release  # noqa: E402
+import publish_release  # noqa: E402
 import release_artifact  # noqa: E402
 
 
@@ -723,6 +726,273 @@ class PromotionTests(unittest.TestCase):
             ), download)
             self.assertIn("Accept: application/octet-stream", download)
             self.assertIn("--draft=false", publish)
+
+    def test_default_api_reads_draft_through_release_database_id(self) -> None:
+        class Runner:
+            def __init__(self) -> None:
+                self.commands: list[list[str]] = []
+
+            def __call__(self, command, **_kwargs):
+                command = list(command)
+                self.commands.append(command)
+                if command[:3] == ["gh", "release", "view"]:
+                    output = json.dumps({"databaseId": 42})
+                else:
+                    output = json.dumps(
+                        {
+                            "id": 42,
+                            "tag_name": "v1.2.3",
+                            "target_commitish": COMMIT,
+                            "draft": True,
+                            "prerelease": False,
+                            "assets": [],
+                        }
+                    )
+                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Runner()
+            api = promote_release.GitHubReleaseAPI(
+                release_artifact.CANONICAL_REPOSITORY,
+                Path(temporary).resolve(),
+                runner,
+            )
+            release = api.release_by_tag("v1.2.3")
+
+        self.assertIsNotNone(release)
+        self.assertTrue(release["draft"])
+        self.assertEqual(
+            runner.commands[0],
+            [
+                "gh",
+                "release",
+                "view",
+                "v1.2.3",
+                "--repo",
+                release_artifact.CANONICAL_REPOSITORY,
+                "--json",
+                "databaseId",
+            ],
+        )
+        self.assertIn(
+            "repos/{}/releases/42".format(release_artifact.CANONICAL_REPOSITORY),
+            runner.commands[1],
+        )
+        self.assertFalse(
+            any(
+                "/releases/tags/" in argument
+                for command in runner.commands
+                for argument in command
+            )
+        )
+
+    def test_default_api_returns_none_when_release_view_reports_not_found(self) -> None:
+        class Runner:
+            def __init__(self) -> None:
+                self.commands: list[list[str]] = []
+
+            def __call__(self, command, **_kwargs):
+                command = list(command)
+                self.commands.append(command)
+                return subprocess.CompletedProcess(
+                    command,
+                    1,
+                    stdout="",
+                    stderr="release not found\n",
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = Runner()
+            api = promote_release.GitHubReleaseAPI(
+                release_artifact.CANONICAL_REPOSITORY,
+                Path(temporary).resolve(),
+                runner,
+            )
+            self.assertIsNone(api.release_by_tag("v1.2.3"))
+
+        self.assertEqual(len(runner.commands), 1)
+
+
+class PublishReleaseTests(unittest.TestCase):
+    def test_version_is_a_required_argument(self) -> None:
+        with mock.patch.object(sys, "stderr", io.StringIO()), self.assertRaises(
+            SystemExit
+        ):
+            publish_release._parser().parse_args([])
+
+    def test_double_build_comparison_rejects_changed_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            first_source = work / "first-source"
+            second_source = work / "second-source"
+            first_source.mkdir()
+            second_source.mkdir()
+            first = work / "first"
+            second = work / "second"
+            _assemble(first_source, first)
+            _assemble(second_source, second)
+            identity = publish_release.compare_asset_sets(
+                first,
+                second,
+                version=VERSION,
+            )
+            self.assertEqual(identity["source_commit"], COMMIT)
+            (second / "install.sh").write_bytes(b"changed\n")
+            with (
+                mock.patch.object(
+                    publish_release.promote_release,
+                    "validate_asset_set",
+                    return_value=identity,
+                ),
+                self.assertRaisesRegex(
+                    publish_release.PublishReleaseError,
+                    "bytes differ: install.sh",
+                ),
+            ):
+                publish_release.compare_asset_sets(first, second, version=VERSION)
+
+    def test_one_command_flow_builds_twice_before_tag_push_and_promotion(self) -> None:
+        class Runner:
+            def __init__(self, root: Path) -> None:
+                self.root = root
+                self.local_tags: dict[str, str] = {}
+                self.remote_tags: dict[str, str] = {}
+                self.commands: list[list[str]] = []
+                self.events: list[str] = []
+
+            def __call__(self, command, **kwargs):
+                command = list(command)
+                cwd = Path(kwargs["cwd"])
+                self.commands.append(command)
+                self.events.append("command:" + " ".join(command))
+                stdout = ""
+                returncode = 0
+                if command[:3] == ["git", "status", "--porcelain=v1"]:
+                    stdout = ""
+                elif command[:4] == ["git", "remote", "get-url", "--push"]:
+                    stdout = "git@github.com:{}.git\n".format(
+                        release_artifact.CANONICAL_REPOSITORY
+                    )
+                elif command[:3] == ["git", "rev-parse", "HEAD"]:
+                    stdout = COMMIT + "\n"
+                elif command[:3] == ["git", "rev-parse", "HEAD^{tree}"]:
+                    stdout = TREE + "\n"
+                elif command[:3] == ["git", "show-ref", "--verify"]:
+                    tag = command[-1].removeprefix("refs/tags/")
+                    tags = self.local_tags if cwd == self.root else getattr(
+                        self, "checkout_tags", {}
+                    )
+                    returncode = 0 if tag in tags else 1
+                elif command[:2] == ["git", "rev-parse"]:
+                    tag = command[-1].removesuffix("^{commit}")
+                    tags = self.local_tags if cwd == self.root else self.checkout_tags
+                    stdout = tags[tag] + "\n"
+                elif command[:3] == ["git", "ls-remote", "--tags"]:
+                    tag = command[-2].removeprefix("refs/tags/")
+                    if tag in self.remote_tags:
+                        stdout = "{}\trefs/tags/{}\n".format(
+                            self.remote_tags[tag], tag
+                        )
+                elif command[:2] == ["git", "clone"]:
+                    Path(command[-1]).mkdir()
+                    self.checkout_tags = dict(self.local_tags)
+                elif "checkout" in command:
+                    pass
+                elif command[:2] == ["git", "tag"]:
+                    tag, commit = command[2:]
+                    if cwd == self.root:
+                        self.local_tags[tag] = commit
+                    else:
+                        self.checkout_tags[tag] = commit
+                elif command[:2] == ["git", "push"]:
+                    tag = command[-1].split(":", 1)[0].removeprefix("refs/tags/")
+                    self.remote_tags[tag] = self.local_tags[tag]
+                    self.events.append("tag-pushed")
+                elif command[:3] == ["gh", "auth", "status"]:
+                    pass
+                else:
+                    raise AssertionError(command)
+                return subprocess.CompletedProcess(
+                    command,
+                    returncode,
+                    stdout=stdout,
+                    stderr="",
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            runner = Runner(ROOT)
+            build_count = 0
+
+            def builder(_root, output, *, version, runner):
+                nonlocal build_count
+                self.assertEqual(version, VERSION)
+                build_count += 1
+                runner.events.append("build:{}".format(build_count))
+                source = work / "source-{}".format(build_count)
+                source.mkdir()
+                return _assemble(source, output)
+
+            def promoter(asset_dir, *, version, journal_path):
+                self.assertEqual(version, VERSION)
+                self.assertEqual(journal_path, work / "promotion.json")
+                promote_release.validate_asset_set(asset_dir, version=version)
+                runner.events.append("promoted")
+                return {
+                    "phase": "published",
+                    "published": True,
+                    "release_id": "v{}-fixture".format(version),
+                }
+
+            with mock.patch.object(
+                publish_release.bump_version,
+                "validate_release_files",
+                return_value=VERSION,
+            ):
+                result = publish_release.publish_release(
+                    ROOT,
+                    VERSION,
+                    record_path=work / "promotion.json",
+                    runner=runner,
+                    builder=builder,
+                    promoter=promoter,
+                )
+
+        self.assertEqual(build_count, 2)
+        self.assertTrue(result["created_local_tag"])
+        self.assertTrue(result["pushed_remote_tag"])
+        self.assertEqual(runner.local_tags["v" + VERSION], COMMIT)
+        self.assertEqual(runner.remote_tags["v" + VERSION], COMMIT)
+        self.assertLess(runner.events.index("build:2"), runner.events.index("tag-pushed"))
+        self.assertLess(runner.events.index("tag-pushed"), runner.events.index("promoted"))
+
+    def test_remote_tag_conflict_is_refused_without_force_push(self) -> None:
+        class Runner:
+            def __init__(self) -> None:
+                self.commands: list[list[str]] = []
+
+            def __call__(self, command, **_kwargs):
+                command = list(command)
+                self.commands.append(command)
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="{}\trefs/tags/v{}\n".format("9" * 40, VERSION),
+                    stderr="",
+                )
+
+        runner = Runner()
+        with self.assertRaisesRegex(
+            publish_release.PublishReleaseError,
+            "another commit",
+        ):
+            publish_release._ensure_remote_tag(
+                ROOT,
+                "v" + VERSION,
+                COMMIT,
+                runner,
+            )
+        self.assertFalse(any(command[:2] == ["git", "push"] for command in runner.commands))
 
 
 if __name__ == "__main__":
