@@ -1,5 +1,0 @@
-schema: spec-driven
-created: 2026-08-12
-goal: Replace persistent Git-checkout installation with a verified versioned release
-  artifact and a bounded lifecycle that preserves existing plugin, runtime,
-  task-data, and Controller authority boundaries.
