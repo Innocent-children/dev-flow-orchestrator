@@ -48,16 +48,22 @@ uv run python -m unittest discover -s tests -p 'test_*.py'
 
 The former repository rule prohibiting full unittest discovery is abolished.
 Do not replace complete discovery with a hand-maintained partial module list in
-release evidence. Focused suites remain useful for fast feedback.
-The checked-in CI matrix runs that complete discovery on macOS and native Windows
-for every supported Python minor from 3.10 through 3.14; a green subset is not a
-substitute for the complete release matrix.
+release evidence. Focused suites remain useful for fast feedback. Run complete
+discovery once near the end of an implementation and, after fixing a failure,
+rerun the failing subset before the final complete discovery.
+
+Release-artifact evidence is deliberately layered. Shared verifier and lifecycle
+behavior belongs in focused unit and deterministic fake-Codex integration tests.
+The Python 3.10–3.14 matrix runs only lightweight wheel-only dependency
+installation, import, and MCP startup smoke checks. Do not repeat the complete
+lifecycle matrix on every Python minor. Concurrency coverage is limited to
+upgrade versus upgrade and upgrade versus uninstall.
 
 Run package and OpenSpec validation when relevant:
 
 ```sh
 uv run python scripts/validate_package.py
-openspec validate dev-flow-orchestrator-mcp --strict
+openspec validate install-versioned-release-artifact --strict
 ```
 
 The same installed STDIO launcher is compatible with the
@@ -74,8 +80,11 @@ The automated protocol gate remains `tests/test_mcp_runtime.py`, which uses the
 official Python client directly and does not require Node.js.
 
 Never claim a platform or matrix passed unless it actually ran. Native Windows
-evidence must come from native Windows x64, not macOS, Wine, WSL, or a skipped
-test. Record skips, unavailable hosts, and stale evidence explicitly.
+evidence must come from native Windows x64, not macOS, static PowerShell, Wine,
+WSL, a deterministic fake, or a skipped test. Release-candidate Codex evidence
+must use a real Codex host, and promotion evidence must re-download the final
+assets from exact official version-specific locators. Record skips, unavailable
+hosts, permissions, retained paths, degradations, and stale evidence explicitly.
 
 ## MCP changes
 
@@ -130,21 +139,66 @@ the bound review package and guidance digest.
 
 ## Installation and platform changes
 
-Candidate validation runs before candidate runtime code. The managed runtime
-must remain outside verified source and task data, use the exact lock, install a
-wheel, pass MCP smoke checks, and write a matching receipt before activation.
-Failed builds must preserve the previous runtime and launcher.
+End-user installation consumes version-specific GitHub Release assets and must
+not require Git, `.git`, `DEV_FLOW_SOURCE_ROOT`, or a retained checkout. Release
+production may inspect the exact clean `vMAJOR.MINOR.PATCH` tag, but no source
+checkout may become installed, active, repair, rollback, migration, or uninstall
+authority.
 
-POSIX scripts target macOS. PowerShell scripts retain PowerShell 5.1
-compatibility, literal-path handling, x64 checks, fast-forward-only source
-authority, marker-validated removal, and no POSIX dependency. Pair lifecycle
-behavior across platforms without copying platform-specific mechanisms.
+Maintain one closed platform-neutral archive contract: complete sealed plugin
+tree, exactly one pure-Python project wheel, hash-locked
+`runtime-requirements.txt`, its `uv.lock`, versioned lifecycle helpers, and an
+embedded manifest that excludes itself. `release-index.json` pins the raw UTF-8
+manifest bytes. Artifact member paths use the portable ASCII grammar; user
+installation roots may contain spaces, apostrophes, and Unicode.
 
-Installed journeys must use the real PATH launcher and official MCP client over
-STDIO; the server process must not import test helpers. Cover one-member and
-multi-member flows, restart/resume, 0.4.x data compatibility, governance,
-review/rework, assurance exhaustion, terminal Dossiers, duplicate registration,
-failed build/activation rollback, and uninstall preservation.
+Both version-matched bootstraps must embed byte-identical standard-library
+Phase A verifier bytes. Phase A verifies the pinned index before parsing, then
+the archive, all headers and paths, fixed limits, safe extraction, raw manifest,
+complete inventory, and topology before any artifact code or product mutation.
+Tests must explicitly prove that gate. SHA-256 establishes pinned byte
+agreement; never describe it as independent signing or absolute source
+authenticity.
+
+Phase B installs exact hash-required wheel-only dependencies and the supplied
+project wheel without executing an sdist backend. Candidate health precedes
+host activation. The active record remains the only local release selector;
+stable `dev-flow`, `dev-flow-mcp`, and `dev-flow-uninstall` dispatchers are not
+replaced during ordinary repair, upgrade, or automatic rollback.
+
+Fresh install, repair, upgrade, migration, recovery, and uninstall share one
+installation-wide lock, bounded journals, monotonic generation, and
+generation-plus-digest CAS. Each operation must finish as `committed`,
+`rolled_back`, or `partial`. Never make a command successful while its journal
+is non-terminal or broaden deletion to make an uncertain state appear clean.
+
+POSIX bootstrap tests target macOS. PowerShell retains PowerShell 5.1
+compatibility, literal-path handling, x64 checks, safe native reparse behavior,
+and no POSIX dependency. Pair lifecycle semantics across platforms without
+copying platform-specific mechanisms or treating static equivalence as native
+evidence.
+
+The bounded final artifact journey runs once on native macOS and once on native
+Windows and covers fresh install, healthy and drift repair, upgrade,
+failed-activation rollback, interrupted recovery, startup, predecessor
+migration, uninstall, and task-data preservation. Release-candidate evidence
+uses a real Codex host for plugin read-back, bundled Skill discovery,
+`dev-flow-mcp --stdio`, and uninstall. Ordinary development uses deterministic
+fakes.
+
+Native installed journeys use the real PATH launcher and the official MCP
+client over STDIO; the server process must not import test helpers.
+
+Uninstall uses exact compare-and-remove evidence and must preserve Controller
+task data, changed or unknown content, unrelated Codex state, unrelated
+launchers, standalone MCP registrations, and every legacy checkout. Migration
+supports only the frozen immediately preceding conforming installer and must
+not read, execute, update, clean, own, or delete its checkout.
+
+Signing, Sigstore, transparency logs, offline fresh install, mirrors, update
+channels, background updates, arbitrary historical rollback, unbounded
+retention, general Unicode archive members, broader legacy migration, and a
+dispatcher-protocol migration framework require separate OpenSpec changes.
 
 ## Public documentation
 

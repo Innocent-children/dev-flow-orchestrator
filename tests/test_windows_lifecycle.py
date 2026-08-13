@@ -1,578 +1,91 @@
-"""Black-box representative Windows PowerShell install/uninstall coverage."""
+"""Windows lifecycle contracts; static checks are not native final-artifact evidence."""
 
 from __future__ import annotations
 
-import inspect
-import json
-import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TESTS = Path(__file__).resolve().parent
-sys.path.insert(0, str(TESTS))
-
-from support import (
-    assert_hermetic_subprocess_env,
-    hermetic_subprocess_env,
-    probe_subprocess_runtime_roots,
-)
-
-PACKAGE_VERSION = json.loads(
-    (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
-)["version"]
-CANONICAL_BUNDLED_MCP = [
-    {
-        "name": "dev-flow",
-        "enabled": True,
-        "disabled_reason": None,
-        "transport": {
-            "type": "stdio",
-            "command": "dev-flow-mcp",
-            "args": ["--stdio"],
-        },
-    }
-]
-CODEX_STUB = """import json
-import os
-import sys
-
-args = sys.argv[1:]
-state = os.environ["DEV_FLOW_CODEX_STATE"]
-if args[:3] == ["plugin", "list", "--marketplace"]:
-    installed = []
-    if os.path.exists(state):
-        with open(state, encoding="utf-8") as stream:
-            version = stream.read().strip()
-        enabled = os.environ.get("DEV_FLOW_CODEX_ENABLED_JSON", "true") == "true"
-        installed.append(
-            {
-                "pluginId": "dev-flow-orchestrator@personal",
-                "version": version,
-                "installed": True,
-                "enabled": enabled,
-            }
-        )
-    print(json.dumps({"installed": installed}))
-elif args == ["mcp", "list", "--json"]:
-    if os.path.exists(state):
-        payload = os.environ["DEV_FLOW_ACTIVE_MCP_LIST_JSON"]
-    else:
-        payload = os.environ.get("DEV_FLOW_MCP_LIST_JSON", "[]")
-    print(json.dumps(json.loads(payload)))
-elif args == ["plugin", "remove", "dev-flow-orchestrator@personal"]:
-    with open(os.environ["DEV_FLOW_CODEX_LOG"], "a", encoding="utf-8") as stream:
-        stream.write("remove\\n")
-    if os.path.exists(state):
-        os.unlink(state)
-elif args == ["plugin", "add", "dev-flow-orchestrator@personal"]:
-    if os.environ.get("DEV_FLOW_CODEX_ADD_EXIT") != "0":
-        sys.exit(int(os.environ["DEV_FLOW_CODEX_ADD_EXIT"]))
-    with open(os.environ["DEV_FLOW_CODEX_LOG"], "a", encoding="utf-8") as stream:
-        stream.write("add\\n")
-    with open(state, "w", encoding="utf-8") as stream:
-        stream.write(os.environ["DEV_FLOW_PACKAGE_VERSION"])
-else:
-    sys.exit(2)
-"""
 
 
-def git(*arguments: str, cwd: Path | None = None) -> str:
-    if cwd is not None:
-        isolation_root = cwd.resolve()
-    else:
-        absolute = next(
-            (Path(value) for value in arguments if Path(value).is_absolute()),
-            None,
-        )
-        if absolute is None:
-            raise AssertionError("fixture Git command has no temporary path authority")
-        isolation_root = absolute.resolve().parent
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=cwd,
-        env=hermetic_subprocess_env(isolation_root),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def configure(repository: Path) -> None:
-    git("config", "user.name", "Windows Lifecycle Test", cwd=repository)
-    git("config", "user.email", "windows-test@example.invalid", cwd=repository)
-
-
-@unittest.skipUnless(sys.platform == "win32", "requires native Windows PowerShell")
-class WindowsLifecycleTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.fixture = tempfile.TemporaryDirectory()
-        fixture = Path(cls.fixture.name)
-        seed = fixture / "candidate seed"
-        seed.mkdir()
-        listed = subprocess.run(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-            cwd=ROOT,
-            env=hermetic_subprocess_env(fixture),
-            check=True,
-            capture_output=True,
-        ).stdout
-        for raw in listed.split(b"\0"):
-            if not raw:
-                continue
-            relative = Path(os.fsdecode(raw))
-            source = ROOT / relative
-            if source.is_file():
-                target = seed / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
-        git("init", "--initial-branch=main", cwd=seed)
-        configure(seed)
-        git("add", "--all", cwd=seed)
-        git("commit", "-m", "candidate", cwd=seed)
-        cls.remote_template = fixture / "remote.git"
-        git("init", "--bare", str(cls.remote_template))
-        git("remote", "add", "origin", str(cls.remote_template), cwd=seed)
-        git("push", "origin", "main", cwd=seed)
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.fixture.cleanup()
-
-    def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
-        self.remote = self.root / "remote copy.git"
-        shutil.copytree(self.remote_template, self.remote)
-        self.source = self.root / "plugins" / "source O'Brien 雪 with spaces"
-        self.marketplace = self.root / ".agents" / "plugins" / "marketplace.json"
-        self.state = self.root / "plugin-state.txt"
-        self.log = self.root / "codex.log"
-        fake_bin = self.root / "fake bin"
-        fake_bin.mkdir()
-        (fake_bin / "codex.cmd").write_text(
-            '@echo off\r\n"%DEV_FLOW_PYTHON%" "%~dp0codex_stub.py" %*\r\n',
-            encoding="ascii",
-        )
-        (fake_bin / "codex_stub.py").write_text(CODEX_STUB, encoding="utf-8")
-        self.environment = hermetic_subprocess_env(
-            self.root,
-            path_entries=(fake_bin,),
-            overrides={
-                "DEV_FLOW_REPOSITORY_URL": self.remote.as_uri(),
-                "DEV_FLOW_SOURCE_ROOT": str(self.source),
-                "DEV_FLOW_MARKETPLACE_FILE": str(self.marketplace),
-                "DEV_FLOW_PYTHON": sys.executable,
-                "DEV_FLOW_CODEX_STATE": str(self.state),
-                "DEV_FLOW_CODEX_LOG": str(self.log),
-                "DEV_FLOW_CODEX_ADD_EXIT": "0",
-                "DEV_FLOW_CODEX_ENABLED_JSON": "true",
-                "DEV_FLOW_PACKAGE_VERSION": PACKAGE_VERSION,
-                "DEV_FLOW_ACTIVE_MCP_LIST_JSON": json.dumps(CANONICAL_BUNDLED_MCP),
-                "CODEX_HOME": str(self.root / ".codex"),
-                "DEV_FLOW_RUNTIME_HOME": str(self.root / "managed runtime"),
-            },
-        )
-        for authority in (
-            "HOME",
-            "USERPROFILE",
-            "LOCALAPPDATA",
-            "XDG_DATA_HOME",
-            "CODEX_HOME",
-            "DEV_FLOW_DATA_DIR",
-            "PLUGIN_DATA",
-            "DEV_FLOW_RUNTIME_HOME",
-            "DEV_FLOW_SOURCE_ROOT",
-            "DEV_FLOW_MARKETPLACE_FILE",
-            "DEV_FLOW_BIN_DIR",
-        ):
-            Path(self.environment[authority]).resolve().relative_to(
-                self.root.resolve()
-            )
-        self.assertEqual(
-            Path(self.environment["PATH"].split(os.pathsep)[0]).resolve(),
-            fake_bin.resolve(),
-        )
-        probe_subprocess_runtime_roots(self.root, self.environment)
-
-    def tearDown(self) -> None:
-        self.temporary.cleanup()
-
-    def run_script(self, name: str, *arguments: str, overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        environment = self.environment.copy()
-        if overrides:
-            environment.update(overrides)
-        assert_hermetic_subprocess_env(self.root, environment)
-        probe_subprocess_runtime_roots(self.root, environment)
-        return subprocess.run(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / name), *arguments],
-            cwd=self.root,
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-
-    def advance_remote(self, name: str = "incoming.txt") -> str:
-        checkout = self.root / ("remote advance " + name.replace(".", "-"))
-        git("clone", str(self.remote), str(checkout))
-        configure(checkout)
-        (checkout / name).write_text("incoming\n", encoding="utf-8")
-        git("add", name, cwd=checkout)
-        git("commit", "-m", "advance", cwd=checkout)
-        commit = git("rev-parse", "HEAD", cwd=checkout)
-        git("push", "origin", "main", cwd=checkout)
-        return commit
-
-    def test_fresh_install_and_repair_preserve_one_marketplace_entry(self) -> None:
-        first = self.run_script("install.ps1")
-        self.assertEqual(first.returncode, 0, first.stderr)
-        for label in ("ACTION", "VERSION", "SOURCE", "MARKETPLACE", "CODEX HOME", "FIRST PROMPT"):
-            self.assertIn(label, first.stdout)
-        second = self.run_script("install.ps1")
-        self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertIn("repaired", second.stdout)
-        plugins = json.loads(self.marketplace.read_text(encoding="utf-8-sig"))["plugins"]
-        self.assertEqual(sum(item.get("name") == "dev-flow-orchestrator" for item in plugins), 1)
-        entry = next(
-            item for item in plugins if item.get("name") == "dev-flow-orchestrator"
-        )
-        plugin_root = (
-            self.marketplace.parent.parent.parent / entry["source"]["path"]
-        ).resolve()
-        plugin_root.relative_to(
-            Path(self.environment["DEV_FLOW_RUNTIME_HOME"]).resolve()
-        )
-        self.assertNotEqual(plugin_root, self.source.resolve())
-        installed_manifest = json.loads(
-            (plugin_root / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(installed_manifest["skills"], "./skills/")
-        self.assertEqual(installed_manifest["mcpServers"], "./.mcp.json")
-        for relative in (
-            "skills/dev-flow/SKILL.md",
-            "skills/dev-flow/agents/openai.yaml",
-            "skills/dev-flow/references/activation-and-routing.md",
-        ):
-            self.assertEqual(
-                (plugin_root / relative).read_bytes(),
-                (ROOT / relative).read_bytes(),
-            )
-        receipt = json.loads(
-            (plugin_root.parent / "runtime-receipt.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(receipt["schema"], "dev-flow-runtime-receipt/2.0.0")
-        self.assertEqual(receipt["release_id"], plugin_root.parent.name)
-        cli_launcher = Path(self.environment["DEV_FLOW_BIN_DIR"]) / "dev-flow.cmd"
-        self.assertTrue(cli_launcher.is_file())
-        self.assertIsInstance(receipt["cli_launcher_sha256"], str)
-        self.assertIn("managed CLI launcher", cli_launcher.read_text(encoding="utf-8"))
-
-    def test_older_version_is_upgraded(self) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        self.state.write_text("0.2.0", encoding="utf-8")
-        result = self.run_script("install.ps1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("ACTION         upgraded", result.stdout)
-        self.assertIn("PREVIOUS       0.2.0", result.stdout)
-
-    def test_dirty_source_is_rejected_without_activation(self) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        self.log.write_text("", encoding="utf-8")
-        (self.source / "local.txt").write_text("work", encoding="utf-8")
-        result = self.run_script("install.ps1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("local changes", result.stderr)
-        self.assertEqual(self.log.read_text(encoding="utf-8"), "")
-
-    def test_activation_failure_is_nonzero_with_recovery_command(self) -> None:
-        result = self.run_script("install.ps1", overrides={"DEV_FLOW_CODEX_ADD_EXIT": "17"})
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Plugin activation failed", result.stderr)
-        self.assertIn("Inspect transaction state at", result.stderr)
-
-    def test_keep_source_uninstall_preserves_checkout_and_task_data(self) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        task_data = self.root / ".codex" / "plugins" / "data" / "task.json"
-        task_data.parent.mkdir(parents=True)
-        task_data.write_text("preserve", encoding="utf-8")
-        result = self.run_script("uninstall.ps1", "-KeepSource")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.source.is_dir())
-        self.assertEqual(task_data.read_text(encoding="utf-8"), "preserve")
-        self.assertIn("TASK DATA", result.stdout)
-        self.assertIn("OUTCOME        partial", result.stdout)
-        self.assertIn("SOURCE         retained", result.stdout)
-        self.assertIn(f"SOURCE PATH    {self.source}", result.stdout)
-        self.assertIn("no verifiable exact-ownership manifest", result.stdout)
-        self.assertIn("Inspect and back up", result.stdout)
-        self.assertIn("independently confirm ownership", result.stdout)
-
-    def test_fast_forward_install_and_default_uninstall_preserve_task_data(self) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        expected = self.advance_remote()
-        repaired = self.run_script("install.ps1")
-        self.assertEqual(repaired.returncode, 0, repaired.stderr)
-        self.assertEqual(git("rev-parse", "HEAD", cwd=self.source), expected)
-
-        task_data = self.root / ".codex" / "plugins" / "data" / "task.json"
-        task_data.parent.mkdir(parents=True)
-        task_data.write_text("preserve", encoding="utf-8")
-        removed = self.run_script("uninstall.ps1")
-        self.assertEqual(removed.returncode, 0, removed.stderr)
-        self.assertTrue(self.source.is_dir())
-        self.assertEqual(task_data.read_text(encoding="utf-8"), "preserve")
-        self.assertIn("OUTCOME        partial", removed.stdout)
-        self.assertIn(f"SOURCE PATH    {self.source}", removed.stdout)
-
-    def test_malformed_marketplace_preserves_original_bytes(self) -> None:
-        self.marketplace.parent.mkdir(parents=True)
-        original = b"{ malformed marketplace \xff"
-        self.marketplace.write_bytes(original)
-        result = self.run_script("install.ps1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.marketplace.read_bytes(), original)
-        self.assertFalse(self.state.exists())
-
-    def test_preexisting_ignored_cache_is_preserved_without_new_source_residue(self) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        legacy = self.source / "scripts" / "dev_flow_parts" / "__pycache__"
-        legacy.mkdir(parents=True)
-        sentinel = legacy / "old.cpython-314.pyc"
-        sentinel.write_bytes(b"cache")
-        before_ignored = git(
-            "ls-files", "--others", "--ignored", "--exclude-standard", cwd=self.source
-        )
-        self.log.write_text("", encoding="utf-8")
-
-        result = self.run_script("install.ps1")
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(sentinel.read_bytes(), b"cache")
-        self.assertEqual(
-            git("ls-files", "--others", "--ignored", "--exclude-standard", cwd=self.source),
-            before_ignored,
-        )
-
-    def test_unrelated_marketplace_entries_are_preserved(self) -> None:
-        self.marketplace.parent.mkdir(parents=True)
-        self.marketplace.write_text(
-            json.dumps({"name": "personal", "plugins": [{"name": "unrelated"}]}),
-            encoding="utf-8",
-        )
-        installed = self.run_script("install.ps1")
-        self.assertEqual(installed.returncode, 0, installed.stderr)
-        document = json.loads(self.marketplace.read_text(encoding="utf-8-sig"))
-        self.assertEqual(
-            [item["name"] for item in document["plugins"]],
-            ["unrelated", "dev-flow-orchestrator"],
-        )
-        removed = self.run_script("uninstall.ps1", "-KeepSource")
-        self.assertEqual(removed.returncode, 0, removed.stderr)
-        document = json.loads(self.marketplace.read_text(encoding="utf-8-sig"))
-        self.assertEqual([item["name"] for item in document["plugins"]], ["unrelated"])
-
-    def assert_reinstall_refused_without_activation(self, scenario: str) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        self.log.write_text("", encoding="utf-8")
-        if scenario == "branch":
-            git("switch", "-c", "topic", cwd=self.source)
-        elif scenario == "detached":
-            git("switch", "--detach", cwd=self.source)
-        else:
-            git("remote", "set-url", "origin", str(self.root / "unexpected.git"), cwd=self.source)
-        result = self.run_script("install.ps1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.log.read_text(encoding="utf-8"), "")
-
-    def test_non_main_source_is_rejected(self) -> None:
-        self.assert_reinstall_refused_without_activation("branch")
-
-    def test_detached_source_is_rejected(self) -> None:
-        self.assert_reinstall_refused_without_activation("detached")
-
-    def test_unexpected_origin_is_rejected(self) -> None:
-        self.assert_reinstall_refused_without_activation("origin")
-
-    def test_incoming_main_does_not_overwrite_ignored_path(self) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        (self.source / ".git" / "info" / "exclude").write_text(
-            "incoming.txt\n", encoding="utf-8"
-        )
-        (self.source / "incoming.txt").write_text("local ignored\n", encoding="utf-8")
-        self.advance_remote("incoming.txt")
-        self.log.write_text("", encoding="utf-8")
-        result = self.run_script("install.ps1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((self.source / "incoming.txt").read_text(encoding="utf-8"), "local ignored\n")
-        self.assertEqual(self.log.read_text(encoding="utf-8"), "")
-
-    def test_local_ahead_and_diverged_histories_are_rejected(self) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        (self.source / "local-only.txt").write_text("local\n", encoding="utf-8")
-        git("add", "local-only.txt", cwd=self.source)
-        git("commit", "-m", "local ahead", cwd=self.source)
-        ahead = self.run_script("install.ps1")
-        self.assertNotEqual(ahead.returncode, 0)
-        self.assertIn("local commits", ahead.stderr)
-
-        self.advance_remote("remote-only.txt")
-        diverged = self.run_script("install.ps1")
-        self.assertNotEqual(diverged.returncode, 0)
-        self.assertIn("diverged", diverged.stderr)
-
-    def assert_contained_uninstall_preserves_source(self, scenario: str) -> None:
-        self.assertEqual(self.run_script("install.ps1").returncode, 0)
-        if scenario == "ignored":
-            (self.source / ".git" / "info" / "exclude").write_text(
-                "local-cache.txt\n", encoding="utf-8"
-            )
-            (self.source / "local-cache.txt").write_text("cache", encoding="utf-8")
-        else:
-            (self.source / "local-commit.txt").write_text("local", encoding="utf-8")
-            git("add", "local-commit.txt", cwd=self.source)
-            git("commit", "-m", "local only", cwd=self.source)
-        result = self.run_script("uninstall.ps1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.source.is_dir())
-        self.assertIn("OUTCOME        partial", result.stdout)
-        self.assertIn("SOURCE         retained", result.stdout)
-        self.assertIn(f"SOURCE PATH    {self.source}", result.stdout)
-        self.assertIn("no verifiable exact-ownership manifest", result.stdout)
-
-    def test_uninstaller_contains_ignored_source(self) -> None:
-        self.assert_contained_uninstall_preserves_source("ignored")
-
-    def test_uninstaller_contains_local_only_commit(self) -> None:
-        self.assert_contained_uninstall_preserves_source("local-commit")
-
-
-class WindowsLifecycleFixtureStaticTests(unittest.TestCase):
-    def test_installer_uses_sealed_previous_and_bounded_observed_rollback(self) -> None:
+class VersionedWindowsLifecycleStaticTests(unittest.TestCase):
+    def test_powershell_asset_is_a_pinned_phase_a_template(self) -> None:
         source = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
         for token in (
-            "Seal-Commit $CurrentHead $PreviousSourceTree 'previous'",
-            "Build-SealedRuntime $PreviousStagedRoot",
-            "Write-InstallTransaction",
-            "Get-PluginObservation",
-            "Set-MarketplaceEntry $CandidateMarketplaceEntry $RollbackMarketplaceEntry",
-            "Set-McpLauncher $CandidateLauncherBytes $RollbackLauncherBytes",
-            "Test-ReleaseHealth $PreviousRuntimePython $PreviousPersistentPluginRoot",
-            "Previous plugin activation was restored and verified",
-            "rollback-incomplete",
-            "blind_retry_safe",
-            "candidate_release",
-            "previous_release",
+            "Set-StrictMode -Version Latest",
+            "@DEV_FLOW_RELEASE_VERSION@",
+            "@DEV_FLOW_ARCHIVE_NAME@",
+            "@DEV_FLOW_INDEX_SHA256@",
+            "@DEV_FLOW_PHASE_A_B64@",
+            "DEV_FLOW_SOURCE_ROOT is not supported",
+            "-I -S $PhaseAPath bootstrap",
         ):
             self.assertIn(token, source)
-        self.assertLess(
-            source.index("Seal-Commit $CurrentHead $PreviousSourceTree 'previous'"),
-            source.index("'merge', '--ff-only'"),
-        )
-        self.assertLess(
-            source.index("Build-SealedRuntime $SealedSourceRoot"),
-            source.index("Set-McpLauncher $PreviousLauncherBytes"),
-        )
-        self.assertNotIn("[IO.File]::WriteAllBytes($MarketplaceFile", source)
+        for obsolete in ("refs/heads", "--ff-only", "--no-overwrite-ignore"):
+            self.assertNotIn(obsolete, source)
 
-    def test_uninstaller_disables_recursive_source_and_runtime_removal(self) -> None:
+    def test_versioned_driver_uses_shared_lock_cas_and_terminal_contract(self) -> None:
+        lifecycle = (ROOT / "scripts" / "release_lifecycle.py").read_text(
+            encoding="utf-8"
+        )
+        machine = (ROOT / "scripts" / "lifecycle_machine.py").read_text(
+            encoding="utf-8"
+        )
+        state = (ROOT / "scripts" / "lifecycle_state.py").read_text(
+            encoding="utf-8"
+        )
+        combined = "\n".join((lifecycle, machine, state))
+        for token in (
+            "lifecycle.lock",
+            "expected_active",
+            "public_proof",
+            "committed",
+            "rolled_back",
+            "partial",
+        ):
+            self.assertIn(token, combined)
+
+    def test_native_dispatcher_names_are_closed(self) -> None:
+        sources = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8")
+            for relative in (
+                "scripts/release_lifecycle.py",
+                "scripts/render_dispatchers.py",
+                "scripts/stable_dispatcher.py",
+            )
+        )
+        for name in ("dev-flow.cmd", "dev-flow-mcp.cmd", "dev-flow-uninstall.cmd"):
+            self.assertIn(name, sources)
+
+    def test_repository_uninstaller_has_no_checkout_retention_switch(self) -> None:
         source = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
-        source_removal_lines = [
-            line
-            for line in source.splitlines()
-            if "Remove-Item" in line and "$SourceRoot" in line
-        ]
-        self.assertEqual(source_removal_lines, [])
-        self.assertNotIn("$RemoveSource", source)
-        self.assertNotIn("[switch]$RemoveSource", source)
-        self.assertNotIn("status', '--ignored', '--porcelain", source)
-        self.assertNotIn("--remotes=origin", source)
-        self.assertNotIn(
-            "Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force",
-            source,
-        )
-        self.assertIn("runtime_integrity.py", source)
-        self.assertIn("remove-owned", source)
-        self.assertIn("RUNTIME RETAINED", source)
-        for token in (
-            "OUTCOME        partial",
-            "SOURCE         $SourceAction",
-            "SOURCE PATH    $SourceRoot",
-            "no verifiable exact-ownership manifest",
-            "TASK DATA      preserved",
-            "MANUAL ACTION",
-            "Inspect and back up",
-            "independently confirm ownership",
-        ):
-            self.assertIn(token, source)
+        self.assertIn("dev-flow-uninstall", source)
+        self.assertNotIn("KeepSource", source)
+        self.assertNotIn("RemoveSource", source)
 
-    def test_fixture_environment_contains_every_windows_mutation_target(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment = hermetic_subprocess_env(root)
-            resolved = assert_hermetic_subprocess_env(root, environment)
-            for authority in (
-                "HOME",
-                "USERPROFILE",
-                "LOCALAPPDATA",
-                "XDG_DATA_HOME",
-                "CODEX_HOME",
-                "DEV_FLOW_DATA_DIR",
-                "PLUGIN_DATA",
-                "DEV_FLOW_RUNTIME_HOME",
-                "DEV_FLOW_SOURCE_ROOT",
-                "DEV_FLOW_MARKETPLACE_FILE",
-                "DEV_FLOW_BIN_DIR",
-            ):
-                Path(environment[authority]).resolve().relative_to(root.resolve())
-            resolved["data"].relative_to(root.resolve())
-            resolved["runtime"].relative_to(root.resolve())
-            for redirect in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
-                self.assertNotIn(redirect, environment)
+    def test_this_suite_is_explicitly_static(self) -> None:
+        self.assertIn("not native final-artifact evidence", __doc__ or "")
 
-    def test_fake_codex_supports_current_plugin_and_mcp_protocol(self) -> None:
-        compile(CODEX_STUB, "codex_stub.py", "exec")
-        for token in (
-            '"enabled": enabled',
-            'args == ["mcp", "list", "--json"]',
-            "DEV_FLOW_CODEX_ENABLED_JSON",
-            "DEV_FLOW_ACTIVE_MCP_LIST_JSON",
-            "DEV_FLOW_MCP_LIST_JSON",
-            "DEV_FLOW_PACKAGE_VERSION",
-        ):
-            self.assertIn(token, CODEX_STUB)
-        setup_source = inspect.getsource(WindowsLifecycleTests.setUp)
-        self.assertIn('"DEV_FLOW_CODEX_ENABLED_JSON": "true"', setup_source)
-        self.assertIn(
-            '"DEV_FLOW_ACTIVE_MCP_LIST_JSON": json.dumps(CANONICAL_BUNDLED_MCP)',
-            setup_source,
-        )
-
-    def test_active_mcp_fixture_matches_canonical_bundled_registration(self) -> None:
-        self.assertEqual(
-            CANONICAL_BUNDLED_MCP,
+    @unittest.skipUnless(sys.platform == "win32", "requires native Windows PowerShell")
+    def test_unrendered_template_refusal_executes_in_native_powershell(self) -> None:
+        completed = subprocess.run(
             [
-                {
-                    "name": "dev-flow",
-                    "enabled": True,
-                    "disabled_reason": None,
-                    "transport": {
-                        "type": "stdio",
-                        "command": "dev-flow-mcp",
-                        "args": ["--stdio"],
-                    },
-                }
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(ROOT / "scripts" / "install.ps1"),
             ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        self.assertIsInstance(PACKAGE_VERSION, str)
-        self.assertTrue(PACKAGE_VERSION)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("release template", completed.stderr)
 
 
 if __name__ == "__main__":

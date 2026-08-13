@@ -4,7 +4,7 @@
 
 ## 产品身份
 
-`0.6.0` 在 MCP 接口旁捆绑名为 `dev-flow` 的正式 Codex Skill，但不改变持久化
+`0.6.6` 在 MCP 接口旁捆绑名为 `dev-flow` 的正式 Codex Skill，但不改变持久化
 模型身份。`MODEL_VERSION`、任务数据命名空间、workflow、policy、binding、record、
 finding、snapshot 和 Delivery Dossier 均保持 `0.4.0`。
 
@@ -83,15 +83,122 @@ MCP 适配器增加有界进程内协调器：同任务 mutation 串行化，最
 
 Mutation 非幂等。commit 后断连或取消可能使完成状态不确定，客户端必须读取存储任务和当前动作，再判断是否需要另一次 mutation。适配器不得通过 retry loop 自动重放 mutation。
 
-## 运行时与安装
+## Release 获取与执行前边界
 
-源码 checkout、密封插件快照、托管 MCP runtime 和任务数据根目录彼此分离。安装器
-在密封插件快照中保留完整 Skill 目录树，使用精确 `uv.lock` 构建版本化虚拟环境，
-安装 wheel，运行已安装 Skill 校验及 MCP 启动/目录/读取 smoke check，并写入 runtime
-receipt。Receipt 和 ownership manifest 绑定 release、source commit、解释器身份与
-架构、lock digest、launcher 及每个已安装 Skill asset，且不暴露数据根目录。
+最终用户生命周期操作获取版本寻址的 GitHub Release 资产，而不是源码 checkout。每个
+版本发布一个闭合的平台中立 archive、一个闭合 `release-index.json`，以及版本匹配的
+`install.sh` 和 `install.ps1` bootstrap。Archive 包含完整 sealed plugin tree、一个
+pure-Python 项目 wheel、哈希锁定的 `runtime-requirements.txt`、其 `uv.lock`、版本化
+lifecycle helper 和内嵌的闭合 manifest。Manifest inventory 覆盖除自身以外的所有
+后代；外部 index 对 manifest 的原始 UTF-8 字节求 hash。
 
-插件 manifest 指向根 `.mcp.json`；后者声明一个 `dev-flow` server，调用自有 PATH launcher `dev-flow-mcp --stdio`。Bundled 与 standalone 注册互斥。Runtime 发布和 launcher 替换采用分阶段方式，使构建失败后原运行时仍可用。
+两个 bootstrap 内嵌相同的标准库 Phase A verifier。它在 parse 前检查 bootstrap 固定
+的 index digest，随后检查闭合 index、archive size 与 digest、每个 tar header 和
+portable ASCII member path、固定资源上限、安全的 exclusive extraction、原始 manifest
+digest、完整 inventory 及静态 package topology。Link、reparse ancestor、special 或
+sparse member、不支持的 tar extension、traversal、path collision 以及缺失或未声明的
+member 都会失败，且 extraction 不能成为权威。
+
+Phase A 完成前，不得执行 artifact helper、artifact import 或 artifact subprocess，
+也不得创建或修改 runtime authority、lifecycle state、dispatcher、marketplace、plugin、
+MCP、Codex state、active record 或 transaction authority。Acquisition staging 是
+installer-owned temporary state，绝不是已安装或 rollback selector。
+
+Bootstrap 是首个版本专属 trust input，它固定规范 repository、version、asset 和 index
+digest。SHA-256 证明 bootstrap、index、archive 与 manifest 之间的字节一致性；它不是
+独立签名或发布真实性的绝对证明。Source commit 与 tree 是 release-builder publication
+assertion。设计不声称抵御所有同用户 trust input 被一致替换，也不增加签名、Sigstore、
+transparency log、mirror 或 offline fresh install。
+
+## Managed release 与启动权威
+
+只有 Phase B 才能执行 semantic wheel validation、要求哈希且仅 wheel 的依赖安装、
+项目 wheel 安装、candidate 构建，以及 staged Skill/MCP health。它绝不在用户机器上
+执行 sdist build backend。Candidate-specific health 不读取公共 active record。
+
+```text
+version-matched bootstrap
+          |
+          v
+Phase A verified extraction（临时，绝不是权威）
+          |
+          v
+Phase B candidate + staged health
+          |
+          v
+provisional marketplace/plugin read-back
+          |
+          v
+active.json generation CAS
+          |
+          v
+public dev-flow and dev-flow-mcp --stdio proof
+```
+
+Managed release 包含隔离 environment、sealed plugin、runtime receipt、installed-
+content verifier 与版本化 lifecycle entry point。Receipt 绑定完整 artifact 与 installed
+identity：index、archive、manifest、source assertion、wheel、requirements、lock、
+distribution、Python、plugin、verifier、helper、owned inventory、release path 与
+transaction。
+
+闭合 `active.json` record 是本地 active-release 的唯一 selector。它只包含单调递增
+generation、release ID、contained 的绝对 managed-release path、receipt digest、
+stable-dispatcher protocol 与提交它的 transaction ID。Receipt、marketplace、plugin
+state、launcher 和 helper file 可以佐证 active record，但绝不选择一个竞争 release。
+
+三个产品自有的小型 dispatcher `dev-flow`、`dev-flow-mcp` 和
+`dev-flow-uninstall` 是稳定安装基础设施。普通 repair、upgrade 与自动 rollback 不会
+替换它们。CLI 与 MCP dispatcher 在调用该 verifier 前检查 active schema、contained
+path、receipt digest、protocol、managed Python 与 versioned verifier。Verifier 在项目
+import 或 MCP initialization 前证明完整 installed content。
+
+插件 manifest 指向根 `.mcp.json`；后者声明一个调用 `dev-flow-mcp --stdio` 的
+`dev-flow` server。Personal marketplace 只指向 active managed release 内的精确
+plugin root，绝不指向 download、extraction、checkout、candidate staging 或可变的共享
+plugin tree。
+
+## Lifecycle 状态机
+
+Fresh install、repair、upgrade、predecessor migration、recovery 与 uninstall 共用一把
+installation-wide lifecycle lock。读取 active 或 transaction authority 前先获取锁，并
+持有至终态持久化。Active 创建、替换、恢复与删除使用 expected generation 加 active-
+record-digest CAS。单调 generation 防止 stale writer 与 `A -> B -> A` identity confusion。
+
+每个 operation 创建或恢复一个有界 transaction journal，其中包含 operation 与
+transaction ID、expected active state、target/previous authority、external observation、
+provisional effect、transaction-owned/retained path、phase 和 outcome。新操作先恢复或
+分类已有 non-terminal journal。
+
+Activation 按 candidate staged health、provisional marketplace/plugin effect、host
+read-back、active CAS 与真实 public CLI/MCP startup proof 的顺序执行。Active commit 前
+失败会恢复 previous external state；commit 后失败会用 CAS 恢复 immediate previous
+generation，并重新验证其 public startup。终态仅有 `committed`、`rolled_back` 与
+`partial`；`partial` 保留不确定性并停止 identity-specific mutation。Rollback 只在该
+activation transaction 尚未终结时自动恢复 immediate previous authority。
+
+只有 complete startup、receipt、ownership 与 installed-content attestation 均通过时，
+健康的 exact-version repair 才能复用 active release。Drift 会构建新的已验证同版本
+candidate。相同版本的 index、archive 或 manifest digest 发生变化时会拒绝采用。
+Upgrade 始终运行目标版本的 bootstrap。
+
+## Migration 与卸载边界
+
+Migration 只接受 frozen fixture 所表达的紧邻 conforming checkout installer 的 installed
+observation。Classification 使用 plugin、marketplace、launcher marker、receipt、
+ownership 与 transaction evidence；它绝不读取、导入、执行、更新、清理、纳入
+ownership、删除 checkout，也不把 checkout 用于 rollback。更旧、未来、畸形或歧义
+observation 会在 identity-specific mutation 前停止。
+
+`dev-flow-uninstall` 验证稳定基础设施和复制出的最小标准库 removal driver，然后在同一
+lifecycle lock 下创建或恢复 uninstall journal。它按依赖顺序 compare-and-remove 精确
+plugin/marketplace state、managed release、active record、CLI/MCP dispatcher 与 lifecycle
+support。Changed、unknown、concurrent、linked、reparse、special 或无法证明的内容会被
+保留并报告。Lifecycle support 与 uninstall dispatcher 最后移除；释放锁后不再发生
+产品修改。
+
+Controller task data、model namespace、无关 marketplace/plugin state、无关 launcher、
+standalone MCP registration 与每个 legacy checkout 都在安装 ownership 和 uninstall
+removal 之外。
 
 ## 安全与剩余边界
 
@@ -104,6 +211,13 @@ receipt。Receipt 和 ownership manifest 绑定 release、source commit、解释
 
 ## 兼容性
 
-支持 Python `>=3.10,<3.15`，托管安装要求 64 位。macOS 是主要已安装交付平台。原生 Windows 10 22H2 x64 和 Windows 11 x64 使用 PowerShell 5.1/7 生命周期脚本并要求原生证据；Windows Server 和兼容层不在客户端承诺范围。
+支持 Python `>=3.10,<3.15`，托管安装要求 64 位。macOS 使用 POSIX bootstrap。
+原生 Windows 10 22H2 x64 和 Windows 11 x64 使用不依赖 POSIX 的 PowerShell 5.1/7
+bootstrap；Windows Server 和 compatibility layer 不在客户端声明范围。用户选择的
+root 可以包含空格、撇号和 Unicode，而 archive 内部名称使用闭合 portable ASCII
+grammar。
 
-由于模型命名空间与字节不变，现有 0.4.x 任务可直接恢复。保留的历史 OpenSpec 材料是证据，不是当前包权威。
+由于模型命名空间与字节不变，现有 0.4.x 任务可直接恢复。保留的历史 OpenSpec 材料是
+证据，不是当前包权威。静态 PowerShell 检查与 macOS 执行不是原生 Windows 证据。
+真实 Codex release-candidate 与最终 promotion/re-download gate 同样必须在各自所需环境
+真实运行后才算已验证。

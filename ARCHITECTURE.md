@@ -4,7 +4,7 @@
 
 ## Product identities
 
-Release `0.6.0` bundles a formal Codex Skill named `dev-flow` alongside the MCP
+Release `0.6.6` bundles a formal Codex Skill named `dev-flow` alongside the MCP
 interface without changing persisted model identity. `MODEL_VERSION`, the
 task-data namespace, workflows, policies, bindings, records, findings,
 snapshots, and Delivery Dossiers remain `0.4.0`.
@@ -143,22 +143,141 @@ make completion uncertain, so clients must read the stored task and current
 action before deciding whether another mutation is necessary. No adapter retry
 loop replays mutations automatically.
 
-## Runtime and installation
+## Release acquisition and pre-execution boundary
 
-The source checkout, sealed plugin snapshot, managed MCP runtime, and task-data
-root are disjoint. The installer preserves the complete Skill tree in the
-sealed plugin snapshot, builds a versioned virtual environment using the exact
-`uv.lock`, installs a wheel, runs installed Skill validation plus MCP
-startup/catalog/read smoke checks, and writes a runtime receipt. The receipt and
-ownership manifest bind the release, source commit, interpreter identity and
-architecture, lock digest, launchers, and every installed Skill asset without
-exposing the data root.
+End-user lifecycle operations acquire version-addressed GitHub Release assets,
+not a source checkout. Each version publishes one platform-neutral archive,
+one closed `release-index.json`, and version-matched `install.sh` and
+`install.ps1` bootstraps. The archive contains the complete sealed plugin tree,
+one pure-Python project wheel, hash-locked `runtime-requirements.txt`, its
+`uv.lock`, versioned lifecycle helpers, and an embedded closed manifest. The
+manifest inventories every descendant except itself; the external index hashes
+the manifest's original UTF-8 bytes.
+
+The two bootstraps embed the same standard-library Phase A verifier. It checks
+the bootstrap-pinned index digest before parsing, then the closed index,
+archive size and digest, every tar header and portable ASCII member path, fixed
+resource caps, safe exclusive extraction, raw manifest digest, complete
+inventory, and static package topology. Links, reparse ancestors, special or
+sparse members, unsupported tar extensions, traversal, path collisions, and
+missing or undeclared members fail before extraction can become authority.
+
+No artifact helper, artifact import, artifact subprocess, runtime authority,
+lifecycle state, dispatcher, marketplace, plugin, MCP, Codex state, active
+record, or transaction authority may execute or change before Phase A
+completes. Acquisition staging is installer-owned temporary state and never an
+installed or rollback selector.
+
+The bootstrap is the first version-specific trust input and fixes the canonical
+repository, version, asset, and index digest. SHA-256 proves byte agreement
+between the bootstrap, index, archive, and manifest; it is not an independent
+signature or an absolute proof of publication authenticity. Source commit and
+tree are release-builder publication assertions. The design does not claim to
+resist coherent replacement of all same-user trust inputs and does not add
+signing, Sigstore, transparency logs, mirrors, or offline fresh installation.
+
+## Managed release and startup authority
+
+Only Phase B may perform semantic wheel validation, hash-required wheel-only
+dependency installation, project-wheel installation, candidate construction,
+and staged Skill/MCP health. It never executes an sdist build backend on the
+user's machine. Candidate-specific health does not read the public active
+record.
+
+```text
+version-matched bootstrap
+          |
+          v
+Phase A verified extraction (temporary, never authority)
+          |
+          v
+Phase B candidate + staged health
+          |
+          v
+provisional marketplace/plugin read-back
+          |
+          v
+active.json generation CAS
+          |
+          v
+public dev-flow and dev-flow-mcp --stdio proof
+```
+
+A managed release contains its isolated environment, sealed plugin, runtime
+receipt, installed-content verifier, and versioned lifecycle entry points. The
+receipt binds the complete artifact and installed identity: index, archive,
+manifest, source assertions, wheel, requirements, lock, distributions, Python,
+plugin, verifier, helpers, owned inventory, release path, and transaction.
+
+The closed `active.json` record is the only local active-release selector. It
+contains only a monotonic generation, release ID, contained absolute managed
+release path, receipt digest, stable-dispatcher protocol, and committing
+transaction ID. Receipt, marketplace, plugin state, launcher, and helper files
+may corroborate the active record but never select a competing release.
+
+Three small product-owned dispatchers, `dev-flow`, `dev-flow-mcp`, and
+`dev-flow-uninstall`, are stable installation infrastructure. Ordinary repair,
+upgrade, and automatic rollback do not replace them. CLI and MCP dispatchers
+validate the active schema, contained path, receipt digest, protocol, managed
+Python, and versioned verifier before invoking that verifier. The verifier
+attests complete installed content before project import or MCP initialization.
 
 The plugin manifest points to root `.mcp.json`, which declares one `dev-flow`
-server invoking the owned `dev-flow-mcp --stdio` PATH launcher. Bundled and
-standalone registrations are mutually exclusive. Runtime publication and
-launcher replacement are staged so a failed build leaves the prior runtime
-usable.
+server invoking `dev-flow-mcp --stdio`. The personal marketplace points only to
+the exact plugin root inside the active managed release, never to downloads,
+extraction, checkout, candidate staging, or a mutable shared plugin tree.
+
+## Lifecycle state machine
+
+Fresh install, repair, upgrade, predecessor migration, recovery, and uninstall
+use one installation-wide lifecycle lock. The lock is acquired before reading
+active or transaction authority and remains held until a terminal outcome is
+durable. Active creation, replacement, restoration, and deletion use expected
+generation plus active-record-digest compare-and-swap. The monotonic generation
+prevents stale writers and `A -> B -> A` identity confusion.
+
+Each operation creates or resumes a bounded transaction journal containing the
+operation and transaction ID, expected active state, target and previous
+authority, external observations, provisional effects, transaction-owned and
+retained paths, phase, and outcome. A new operation first recovers or classifies
+an existing non-terminal journal.
+
+Activation orders candidate staged health before provisional marketplace and
+plugin effects, host read-back, active CAS, and real public CLI/MCP startup
+proof. Failure before active commit restores previous external state. Failure
+after commit CAS-restores the immediate previous generation and revalidates its
+public startup. The only terminal outcomes are `committed`, `rolled_back`, and
+`partial`; `partial` preserves uncertainty and stops identity-specific
+mutation. Rollback is automatic and limited to the immediate previous authority
+while that activation transaction is unsettled.
+
+A healthy exact-version repair may reuse an active release only after complete
+startup, receipt, ownership, and installed-content attestation. Drift builds a
+new verified same-version candidate. A different index, archive, or manifest
+digest for the same version is rejected rather than adopted. Upgrade always
+runs the target version's bootstrap.
+
+## Migration and uninstall boundaries
+
+Migration accepts only the frozen installed observations of the immediately
+preceding conforming checkout installer. Classification uses plugin,
+marketplace, launcher marker, receipt, ownership, and transaction evidence; it
+never reads, imports, executes, updates, cleans, owns, deletes, or uses the
+checkout for rollback. Older, future, malformed, or ambiguous observations
+stop before identity-specific mutation.
+
+`dev-flow-uninstall` verifies stable infrastructure and a copied minimal
+standard-library removal driver, then creates or resumes an uninstall journal
+under the same lifecycle lock. It compare-and-removes exact plugin and
+marketplace state, managed releases, active record, CLI/MCP dispatchers, and
+lifecycle support in dependency order. Changed, unknown, concurrent, linked,
+reparse, special, or unprovable content is retained and reported. Lifecycle
+support and the uninstall dispatcher are removed last, and no product mutation
+occurs after lock removal.
+
+Controller task data, the model namespace, unrelated marketplace and plugin
+state, unrelated launchers, standalone MCP registrations, and every legacy
+checkout are outside installation ownership and uninstall removal.
 
 ## Security and residual boundary
 
@@ -177,10 +296,14 @@ Skill or MCP enforcement.
 ## Compatibility
 
 Supported Python is `>=3.10,<3.15`, 64-bit for managed installation. macOS is
-the primary installed delivery platform. Native Windows 10 22H2 x64 and Windows
-11 x64 use PowerShell 5.1/7 lifecycle scripts and require native evidence;
-Windows Server and compatibility layers are outside the client claim.
+supported by the POSIX bootstrap. Native Windows 10 22H2 x64 and Windows 11 x64
+use the PowerShell 5.1/7 bootstrap without POSIX dependencies; Windows Server
+and compatibility layers are outside the client claim. User-selected roots may
+contain spaces, apostrophes, and Unicode, while archive-internal names use the
+closed portable ASCII grammar.
 
 Existing 0.4.x tasks resume directly because the model namespace and bytes are
 unchanged. Retained historical OpenSpec material remains evidence, not current
-package authority.
+package authority. Static PowerShell checks and macOS execution are not native
+Windows evidence. Real Codex release-candidate and final promotion/re-download
+gates likewise remain unverified until they run in their required environments.

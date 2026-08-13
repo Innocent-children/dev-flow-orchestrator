@@ -180,29 +180,22 @@ class RepositorySetPublicAssetTests(unittest.TestCase):
             ),
         )
 
-    def test_public_manual_install_clones_pin_authoritative_main(self) -> None:
-        repository_urls = (
-            "git@github.com:Innocent-children/dev-flow-orchestrator.git",
-            "https://github.com/Innocent-children/dev-flow-orchestrator.git",
+    def test_public_install_uses_exact_version_release_bootstraps(self) -> None:
+        release_prefix = (
+            "https://github.com/Innocent-children/dev-flow-orchestrator/"
+            "releases/download/v"
         )
         for relative_path in ("README.md", "README_CN.md", "INSTALL.md"):
             document = _read(relative_path)
-            shell_blocks = re.findall(r"```sh\n(.*?)```", document, re.DOTALL)
-            clone_commands: list[str] = []
-            for block in shell_blocks:
-                continued_block = re.sub(r"\\\n\s*", " ", block)
-                clone_commands.extend(
-                    line.strip()
-                    for line in continued_block.splitlines()
-                    if line.strip().startswith("git clone ")
-                    and any(url in line for url in repository_urls)
+            with self.subTest(relative_path=relative_path):
+                self.assertIn(release_prefix, document)
+                self.assertIn("install.sh", document)
+                self.assertNotIn("git clone ", document)
+                self.assertNotIn(
+                    "raw.githubusercontent.com/Innocent-children/"
+                    "dev-flow-orchestrator/main/scripts/install.sh",
+                    document,
                 )
-
-            self.assertTrue(clone_commands, relative_path)
-            for command in clone_commands:
-                with self.subTest(relative_path=relative_path, command=command):
-                    self.assertIn("--branch main", command)
-                    self.assertIn("--single-branch", command)
 
     def test_mcp_guidance_covers_member_scope_and_aggregate_assurance(self) -> None:
         guidance = "\n".join(
