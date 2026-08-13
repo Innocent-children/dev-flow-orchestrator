@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -58,6 +60,40 @@ class VersionedBootstrapSourceTests(unittest.TestCase):
             self.assertIn(digest, document)
             self.assertIn("DEV_FLOW_SOURCE_ROOT", document)
             self.assertNotIn("git clone", document.casefold())
+
+    @unittest.skipIf(os.name == "nt", "requires a POSIX shell")
+    def test_rendered_shell_preserves_phase_b_argument_boundaries(self) -> None:
+        verifier = (
+            "import json,sys\n"
+            "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n"
+        ).encode("utf-8")
+        rendered = build_release.render_bootstrap_assets(
+            verifier,
+            index_sha256="a" * 64,
+            version="1.2.3",
+        )
+        with tempfile.TemporaryDirectory(prefix="Dev Flow shell's 数据 ") as temporary:
+            work = Path(temporary).resolve()
+            installer = work / "install.sh"
+            installer.write_bytes(rendered["install.sh"])
+            installer.chmod(0o755)
+            values = (
+                "--runtime-root=" + str(work / "runtime root's 数据"),
+                "--bin-dir",
+                str(work / "bin root's 数据"),
+            )
+            completed = subprocess.run(
+                ["/bin/sh", str(installer), *values],
+                cwd=work,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            captured = json.loads(completed.stdout.strip())
+            separator = captured.index("--")
+            self.assertEqual(captured[separator + 1 :], list(values))
 
     @unittest.skipUnless(sys.platform == "darwin", "POSIX bootstrap test targets macOS")
     def test_unrendered_template_refuses_without_creating_product_state(self) -> None:

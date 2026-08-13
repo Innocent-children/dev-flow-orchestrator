@@ -209,33 +209,65 @@ def exclusive_file_lock(
             raise _unsafe_path(path)
         if path.is_symlink():
             raise _unsafe_path(path)
+        timeout = (
+            DEFAULT_POSIX_FILE_LOCK_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or timeout <= 0
+        ):
+            raise ValueError("file lock timeout must be positive")
+        timeout = float(timeout)
+        deadline = time.monotonic() + timeout
         if os.name == "nt":
             if os.fstat(descriptor).st_size == 0:
                 os.write(descriptor, b"\0")
                 os.fsync(descriptor)
             while True:
+                if cancellation_check is not None and cancellation_check():
+                    raise DevFlowError(
+                        "REQUEST_CANCELLED",
+                        "state lock acquisition was cancelled",
+                    )
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 try:
                     msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    os_lock_held = True
+                    if cancellation_check is not None and cancellation_check():
+                        raise DevFlowError(
+                            "REQUEST_CANCELLED",
+                            "state lock acquisition was cancelled",
+                        )
+                    if deadline - time.monotonic() <= 0:
+                        raise DevFlowError(
+                            "STATE_LOCK_TIMEOUT",
+                            "state lock could not be acquired before the deadline",
+                            details={"timeout_seconds": timeout},
+                        )
                     break
                 except OSError as exc:
                     if not _lock_contention(exc):
                         raise
-                    time.sleep(0.05)
+                    if cancellation_check is not None and cancellation_check():
+                        raise DevFlowError(
+                            "REQUEST_CANCELLED",
+                            "state lock acquisition was cancelled",
+                        )
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise DevFlowError(
+                            "STATE_LOCK_TIMEOUT",
+                            "state lock could not be acquired before the deadline",
+                            details={"timeout_seconds": timeout},
+                        ) from exc
+                    time.sleep(
+                        min(POSIX_FILE_LOCK_POLL_INTERVAL_SECONDS, remaining)
+                    )
         else:
             os.fchmod(descriptor, 0o600)
-            timeout = (
-                DEFAULT_POSIX_FILE_LOCK_TIMEOUT_SECONDS
-                if timeout_seconds is None
-                else timeout_seconds
-            )
-            if (
-                isinstance(timeout, bool)
-                or not isinstance(timeout, (int, float))
-                or timeout <= 0
-            ):
-                raise ValueError("POSIX file lock timeout must be positive")
-            deadline = time.monotonic() + float(timeout)
             while True:
                 if cancellation_check is not None and cancellation_check():
                     raise DevFlowError(
@@ -260,7 +292,7 @@ def exclusive_file_lock(
                         raise DevFlowError(
                             "STATE_LOCK_TIMEOUT",
                             "state lock could not be acquired before the deadline",
-                            details={"timeout_seconds": float(timeout)},
+                            details={"timeout_seconds": timeout},
                         )
                     break
                 except OSError as exc:
@@ -276,7 +308,7 @@ def exclusive_file_lock(
                         raise DevFlowError(
                             "STATE_LOCK_TIMEOUT",
                             "state lock could not be acquired before the deadline",
-                            details={"timeout_seconds": float(timeout)},
+                            details={"timeout_seconds": timeout},
                         ) from exc
                     time.sleep(
                         min(POSIX_FILE_LOCK_POLL_INTERVAL_SECONDS, remaining)

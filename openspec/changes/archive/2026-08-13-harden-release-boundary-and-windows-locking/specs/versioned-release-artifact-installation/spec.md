@@ -1,10 +1,5 @@
-# versioned-release-artifact-installation Specification
+## MODIFIED Requirements
 
-## Purpose
-Define the closed release-artifact, verification, managed-runtime, lifecycle,
-migration, and uninstall contract that installs Dev Flow without retaining a
-source checkout while preserving Controller data and bounded local authority.
-## Requirements
 ### Requirement: Release production emits one closed version-addressed artifact
 For each `MAJOR.MINOR.PATCH` release, production SHALL build one platform-neutral archive, one `release-index.json`, and version-matched macOS and Windows bootstraps from an exact clean `v<version>` tag.
 
@@ -69,25 +64,6 @@ Only after Phase A succeeds MAY Phase B execute artifact helpers, import artifac
 - **WHEN** a member, destination, ancestor, inventory or resource bound violates Phase A
 - **THEN** installation fails with prior authority unchanged
 
-### Requirement: Installation requires no checkout and has one active authority
-macOS and native Windows SHALL install without Git, repository cloning, `.git`, or retained source. Supported Python, `uv`, Codex, a writable absolute `PATH` directory, and the platform download facility remain prerequisites. `DEV_FLOW_SOURCE_ROOT` and checkout-driven lifecycle invocation SHALL fail before mutation.
-
-A managed release SHALL contain the isolated environment, sealed plugin, runtime receipt, installed-content verifier, and versioned lifecycle entry points. The receipt SHALL bind the complete artifact and installed identity. The active record SHALL be the only local selector of the active release and SHALL bind a closed schema, monotonic generation, release ID, contained release path, receipt digest, stable-dispatcher protocol, and committing transaction ID.
-
-`dev-flow`, `dev-flow-mcp`, and `dev-flow-uninstall` SHALL be small stable product-owned dispatchers. Ordinary repair, upgrade and automatic rollback SHALL reuse them; versioned verification and lifecycle behavior SHALL live inside managed releases. The personal marketplace SHALL point only to the exact plugin root inside the active managed release.
-
-#### Scenario: Fresh host has no Git
-- **WHEN** all other prerequisites and the selected artifact are valid
-- **THEN** installation succeeds with the bundled Skill and STDIO MCP and creates no checkout
-
-#### Scenario: Candidate passes staged health
-- **WHEN** wheel, dependencies, plugin, Skill, MCP, receipt, verifier and helpers share one identity
-- **THEN** it may enter provisional host activation without yet becoming active authority
-
-#### Scenario: Temporary path is proposed as authority
-- **WHEN** a download, extraction, checkout or staging path would become marketplace or active authority
-- **THEN** activation is rejected
-
 ### Requirement: Lifecycle mutation is serialized and has explicit terminal outcomes
 Install, repair, upgrade, migration, recovery and uninstall SHALL acquire one installation-wide lock before reading active or transaction authority and SHALL hold it until a terminal outcome is durable. Each operation SHALL create or resume one bounded journal recording expected active generation and digest, target and previous authority, exact external observations, provisional effects, transaction-owned paths, phase and outcome. Active creation, replacement, restoration and removal SHALL use generation-and-digest compare-and-swap.
 
@@ -120,55 +96,6 @@ The immediate previous runtime SHALL remain until the activation transaction is 
 #### Scenario: Prior transaction was interrupted
 - **WHEN** a new lifecycle command finds a non-terminal journal
 - **THEN** it first recovers or classifies that journal and refuses new mutation while authority is unresolved
-
-### Requirement: Runtime startup attests before project import
-Stable CLI and MCP dispatchers SHALL minimally validate the active record, contained release path, receipt digest, dispatcher protocol, and versioned verifier digest before invoking the active verifier. The active verifier SHALL validate the complete receipt and installed identity before importing Dev Flow code or initializing MCP.
-
-Startup attestation SHALL be described as protection against corruption, drift and cross-release mixing, not against coherent replacement of all same-user trust inputs.
-
-#### Scenario: Installed release is intact
-- **WHEN** active, receipt, runtime, plugin, dependency, Python, verifier and owned-file evidence agree
-- **THEN** the selected CLI or `dev-flow-mcp --stdio` entry point may run
-
-#### Scenario: Installed release has drifted
-- **WHEN** required active or installed evidence is missing, malformed, changed or cross-release
-- **THEN** startup fails before project import and reports exact-version repair guidance
-
-### Requirement: Uninstall is source-independent and ownership-bounded
-`dev-flow-uninstall` SHALL validate stable infrastructure and current authority, verify a copied minimal standard-library removal driver, and create or resume a durable uninstall transaction under the lifecycle lock.
-
-Uninstall SHALL remove only exact compare-and-remove matches and empty owned directories. It SHALL read back plugin and marketplace state, remove the active record by generation CAS, remove managed releases before stable CLI and MCP dispatchers, remove lifecycle support and the uninstall dispatcher last, and perform no product mutation after lock removal. Rerun after interruption SHALL resume or classify the journal without a checkout or removed runtime.
-
-Changed, unknown, concurrent, linked, reparse, special or unprovable content SHALL be retained and reported. Controller task data, unrelated Codex state, unrelated launchers, standalone MCP registrations, and every checkout SHALL remain outside the removal set.
-
-#### Scenario: Exact owned installation is removed
-- **WHEN** all product-owned state matches exact ownership evidence
-- **THEN** uninstall removes product authority without repository files and records `committed`
-
-#### Scenario: Unknown content is encountered
-- **WHEN** an owned root or external component contains changed or unprovable content
-- **THEN** uninstall retains it, avoids broad deletion, reports exact paths, and records `partial` when needed
-
-#### Scenario: Uninstall is interrupted
-- **WHEN** the process terminates after recording a removal phase
-- **THEN** rerun resumes or classifies the journal without a checkout or removed runtime
-
-### Requirement: Legacy migration is bounded to the known predecessor
-The artifact installer SHALL migrate only installations matching frozen fixtures for the immediately preceding conforming checkout installer. Fixtures SHALL define accepted plugin observations, launcher markers, receipt and ownership schemas, marketplace shape and transaction outcomes. Older, future, malformed or ambiguous installations SHALL fail before identity-specific mutation.
-
-Migration SHALL classify previous authority only from installed observations. It SHALL NOT read, execute, update, clean, seal or delete a checkout, and the checkout SHALL NOT be rollback input. A conforming previous runtime MAY serve as immediate rollback authority while the artifact candidate is unsettled.
-
-#### Scenario: Known predecessor is migrated
-- **WHEN** fixtures prove one previous authority and the candidate passes activation and public proof
-- **THEN** the artifact release becomes authoritative and the checkout remains untouched
-
-#### Scenario: Migration fails before host effects
-- **WHEN** Phase A, Phase B, construction or staged health fails
-- **THEN** previous installation and checkout remain unchanged and the transaction becomes `rolled_back`
-
-#### Scenario: Previous installation is unsupported or ambiguous
-- **WHEN** observations do not match fixtures or prove one authority
-- **THEN** migration fails before identity-specific mutation and reports conflicts
 
 ### Requirement: Delivery evidence has a bounded completion gate
 Shared verifier and state-machine behavior SHALL be tested primarily through unit and deterministic simulated integration tests. Native macOS and native Windows SHALL each run one final-artifact lifecycle on one supported Python version covering fresh install, healthy and drift repair, successful upgrade, one failed-activation rollback, one interrupted transaction, startup, predecessor migration, uninstall and task-data preservation.

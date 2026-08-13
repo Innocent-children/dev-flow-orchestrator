@@ -446,61 +446,148 @@ class BuilderConfigurationTests(unittest.TestCase):
 
 
 class PromotionTests(unittest.TestCase):
-    class Runner:
-        def __init__(self, *, exists: bool = False) -> None:
-            self.exists = exists
-            self.commands: list[list[str]] = []
+    class FakeAPI:
+        def __init__(
+            self,
+            assets: Path,
+            *,
+            existing: str | None = None,
+            corrupt: str | None = None,
+            wrong_source: bool = False,
+            interrupt_upload_once: bool = False,
+        ) -> None:
+            self.assets = assets
+            self.existing = existing
+            self.corrupt = corrupt
+            self.wrong_source = wrong_source
+            self.interrupt_upload_once = interrupt_upload_once
+            self.release_id = 42
+            self.asset_ids: dict[str, int] = {}
+            self.events: list[str] = []
+            self._next_asset_id = 100
 
-        def __call__(self, command, **_kwargs):
-            self.commands.append(list(command))
-            if command[:2] == ["gh", "api"]:
-                if self.exists:
-                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-                return subprocess.CompletedProcess(
-                    command, 1, stdout="", stderr="HTTP 404: release not found"
-                )
-            if command[:3] == ["gh", "release", "create"]:
-                return subprocess.CompletedProcess(command, 0, stdout="created\n", stderr="")
-            raise AssertionError(command)
+        def tag_identity(self, tag: str) -> tuple[str, str]:
+            self.events.append("tag_identity:" + tag)
+            return (("9" * 40, TREE) if self.wrong_source else (COMMIT, TREE))
+
+        def release_by_tag(self, tag: str) -> dict[str, object] | None:
+            self.events.append("release_by_tag:" + tag)
+            if self.existing is None:
+                return None
+            return {
+                "id": self.release_id,
+                "tag_name": tag,
+                "target_commitish": COMMIT,
+                "draft": self.existing == "draft",
+                "prerelease": False,
+                "assets": [
+                    {"id": asset_id, "name": name}
+                    for name, asset_id in sorted(self.asset_ids.items())
+                ],
+            }
+
+        def create_draft(self, tag: str, commit: str, title: str) -> None:
+            self.events.append("create_draft")
+            self.assert_equal(commit, COMMIT)
+            self.assert_equal(tag, "v" + VERSION)
+            self.assert_equal(title, "Dev Flow Orchestrator " + VERSION)
+            self.existing = "draft"
+
+        def upload(self, _tag: str, assets: list[Path]) -> None:
+            self.events.append("upload:" + ",".join(path.name for path in assets))
+            for path in assets:
+                self.asset_ids[path.name] = self._next_asset_id
+                self._next_asset_id += 1
+            if self.interrupt_upload_once:
+                self.interrupt_upload_once = False
+                raise promote_release.PromotionError("simulated upload response loss")
+
+        def download_asset(
+            self,
+            asset_id: int,
+            destination: Path,
+            maximum: int,
+        ) -> None:
+            self.events.append("download:{}:{}".format(asset_id, self.existing))
+            name = next(
+                name for name, observed_id in self.asset_ids.items() if observed_id == asset_id
+            )
+            source = self.assets / name
+            self.assert_less_equal(source.stat().st_size, maximum)
+            if name == self.corrupt:
+                destination.write_bytes(b"changed authenticated asset\n")
+            else:
+                shutil.copyfile(source, destination)
+
+        def publish(self, _tag: str) -> None:
+            self.events.append("publish")
+            self.existing = "published"
+
+        @staticmethod
+        def assert_equal(left: object, right: object) -> None:
+            if left != right:
+                raise AssertionError((left, right))
+
+        @staticmethod
+        def assert_less_equal(left: int, right: int) -> None:
+            if left > right:
+                raise AssertionError((left, right))
+
+    def _fixture(self, work: Path) -> tuple[Path, Path]:
+        source = work / "source"
+        source.mkdir()
+        assets = work / "assets"
+        _assemble(source, assets)
+        return assets, work / "promotion.json"
 
     def test_promotion_refuses_existing_version_without_upload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary).resolve()
-            source = work / "source"
-            source.mkdir()
-            assets = work / "assets"
-            _assemble(source, assets)
-            runner = self.Runner(exists=True)
+            assets, journal = self._fixture(work)
+            api = self.FakeAPI(assets, existing="published")
             with self.assertRaisesRegex(promote_release.PromotionError, "overwrite"):
                 promote_release.promote_release(
-                    assets, version=VERSION, runner=runner
+                    assets,
+                    version=VERSION,
+                    journal_path=journal,
+                    api=api,
                 )
-            self.assertEqual(len(runner.commands), 1)
+            self.assertNotIn("create_draft", api.events)
+            self.assertNotIn("publish", api.events)
+
+    def test_promotion_refuses_unrecorded_existing_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            assets, journal = self._fixture(work)
+            api = self.FakeAPI(assets, existing="draft")
+            with self.assertRaisesRegex(promote_release.PromotionError, "ambiguous"):
+                promote_release.promote_release(
+                    assets,
+                    version=VERSION,
+                    journal_path=journal,
+                    api=api,
+                )
+            self.assertNotIn("upload:", "\n".join(api.events))
+            self.assertNotIn("publish", api.events)
 
     def test_promotion_redownloads_and_records_all_component_digests(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary).resolve()
-            source = work / "source"
-            source.mkdir()
-            assets = work / "assets"
-            _assemble(source, assets)
-            runner = self.Runner()
-
-            def downloader(url: str, destination: Path, maximum: int) -> None:
-                source_path = assets / url.rsplit("/", 1)[1]
-                self.assertLessEqual(source_path.stat().st_size, maximum)
-                shutil.copyfile(source_path, destination)
+            assets, journal = self._fixture(work)
+            api = self.FakeAPI(assets)
 
             result = promote_release.promote_release(
                 assets,
                 version=VERSION,
-                runner=runner,
-                downloader=downloader,
+                journal_path=journal,
+                api=api,
             )
             self.assertTrue(result["redownloaded"])
+            self.assertTrue(result["published"])
+            self.assertEqual(result["phase"], "published")
             self.assertEqual(result["schema"], promote_release.PROMOTION_SCHEMA)
             self.assertEqual(
-                set(result["component_digests"]),
+                set(result["final_component_digests"]),
                 {
                     "index",
                     "archive",
@@ -514,32 +601,128 @@ class PromotionTests(unittest.TestCase):
                     "install_ps1",
                 },
             )
+            self.assertEqual(
+                json.loads(journal.read_text(encoding="utf-8"))["phase"],
+                "published",
+            )
+
+    def test_promotion_keeps_release_draft_until_redownload_is_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            assets, journal = self._fixture(work)
+            api = self.FakeAPI(assets)
+
+            promote_release.promote_release(
+                assets,
+                version=VERSION,
+                journal_path=journal,
+                api=api,
+            )
+            download_positions = [
+                index for index, event in enumerate(api.events) if event.startswith("download:")
+            ]
+            publish_position = api.events.index("publish")
+            self.assertEqual(len(download_positions), 4)
+            self.assertTrue(all(position < publish_position for position in download_positions))
             self.assertTrue(
-                any(command[:3] == ["gh", "release", "create"] for command in runner.commands)
+                all(api.events[position].endswith(":draft") for position in download_positions)
             )
 
     def test_promotion_rejects_redownload_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary).resolve()
-            source = work / "source"
-            source.mkdir()
-            assets = work / "assets"
-            _assemble(source, assets)
-
-            def downloader(url: str, destination: Path, _maximum: int) -> None:
-                name = url.rsplit("/", 1)[1]
-                if name == "install.ps1":
-                    destination.write_bytes(b"changed final asset\n")
-                else:
-                    shutil.copyfile(assets / name, destination)
+            assets, journal = self._fixture(work)
+            api = self.FakeAPI(assets, corrupt="install.ps1")
 
             with self.assertRaises(promote_release.PromotionError):
                 promote_release.promote_release(
                     assets,
                     version=VERSION,
-                    runner=self.Runner(),
-                    downloader=downloader,
+                    journal_path=journal,
+                    api=api,
                 )
+            self.assertEqual(api.existing, "draft")
+            self.assertNotIn("publish", api.events)
+            record = json.loads(journal.read_text(encoding="utf-8"))
+            self.assertEqual(record["phase"], "assets_uploaded")
+            self.assertIsInstance(record["diagnostic"], str)
+
+    def test_promotion_proves_remote_source_before_creating_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            assets, journal = self._fixture(work)
+            api = self.FakeAPI(assets, wrong_source=True)
+            with self.assertRaisesRegex(promote_release.PromotionError, "commit/tree"):
+                promote_release.promote_release(
+                    assets,
+                    version=VERSION,
+                    journal_path=journal,
+                    api=api,
+                )
+            self.assertNotIn("create_draft", api.events)
+
+    def test_promotion_resumes_recorded_draft_after_upload_response_loss(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            assets, journal = self._fixture(work)
+            api = self.FakeAPI(assets, interrupt_upload_once=True)
+            with self.assertRaisesRegex(promote_release.PromotionError, "response loss"):
+                promote_release.promote_release(
+                    assets,
+                    version=VERSION,
+                    journal_path=journal,
+                    api=api,
+                )
+            first_uploads = sum(event.startswith("upload:") for event in api.events)
+            self.assertEqual(first_uploads, 1)
+            result = promote_release.promote_release(
+                assets,
+                version=VERSION,
+                journal_path=journal,
+                api=api,
+            )
+            self.assertEqual(result["phase"], "published")
+            self.assertEqual(
+                sum(event.startswith("upload:") for event in api.events),
+                1,
+            )
+
+    def test_default_api_uses_draft_and_authenticated_asset_id_endpoints(self) -> None:
+        class Runner:
+            def __init__(self, raw: bytes) -> None:
+                self.raw = raw
+                self.commands: list[list[str]] = []
+
+            def __call__(self, command, **kwargs):
+                self.commands.append(list(command))
+                output = kwargs.get("stdout")
+                if output is not None:
+                    output.write(self.raw)
+                    return subprocess.CompletedProcess(command, 0, stdout=None, stderr=b"")
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            runner = Runner(b"authenticated bytes")
+            api = promote_release.GitHubReleaseAPI(
+                release_artifact.CANONICAL_REPOSITORY,
+                work,
+                runner,
+            )
+            api.create_draft("v1.2.3", COMMIT, "release")
+            destination = work / "asset.bin"
+            api.download_asset(123, destination, 1024)
+            api.publish("v1.2.3")
+            self.assertEqual(destination.read_bytes(), b"authenticated bytes")
+            create = runner.commands[0]
+            download = runner.commands[1]
+            publish = runner.commands[2]
+            self.assertIn("--draft", create)
+            self.assertIn("repos/{}/releases/assets/123".format(
+                release_artifact.CANONICAL_REPOSITORY
+            ), download)
+            self.assertIn("Accept: application/octet-stream", download)
+            self.assertIn("--draft=false", publish)
 
 
 if __name__ == "__main__":

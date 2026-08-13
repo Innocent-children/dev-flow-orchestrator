@@ -33,6 +33,7 @@ from dev_flow_orchestrator._platform.storage import (
     atomic_write_bytes,
     exclusive_file_lock,
 )
+from dev_flow_orchestrator._platform import storage as storage_module
 from dev_flow_orchestrator.git_client import GitClient
 from dev_flow_orchestrator.controller import Controller
 from dev_flow_orchestrator.model import DevFlowError
@@ -49,6 +50,36 @@ def _hold_lock(path: str, ready: multiprocessing.Event, seconds: float) -> None:
     with exclusive_file_lock(Path(path)):
         ready.set()
         time.sleep(seconds)
+
+
+def _attempt_windows_lock(
+    path: str,
+    timeout: float,
+    result: multiprocessing.Queue,
+    cancel: multiprocessing.Event | None = None,
+    post_acquire_cancel: bool = False,
+) -> None:
+    checks = 0
+
+    def cancelled() -> bool:
+        nonlocal checks
+        checks += 1
+        if post_acquire_cancel:
+            return checks >= 2
+        return cancel is not None and cancel.is_set()
+
+    started = time.monotonic()
+    try:
+        with exclusive_file_lock(
+            Path(path),
+            timeout_seconds=timeout,
+            cancellation_check=cancelled,
+        ):
+            outcome = {"ok": True}
+    except DevFlowError as exc:
+        outcome = {"ok": False, "code": exc.code}
+    outcome["elapsed"] = time.monotonic() - started
+    result.put(outcome)
 
 
 def _windows_process_is_running(pid: int) -> bool:
@@ -69,6 +100,200 @@ def _windows_process_is_running(pid: int) -> bool:
 
 
 class NativeWindowsRuntimeTests(unittest.TestCase):
+    def test_windows_lock_rechecks_cancellation_after_acquisition(self) -> None:
+        class WindowsOS:
+            name = "nt"
+            O_BINARY = 0
+
+            def __getattr__(self, name: str):
+                return getattr(os, name)
+
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            def __init__(self) -> None:
+                self.operations: list[int] = []
+
+            def locking(self, _descriptor: int, operation: int, _length: int) -> None:
+                self.operations.append(operation)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "state.lock"
+            fake_msvcrt = FakeMsvcrt()
+            checks = iter((False, True))
+            with (
+                mock.patch.object(storage_module, "os", WindowsOS()),
+                mock.patch.object(
+                    storage_module,
+                    "msvcrt",
+                    fake_msvcrt,
+                    create=True,
+                ),
+                self.assertRaises(DevFlowError) as raised,
+            ):
+                with storage_module.exclusive_file_lock(
+                    path,
+                    timeout_seconds=1.0,
+                    cancellation_check=lambda: next(checks),
+                ):
+                    self.fail("cancelled Windows lock must not enter the critical section")
+            self.assertEqual(raised.exception.code, "REQUEST_CANCELLED")
+            self.assertEqual(
+                fake_msvcrt.operations,
+                [fake_msvcrt.LK_NBLCK, fake_msvcrt.LK_UNLCK],
+            )
+
+    def test_windows_lock_timeout_after_acquisition_releases_raw_lock(self) -> None:
+        class WindowsOS:
+            name = "nt"
+            O_BINARY = 0
+
+            def __getattr__(self, name: str):
+                return getattr(os, name)
+
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            def __init__(self) -> None:
+                self.operations: list[int] = []
+
+            def locking(self, _descriptor: int, operation: int, _length: int) -> None:
+                self.operations.append(operation)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            fake_msvcrt = FakeMsvcrt()
+            with (
+                mock.patch.object(storage_module, "os", WindowsOS()),
+                mock.patch.object(storage_module, "msvcrt", fake_msvcrt, create=True),
+                mock.patch.object(
+                    storage_module.time,
+                    "monotonic",
+                    side_effect=(10.0, 11.1),
+                ),
+                self.assertRaises(DevFlowError) as raised,
+            ):
+                with storage_module.exclusive_file_lock(
+                    Path(temporary).resolve() / "state.lock",
+                    timeout_seconds=1.0,
+                ):
+                    self.fail("expired Windows lock must not enter the critical section")
+            self.assertEqual(raised.exception.code, "STATE_LOCK_TIMEOUT")
+            self.assertEqual(
+                fake_msvcrt.operations,
+                [fake_msvcrt.LK_NBLCK, fake_msvcrt.LK_UNLCK],
+            )
+
+    def test_windows_lock_wait_honors_timeout_and_cancellation(self) -> None:
+        class WindowsOS:
+            name = "nt"
+            O_BINARY = 0
+
+            def __getattr__(self, name: str):
+                return getattr(os, name)
+
+        class ContendedMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(_descriptor: int, operation: int, _length: int) -> None:
+                if operation == ContendedMsvcrt.LK_NBLCK:
+                    raise OSError(13, "lock violation")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "state.lock"
+            with (
+                mock.patch.object(storage_module, "os", WindowsOS()),
+                mock.patch.object(
+                    storage_module,
+                    "msvcrt",
+                    ContendedMsvcrt(),
+                    create=True,
+                ),
+                mock.patch.object(
+                    storage_module.time,
+                    "monotonic",
+                    side_effect=(10.0, 10.2),
+                ),
+                self.assertRaises(DevFlowError) as timeout,
+            ):
+                with storage_module.exclusive_file_lock(path, timeout_seconds=0.1):
+                    self.fail("timed out Windows lock must not enter")
+            self.assertEqual(timeout.exception.code, "STATE_LOCK_TIMEOUT")
+
+            checks = iter((False, True))
+            with (
+                mock.patch.object(storage_module, "os", WindowsOS()),
+                mock.patch.object(
+                    storage_module,
+                    "msvcrt",
+                    ContendedMsvcrt(),
+                    create=True,
+                ),
+                self.assertRaises(DevFlowError) as cancelled,
+            ):
+                with storage_module.exclusive_file_lock(
+                    path,
+                    timeout_seconds=1.0,
+                    cancellation_check=lambda: next(checks),
+                ):
+                    self.fail("cancelled Windows lock must not enter")
+            self.assertEqual(cancelled.exception.code, "REQUEST_CANCELLED")
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows msvcrt locking")
+    def test_native_windows_lock_timeout_cancellation_and_release(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory(prefix="Dev Flow lock's 数据 ") as temporary:
+            path = str(Path(temporary).resolve() / "state.lock")
+
+            for expected, cancel_wait in (
+                ("STATE_LOCK_TIMEOUT", False),
+                ("REQUEST_CANCELLED", True),
+            ):
+                with self.subTest(expected=expected):
+                    ready = context.Event()
+                    holder = context.Process(
+                        target=_hold_lock,
+                        args=(path, ready, 1.5),
+                    )
+                    holder.start()
+                    self.assertTrue(ready.wait(5.0))
+                    result = context.Queue()
+                    cancel = context.Event()
+                    contender = context.Process(
+                        target=_attempt_windows_lock,
+                        args=(path, 0.25 if not cancel_wait else 2.0, result, cancel),
+                    )
+                    contender.start()
+                    if cancel_wait:
+                        time.sleep(0.15)
+                        cancel.set()
+                    contender.join(5.0)
+                    self.assertEqual(contender.exitcode, 0)
+                    observed = result.get(timeout=2.0)
+                    self.assertFalse(observed["ok"])
+                    self.assertEqual(observed["code"], expected)
+                    self.assertLess(observed["elapsed"], 1.0)
+                    holder.join(5.0)
+                    self.assertEqual(holder.exitcode, 0)
+                    with exclusive_file_lock(Path(path), timeout_seconds=1.0):
+                        pass
+
+            result = context.Queue()
+            cancelled = context.Process(
+                target=_attempt_windows_lock,
+                args=(path, 1.0, result, None, True),
+            )
+            cancelled.start()
+            cancelled.join(5.0)
+            self.assertEqual(cancelled.exitcode, 0)
+            observed = result.get(timeout=2.0)
+            self.assertEqual(observed.get("code"), "REQUEST_CANCELLED")
+            with exclusive_file_lock(Path(path), timeout_seconds=1.0):
+                pass
+
     @unittest.skipUnless(os.name == "nt", "requires native Windows paths")
     def test_canonical_repository_root_preserves_host_spelling(self) -> None:
         with tempfile.TemporaryDirectory(prefix="Dev Flow Mixed Case ") as temporary:

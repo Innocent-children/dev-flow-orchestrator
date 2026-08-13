@@ -3,6 +3,12 @@
 本文件规定在此仓库中工作的 Agent 必须遵循的工作方式、维护要求和禁止事项。除非用户
 针对当前事项给出明确授权，不得绕过、弱化或自行解释其中的限制。
 
+## Dev Flow
+
+在本仓库及其子目录中，不要隐式调用 `dev-flow` Skill，
+也不要调用 `dev-flow` MCP 工具。
+仅当用户明确输入 `$dev-flow` 时才允许使用。
+
 ## 中英文公共文档维护
 
 - `README.md`、`ROADMAP.md`、`ARCHITECTURE.md`、`CONTRIBUTING.md` 和

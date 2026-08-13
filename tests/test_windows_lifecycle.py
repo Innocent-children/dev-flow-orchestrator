@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import build_release  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,6 +92,47 @@ class VersionedWindowsLifecycleStaticTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2)
         self.assertIn("release template", completed.stderr)
+
+    @unittest.skipUnless(sys.platform == "win32", "requires native Windows PowerShell")
+    def test_rendered_powershell_preserves_phase_b_argument_boundaries(self) -> None:
+        verifier = (
+            "import json,sys\n"
+            "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n"
+        ).encode("utf-8")
+        rendered = build_release.render_bootstrap_assets(
+            verifier,
+            index_sha256="a" * 64,
+            version="1.2.3",
+        )
+        with tempfile.TemporaryDirectory(prefix="Dev Flow PowerShell's 数据 ") as temporary:
+            work = Path(temporary).resolve()
+            installer = work / "install.ps1"
+            installer.write_bytes(rendered["install.ps1"])
+            values = (
+                "--runtime-root=" + str(work / "runtime root's 数据"),
+                "--bin-dir",
+                str(work / "bin root's 数据"),
+            )
+            completed = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(installer),
+                    *values,
+                ],
+                cwd=work,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            captured = json.loads(completed.stdout.strip())
+            separator = captured.index("--")
+            self.assertEqual(captured[separator + 1 :], list(values))
 
 
 if __name__ == "__main__":

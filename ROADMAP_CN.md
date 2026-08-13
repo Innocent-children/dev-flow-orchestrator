@@ -23,7 +23,7 @@ controller：一个任务、一个当前 action 和一个 Codex executor。保�
 server、现有 CLI 和本地只读 Web UI。Skill 提供激活和路由；Controller 保留所有
 transition、repository、binding、assurance、review 与 Delivery Dossier 权威。
 
-## 0.6.6 交付：版本化 release artifact
+## 0.6.7 交付：加固版本化 release artifact
 
 Installed delivery 正从永久保留源码 checkout 转换为精确版本 GitHub Release 资产集：
 
@@ -46,6 +46,12 @@ Phase A 在 parse 前验证固定 index，并在 artifact code 执行或产品�
 archive、portable path、tar header、hard limit、安全 extraction、原始 manifest、完整
 inventory 和静态 topology。Phase B 使用随附 wheel 与要求哈希的 wheel-only 依赖，
 构建 candidate，并在 provisional plugin/marketplace activation 前完成 staged health。
+
+Phase A 到 Phase B 的边界只接受闭合 destination option，拒绝缩写和重复 option，从
+版本化 lifecycle 位置推导 Phase B artifact root，并在 candidate 工作前重复执行完整
+live-inventory 验证。原生 Windows lock admission 与 POSIX 使用相同的有界 timeout 和
+cancellation 语义。Promotion 在通过受认证官方 API 重新下载并完成全部 component
+验证前，会把上传资产保留在带 journal 的 Draft Release 中。
 
 Lifecycle 保留 `.codex-plugin/plugin.json`、`.mcp.json`、捆绑的
 `skills/dev-flow/**`、`dev-flow-mcp --stdio`、Controller model、MCP tools 与 schema、

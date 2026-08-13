@@ -117,6 +117,52 @@ class ReleaseLifecycleTests(unittest.TestCase):
                 path, hashlib.sha256(raw).hexdigest()
             )
 
+    def test_phase_b_derives_artifact_root_and_disables_abbreviations(self) -> None:
+        artifact = self.root / "dev-flow-orchestrator-0.6.0"
+        lifecycle = artifact / "lifecycle"
+        lifecycle.mkdir(parents=True)
+        index_path = self.root / "release-index.json"
+        index_path.write_text("{}\n", encoding="utf-8")
+        runtime = self.root / "runtime"
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        codex = self.root / "codex"
+        marketplace = self.root / "market" / ".agents" / "plugins" / "marketplace.json"
+        data = self.root / "data"
+        arguments = SimpleNamespace(
+            release_index=str(index_path),
+            runtime_root=str(runtime),
+            bin_dir=str(bin_dir),
+            marketplace_file=str(marketplace),
+            codex_home=str(codex),
+            data_root=str(data),
+        )
+        with mock.patch.object(release_lifecycle, "SCRIPT_ROOT", lifecycle):
+            paths = release_lifecycle.resolve_install_paths(arguments)
+        self.assertEqual(paths.artifact_root, artifact)
+        with self.assertRaises(SystemExit):
+            release_lifecycle._parser().parse_args(
+                [
+                    "install",
+                    "--release-ind",
+                    str(index_path),
+                    "--release-index-sha256",
+                    "a" * 64,
+                ]
+            )
+        with self.assertRaisesRegex(
+            release_lifecycle.ReleaseLifecycleError,
+            "repeated",
+        ):
+            release_lifecycle._reject_repeated_options(
+                (
+                    "install",
+                    "--release-index",
+                    str(index_path),
+                    "--release-index=" + str(index_path),
+                )
+            )
+
     def test_source_root_is_rejected_before_argument_or_state_processing(self) -> None:
         output = StringIO()
         with (
@@ -535,7 +581,7 @@ class ReleaseLifecycleTests(unittest.TestCase):
 
         paths = self._paths()
         identity = release_lifecycle.IndexIdentity(
-            "0.6.0", "a" * 64, "b" * 64, "c" * 64
+            "0.6.0", "a" * 64, "b" * 64, "c" * 64, _index()
         )
         candidates = SimpleNamespace(
             index=identity,
@@ -706,7 +752,7 @@ class ReleaseLifecycleTests(unittest.TestCase):
     def test_terminal_json_and_exit_code_never_treat_rollback_as_success(self) -> None:
         paths = self._paths()
         identity = release_lifecycle.IndexIdentity(
-            "0.6.0", "a" * 64, "b" * 64, "c" * 64
+            "0.6.0", "a" * 64, "b" * 64, "c" * 64, _index()
         )
         committed = SimpleNamespace(
             outcome="committed",
@@ -726,8 +772,6 @@ class ReleaseLifecycleTests(unittest.TestCase):
         )
         argv = [
             "install",
-            "--artifact-root",
-            str(paths.artifact_root),
             "--release-index",
             str(paths.release_index),
             "--release-index-sha256",
@@ -739,6 +783,7 @@ class ReleaseLifecycleTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {}, clear=False),
                 mock.patch.object(release_lifecycle, "resolve_install_paths", return_value=paths),
                 mock.patch.object(release_lifecycle, "load_index_identity", return_value=identity),
+                mock.patch.object(release_artifact, "verify_extracted_artifact"),
                 mock.patch.object(release_lifecycle, "execute_install", return_value=result),
                 redirect_stdout(output),
             ):

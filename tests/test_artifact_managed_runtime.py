@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts import manage_runtime
+from scripts import release_artifact
 from scripts import runtime_integrity
 
 
@@ -47,6 +48,7 @@ def _write_plugin(plugin: Path, version: str) -> dict[str, object]:
     (plugin / "scripts" / "validate_installed_stage1.py").write_text(
         "raise SystemExit(0)\n", encoding="utf-8"
     )
+    (plugin / "scripts" / "validate_installed_stage1.py").chmod(0o755)
     entries = runtime_integrity.inventory_tree(plugin)
     body = {"source_commit": COMMIT, "source_tree": TREE, "entries": entries}
     content = hashlib.sha256(runtime_integrity.canonical_json_bytes(body)).hexdigest()
@@ -78,6 +80,41 @@ def _write_wheel(path: Path, version: str) -> None:
         )
         archive.writestr(dist_info + "/RECORD", "")
         archive.writestr("dev_flow_orchestrator/__init__.py", "")
+
+
+def _write_artifact_manifest(artifact_root: Path, version: str) -> tuple[Path, str]:
+    entries: list[dict[str, object]] = []
+    for path in sorted(artifact_root.rglob("*")):
+        relative = path.relative_to(artifact_root).as_posix()
+        if relative == release_artifact.MANIFEST_NAME:
+            continue
+        if path.is_dir():
+            path.chmod(0o755)
+            entries.append(
+                {"path": relative, "type": "directory", "mode": 0o755}
+            )
+        else:
+            mode = release_artifact._expected_mode(relative, False)
+            path.chmod(mode)
+            raw = path.read_bytes()
+            entries.append(
+                {
+                    "path": relative,
+                    "type": "file",
+                    "mode": mode,
+                    "size": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                }
+            )
+    manifest = {
+        "schema": release_artifact.ARTIFACT_SCHEMA,
+        "version": version,
+        "entries": entries,
+    }
+    path = artifact_root / release_artifact.MANIFEST_NAME
+    path.write_bytes(release_artifact.canonical_json_bytes(manifest))
+    path.chmod(0o644)
+    return path, runtime_integrity.sha256_file(path)
 
 
 def _receipt(runtime: Path, *, version: str = "0.6.0") -> dict[str, object]:
@@ -217,7 +254,8 @@ class ArtifactCandidateBuildTests(unittest.TestCase):
             wheel = wheels / ("dev_flow_orchestrator-{}-py3-none-any.whl".format(version))
             _write_wheel(wheel, version)
             (artifact / "runtime-requirements.txt").write_text(
-                "mcp==2.0.0 --hash=sha256:{}\n".format("0" * 64), encoding="utf-8"
+                "mcp==2.0.0 \\\n    --hash=sha256:{}\n".format("0" * 64),
+                encoding="utf-8",
             )
             (artifact / "uv.lock").write_text("version = 1\n", encoding="utf-8")
             lifecycle = artifact / "lifecycle"
@@ -228,19 +266,25 @@ class ArtifactCandidateBuildTests(unittest.TestCase):
                 "release_lifecycle.py",
                 "runtime_integrity.py",
                 "validate_installed_stage1.py",
+                "lifecycle_state.py",
+                "lifecycle_machine.py",
+                "legacy_migration.py",
+                "render_dispatchers.py",
+                "stable_dispatcher.py",
+                "uninstall_driver.py",
             ):
                 source = ROOT / "scripts" / name
                 (lifecycle / name).write_bytes(
                     source.read_bytes() if source.exists() else b"# fixture\n"
                 )
-            manifest = {
-                "schema": "dev-flow-release-artifact/1.0.0",
-                "version": version,
-                "entries": [],
-            }
-            manifest_path = artifact / "release-manifest.json"
-            manifest_path.write_bytes(runtime_integrity.pretty_json_bytes(manifest))
-            manifest_digest = runtime_integrity.sha256_file(manifest_path)
+            (lifecycle / "legacy_predecessor.json").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+            manifest_path, manifest_digest = _write_artifact_manifest(
+                artifact,
+                version,
+            )
             index = {
                 "schema": "dev-flow-release-index/1.0.0",
                 "artifact_schema": "dev-flow-release-artifact/1.0.0",
@@ -254,17 +298,7 @@ class ArtifactCandidateBuildTests(unittest.TestCase):
                     "sha256": "5" * 64,
                 },
                 "manifest_sha256": manifest_digest,
-                "limits": {
-                    "index_bytes": 1,
-                    "manifest_bytes": 1,
-                    "archive_bytes": 1,
-                    "entry_count": 1,
-                    "component_length": 1,
-                    "path_length": 1,
-                    "nesting_depth": 1,
-                    "file_bytes": 1,
-                    "total_bytes": 1,
-                },
+                "limits": dict(release_artifact.HARD_LIMITS),
             }
             index_path = base / "release-index.json"
             index_path.write_bytes(runtime_integrity.pretty_json_bytes(index))
@@ -365,6 +399,29 @@ class ArtifactCandidateBuildTests(unittest.TestCase):
                     "tx456",
                     expected_release_id=release_id,
                 )
+
+            for offset, path in enumerate((wheel, lifecycle / "release_lifecycle.py")):
+                with self.subTest(replaced=path.name):
+                    original = path.read_bytes()
+                    path.write_bytes(b"replacement after Phase A\n")
+                    try:
+                        with (
+                            mock.patch.object(manage_runtime, "_run") as run,
+                            self.assertRaisesRegex(
+                                manage_runtime.RuntimeBuildError,
+                                "live artifact inventory",
+                            ),
+                        ):
+                            manage_runtime.build_artifact_candidate(
+                                artifact,
+                                base / "replacement-runtime-{}".format(offset),
+                                index_path,
+                                index_digest,
+                                "tx-replaced-{}".format(offset),
+                            )
+                        run.assert_not_called()
+                    finally:
+                        path.write_bytes(original)
 
 
 if __name__ == "__main__":

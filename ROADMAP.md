@@ -28,7 +28,7 @@ six mutation tools, the existing CLI, and the local read-only Web UI. The Skill
 provides activation and routing; the Controller retains all transition,
 repository, binding, assurance, review, and Delivery Dossier authority.
 
-## Release 0.6.6 delivery: versioned release artifacts
+## Release 0.6.7 delivery: hardened versioned release artifacts
 
 Installed delivery is moving from a permanently retained source checkout to an
 exact-version GitHub Release asset set:
@@ -55,6 +55,14 @@ complete inventory, and static topology before artifact code executes or
 product state changes. Phase B uses the supplied wheel and hash-required
 wheel-only dependencies, builds a candidate, and completes staged health before
 provisional plugin and marketplace activation.
+
+The Phase A to Phase B boundary accepts only closed destination options, rejects
+abbreviations and duplicates, derives the Phase B artifact root from the
+versioned lifecycle location, and repeats complete live-inventory verification
+before candidate work. Native Windows lock admission shares the bounded timeout
+and cancellation semantics used by POSIX. Promotion keeps uploads in a
+journaled Draft Release until authenticated official-API re-download and full
+component verification succeed.
 
 The lifecycle preserves `.codex-plugin/plugin.json`, `.mcp.json`, the bundled
 `skills/dev-flow/**`, `dev-flow-mcp --stdio`, the Controller model, MCP tools and

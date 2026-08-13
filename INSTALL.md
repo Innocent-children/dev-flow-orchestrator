@@ -3,7 +3,7 @@
 [Simplified Chinese](INSTALL_CN.md)
 
 This guide describes the versioned release-artifact lifecycle for release
-`0.6.6`. It installs the formal `dev-flow` Codex Skill as a bundled plugin and
+`0.6.7`. It installs the formal `dev-flow` Codex Skill as a bundled plugin and
 the local STDIO MCP server without cloning or retaining this repository. The
 persisted Controller model and task-data namespace remain `0.4.0`.
 
@@ -52,7 +52,7 @@ location, inspect it if required by local policy, and execute that downloaded
 asset:
 
 ```sh
-VERSION=0.6.6
+VERSION=0.6.7
 INSTALLER="${TMPDIR:-/tmp}/dev-flow-install-${VERSION}.sh"
 curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
   -o "$INSTALLER"
@@ -62,7 +62,7 @@ sh "$INSTALLER"
 On native Windows:
 
 ```powershell
-$Version = '0.6.6'
+$Version = '0.6.7'
 $Installer = Join-Path $env:TEMP "dev-flow-install-$Version.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `
@@ -123,6 +123,16 @@ Only a successful Phase A can enter Phase B. Temporary acquisition and
 extraction paths never become marketplace, active, receipt, or rollback
 authority. Handled outcomes remove transaction-owned staging exactly or report
 the precise retained path.
+
+Caller input crosses this boundary only through the closed destination-option
+set `--runtime-root`, `--bin-dir`, `--marketplace-file`, `--codex-home`,
+`--data-root`, and `--lock-timeout`. Both `--option value` and
+`--option=value` preserve native paths containing spaces, apostrophes, and
+Unicode. Abbreviations, duplicates, positional input, and release or artifact
+identity options are rejected. Phase B derives the artifact root from its own
+versioned lifecycle location and rechecks the complete live inventory before
+candidate construction; candidate construction checks it again before copying,
+installing the wheel, or executing another helper.
 
 ## 5. Trust boundary
 
@@ -233,7 +243,7 @@ marketplace state, or an unclassified provisional effect.
 ## 8. Repair, upgrade, rollback, and recovery
 
 Repair reruns the bootstrap matching the installed version. For release
-`0.6.6`, use the exact same commands from Section 3 with `VERSION=0.6.6`.
+`0.6.7`, use the exact same commands from Section 3 with `VERSION=0.6.7`.
 A healthy release is reused only after complete startup, receipt, ownership,
 and installed-content attestation. Any drift builds a new candidate from the
 reacquired and reverified same-version artifact. If that version's remote

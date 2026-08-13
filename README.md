@@ -4,7 +4,7 @@
 
 Dev Flow Orchestrator keeps long-running Codex development tasks resumable,
 bounded, and verifiable across an exact set of one to eight user-prepared Git
-worktrees. Release `0.6.6` bundles a formal Codex Skill named `dev-flow` and a
+worktrees. Release `0.6.7` bundles a formal Codex Skill named `dev-flow` and a
 local STDIO MCP server while preserving the persisted `0.4.0` model and
 task-data namespace.
 
@@ -27,7 +27,7 @@ product.
 Download and run the bootstrap attached to the exact release you selected:
 
 ```sh
-VERSION=0.6.6
+VERSION=0.6.7
 curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
   -o /tmp/dev-flow-install.sh
 sh /tmp/dev-flow-install.sh
@@ -37,7 +37,7 @@ On native Windows, download the same version's `install.ps1` asset and run it
 from PowerShell 5.1 or PowerShell 7:
 
 ```powershell
-$Version = '0.6.6'
+$Version = '0.6.7'
 $Installer = Join-Path $env:TEMP 'dev-flow-install.ps1'
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `

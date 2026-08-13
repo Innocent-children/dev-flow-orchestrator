@@ -315,6 +315,7 @@ class IndexIdentity:
     index_sha256: str
     archive_sha256: str
     manifest_sha256: str
+    model: Mapping[str, object] | None = None
 
 
 def load_index_identity(path: Path, expected_sha256: str) -> IndexIdentity:
@@ -338,6 +339,7 @@ def load_index_identity(path: Path, expected_sha256: str) -> IndexIdentity:
         expected_sha256,
         str(archive["sha256"]),
         str(index["manifest_sha256"]),
+        index,
     )
 
 
@@ -372,7 +374,7 @@ def _select_bin_dir(explicit: str | None) -> Path:
 
 
 def resolve_install_paths(arguments: argparse.Namespace) -> InstallPaths:
-    artifact_root = _native_absolute(arguments.artifact_root, "verified artifact root")
+    artifact_root = _native_absolute(SCRIPT_ROOT.parent, "verified artifact root")
     _regular_directory(artifact_root, "verified artifact root")
     release_index = _native_absolute(arguments.release_index, "Phase A release index")
     _regular_file(release_index, "Phase A release index")
@@ -1748,10 +1750,9 @@ def _result_json(result: Any) -> dict[str, object]:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    install = subparsers.add_parser("install")
-    install.add_argument("--artifact-root", required=True)
+    install = subparsers.add_parser("install", allow_abbrev=False)
     install.add_argument("--release-index", required=True)
     install.add_argument("--release-index-sha256", required=True)
     install.add_argument("--runtime-root")
@@ -1763,17 +1764,41 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _reject_repeated_options(arguments: Sequence[str]) -> None:
+    seen: set[str] = set()
+    for token in arguments:
+        if not isinstance(token, str) or not token.startswith("--") or token == "--":
+            continue
+        option = token.partition("=")[0]
+        if option in seen:
+            raise ReleaseLifecycleError("repeated lifecycle option is rejected: " + option)
+        seen.add(option)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         if "DEV_FLOW_SOURCE_ROOT" in os.environ:
             raise ReleaseLifecycleError(
                 "DEV_FLOW_SOURCE_ROOT is unsupported; rerun the exact-version artifact bootstrap"
             )
-        arguments = _parser().parse_args(argv)
+        selected_argv = list(sys.argv[1:] if argv is None else argv)
+        _reject_repeated_options(selected_argv)
+        arguments = _parser().parse_args(selected_argv)
         if arguments.lock_timeout <= 0:
             raise ReleaseLifecycleError("lifecycle lock timeout must be positive")
         paths = resolve_install_paths(arguments)
         index = load_index_identity(paths.release_index, arguments.release_index_sha256)
+        if index.model is None:
+            raise ReleaseLifecycleError("Phase A release index model is unavailable")
+        try:
+            release_artifact.verify_extracted_artifact(
+                paths.artifact_root,
+                index.model,
+            )
+        except Exception as exc:
+            raise ReleaseLifecycleError(
+                "Phase B live artifact inventory verification failed: " + str(exc)
+            ) from exc
         result = execute_install(paths, index, lock_timeout=arguments.lock_timeout)
         payload = _result_json(result)
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))

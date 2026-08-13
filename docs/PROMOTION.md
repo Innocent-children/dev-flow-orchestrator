@@ -25,7 +25,7 @@ rollback, migration, or uninstall.
 From the exact tagged source, build twice into two new empty directories:
 
 ```sh
-VERSION=0.6.6
+VERSION=0.6.7
 uv sync --locked
 uv run python scripts/build_release.py \
   --version "$VERSION" \
@@ -85,22 +85,38 @@ tests exercise this operation with a fake GitHub command runner:
 uv run python -m unittest tests.test_release_builder.PromotionTests
 ```
 
-With an authenticated `gh` session and explicit publication authority, create
-the release once and write the promotion record outside the repository:
+With an authenticated `gh` session and explicit publication authority, run the
+journaled promotion outside the repository:
 
 ```sh
-VERSION=0.6.6
+VERSION=0.6.7
 uv run python scripts/promote_release.py \
   --version "$VERSION" \
   --asset-dir "/tmp/dev-flow-release-$VERSION-a" \
   --record "/tmp/dev-flow-promotion-$VERSION.json"
 ```
 
-Promotion refuses an existing same-version release, validates all four assets
-before upload, then re-downloads them from their exact canonical
-version-specific GitHub locators. The record includes source commit/tree,
-release ID, all asset digests, and the index, archive, raw manifest, wheel,
-requirements, lock, plugin, lifecycle, and bootstrap component digests.
+Promotion first validates all four local assets and proves that the remote tag's
+commit and tree equal the source identity in `release-index.json`. It then
+creates a Draft Release, uploads the closed four-asset set, reads back the exact
+asset IDs, and downloads every asset through GitHub's authenticated official
+release-asset API. The same full asset and component-digest validation runs on
+those downloaded bytes. Only after exact equality does promotion change the
+Draft Release to public.
+
+`--record` is a bounded, closed, atomically replaced promotion journal, not only
+a final summary. It records the local identity, current phase, Draft Release ID,
+uploaded asset IDs, final digests, and a bounded diagnostic. Rerunning the same
+command resumes only the exact matching recorded draft after re-reading the
+remote tag, release, and assets. An unrecorded draft, a mismatched release, or a
+published same-version release without durable prior remote-verification
+evidence is ambiguous and is refused; promotion never overwrites it. If upload,
+download, or validation fails, the release remains draft.
+
+The final journal includes source commit/tree, release ID, all asset digests,
+and the index, archive, raw manifest, wheel, requirements, lock, plugin,
+lifecycle, and bootstrap component digests. Repository tests exercise this
+workflow only through fake command/API adapters and never mutate GitHub.
 
 The canonical GitHub repository and Release are the publication source. The
 version-matched bootstrap fixes repository, version, archive name, and index

@@ -185,6 +185,46 @@ class ReleaseIndexTests(unittest.TestCase):
             )
 
 
+class PhaseBoundaryArgumentTests(unittest.TestCase):
+    def test_allowed_options_preserve_equals_spaces_apostrophes_and_unicode(self) -> None:
+        values = {
+            "--runtime-root": "/tmp/Dev Flow runtime's 数据",
+            "--bin-dir": "/tmp/Dev Flow bin's 数据",
+            "--marketplace-file": "/tmp/市场's 路径/marketplace.json",
+            "--codex-home": "/tmp/Codex home ' 数据",
+            "--data-root": "/tmp/task data's 数据",
+            "--lock-timeout": "1.25",
+        }
+        supplied: list[str] = []
+        expected: list[str] = []
+        for offset, (option, value) in enumerate(values.items()):
+            supplied.extend(
+                [option + "=" + value] if offset % 2 == 0 else [option, value]
+            )
+            expected.extend((option, value))
+        self.assertEqual(
+            release_artifact.normalize_phase_b_user_args(supplied),
+            tuple(expected),
+        )
+
+    def test_duplicates_abbreviations_identity_and_positional_input_are_rejected(self) -> None:
+        invalid = (
+            ("--runtime-root", "/tmp/a", "--runtime-root=/tmp/b"),
+            ("--runtime", "/tmp/a"),
+            ("--artifact-root", "/tmp/a"),
+            ("--release-index=/tmp/index.json",),
+            ("--repository", release_artifact.CANONICAL_REPOSITORY),
+            ("--version=1.2.3",),
+            ("positional",),
+            ("--",),
+        )
+        for arguments in invalid:
+            with self.subTest(arguments=arguments), self.assertRaises(
+                release_artifact.ReleaseArtifactError
+            ):
+                release_artifact.normalize_phase_b_user_args(arguments)
+
+
 class PortablePathTests(unittest.TestCase):
     def test_portable_ascii_paths_and_collision_key(self) -> None:
         self.assertEqual(
@@ -610,12 +650,122 @@ class ArtifactExtractionTests(unittest.TestCase):
                         version="1.2.3",
                         archive_name=archive.name,
                         index_sha256=_sha256(index_raw),
-                        phase_b_args=("--install-root", str(product_state)),
+                        phase_b_args=("--runtime-root", str(product_state)),
                         opener=Opener(index_raw, archive.read_bytes()),
                     )
             run.assert_not_called()
             self.assertFalse(marker.exists())
             self.assertFalse(product_state.exists())
+
+    def test_phase_a_rejects_user_override_of_artifact_identity(self) -> None:
+        class Response:
+            def __init__(self, raw: bytes, url: str):
+                self.raw = io.BytesIO(raw)
+                self.url = url
+
+            def geturl(self) -> str:
+                return self.url
+
+            def read(self, size: int = -1) -> bytes:
+                return self.raw.read(size)
+
+        class Opener:
+            def __init__(self, index_raw: bytes, archive_raw: bytes):
+                self.index_raw = index_raw
+                self.archive_raw = archive_raw
+
+            def open(self, request, timeout: int):
+                url = request.full_url
+                raw = (
+                    self.index_raw
+                    if url.endswith("release-index.json")
+                    else self.archive_raw
+                )
+                return Response(raw, url)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            archive, index, _ = artifact_fixture(work)
+            index_raw = release_artifact.canonical_json_bytes(index)
+            with mock.patch.object(release_artifact.subprocess, "run") as run:
+                with self.assertRaisesRegex(
+                    release_artifact.ReleaseArtifactError,
+                    "artifact-root|identity",
+                ):
+                    release_artifact.bootstrap(
+                        repository=release_artifact.CANONICAL_REPOSITORY,
+                        version="1.2.3",
+                        archive_name=archive.name,
+                        index_sha256=_sha256(index_raw),
+                        phase_b_args=(
+                            "--artifact-root",
+                            str(work / "attacker-controlled"),
+                        ),
+                        opener=Opener(index_raw, archive.read_bytes()),
+                    )
+            run.assert_not_called()
+
+    def test_phase_a_rechecks_wheel_and_lifecycle_before_execution(self) -> None:
+        class Response:
+            def __init__(self, raw: bytes, url: str):
+                self.raw = io.BytesIO(raw)
+                self.url = url
+
+            def geturl(self) -> str:
+                return self.url
+
+            def read(self, size: int = -1) -> bytes:
+                return self.raw.read(size)
+
+        class Opener:
+            def __init__(self, index_raw: bytes, archive_raw: bytes):
+                self.index_raw = index_raw
+                self.archive_raw = archive_raw
+
+            def open(self, request, timeout: int):
+                url = request.full_url
+                raw = (
+                    self.index_raw
+                    if url.endswith("release-index.json")
+                    else self.archive_raw
+                )
+                return Response(raw, url)
+
+        for relative in (
+            "wheels/dev_flow_orchestrator-1.2.3-py3-none-any.whl",
+            "lifecycle/release_lifecycle.py",
+        ):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as temporary:
+                work = Path(temporary).resolve()
+                archive, index, _ = artifact_fixture(work)
+                index_raw = release_artifact.canonical_json_bytes(index)
+                original = release_artifact.inspect_and_extract_artifact
+
+                def replace_after_extract(*args, **kwargs):
+                    verified = original(*args, **kwargs)
+                    (Path(str(verified["root"])) / relative).write_bytes(b"replacement\n")
+                    return verified
+
+                with (
+                    mock.patch.object(
+                        release_artifact,
+                        "inspect_and_extract_artifact",
+                        side_effect=replace_after_extract,
+                    ),
+                    mock.patch.object(release_artifact.subprocess, "run") as run,
+                    self.assertRaisesRegex(
+                        release_artifact.ReleaseArtifactError,
+                        "inventory mismatch",
+                    ),
+                ):
+                    release_artifact.bootstrap(
+                        repository=release_artifact.CANONICAL_REPOSITORY,
+                        version="1.2.3",
+                        archive_name=archive.name,
+                        index_sha256=_sha256(index_raw),
+                        opener=Opener(index_raw, archive.read_bytes()),
+                    )
+                run.assert_not_called()
 
 
 class DownloadBoundaryTests(unittest.TestCase):

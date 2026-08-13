@@ -77,6 +77,24 @@ _REQUIREMENT = re.compile(
     r"(?:\s*;\s*(?P<marker>[A-Za-z0-9_.'\"<>=!~(), +\-]+))?\s+\\$"
 )
 _REQUIREMENT_HASH = re.compile(r"^\s+--hash=sha256:([0-9a-f]{64})(?:\s+\\)?$")
+_PHASE_B_USER_OPTIONS = frozenset(
+    {
+        "--runtime-root",
+        "--bin-dir",
+        "--marketplace-file",
+        "--codex-home",
+        "--data-root",
+        "--lock-timeout",
+    }
+)
+_BOOTSTRAP_IDENTITY_OPTIONS = frozenset(
+    {
+        "--repository",
+        "--version",
+        "--archive-name",
+        "--index-sha256",
+    }
+)
 
 
 class ReleaseArtifactError(RuntimeError):
@@ -627,6 +645,168 @@ def validate_artifact_topology(root: Path, *, version: str) -> dict[str, str]:
     }
 
 
+def verify_extracted_artifact(
+    root: Path,
+    index_model: Mapping[str, object],
+) -> dict[str, object]:
+    """Re-verify one live extracted artifact against its index-bound manifest.
+
+    This is the Phase B time-of-use boundary.  It observes every current
+    descendant without following links or reparse points and does not accept a
+    manifest as evidence for bytes that were not actually inspected.
+    """
+
+    index = validate_release_index(index_model)
+    limits = index["limits"]
+    assert isinstance(limits, Mapping)
+    version = str(index["version"])
+    root = Path(os.path.abspath(root))
+    if root.name != "{}-{}".format(PRODUCT_NAME, version):
+        raise ReleaseArtifactError("verified artifact root name is invalid")
+    try:
+        root_metadata = root.lstat()
+    except OSError as exc:
+        raise ReleaseArtifactError("verified artifact root is unavailable") from exc
+    root_reparse = bool(
+        getattr(root_metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+    if (
+        not stat.S_ISDIR(root_metadata.st_mode)
+        or stat.S_ISLNK(root_metadata.st_mode)
+        or root_reparse
+    ):
+        raise ReleaseArtifactError("verified artifact root is linked, reparsed, or special")
+
+    manifest_path = root / MANIFEST_NAME
+    try:
+        manifest_metadata = manifest_path.lstat()
+    except OSError as exc:
+        raise ReleaseArtifactError("embedded release manifest is unavailable") from exc
+    manifest_reparse = bool(
+        getattr(manifest_metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+    if (
+        not stat.S_ISREG(manifest_metadata.st_mode)
+        or stat.S_ISLNK(manifest_metadata.st_mode)
+        or manifest_reparse
+        or stat.S_IMODE(manifest_metadata.st_mode) != 0o644
+        or manifest_metadata.st_size > int(limits["manifest_bytes"])
+    ):
+        raise ReleaseArtifactError("embedded release manifest identity is invalid")
+    try:
+        manifest_raw = manifest_path.read_bytes()
+    except OSError as exc:
+        raise ReleaseArtifactError("embedded release manifest cannot be read") from exc
+    manifest_digest = sha256_bytes(manifest_raw)
+    if manifest_digest != index["manifest_sha256"]:
+        raise ReleaseArtifactError("release manifest digest mismatch")
+    manifest = validate_release_manifest(
+        strict_json_bytes(
+            manifest_raw,
+            maximum=int(limits["manifest_bytes"]),
+            label="release manifest",
+        ),
+        version=version,
+        limits=limits,
+    )
+    expected = {str(entry["path"]): entry for entry in manifest["entries"]}
+    observed: dict[str, dict[str, object]] = {}
+    collision_keys: set[str] = set()
+    pending = [root]
+    total_bytes = 0
+    while pending:
+        parent = pending.pop()
+        try:
+            children = sorted(parent.iterdir(), key=lambda item: item.name)
+        except OSError as exc:
+            raise ReleaseArtifactError("extracted inventory cannot be enumerated") from exc
+        directories: list[Path] = []
+        for path in children:
+            relative = path.relative_to(root).as_posix()
+            if relative == MANIFEST_NAME:
+                continue
+            portable_path_parts(relative, limits=limits)
+            collision_key = portable_path_key(relative, limits=limits)
+            if relative in observed or collision_key in collision_keys:
+                raise ReleaseArtifactError(
+                    "extracted inventory contains a duplicate or case-colliding path"
+                )
+            collision_keys.add(collision_key)
+            try:
+                metadata = path.lstat()
+            except OSError as exc:
+                raise ReleaseArtifactError(
+                    "extracted inventory entry cannot be inspected"
+                ) from exc
+            reparse = bool(
+                getattr(metadata, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            )
+            if stat.S_ISLNK(metadata.st_mode) or reparse:
+                raise ReleaseArtifactError(
+                    "extracted inventory contains a link or reparse point"
+                )
+            if stat.S_ISDIR(metadata.st_mode):
+                entry: dict[str, object] = {
+                    "path": relative,
+                    "type": "directory",
+                    "mode": stat.S_IMODE(metadata.st_mode),
+                }
+                directories.append(path)
+            elif stat.S_ISREG(metadata.st_mode):
+                entry_size, entry_digest = sha256_file(
+                    path,
+                    maximum=int(limits["file_bytes"]),
+                )
+                total_bytes += entry_size
+                if total_bytes > int(limits["total_bytes"]):
+                    raise ReleaseArtifactError(
+                        "extracted inventory exceeds the supported byte limit"
+                    )
+                entry = {
+                    "path": relative,
+                    "type": "file",
+                    "mode": stat.S_IMODE(metadata.st_mode),
+                    "size": entry_size,
+                    "sha256": entry_digest,
+                }
+            else:
+                raise ReleaseArtifactError(
+                    "extracted inventory contains a special entry"
+                )
+            observed[relative] = entry
+            if len(observed) > int(limits["entry_count"]):
+                raise ReleaseArtifactError("extracted inventory has too many entries")
+        pending.extend(reversed(directories))
+    if observed != expected:
+        missing = sorted(set(expected) - set(observed))
+        extra = sorted(set(observed) - set(expected))
+        changed = sorted(
+            path
+            for path in set(expected) & set(observed)
+            if expected[path] != observed[path]
+        )
+        raise ReleaseArtifactError(
+            "release inventory mismatch (missing={}, extra={}, changed={})".format(
+                missing,
+                extra,
+                changed,
+            )
+        )
+    topology = validate_artifact_topology(root, version=version)
+    return {
+        "root": str(root.resolve()),
+        "release_id": "v{}-{}".format(version, manifest_digest[:16]),
+        "index": index,
+        "manifest": manifest,
+        "manifest_sha256": manifest_digest,
+        "inventory": manifest["entries"],
+        "topology": topology,
+    }
+
+
 def validate_requirements_text(document: str) -> None:
     if not isinstance(document, str) or not document.strip():
         raise ReleaseArtifactError("runtime requirements are empty")
@@ -887,65 +1067,7 @@ def inspect_and_extract_artifact(
             with manifest_path.open("xb") as output:
                 output.write(manifest_raw)
             manifest_path.chmod(0o644)
-        manifest_path = release_root / MANIFEST_NAME
-        if len(manifest_raw) > limits["manifest_bytes"]:
-            raise ReleaseArtifactError("release manifest exceeds the supported byte limit")
-        manifest_digest = sha256_bytes(manifest_raw)
-        if manifest_digest != index["manifest_sha256"]:
-            raise ReleaseArtifactError("release manifest digest mismatch")
-        manifest = validate_release_manifest(
-            strict_json_bytes(manifest_raw, maximum=limits["manifest_bytes"], label="release manifest"),
-            version=version,
-            limits=limits,
-        )
-        expected = {str(entry["path"]): entry for entry in manifest["entries"]}
-        observed: dict[str, dict[str, object]] = {}
-        for path in sorted(release_root.rglob("*")):
-            relative = path.relative_to(release_root).as_posix()
-            if relative == MANIFEST_NAME:
-                continue
-            metadata = path.lstat()
-            reparse = bool(
-                getattr(metadata, "st_file_attributes", 0)
-                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-            )
-            if stat.S_ISLNK(metadata.st_mode) or reparse:
-                raise ReleaseArtifactError("extracted inventory contains a link or reparse point")
-            if stat.S_ISDIR(metadata.st_mode):
-                entry = {
-                    "path": relative,
-                    "type": "directory",
-                    "mode": stat.S_IMODE(metadata.st_mode),
-                }
-            elif stat.S_ISREG(metadata.st_mode):
-                entry_size, entry_digest = sha256_file(path, maximum=limits["file_bytes"])
-                entry = {
-                    "path": relative,
-                    "type": "file",
-                    "mode": stat.S_IMODE(metadata.st_mode),
-                    "size": entry_size,
-                    "sha256": entry_digest,
-                }
-            else:
-                raise ReleaseArtifactError("extracted inventory contains a special entry")
-            observed[relative] = entry
-        if observed != expected:
-            missing = sorted(set(expected) - set(observed))
-            extra = sorted(set(observed) - set(expected))
-            changed = sorted(path for path in set(expected) & set(observed) if expected[path] != observed[path])
-            raise ReleaseArtifactError(
-                "release inventory mismatch (missing={}, extra={}, changed={})".format(missing, extra, changed)
-            )
-        topology = validate_artifact_topology(release_root, version=version)
-        return {
-            "root": str(release_root.resolve()),
-            "release_id": "v{}-{}".format(version, manifest_digest[:16]),
-            "index": index,
-            "manifest": manifest,
-            "manifest_sha256": manifest_digest,
-            "inventory": manifest["entries"],
-            "topology": topology,
-        }
+        return verify_extracted_artifact(release_root, index)
     except tarfile.TarError as exc:
         if destination_created:
             _remove_extraction(destination)
@@ -1020,6 +1142,64 @@ def _download(
         raise ReleaseArtifactError("release download failed") from exc
 
 
+def normalize_phase_b_user_args(arguments: Sequence[str]) -> tuple[str, ...]:
+    """Validate and canonicalize the caller-controlled Phase B option suffix."""
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if not isinstance(token, str) or not token.startswith("--") or token == "--":
+            raise ReleaseArtifactError(
+                "Phase A accepts only closed Phase B options; positional input is rejected"
+            )
+        option, separator, attached = token.partition("=")
+        if option not in _PHASE_B_USER_OPTIONS:
+            if option in _BOOTSTRAP_IDENTITY_OPTIONS or any(
+                marker in option
+                for marker in (
+                    "artifact",
+                    "archive",
+                    "index",
+                    "repository",
+                    "release",
+                    "source",
+                    "transaction",
+                    "version",
+                )
+            ):
+                raise ReleaseArtifactError(
+                    "Phase A caller cannot select artifact or release identity option: "
+                    + option
+                )
+            raise ReleaseArtifactError(
+                "Phase A option is outside the closed whitelist; abbreviations are disabled: "
+                + option
+            )
+        if option in seen:
+            raise ReleaseArtifactError(
+                "Phase A rejects repeated Phase B option: " + option
+            )
+        seen.add(option)
+        if separator:
+            value = attached
+        else:
+            index += 1
+            if index >= len(arguments):
+                raise ReleaseArtifactError("Phase A option requires one value: " + option)
+            value = arguments[index]
+            if value.startswith("--"):
+                raise ReleaseArtifactError("Phase A option requires one value: " + option)
+        if not value or "\x00" in value:
+            raise ReleaseArtifactError(
+                "Phase A option value must be non-empty and contain no NUL: " + option
+            )
+        normalized.extend((option, value))
+        index += 1
+    return tuple(normalized)
+
+
 def bootstrap(
     *,
     repository: str,
@@ -1035,6 +1215,7 @@ def bootstrap(
         raise ReleaseArtifactError("bootstrap archive name is invalid")
     if repository != CANONICAL_REPOSITORY:
         raise ReleaseArtifactError("bootstrap repository is not canonical")
+    normalized_phase_b_args = normalize_phase_b_user_args(phase_b_args)
     base_url = "https://github.com/{}/releases/download/v{}/".format(repository, version)
     temporary_name = tempfile.mkdtemp(prefix="dev-flow-acquire-")
     return_code: int | None = None
@@ -1058,6 +1239,11 @@ def bootstrap(
             collect=False,
         )
         verified = inspect_and_extract_artifact(archive_path, extraction, index)
+        # Re-observe the complete live tree at the Phase A -> Phase B handoff.
+        # This catches a replaced wheel or lifecycle helper before artifact code
+        # is selected for execution; Phase B repeats the same check at time of
+        # use before candidate construction.
+        verified = verify_extracted_artifact(Path(str(verified["root"])), index)
         lifecycle = Path(str(verified["root"])) / "lifecycle" / "release_lifecycle.py"
         command = [
             sys.executable,
@@ -1065,13 +1251,11 @@ def bootstrap(
             "-S",
             str(lifecycle),
             "install",
-            "--artifact-root",
-            str(verified["root"]),
             "--release-index",
             str(index_path),
             "--release-index-sha256",
             index_sha256,
-            *phase_b_args,
+            *normalized_phase_b_args,
         ]
         completed = subprocess.run(command, check=False)
         return_code = completed.returncode
@@ -1092,9 +1276,9 @@ def bootstrap(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    command = subparsers.add_parser("bootstrap")
+    command = subparsers.add_parser("bootstrap", allow_abbrev=False)
     command.add_argument("--repository", required=True)
     command.add_argument("--version", required=True)
     command.add_argument("--archive-name", required=True)
@@ -1103,9 +1287,26 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _reject_repeated_bootstrap_identity(arguments: Sequence[str]) -> None:
+    seen: set[str] = set()
+    for token in arguments:
+        if token == "--":
+            break
+        option = token.partition("=")[0]
+        if option not in _BOOTSTRAP_IDENTITY_OPTIONS:
+            continue
+        if option in seen:
+            raise ReleaseArtifactError(
+                "Phase A rejects repeated bootstrap identity option: " + option
+            )
+        seen.add(option)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = _parser().parse_args(argv)
     try:
+        selected_argv = list(sys.argv[1:] if argv is None else argv)
+        _reject_repeated_bootstrap_identity(selected_argv)
+        arguments = _parser().parse_args(selected_argv)
         phase_b_args = list(arguments.phase_b_args)
         if phase_b_args[:1] == ["--"]:
             phase_b_args.pop(0)

@@ -32,6 +32,15 @@ if _HELPER_SPEC is None or _HELPER_SPEC.loader is None:
     raise RuntimeError("managed runtime integrity helper cannot be loaded")
 integrity = importlib.util.module_from_spec(_HELPER_SPEC)
 _HELPER_SPEC.loader.exec_module(integrity)
+_ARTIFACT_PATH = SCRIPT_ROOT / "release_artifact.py"
+_ARTIFACT_SPEC = importlib.util.spec_from_file_location(
+    "dev_flow_release_artifact",
+    _ARTIFACT_PATH,
+)
+if _ARTIFACT_SPEC is None or _ARTIFACT_SPEC.loader is None:
+    raise RuntimeError("release artifact verifier cannot be loaded")
+release_artifact = importlib.util.module_from_spec(_ARTIFACT_SPEC)
+_ARTIFACT_SPEC.loader.exec_module(release_artifact)
 
 
 ROOT_MARKER = ".dev-flow-managed-runtime"
@@ -549,6 +558,12 @@ def build_artifact_candidate(
     index = _strict_index_identity(
         release_index_path.expanduser(), release_index_sha256
     )
+    try:
+        release_artifact.verify_extracted_artifact(artifact_root, index)
+    except release_artifact.ReleaseArtifactError as exc:
+        raise RuntimeBuildError(
+            "live artifact inventory differs from Phase A evidence: " + str(exc)
+        ) from exc
     version = str(index["version"])
     expected_artifact_name = "dev-flow-orchestrator-{}".format(version)
     if artifact_root.name != expected_artifact_name:
@@ -1059,7 +1074,7 @@ def build(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--source-root")
     parser.add_argument("--artifact-root")
     parser.add_argument("--release-index")
@@ -1070,7 +1085,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-tree")
     parser.add_argument("--release-id")
     parser.add_argument("--data-root")
-    arguments = parser.parse_args(argv)
+    selected_argv = list(sys.argv[1:] if argv is None else argv)
+    seen_options: set[str] = set()
+    for token in selected_argv:
+        if token.startswith("--"):
+            option = token.partition("=")[0]
+            if option in seen_options:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "repeated runtime option is rejected: " + option},
+                        sort_keys=True,
+                    )
+                )
+                return 1
+            seen_options.add(option)
+    arguments = parser.parse_args(selected_argv)
     try:
         if "DEV_FLOW_SOURCE_ROOT" in os.environ:
             raise RuntimeBuildError(
