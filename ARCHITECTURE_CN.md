@@ -4,7 +4,7 @@
 
 ## 产品身份
 
-`0.6.8` 在 MCP 接口旁捆绑名为 `dev-flow` 的正式 Codex Skill，但不改变持久化
+`0.6.9` 在 MCP 接口旁捆绑名为 `dev-flow` 的正式 Codex Skill，但不改变持久化
 模型身份。`MODEL_VERSION`、任务数据命名空间、workflow、policy、binding、record、
 finding、snapshot 和 Delivery Dossier 均保持 `0.4.0`。
 
@@ -86,18 +86,26 @@ Mutation 非幂等。commit 后断连或取消可能使完成状态不确定，�
 ## Release 获取与执行前边界
 
 最终用户生命周期操作获取版本寻址的 GitHub Release 资产，而不是源码 checkout。每个
-版本发布一个闭合的平台中立 archive、一个闭合 `release-index.json`，以及版本匹配的
-`install.sh` 和 `install.ps1` bootstrap。Archive 包含完整 sealed plugin tree、一个
-pure-Python 项目 wheel、哈希锁定的 `runtime-requirements.txt`、其 `uv.lock`、版本化
-lifecycle helper 和内嵌的闭合 manifest。Manifest inventory 覆盖除自身以外的所有
-后代；外部 index 对 manifest 的原始 UTF-8 字节求 hash。
+版本发布一个闭合的平台中立 archive、一个闭合 `release-index.json`、版本无关的
+`install.sh`/`install.ps1` 首次安装入口，以及版本匹配的
+`install-<version>.sh`/`install-<version>.ps1` bootstrap。Archive 包含完整 sealed
+plugin tree、一个 pure-Python 项目 wheel、哈希锁定的 `runtime-requirements.txt`、
+其 `uv.lock`、版本化 lifecycle helper 和内嵌的闭合 manifest。Manifest inventory
+覆盖除自身以外的所有后代；外部 index 对 manifest 的原始 UTF-8 字节求 hash。
 
-两个 bootstrap 内嵌相同的标准库 Phase A verifier。它在 parse 前检查 bootstrap 固定
-的 index digest，随后检查闭合 index、archive size 与 digest、每个 tar header 和
+两个版本匹配 bootstrap 内嵌相同的标准库 Phase A verifier。它在 parse 前检查 bootstrap
+固定的 index digest，随后检查闭合 index、archive size 与 digest、每个 tar header 和
 portable ASCII member path、固定资源上限、安全的 exclusive extraction、原始 manifest
 digest、完整 inventory 及静态 package topology。Link、reparse ancestor、special 或
 sparse member、不支持的 tar extension、traversal、path collision 以及缺失或未声明的
 member 都会失败，且 extraction 不能成为权威。
+
+首次安装入口与已安装的 `update`/`reinstall` 命令共享同一个标准库 release resolver：
+严格的 `MAJOR.MINOR.PATCH` 或 `latest` 语法、仅规范仓库的 HTTPS 主机、拒绝 draft 与
+prerelease 的正式 Release 过滤器，并且只在规范的 `releases/download/v<version>/` 地址
+下载。`latest` 通过规范仓库的官方 release listing 解析，随后所选 Release 的版本匹配
+bootstrap 执行与精确版本完全相同的固定 Phase A、Phase B 校验。无效版本、Release 不
+存在或下载失败都会在任何产品状态变化前以非零状态退出。
 
 Phase A 完成前，不得执行 artifact helper、artifact import 或 artifact subprocess，
 也不得创建或修改 runtime authority、lifecycle state、dispatcher、marketplace、plugin、
@@ -105,10 +113,12 @@ MCP、Codex state、active record 或 transaction authority。Acquisition stagin
 installer-owned temporary state，绝不是已安装或 rollback selector。
 
 Bootstrap 是首个版本专属 trust input，它固定规范 repository、version、asset 和 index
-digest。SHA-256 证明 bootstrap、index、archive 与 manifest 之间的字节一致性；它不是
-独立签名或发布真实性的绝对证明。Source commit 与 tree 是 release-builder publication
-assertion。设计不声称抵御所有同用户 trust input 被一致替换，也不增加签名、Sigstore、
-transparency log、mirror 或 offline fresh install。
+digest。动态 `latest` 路径依赖规范仓库的 release listing，该 listing 被限制为携带
+两个版本化 bootstrap 资产的正式、非 draft、非 prerelease Release。SHA-256 证明
+bootstrap、index、archive 与 manifest 之间的字节一致性；它不是独立签名或发布真实性
+的绝对证明。Source commit 与 tree 是 release-builder publication assertion。设计不
+声称抵御所有同用户 trust input 被一致替换，也不增加签名、Sigstore、transparency
+log、mirror 或 offline fresh install。
 
 ## Managed release 与启动权威
 
@@ -150,19 +160,36 @@ state、launcher 和 helper file 可以佐证 active record，但绝不选择一
 `dev-flow-uninstall` 是稳定安装基础设施。普通 repair、upgrade 与自动 rollback 不会
 替换它们。CLI 与 MCP dispatcher 在调用该 verifier 前检查 active schema、contained
 path、receipt digest、protocol、managed Python 与 versioned verifier。Verifier 在项目
-import 或 MCP initialization 前证明完整 installed content。
+import 或 MCP initialization 前证明完整 installed content。`dev-flow update` 与
+`dev-flow reinstall` 由同一稳定 dispatcher 在解析 active release 之前识别；它校验并
+复制 digest 固定的命令驱动，在 managed runtime 之外运行，因此 active release 无法
+启动时这两个命令仍然可以执行。
 
 插件 manifest 指向根 `.mcp.json`；后者声明一个调用 `dev-flow-mcp --stdio` 的
 `dev-flow` server。Personal marketplace 只指向 active managed release 内的精确
 plugin root，绝不指向 download、extraction、checkout、candidate staging 或可变的共享
 plugin tree。
 
+`lifecycle/installation.json` 中的闭合安装记录是每个生命周期命令运行前都要验证的
+digest 固定证据。它记录实际使用的 runtime root、dispatcher 目录、Codex home、
+personal marketplace 文件、Controller 任务数据根目录、该根目录下的 Dev Flow 自有
+数据条目名称，以及全部稳定支持文件的 digest。升级、卸载与重装都从该证据推导精确
+路径，因此安装时选择的自定义 data root 会被之后的每个生命周期命令遵守。小型
+data-root ownership marker 证明所记录的根目录及其自有名称；重装在修改任何数据之前
+会验证该 marker（或闭合的自有名称布局）。只有记录、稳定支持文件和 dispatcher
+均与冻结身份精确一致的紧邻前代安装，才允许一次性迁移到扩展后的安装证据 schema；
+支持字节发生变化或属于其他历史布局时会保留原状，而不会覆盖。
+
 ## Lifecycle 状态机
 
-Fresh install、repair、upgrade、predecessor migration、recovery 与 uninstall 共用一把
-installation-wide lifecycle lock。读取 active 或 transaction authority 前先获取锁，并
-持有至终态持久化。Active 创建、替换、恢复与删除使用 expected generation 加 active-
-record-digest CAS。单调 generation 防止 stale writer 与 `A -> B -> A` identity confusion。
+Fresh install、repair、upgrade、reinstall、predecessor migration、recovery 与 uninstall
+在每次 authority 读取和修改时共用一把 installation-wide lifecycle lock。Reinstall
+调用的子 bootstrap 也必须获取该锁，因此父命令在调用期间释放它；持久的 pending
+journal 会阻止无关操作，独立 operation guard 会阻止并发的第二个 reinstall driver，
+而且只有携带精确匹配 reinstall transaction 授权的子进程才能越过该 journal。Active
+创建、替换、恢复与删除使用 expected generation
+加 active-record-digest CAS。单调 generation 防止 stale writer 与
+`A -> B -> A` identity confusion。
 
 每个 operation 创建或恢复一个有界 transaction journal，其中包含 operation 与
 transaction ID、expected active state、target/previous authority、external observation、
@@ -181,6 +208,19 @@ activation transaction 尚未终结时自动恢复 immediate previous authority�
 candidate。相同版本的 index、archive 或 manifest digest 发生变化时会拒绝采用。
 Upgrade 始终运行目标版本的 bootstrap。
 
+`dev-flow update` 用共享 resolver 解析最新正式 Release，并以记录路径运行其版本化
+bootstrap。即使 active release 已经是最新版本，Phase B 仍会完成 runtime、installed-
+content、public startup 与 stable infrastructure 的完整证明。健康 release 会被复用，
+不会重建或替换；receipt 身份尚存的损坏 release 会被修复重建；无法证明的状态被报告
+为 `partial`，绝不会是成功。`dev-flow reinstall` 运行一个持久的 `reinstall`
+事务：它证明数据根目录只包含 Dev Flow 自有条目（Controller `0.4.0` 命名空间、
+`web-runtime` 与 ownership marker），把它们移动到带 digest inventory 的事务备份，
+通过版本化 bootstrap 安装最新 Release，并且只有在安装 committed 之后才删除备份。
+失败或中断时，只要仍能证明精确回滚，就会恢复之前的数据字节；否则保留两侧 authority
+并把事务分类为 `partial`。数据移动之前遗留的 activation journal 会先被恢复。安装
+期间只有 transaction 匹配的子进程可以越过该 reinstall journal；任何无关 activation
+都会被拒绝。
+
 ## Migration 与卸载边界
 
 Migration 只接受 frozen fixture 所表达的紧邻 conforming checkout installer 的 installed
@@ -198,7 +238,11 @@ support。Changed、unknown、concurrent、linked、reparse、special 或无法�
 
 Controller task data、model namespace、无关 marketplace/plugin state、无关 launcher、
 standalone MCP registration 与每个 legacy checkout 都在安装 ownership 和 uninstall
-removal 之外。
+removal 之外。卸载还完整保留所有 Dev Flow 用户数据，包括任务、历史、证据、锁、
+Web UI runtime 状态与日志，以及 data-root ownership marker。只有
+`dev-flow reinstall` 会清空 Dev Flow 自有任务数据，而且只在记录的 data root 内、
+所有权可证明、精确回滚且无法证明的内容被分类为 `partial` 时进行。用户仓库、工作
+树、Git 数据、checkout 与无关插件数据永远不在重装删除范围内。
 
 ## 安全与剩余边界
 

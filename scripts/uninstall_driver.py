@@ -23,13 +23,18 @@ from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, Tuple
 import uuid
 
 
-INSTALLATION_SCHEMA = "dev-flow-lifecycle-installation/1.0.0"
+INSTALLATION_SCHEMA = "dev-flow-lifecycle-installation/2.0.0"
 DISPATCHER_PROTOCOL = "dev-flow-dispatcher/1.0.0"
 OWNERSHIP_SCHEMA = "dev-flow-runtime-ownership/1.0.0"
 RUNTIME_RECEIPT_SCHEMA = "dev-flow-runtime-receipt/2.0.0"
 ARTIFACT_RUNTIME_RECEIPT_SCHEMA = "dev-flow-runtime-receipt/3.0.0"
 PLUGIN_ID = "dev-flow-orchestrator@personal"
 PLUGIN_NAME = "dev-flow-orchestrator"
+# Dev Flow-owned Controller data layout recorded by installation evidence.
+DATA_MARKER_NAME = "dev-flow-data.json"
+DATA_NAMESPACE = "0.4.0"
+WEB_RUNTIME_DIR = "web-runtime"
+REINSTALL_GUARD_DIR = "reinstall-command-guard"
 
 MAX_INSTALLATION_BYTES = 32 * 1024
 MAX_RECEIPT_BYTES = 512 * 1024
@@ -71,6 +76,8 @@ class InstallationEvidence:
     uninstall_driver_sha256: str
     stable_dispatcher_sha256: str
     lifecycle_state_sha256: str
+    release_commands_sha256: str
+    release_resolver_sha256: str
     installation_sha256: str
 
 
@@ -329,11 +336,17 @@ def load_installation(
         "uninstall_driver_sha256",
         "stable_dispatcher_sha256",
         "lifecycle_state_sha256",
+        "release_commands_sha256",
+        "release_resolver_sha256",
         "dispatchers",
         "bin_dir",
         "marketplace_file",
         "codex_home",
         "plugin_id",
+        "runtime_root",
+        "data_root",
+        "data_owned_paths",
+        "data_marker_name",
     }
     if set(value) != fields or value["schema"] != INSTALLATION_SCHEMA:
         raise UninstallError("lifecycle installation record is not closed")
@@ -341,6 +354,24 @@ def load_installation(
         raise UninstallError("dispatcher protocol is incompatible")
     if value["plugin_id"] != PLUGIN_ID:
         raise UninstallError("plugin identity is incompatible")
+    recorded_runtime = _absolute(value["runtime_root"], "recorded runtime root")
+    if os.path.normcase(str(recorded_runtime)) != os.path.normcase(str(runtime_root)):
+        raise UninstallError("recorded runtime root disagrees with the managed runtime")
+    data_root = _absolute(value["data_root"], "recorded Controller task-data root")
+    try:
+        if os.path.commonpath((str(runtime_root), str(data_root))) in {
+            str(runtime_root),
+            str(data_root),
+        }:
+            raise UninstallError("recorded task-data root overlaps the managed runtime root")
+    except ValueError:
+        pass
+    _safe_ancestors(data_root)
+    owned_paths = value["data_owned_paths"]
+    if owned_paths != [DATA_NAMESPACE, WEB_RUNTIME_DIR]:
+        raise UninstallError("recorded data ownership paths are invalid")
+    if value["data_marker_name"] != DATA_MARKER_NAME:
+        raise UninstallError("recorded data marker name is invalid")
     recorded_bin = _absolute(value["bin_dir"], "recorded dispatcher directory")
     if os.path.normcase(str(recorded_bin)) != os.path.normcase(str(bin_dir)):
         raise UninstallError("dispatcher CLI path disagrees with installation evidence")
@@ -378,6 +409,12 @@ def load_installation(
         ),
         lifecycle_state_sha256=_digest(
             value["lifecycle_state_sha256"], "lifecycle state digest"
+        ),
+        release_commands_sha256=_digest(
+            value["release_commands_sha256"], "release commands digest"
+        ),
+        release_resolver_sha256=_digest(
+            value["release_resolver_sha256"], "release resolver digest"
         ),
         installation_sha256=_sha256_bytes(raw),
     )
@@ -1335,51 +1372,52 @@ class DurableUninstaller:
         with self.state.lock() as token:
             pending = self.state.non_terminal_transactions(token)
             if len(pending) > 1:
-                identifiers = []
-                for snapshot in pending:
-                    identifiers.append(snapshot.journal.transaction_id)
-                    self.state.finish_transaction(
-                        token,
-                        snapshot,
-                        "partial",
-                        observations=(
-                            self._observation(
-                                "uninstall-recovery",
-                                "unknown",
-                                detail="multiple non-terminal transactions are ambiguous",
-                            ),
-                        ),
-                        recovery=(
-                            "Inspect every transaction before further identity-specific mutation.",
-                        ),
+                identifiers = [
+                    snapshot.journal.transaction_id for snapshot in pending
+                ]
+                retained = tuple(
+                    dict.fromkeys(
+                        path
+                        for snapshot in pending
+                        for path in (
+                            snapshot.journal.retained_paths
+                            + snapshot.journal.owned_paths
+                        )
+                        if os.path.lexists(path)
                     )
+                )
                 return UninstallResult(
                     identifiers[0],
                     "partial",
-                    (),
+                    retained,
                     recovered=True,
-                    detail="multiple non-terminal transactions classified partial",
+                    detail=(
+                        "multiple non-terminal transactions were preserved for their "
+                        "version-matched drivers"
+                    ),
                 )
             recovered = bool(pending)
             if pending:
                 journal = pending[0]
                 if journal.journal.operation != "uninstall":
-                    terminal = self.state.finish_transaction(
-                        token,
-                        journal,
+                    retained = tuple(
+                        path
+                        for path in (
+                            journal.journal.retained_paths
+                            + journal.journal.owned_paths
+                        )
+                        if os.path.lexists(path)
+                    )
+                    return UninstallResult(
+                        journal.journal.transaction_id,
                         "partial",
-                        observations=(
-                            self._observation(
-                                "uninstall-recovery",
-                                "unknown",
-                                detail="pending operation requires its version-matched driver",
-                            ),
-                        ),
-                        recovery=(
-                            "Recover the pending operation before starting uninstall.",
+                        retained,
+                        recovered=True,
+                        detail=(
+                            "pending operation was preserved for its version-matched "
+                            "lifecycle driver"
                         ),
                     )
-                    return self._result(terminal, recovered=True)
                 journal = self.state.advance_transaction(
                     token,
                     journal,
@@ -1745,7 +1783,7 @@ class DurableUninstaller:
             "committed",
             retained_paths=self._new_retained(journal, residue),
             recovery=(
-                "The persistent lock, generation watermark, and terminal journal are inert uninstall evidence.",
+                "Persistent operation locks, the generation watermark, and the terminal journal are inert uninstall evidence.",
             ),
         )
         self.crash_hook("terminal_durable")
@@ -2212,6 +2250,8 @@ class DurableUninstaller:
             self.evidence.lifecycle_root / "stable_dispatcher.py",
             self.evidence.lifecycle_root / "lifecycle_state.py",
             self.evidence.lifecycle_root / "uninstall_driver.py",
+            self.evidence.lifecycle_root / "release_commands.py",
+            self.evidence.lifecycle_root / "release_resolver.py",
             self.evidence.lifecycle_root / "installation.json",
         )
 
@@ -2220,6 +2260,8 @@ class DurableUninstaller:
             self.evidence.lifecycle_root / "stable_dispatcher.py": self.evidence.stable_dispatcher_sha256,
             self.evidence.lifecycle_root / "lifecycle_state.py": self.evidence.lifecycle_state_sha256,
             self.evidence.lifecycle_root / "uninstall_driver.py": self.evidence.uninstall_driver_sha256,
+            self.evidence.lifecycle_root / "release_commands.py": self.evidence.release_commands_sha256,
+            self.evidence.lifecycle_root / "release_resolver.py": self.evidence.release_resolver_sha256,
             self.evidence.lifecycle_root / "installation.json": self.evidence.installation_sha256,
         }
         if not os.path.lexists(self.evidence.lifecycle_root):
@@ -2340,6 +2382,8 @@ class DurableUninstaller:
             self.state.generation_path,
             self.state.transactions_path,
             self.state.transactions_path / f"{transaction_id}.json",
+            self.evidence.runtime_root / REINSTALL_GUARD_DIR,
+            self.evidence.runtime_root / REINSTALL_GUARD_DIR / "lifecycle.lock",
             self.evidence.bin_dir / f"dev-flow-uninstall{suffix}",
             self.evidence.support_root,
             self.evidence.temporary_root / "uninstall_driver.py",

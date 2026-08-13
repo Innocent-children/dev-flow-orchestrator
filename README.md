@@ -4,7 +4,7 @@
 
 Dev Flow Orchestrator keeps long-running Codex development tasks resumable,
 bounded, and verifiable across an exact set of one to eight user-prepared Git
-worktrees. Release `0.6.8` bundles a formal Codex Skill named `dev-flow` and a
+worktrees. Release `0.6.9` bundles a formal Codex Skill named `dev-flow` and a
 local STDIO MCP server while preserving the persisted `0.4.0` model and
 task-data namespace.
 
@@ -24,40 +24,58 @@ prerequisite. Target repositories still need one to eight existing,
 user-prepared Git worktree roots because they are the work controlled by the
 product.
 
-Download and run the bootstrap attached to the exact release you selected:
+Download and run the first-install entry with `latest`, or with an exact
+`MAJOR.MINOR.PATCH` such as `0.6.9`:
 
 ```sh
-VERSION=0.6.8
-curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
-  -o /tmp/dev-flow-install.sh
-sh /tmp/dev-flow-install.sh
+(installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" latest)
 ```
 
-On native Windows, download the same version's `install.ps1` asset and run it
+On native Windows, download the same entry's `install.ps1` asset and run it
 from PowerShell 5.1 or PowerShell 7:
 
 ```powershell
-$Version = '0.6.8'
-$Installer = Join-Path $env:TEMP 'dev-flow-install.ps1'
-Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `
-  -OutFile $Installer
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$p=Join-Path ([IO.Path]::GetTempPath()) ("dev-flow-install-"+[guid]::NewGuid().ToString("N")+".ps1"); $status=1; try { Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.ps1" -OutFile $p; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p latest; $status=$LASTEXITCODE } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }; exit $status'
 ```
 
-The version-matched bootstrap pins the canonical repository, version, archive
-name, and `release-index.json` digest. Before it executes artifact code or
-changes product state, its embedded standard-library Phase A verifier checks
-the index, archive, tar members, raw embedded manifest, complete inventory,
-resource limits, and required package topology. Phase B then builds an isolated
-managed release from the supplied pure-Python wheel and hash-locked,
-wheel-only dependencies, runs staged health, and activates it transactionally.
-It preserves the Skill in the sealed plugin snapshot. No source checkout is
-created or retained.
+The first-install entry validates `MAJOR.MINOR.PATCH` or `latest` before
+downloading anything and fails non-zero with the local installation untouched
+when the version is invalid, the Release does not exist, or a download fails.
+`latest` reads only the canonical GitHub repository's official release listing
+over HTTPS and never selects a draft or prerelease. Both paths download and
+execute the selected Release's version-matched bootstrap, which pins the
+canonical repository, version, archive name, and `release-index.json` digest.
+That bootstrap is fetched from the exact canonical locator
+`https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v<version>/install-<version>.sh`
+(or the matching `.ps1` asset on Windows).
+Before it executes artifact code or changes product state, its embedded
+standard-library Phase A verifier checks the index, archive, tar members, raw
+embedded manifest, complete inventory, resource limits, and required package
+topology. Phase B then builds an isolated managed release from the supplied
+pure-Python wheel and hash-locked, wheel-only dependencies, runs staged health,
+and activates it transactionally. It preserves the Skill in the sealed plugin
+snapshot. No source checkout is created or retained.
 
-See [INSTALL.md](INSTALL.md) for the trust boundary, repair, upgrade, automatic
-failed-activation rollback, migration, terminal outcomes, durable paths, and
-source-independent uninstall.
+Installed lifecycle commands remain available from `PATH`:
+
+```sh
+dev-flow update      # upgrade to the latest official Release (idempotent)
+dev-flow uninstall   # remove product-owned installation; keep all user data
+dev-flow reinstall   # clear Dev Flow-owned task data, then install latest
+```
+
+`update` and `reinstall` are handled by the stable dispatcher before the active
+release is resolved, so they still run when the active release cannot start;
+they always select the latest official Release. `reinstall` removes only the
+recorded Dev Flow-owned task-data entries (Controller tasks, history, state,
+evidence, locks, Web UI runtime state and logs) after proving ownership, keeps a
+digest-verified backup until the new install commits, and restores the previous
+data exactly on failure or interruption when rollback remains provable;
+otherwise it retains the evidence and reports `partial`.
+
+See [INSTALL.md](INSTALL.md) for the trust boundary, one-line install commands,
+repair, upgrade, automatic failed-activation rollback, migration, terminal
+outcomes, durable paths, data boundaries, and source-independent uninstall.
 
 After installation, start a new Codex task and invoke the Skill explicitly:
 
@@ -98,7 +116,13 @@ receipt digest, dispatcher protocol, and committing transaction ID. The
 runtime receipt attests the complete installed release. Small product-owned
 `dev-flow`, `dev-flow-mcp`, and `dev-flow-uninstall` dispatchers remain stable
 across ordinary repair, upgrade, and automatic rollback; versioned verification
-and lifecycle code live inside each managed release.
+and lifecycle code live inside each managed release. `dev-flow update` and
+`dev-flow reinstall` are recognized by the stable dispatcher before active
+release resolution; they share the first-install version grammar and canonical
+HTTPS release download rules. The digest-pinned installation record captures
+the runtime root, dispatcher directory, Codex home, marketplace file, task-data
+root, and Dev Flow-owned data paths, and every later lifecycle command derives
+its exact paths from that evidence.
 
 Every lifecycle operation holds one installation-wide lock and ends as exactly
 one of:
@@ -162,7 +186,9 @@ complete set and returns the exact binding required by the next mutation.
 Discovery from a secondary member returns the same task; ambiguous active
 claims fail closed. Existing 0.4.x tasks resume without a state migration.
 Repair, upgrade, migration, and uninstall do not delete or modify Controller
-task data.
+task data. Only `dev-flow reinstall` clears Dev Flow-owned task data, and only
+after proving ownership through the recorded data root and marker, with exact
+rollback on failure.
 
 ## CLI and read-only Web UI
 
@@ -181,13 +207,16 @@ mutation authority. MCP is the primary Codex execution interface.
 ## Trust and evidence boundary
 
 The canonical GitHub repository and its release publication permissions are
-part of release provenance. The bootstrap fixes the repository, version,
-assets, and index digest. SHA-256 proves that downloaded bytes agree with the
-bytes pinned by the bootstrap, index, and manifest; it detects corruption and
-cross-release mixing. SHA-256 is not an independent digital signature and does
-not prove that the GitHub account was never compromised. Source commit and tree
-values are publication assertions verified and recorded by the release
-builder, not source provenance reconstructed on the user's machine.
+part of release provenance. The version-matched bootstrap fixes the repository,
+version, assets, and index digest; the `latest` path additionally trusts the
+canonical repository's official release listing to name the current Release,
+which is then held to the same pinned Phase A and Phase B verification.
+SHA-256 proves that downloaded bytes agree with the bytes pinned by the
+bootstrap, index, and manifest; it detects corruption and cross-release mixing.
+SHA-256 is not an independent digital signature and does not prove that the
+GitHub account was never compromised. Source commit and tree values are
+publication assertions verified and recorded by the release builder, not
+source provenance reconstructed on the user's machine.
 
 This design does not claim to resist an attacker who can coherently replace all
 same-user local trust inputs. It does not add signing, Sigstore, transparency

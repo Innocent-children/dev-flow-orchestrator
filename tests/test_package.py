@@ -81,7 +81,7 @@ class PackageValidationTests(unittest.TestCase):
         )
 
     def test_public_docs_semantics_reject_incomplete_windows_bootstrap(self) -> None:
-        install = self.candidate / "scripts" / "install.ps1"
+        install = self.candidate / "scripts" / "install-versioned.ps1"
         install.write_text(
             install.read_text(encoding="utf-8").replace(
                 "@DEV_FLOW_INDEX_SHA256@", "@REMOVED_INDEX_DIGEST@"

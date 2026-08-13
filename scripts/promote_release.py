@@ -72,6 +72,8 @@ def _expected_assets(version: str) -> tuple[str, ...]:
         "release-index.json",
         "install.sh",
         "install.ps1",
+        "install-{}.sh".format(version),
+        "install-{}.ps1".format(version),
     )
 
 
@@ -135,10 +137,18 @@ def validate_asset_set(asset_dir: Path, *, version: str) -> dict[str, object]:
             "lifecycle": _aggregate_inventory_digest(inventory, "lifecycle"),
             "install_sh": _digest(asset_dir / "install.sh"),
             "install_ps1": _digest(asset_dir / "install.ps1"),
+            "install_versioned_sh": _digest(
+                asset_dir / "install-{}.sh".format(version)
+            ),
+            "install_versioned_ps1": _digest(
+                asset_dir / "install-{}.ps1".format(version)
+            ),
         }
-    # Each bootstrap is itself an identity-bound release asset. This is a
-    # static contract check; executing it belongs to native lifecycle gates.
-    for name in ("install.sh", "install.ps1"):
+    # Each versioned bootstrap is itself an identity-bound release asset and
+    # each universal entry is version-agnostic canonical-repository code.  This
+    # is a static contract check; executing them belongs to native lifecycle
+    # gates.
+    for name in ("install-{}.sh".format(version), "install-{}.ps1".format(version)):
         document = (asset_dir / name).read_text(encoding="utf-8")
         for literal in (
             artifact.CANONICAL_REPOSITORY,
@@ -148,6 +158,15 @@ def validate_asset_set(asset_dir: Path, *, version: str) -> dict[str, object]:
         ):
             if literal not in document:
                 raise PromotionError("{} is not version-matched".format(name))
+        if "@DEV_FLOW_PHASE_A_B64@" in document or "@DEV_FLOW_INDEX_SHA256@" in document:
+            raise PromotionError("{} retains an unresolved template marker".format(name))
+    for name in ("install.sh", "install.ps1"):
+        document = (asset_dir / name).read_text(encoding="utf-8")
+        for literal in (artifact.CANONICAL_REPOSITORY, "MAJOR.MINOR.PATCH|latest"):
+            if literal not in document:
+                raise PromotionError("{} is not a canonical install entry".format(name))
+        if "@DEV_FLOW_RESOLVER_B64@" in document:
+            raise PromotionError("{} retains an unresolved template marker".format(name))
     return {
         "version": version,
         "source_commit": index["source_commit"],

@@ -1,24 +1,33 @@
 [CmdletBinding()]
 param()
 
-# Source template for the version-matched GitHub Release bootstrap.
+# Source template for the canonical GitHub Release first-install entry.
 # scripts/build_release.py replaces every @DEV_FLOW_*@ token before promotion.
+# This entry accepts <MAJOR.MINOR.PATCH|latest>, resolves and downloads the
+# matching versioned bootstrap, and executes it; Phase A and Phase B then run
+# exactly as in the versioned asset.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $BootstrapSchema = '@DEV_FLOW_BOOTSTRAP_SCHEMA@'
 $Repository = '@DEV_FLOW_REPOSITORY@'
-$ReleaseVersion = '@DEV_FLOW_RELEASE_VERSION@'
-$ArchiveName = '@DEV_FLOW_ARCHIVE_NAME@'
-$IndexSha256 = '@DEV_FLOW_INDEX_SHA256@'
-$PhaseABase64 = '@DEV_FLOW_PHASE_A_B64@'
+$ResolverBase64 = '@DEV_FLOW_RESOLVER_B64@'
 
-if ($IndexSha256.StartsWith('@DEV_FLOW_')) {
-    [Console]::Error.WriteLine('This file is a release template; run the version-specific install.ps1 asset from an official GitHub Release.')
+if ($BootstrapSchema.StartsWith('@DEV_FLOW_')) {
+    [Console]::Error.WriteLine('This file is a release template; run the version-specific install asset from an official GitHub Release.')
     exit 2
 }
 if (Test-Path Env:DEV_FLOW_SOURCE_ROOT) {
     [Console]::Error.WriteLine('DEV_FLOW_SOURCE_ROOT is not supported by artifact installation.')
     exit 1
+}
+if ($args.Count -lt 1) {
+    [Console]::Error.WriteLine('Usage: install.ps1 <MAJOR.MINOR.PATCH|latest> [Phase B options]')
+    exit 2
+}
+$Requested = [string]$args[0]
+$Remaining = @()
+if ($args.Count -gt 1) {
+    $Remaining = @($args | Select-Object -Skip 1)
 }
 
 $PythonCommand = $null
@@ -42,19 +51,17 @@ if ($null -eq $PythonCommand) {
     exit 1
 }
 
-$PhaseADir = Join-Path ([System.IO.Path]::GetTempPath()) ('dev-flow-bootstrap-' + [guid]::NewGuid().ToString('N'))
-[System.IO.Directory]::CreateDirectory($PhaseADir) | Out-Null
-$PhaseAPath = Join-Path $PhaseADir 'release_artifact.py'
+$ResolverDir = Join-Path ([System.IO.Path]::GetTempPath()) ('dev-flow-install-' + [guid]::NewGuid().ToString('N'))
+[System.IO.Directory]::CreateDirectory($ResolverDir) | Out-Null
+$ResolverPath = Join-Path $ResolverDir 'release_resolver.py'
 try {
-    [System.IO.File]::WriteAllBytes($PhaseAPath, [System.Convert]::FromBase64String($PhaseABase64))
-    & $PythonCommand @PythonPrefix -I -S $PhaseAPath bootstrap `
+    [System.IO.File]::WriteAllBytes($ResolverPath, [System.Convert]::FromBase64String($ResolverBase64))
+    & $PythonCommand @PythonPrefix -I -S $ResolverPath install `
         --repository $Repository `
-        --version $ReleaseVersion `
-        --archive-name $ArchiveName `
-        --index-sha256 $IndexSha256 `
-        -- @args
+        --requested $Requested `
+        -- @Remaining
     exit $LASTEXITCODE
 } finally {
-    if ([System.IO.File]::Exists($PhaseAPath)) { [System.IO.File]::Delete($PhaseAPath) }
-    if ([System.IO.Directory]::Exists($PhaseADir)) { [System.IO.Directory]::Delete($PhaseADir, $false) }
+    if ([System.IO.File]::Exists($ResolverPath)) { [System.IO.File]::Delete($ResolverPath) }
+    if ([System.IO.Directory]::Exists($ResolverDir)) { [System.IO.Directory]::Delete($ResolverDir, $false) }
 }

@@ -24,7 +24,7 @@ from typing import Mapping, Sequence
 
 ACTIVE_SCHEMA = "dev-flow-active-release/1.0.0"
 RUNTIME_RECEIPT_SCHEMA = "dev-flow-runtime-receipt/3.0.0"
-INSTALLATION_SCHEMA = "dev-flow-lifecycle-installation/1.0.0"
+INSTALLATION_SCHEMA = "dev-flow-lifecycle-installation/2.0.0"
 DISPATCHER_PROTOCOL = "dev-flow-dispatcher/1.0.0"
 MAX_ACTIVE_BYTES = 16 * 1024
 MAX_RECEIPT_BYTES = 512 * 1024
@@ -37,6 +37,8 @@ _SUPPORT_NAMES = (
     "uninstall_driver.py",
     "installation.json",
 )
+_DATA_OWNED_PATHS = ["0.4.0", "web-runtime"]
+_DATA_MARKER_NAME = "dev-flow-data.json"
 
 
 class DispatchError(RuntimeError):
@@ -298,6 +300,7 @@ def prepare_active_command(runtime_root: Path, mode: str, arguments: Sequence[st
 
 def _installation_contract(
     support_root: Path,
+    runtime_root: Path | None = None,
 ) -> tuple[dict[str, object], bytes, dict[str, str], str]:
     installation, installation_raw = _read_json(
         support_root / "installation.json",
@@ -310,11 +313,17 @@ def _installation_contract(
         "uninstall_driver_sha256",
         "stable_dispatcher_sha256",
         "lifecycle_state_sha256",
+        "release_commands_sha256",
+        "release_resolver_sha256",
         "dispatchers",
         "bin_dir",
         "marketplace_file",
         "codex_home",
         "plugin_id",
+        "runtime_root",
+        "data_root",
+        "data_owned_paths",
+        "data_marker_name",
     }
     if set(installation) != fields or installation.get("schema") != INSTALLATION_SCHEMA:
         raise DispatchError("lifecycle installation record is incompatible")
@@ -347,6 +356,33 @@ def _installation_contract(
         raise DispatchError("installed Codex home path is invalid")
     if installation.get("plugin_id") != "dev-flow-orchestrator@personal":
         raise DispatchError("installed plugin identity is invalid")
+    _hex_digest(
+        installation.get("release_commands_sha256"), "release commands digest"
+    )
+    _hex_digest(
+        installation.get("release_resolver_sha256"), "release resolver digest"
+    )
+    recorded_runtime = installation.get("runtime_root")
+    if (
+        not isinstance(recorded_runtime, str)
+        or not os.path.isabs(recorded_runtime)
+    ):
+        raise DispatchError("installed runtime root evidence is invalid")
+    if runtime_root is not None:
+        selected_runtime = _absolute_directory(runtime_root, "managed runtime root")
+        if os.path.normcase(os.path.abspath(recorded_runtime)) != os.path.normcase(
+            str(selected_runtime)
+        ):
+            raise DispatchError("installed runtime root evidence is invalid")
+    data_root = installation.get("data_root")
+    if not isinstance(data_root, str) or not os.path.isabs(data_root):
+        raise DispatchError("installed task-data root is invalid")
+    owned_paths = installation.get("data_owned_paths")
+    if owned_paths != _DATA_OWNED_PATHS:
+        raise DispatchError("installed data ownership paths are invalid")
+    marker_name = installation.get("data_marker_name")
+    if marker_name != _DATA_MARKER_NAME:
+        raise DispatchError("installed data marker name is invalid")
     expected_driver = _hex_digest(
         installation.get("uninstall_driver_sha256"), "uninstall driver digest"
     )
@@ -368,6 +404,72 @@ def _installation_contract(
     return installation, installation_raw, expected, bin_dir
 
 
+def _prepare_release_command(
+    runtime_root: Path, mode: str, temporary_prefix: str = "dev-flow-lifecycle-"
+) -> tuple[list[str], Path]:
+    """Verify and copy the update/reinstall driver outside the runtime."""
+
+    if mode not in {"update", "reinstall"}:
+        raise DispatchError("lifecycle command mode is invalid")
+    runtime_root = _absolute_directory(runtime_root, "managed runtime root")
+    lifecycle_root = runtime_root / "lifecycle"
+    running_dispatcher = Path(os.path.abspath(__file__))
+    if os.path.normcase(str(running_dispatcher)) != os.path.normcase(
+        str(lifecycle_root / "stable_dispatcher.py")
+    ):
+        raise DispatchError(
+            "lifecycle commands require the installed stable dispatcher"
+        )
+    support_root = _absolute_directory(lifecycle_root, "lifecycle support root")
+    installation, _raw, expected, _bin_dir = _installation_contract(
+        support_root, runtime_root
+    )
+    if _sha256_file(running_dispatcher, "running stable dispatcher") != expected[
+        "stable_dispatcher.py"
+    ]:
+        raise DispatchError(
+            "running stable dispatcher digest differs from installation evidence"
+        )
+    expected_commands = _hex_digest(
+        installation.get("release_commands_sha256"), "release commands digest"
+    )
+    if _sha256_file(support_root / "release_commands.py", "release command driver") != expected_commands:
+        raise DispatchError(
+            "release command driver digest differs from installation evidence"
+        )
+    temporary_root = Path(tempfile.mkdtemp(prefix=temporary_prefix))
+    copied = temporary_root / "release_commands.py"
+    try:
+        with copied.open("xb") as output, (
+            support_root / "release_commands.py"
+        ).open("rb") as input_stream:
+            shutil.copyfileobj(input_stream, output)
+            output.flush()
+            os.fsync(output.fileno())
+        if _sha256_file(copied, "copied release command driver") != expected_commands:
+            raise DispatchError("copied release command driver digest is invalid")
+    except BaseException:
+        try:
+            copied.unlink()
+            temporary_root.rmdir()
+        except OSError:
+            pass
+        raise
+    command = [
+        sys.executable,
+        "-B",
+        "-I",
+        str(copied),
+        "--runtime-root",
+        str(runtime_root),
+        "--support-root",
+        str(support_root),
+        "--mode",
+        mode,
+    ]
+    return command, temporary_root
+
+
 def _prepare_uninstall(runtime_root: Path) -> tuple[list[str], Path]:
     runtime_root = _absolute_directory(runtime_root, "managed runtime root")
     lifecycle_root = runtime_root / "lifecycle"
@@ -379,7 +481,9 @@ def _prepare_uninstall(runtime_root: Path) -> tuple[list[str], Path]:
         support_root = _absolute_directory(
             lifecycle_root, "lifecycle support root"
         )
-        installation, _raw, expected, bin_dir = _installation_contract(support_root)
+        installation, _raw, expected, bin_dir = _installation_contract(
+            support_root, runtime_root
+        )
         temporary_root = Path(tempfile.mkdtemp(prefix="dev-flow-uninstall-"))
         copied = temporary_root / "uninstall_driver.py"
         try:
@@ -406,7 +510,9 @@ def _prepare_uninstall(runtime_root: Path) -> tuple[list[str], Path]:
         support_root = _absolute_directory(
             recovery_root, "uninstall recovery support root"
         )
-        installation, _raw, expected, bin_dir = _installation_contract(support_root)
+        installation, _raw, expected, bin_dir = _installation_contract(
+            support_root, runtime_root
+        )
         temporary_root = support_root
     else:
         raise DispatchError("running stable dispatcher is outside installed support")
@@ -448,6 +554,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     if forwarded[:1] == ["--"]:
         forwarded = forwarded[1:]
     try:
+        if arguments.mode == "cli" and forwarded[:1] in (["update"], ["reinstall"]):
+            # Lifecycle commands are recognized and handled before the active
+            # release is resolved, so they stay executable when it cannot start.
+            if len(forwarded) != 1:
+                raise DispatchError(
+                    "dev-flow {} accepts no arguments".format(forwarded[0])
+                )
+            command, temporary_root = _prepare_release_command(
+                arguments.runtime_root, forwarded[0]
+            )
+            try:
+                return subprocess.run(command, check=False).returncode
+            finally:
+                try:
+                    (temporary_root / "release_commands.py").unlink()
+                    temporary_root.rmdir()
+                except OSError:
+                    print(
+                        "Dev Flow temporary lifecycle helper retained at: "
+                        f"{temporary_root}",
+                        file=sys.stderr,
+                    )
         if arguments.mode == "uninstall":
             if forwarded:
                 raise DispatchError("dev-flow-uninstall accepts no arguments")

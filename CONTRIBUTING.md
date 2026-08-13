@@ -160,17 +160,36 @@ Tests must explicitly prove that gate. SHA-256 establishes pinned byte
 agreement; never describe it as independent signing or absolute source
 authenticity.
 
+The `install.sh`/`install.ps1` first-install entries and the installed
+`dev-flow update` and `dev-flow reinstall` commands share one standard-library
+release resolver: a strict `MAJOR.MINOR.PATCH` or `latest` grammar, canonical-
+repository-only HTTPS hosts, an official-release filter that rejects drafts and
+prereleases, and versioned-bootstrap downloads only from the canonical
+`releases/download/v<version>/` locators. Both exact and `latest` installs must
+enter the selected Release's versioned bootstrap and fail non-zero before any
+product mutation on invalid versions, missing Releases, or download failures.
+
 Phase B installs exact hash-required wheel-only dependencies and the supplied
 project wheel without executing an sdist backend. Candidate health precedes
 host activation. The active record remains the only local release selector;
 stable `dev-flow`, `dev-flow-mcp`, and `dev-flow-uninstall` dispatchers are not
 replaced during ordinary repair, upgrade, or automatic rollback.
 
-Fresh install, repair, upgrade, migration, recovery, and uninstall share one
-installation-wide lock, bounded journals, monotonic generation, and
+Fresh install, repair, upgrade, reinstall, migration, recovery, and uninstall
+share one installation-wide lock, bounded journals, monotonic generation, and
 generation-plus-digest CAS. Each operation must finish as `committed`,
 `rolled_back`, or `partial`. Never make a command successful while its journal
 is non-terminal or broaden deletion to make an uncertain state appear clean.
+
+Installation evidence must record the actual runtime root, dispatcher
+directory, Codex home, marketplace file, task-data root, and Dev Flow-owned
+data paths; upgrade, uninstall, and reinstall derive their paths from that
+digest-pinned evidence. `dev-flow update` is idempotent on the latest version
+and remains executable when the active release cannot start. `dev-flow
+uninstall` preserves all Dev Flow user data. `dev-flow reinstall` clears only
+ownership-proven Dev Flow-owned task data under a durable transaction with a
+digest-verified backup, exact restore on failure or interruption, and
+`partial` classification for unprovable content.
 
 POSIX bootstrap tests target macOS. PowerShell retains PowerShell 5.1
 compatibility, literal-path handling, x64 checks, safe native reparse behavior,

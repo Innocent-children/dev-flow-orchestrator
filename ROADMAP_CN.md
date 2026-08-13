@@ -23,7 +23,7 @@ controller：一个任务、一个当前 action 和一个 Codex executor。保�
 server、现有 CLI 和本地只读 Web UI。Skill 提供激活和路由；Controller 保留所有
 transition、repository、binding、assurance、review 与 Delivery Dossier 权威。
 
-## 0.6.8 交付：加固版本化 release artifact
+## 0.6.9 交付：加固版本化 release artifact
 
 Installed delivery 正从永久保留源码 checkout 转换为精确版本 GitHub Release 资产集：
 
@@ -32,10 +32,14 @@ Installed delivery 正从永久保留源码 checkout 转换为精确版本 GitHu
   manifest；
 - 一个闭合 `release-index.json`，绑定 repository、version、source commit/tree
   publication assertion、archive 与原始 manifest digest；
-- 内嵌相同标准库 Phase A verification 的版本匹配 `install.sh` 和 `install.ps1`
-  bootstrap；
+- 版本无关的 `install.sh` 与 `install.ps1` 首次安装入口，接受 `MAJOR.MINOR.PATCH`
+  或 `latest`，只从规范仓库官方 release listing 解析 `latest`，随后运行所选
+  Release 的版本匹配 `install-<version>.sh` / `install-<version>.ps1` bootstrap，
+  后者内嵌相同的标准库 Phase A verification；
 - 只由一个 active record 选择的 managed release，以及稳定的 `dev-flow`、
-  `dev-flow-mcp` 和 `dev-flow-uninstall` dispatcher；
+  `dev-flow-mcp` 和 `dev-flow-uninstall` dispatcher，外加由 dispatcher 识别的
+  `dev-flow update` 与 `dev-flow reinstall` 生命周期命令，它们始终解析最新正式
+  Release，并与安装共享版本语法与规范 HTTPS 下载规则；
 - 一把 installation-wide lifecycle lock、单调 generation 与 digest CAS、有界
   transaction journal，以及仅有 `committed`、`rolled_back` 或 `partial` 的终态；
 - exact-version healthy/drift repair、target-version upgrade、激活失败时自动恢复
@@ -58,18 +62,26 @@ Lifecycle 保留 `.codex-plugin/plugin.json`、`.mcp.json`、捆绑的
 plugin ID、personal-marketplace mode、task data、无关 Codex state、unknown content
 及每个 legacy checkout。
 
-SHA-256 证明与 bootstrap、index 和 manifest 所固定字节一致。它不是独立签名，也不
+安装证据记录实际使用的 runtime root、dispatcher 目录、Codex home、marketplace 文件、
+任务数据根目录与 Dev Flow 自有数据路径；升级、卸载与重装都从这份 digest 固定证据
+推导路径。`dev-flow update` 在已是最新版本时幂等，并可在 active release 无法启动时
+修复；`dev-flow uninstall` 完整保留所有 Dev Flow 用户数据；`dev-flow reinstall` 只在
+所有权可证明时，在持久事务内清空 Dev Flow 自有任务数据，保留 digest 验证备份、
+失败时精确恢复，无法证明的内容被分类为 `partial`。
+
+SHA-256 证明与 bootstrap、index 和 manifest 所固定字节一致；`latest` 路径额外信任
+规范仓库的官方 release listing，其选择随后接受同样的固定校验。它不是独立签名，也不
 表示 GitHub release publication 永远不可能被攻破。Source commit 与 tree 值是 release
 builder assertion；最终用户安装不会从 checkout 重建 provenance。
 
 ## 完成证据
 
-只有全部四个最终资产构建完成，并从其精确官方版本专属地址重新下载，且所有适用仓库
+只有全部六个最终资产构建完成，并从其精确官方版本专属地址重新下载，且所有适用仓库
 检查均通过后，release-artifact change 才能完成。有界 final-artifact journey 必须在
-原生 macOS 和原生 Windows 10 22H2 x64 或 Windows 11 x64 上各运行一次，覆盖 fresh
-install、healthy/drift repair、
-successful upgrade、failed-activation rollback、interrupted recovery、startup、
-predecessor migration、uninstall 与 task-data preservation。
+原生 macOS 和原生 Windows 10 22H2 x64 或 Windows 11 x64 上各运行一次，覆盖精确版本
+与 `latest` 的 fresh install、healthy/drift repair、通过 `dev-flow update` 的
+successful upgrade、已是最新版本时的幂等 update、failed-activation rollback、
+interrupted recovery、reinstall 数据清空与回滚、uninstall 与 task-data preservation。
 
 受支持的 Python 3.10–3.14 运行轻量 wheel-only install 与 import/MCP smoke coverage，
 不重复完整 lifecycle matrix。并发证据只覆盖 upgrade versus upgrade 和 upgrade versus

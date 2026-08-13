@@ -607,6 +607,8 @@ def validate_artifact_topology(root: Path, *, version: str) -> dict[str, str]:
         "lifecycle/runtime_integrity.py",
         "lifecycle/validate_installed_stage1.py",
         "lifecycle/release_artifact.py",
+        "lifecycle/release_commands.py",
+        "lifecycle/release_resolver.py",
         "lifecycle/lifecycle_state.py",
         "lifecycle/lifecycle_machine.py",
         "lifecycle/legacy_migration.py",

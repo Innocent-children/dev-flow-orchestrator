@@ -16,6 +16,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -28,7 +29,20 @@ import uuid
 SCRIPT_ROOT = Path(__file__).resolve().parent
 PLUGIN_ID = "dev-flow-orchestrator@personal"
 PLUGIN_NAME = "dev-flow-orchestrator"
-INSTALLATION_SCHEMA = "dev-flow-lifecycle-installation/1.0.0"
+INSTALLATION_SCHEMA = "dev-flow-lifecycle-installation/2.0.0"
+PREDECESSOR_INSTALLATION_SCHEMA = "dev-flow-lifecycle-installation/1.0.0"
+REINSTALL_TRANSACTION_ENV = "DEV_FLOW_REINSTALL_TRANSACTION_ID"
+_REINSTALL_TRANSACTION = re.compile(r"reinstall-[0-9a-f]{32}\Z")
+# Frozen SHA-256 identities of the protocol-stable support shipped by the
+# immediate predecessor release.
+# Only this immediate predecessor may replace its evidence-bound files while
+# introducing the second-generation installation evidence and installed
+# release commands.
+PREDECESSOR_SUPPORT_SHA256 = {
+    "stable_dispatcher.py": "c04862bd88fc99cd1a09a2588d577d3e2e68971d74d9d44aab6178f8b1fe8a27",
+    "lifecycle_state.py": "797db98b86c9376bb213dfe287e3d18efea03068fbae03cbc4490109d15e6a29",
+    "uninstall_driver.py": "78e76a40d09e071fd083e1ef6ce2523f0937d981f17b798b6b8b0612fa9c7015",
+}
 MAX_INDEX_BYTES = 256 * 1024
 MAX_MARKETPLACE_BYTES = 2 * 1024 * 1024
 MAX_CODEX_BYTES = 1024 * 1024
@@ -82,6 +96,7 @@ lifecycle_machine = _load_sibling("lifecycle_machine")
 runtime_integrity = _load_sibling("runtime_integrity")
 manage_runtime = _load_sibling("manage_runtime")
 release_artifact = _load_sibling("release_artifact")
+release_resolver = _load_sibling("release_resolver")
 render_dispatchers = _load_sibling("render_dispatchers")
 legacy_migration = _load_sibling("legacy_migration")
 
@@ -277,6 +292,7 @@ def _run(
     environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     selected_environment = os.environ.copy()
+    selected_environment.pop(REINSTALL_TRANSACTION_ENV, None)
     selected_environment["PYTHONDONTWRITEBYTECODE"] = "1"
     if environment:
         selected_environment.update(environment)
@@ -452,7 +468,13 @@ class InfrastructureManager:
     def _sources(self) -> dict[Path, bytes]:
         source_root = self.paths.artifact_root / "lifecycle"
         mapping: dict[Path, bytes] = {}
-        for name in ("stable_dispatcher.py", "lifecycle_state.py", "uninstall_driver.py"):
+        for name in (
+            "stable_dispatcher.py",
+            "lifecycle_state.py",
+            "uninstall_driver.py",
+            "release_commands.py",
+            "release_resolver.py",
+        ):
             source = source_root / name
             _regular_file(source, "artifact lifecycle support " + name)
             mapping[self.lifecycle_root / name] = source.read_bytes()
@@ -467,6 +489,8 @@ class InfrastructureManager:
             "uninstall_driver_sha256": _sha256(mapping[self.lifecycle_root / "uninstall_driver.py"]),
             "stable_dispatcher_sha256": _sha256(mapping[self.lifecycle_root / "stable_dispatcher.py"]),
             "lifecycle_state_sha256": _sha256(mapping[self.lifecycle_root / "lifecycle_state.py"]),
+            "release_commands_sha256": _sha256(mapping[self.lifecycle_root / "release_commands.py"]),
+            "release_resolver_sha256": _sha256(mapping[self.lifecycle_root / "release_resolver.py"]),
             "dispatchers": {
                 name: _sha256(mapping[self.paths.bin_dir / name])
                 for name in self.dispatcher_names
@@ -475,6 +499,13 @@ class InfrastructureManager:
             "marketplace_file": str(self.paths.marketplace_file),
             "codex_home": str(self.paths.codex_home),
             "plugin_id": PLUGIN_ID,
+            "runtime_root": str(self.paths.runtime_root),
+            "data_root": str(self.paths.data_root),
+            "data_owned_paths": [
+                release_resolver.DATA_NAMESPACE,
+                release_resolver.WEB_RUNTIME_DIR,
+            ],
+            "data_marker_name": release_resolver.DATA_MARKER_NAME,
         }
         mapping[self.lifecycle_root / "installation.json"] = _canonical_bytes(evidence)
         return mapping
@@ -506,6 +537,90 @@ class InfrastructureManager:
         except (ReleaseLifecycleError, UnicodeError, json.JSONDecodeError, KeyError):
             return False
         return isinstance(expected, dict) and current == expected
+
+    def _predecessor_owned_paths(
+        self, desired: Mapping[Path, bytes]
+    ) -> frozenset[Path]:
+        """Prove the exact immediate predecessor before its one-time migration."""
+
+        evidence_path = self.lifecycle_root / "installation.json"
+        fields = {
+            "schema",
+            "dispatcher_protocol",
+            "uninstall_driver_sha256",
+            "stable_dispatcher_sha256",
+            "lifecycle_state_sha256",
+            "dispatchers",
+            "bin_dir",
+            "marketplace_file",
+            "codex_home",
+            "plugin_id",
+        }
+        try:
+            evidence, _raw = _read_json(
+                evidence_path, 128 * 1024, "predecessor installation evidence"
+            )
+            if (
+                set(evidence) != fields
+                or evidence.get("schema") != PREDECESSOR_INSTALLATION_SCHEMA
+                or evidence.get("dispatcher_protocol")
+                != lifecycle_state.DISPATCHER_PROTOCOL
+                or evidence.get("plugin_id") != PLUGIN_ID
+            ):
+                return frozenset()
+            expected_paths = {
+                "bin_dir": self.paths.bin_dir,
+                "marketplace_file": self.paths.marketplace_file,
+                "codex_home": self.paths.codex_home,
+            }
+            for field, expected_path in expected_paths.items():
+                recorded = evidence.get(field)
+                if (
+                    not isinstance(recorded, str)
+                    or not os.path.isabs(recorded)
+                    or os.path.normcase(os.path.abspath(recorded))
+                    != os.path.normcase(str(expected_path))
+                ):
+                    return frozenset()
+            support_paths: set[Path] = set()
+            for name, expected_digest in PREDECESSOR_SUPPORT_SHA256.items():
+                field = name.removesuffix(".py") + "_sha256"
+                if evidence.get(field) != expected_digest:
+                    return frozenset()
+                path = self.lifecycle_root / name
+                metadata = _regular_file(path, "predecessor lifecycle support")
+                if _sha256_file(path, "predecessor lifecycle support") != expected_digest:
+                    return frozenset()
+                if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != 0o600:
+                    return frozenset()
+                support_paths.add(path)
+            dispatchers = evidence.get("dispatchers")
+            if not isinstance(dispatchers, dict) or set(dispatchers) != set(
+                self.dispatcher_names
+            ):
+                return frozenset()
+            dispatcher_paths: set[Path] = set()
+            for name in self.dispatcher_names:
+                path = self.paths.bin_dir / name
+                expected = desired[path]
+                if dispatchers.get(name) != _sha256(expected):
+                    return frozenset()
+                metadata = _regular_file(path, "predecessor stable dispatcher")
+                if path.read_bytes() != expected:
+                    return frozenset()
+                if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != 0o755:
+                    return frozenset()
+                dispatcher_paths.add(path)
+            evidence_metadata = _regular_file(
+                evidence_path, "predecessor installation evidence"
+            )
+            if os.name != "nt" and stat.S_IMODE(evidence_metadata.st_mode) != 0o600:
+                return frozenset()
+            return frozenset(
+                support_paths | dispatcher_paths | {evidence_path}
+            )
+        except (KeyError, OSError, ReleaseLifecycleError, TypeError, ValueError):
+            return frozenset()
 
     def attest(self) -> tuple[bool, str, str]:
         """Attest closed evidence plus every stable file's bytes and mode."""
@@ -559,10 +674,16 @@ class InfrastructureManager:
         repair_proven = operation == "repair" and self._installation_identity_is_proven(
             desired
         )
+        predecessor_owned = (
+            self._predecessor_owned_paths(desired)
+            if operation == "upgrade"
+            else frozenset()
+        )
         for path, before, _, _, _ in changes:
             existing_change_is_allowed = (
                 before is None
                 or repair_proven
+                or path in predecessor_owned
                 or (
                     operation == "migration"
                     and path in proven_predecessor_dispatchers
@@ -712,13 +833,89 @@ def _runtime_python(release_path: Path) -> Path:
     return release_path / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
+class DataOwnership:
+    """Write and roll back the small data-root ownership marker.
+
+    The marker proves which top-level entries under the recorded task-data
+    root are Dev Flow-owned and is the exact identity ``dev-flow reinstall``
+    verifies before any cleanup.  Install never rewrites pre-existing marker
+    content; drift stops installation before product mutation.
+    """
+
+    MAX_MARKER_BYTES = 16 * 1024
+
+    def __init__(self, paths: InstallPaths) -> None:
+        self.paths = paths
+
+    def _model(self) -> dict[str, object]:
+        return {
+            "schema": release_resolver.DATA_OWNERSHIP_SCHEMA,
+            "product": release_resolver.PRODUCT_NAME,
+            "data_root": str(self.paths.data_root),
+            "namespace": release_resolver.DATA_NAMESPACE,
+            "web_runtime": release_resolver.WEB_RUNTIME_DIR,
+        }
+
+    def _marker_path(self) -> Path:
+        return self.paths.data_root / release_resolver.DATA_MARKER_NAME
+
+    def ensure(self) -> tuple[bool, bool]:
+        """Return (created_root, created_marker) for exact transaction rollback."""
+
+        data_root = self.paths.data_root
+        root_existed = os.path.lexists(data_root)
+        marker_path = self._marker_path()
+        marker_existed = os.path.lexists(marker_path)
+        expected = self._model()
+        if marker_existed:
+            value, _ = _read_json(
+                marker_path, self.MAX_MARKER_BYTES, "data ownership marker"
+            )
+            if value != expected:
+                raise ReleaseLifecycleError(
+                    "data ownership marker drift must be preserved and inspected"
+                )
+            return False, False
+        if not root_existed:
+            _ensure_directory(data_root)
+        else:
+            _regular_directory(data_root, "Controller task-data root")
+        _atomic_write(marker_path, _canonical_bytes(expected))
+        return not root_existed, True
+
+    def rollback(self, created_root: bool, created_marker: bool) -> tuple[str, ...]:
+        if not created_marker:
+            return ()
+        retained: list[str] = []
+        marker_path = self._marker_path()
+        try:
+            if os.path.lexists(marker_path):
+                value, _ = _read_json(
+                    marker_path, self.MAX_MARKER_BYTES, "data ownership marker"
+                )
+                if value == self._model():
+                    marker_path.unlink()
+        except (OSError, ReleaseLifecycleError):
+            retained.append(str(marker_path))
+        if created_root and not retained:
+            try:
+                self.paths.data_root.rmdir()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                retained.append(str(self.paths.data_root))
+        return tuple(retained)
+
+
 class ArtifactCandidates:
     def __init__(self, paths: InstallPaths, index: IndexIdentity, infrastructure: InfrastructureManager) -> None:
         self.paths = paths
         self.index = index
         self.infrastructure = infrastructure
+        self.data_ownership = DataOwnership(paths)
         self._built: dict[str, Mapping[str, object]] = {}
         self._marker_created: set[str] = set()
+        self._data_created: dict[str, tuple[bool, bool]] = {}
 
     @property
     def envelope(self) -> Any:
@@ -852,8 +1049,11 @@ class ArtifactCandidates:
                 expected_release_id=request.release_id,
             )
             owned = self.infrastructure.ensure(request.transaction_id, request.operation)
+            self._data_created[request.transaction_id] = self.data_ownership.ensure()
         except BaseException:
             retained = self.infrastructure.rollback(request.transaction_id)
+            data_created = self._data_created.pop(request.transaction_id, (False, False))
+            retained += self.data_ownership.rollback(*data_created)
             release_path = Path(request.release_path)
             if os.path.lexists(release_path):
                 try:
@@ -918,6 +1118,10 @@ class ArtifactCandidates:
 
     def cleanup_owned(self, journal: Any) -> Any:
         retained = list(self.infrastructure.rollback(journal.transaction_id))
+        data_created = self._data_created.pop(
+            journal.transaction_id, (False, False)
+        )
+        retained.extend(self.data_ownership.rollback(*data_created))
         target = journal.target_release
         if target is not None and os.path.lexists(target.release_path):
             try:
@@ -1669,7 +1873,46 @@ def run_locked_auto(machine: Any, candidates: ArtifactCandidates, host: Artifact
 
     recovered: list[str] = []
     with machine.state.lock(timeout_seconds=machine.lock_timeout_seconds) as token:
-        pending_transactions = machine.state.non_terminal_transactions(token)
+        all_pending = machine.state.non_terminal_transactions(token)
+        reinstall_pending = tuple(
+            snapshot
+            for snapshot in all_pending
+            if snapshot.journal.operation == "reinstall"
+        )
+        authorized_reinstall = os.environ.get(REINSTALL_TRANSACTION_ENV)
+        if authorized_reinstall is None:
+            if reinstall_pending:
+                # Do not terminalize or otherwise reinterpret a durable data
+                # transaction.  Its installed command driver must resume it.
+                machine.state.require_no_non_terminal(token)
+        else:
+            if _REINSTALL_TRANSACTION.fullmatch(authorized_reinstall) is None:
+                raise ReleaseLifecycleError(
+                    "internal reinstall transaction authorization is invalid"
+                )
+            if (
+                len(reinstall_pending) != 1
+                or reinstall_pending[0].journal.transaction_id
+                != authorized_reinstall
+                or reinstall_pending[0].journal.phase != "removing_data"
+            ):
+                raise ReleaseLifecycleError(
+                    "internal reinstall transaction authorization does not match "
+                    "one removing-data journal"
+                )
+        pending_transactions = [
+            snapshot
+            for snapshot in all_pending
+            if snapshot.journal.transaction_id != authorized_reinstall
+        ]
+        if any(
+            snapshot.journal.operation
+            not in lifecycle_machine.ACTIVATION_OPERATIONS
+            for snapshot in pending_transactions
+        ):
+            machine.state.require_no_non_terminal(
+                token, except_transaction_id=authorized_reinstall
+            )
         if len(pending_transactions) > 1:
             for pending in pending_transactions:
                 machine.state.finish_transaction(
@@ -1703,7 +1946,9 @@ def run_locked_auto(machine: Any, candidates: ArtifactCandidates, host: Artifact
                     recovered_transactions=tuple(recovered),
                     detail="prior lifecycle transaction remains unresolved",
                 )
-        machine.state.require_no_non_terminal(token)
+        machine.state.require_no_non_terminal(
+            token, except_transaction_id=authorized_reinstall
+        )
         active = machine.state.read_active(token)
         operation = _operation(active, candidates, host)
         transaction_id = "tx-" + uuid.uuid4().hex

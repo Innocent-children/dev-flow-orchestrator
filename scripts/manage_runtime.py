@@ -613,7 +613,9 @@ def build_artifact_candidate(
     required_lifecycle = {
         "manage_runtime.py",
         "release_artifact.py",
+        "release_commands.py",
         "release_lifecycle.py",
+        "release_resolver.py",
         "runtime_integrity.py",
         "validate_installed_stage1.py",
     }

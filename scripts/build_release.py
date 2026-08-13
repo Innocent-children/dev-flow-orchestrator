@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import zipfile
 
 import release_artifact as artifact
+import release_resolver as resolver
 
 
 BUILDER_SCHEMA = "dev-flow-release-builder/1.0.0"
@@ -48,6 +49,8 @@ LIFECYCLE_FILES = (
     "runtime_integrity.py",
     "validate_installed_stage1.py",
     "release_artifact.py",
+    "release_commands.py",
+    "release_resolver.py",
     "lifecycle_state.py",
     "lifecycle_machine.py",
     "legacy_migration.py",
@@ -600,9 +603,9 @@ def _default_bootstrap_renderer(
         archive_name=archive_name,
     )
     if platform_name == "posix":
-        return assets["install.sh"]
+        return assets["install-{}.sh".format(version)]
     if platform_name == "windows":
-        return assets["install.ps1"]
+        return assets["install-{}.ps1".format(version)]
     raise ReleaseBuildError("bootstrap platform is unsupported")
 
 
@@ -614,7 +617,7 @@ def render_bootstrap_assets(
     repository: str = artifact.CANONICAL_REPOSITORY,
     archive_name: str | None = None,
 ) -> dict[str, bytes]:
-    """Render both bootstraps around one byte-identical base64 verifier body."""
+    """Render both versioned bootstraps around one byte-identical verifier body."""
 
     version = artifact.validate_version(version)
     artifact._digest(index_sha256, "bootstrap index digest")
@@ -635,7 +638,7 @@ def render_bootstrap_assets(
     }
     rendered: dict[str, bytes] = {}
     script_root = Path(__file__).resolve().parent
-    for name in ("install.sh", "install.ps1"):
+    for name in ("install-versioned.sh", "install-versioned.ps1"):
         try:
             document = (script_root / name).read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -648,6 +651,45 @@ def render_bootstrap_assets(
             document = document.replace(marker, replacement)
         if re.search(r"@DEV_FLOW_[A-Z_]+@", document):
             raise ReleaseBuildError("release bootstrap template retains an unresolved marker")
+        output_name = (
+            "install-{}.sh".format(version)
+            if name.endswith(".sh")
+            else "install-{}.ps1".format(version)
+        )
+        rendered[output_name] = document.encode("utf-8")
+    return rendered
+
+
+def render_universal_assets(
+    resolver_bytes: bytes,
+    *,
+    repository: str = artifact.CANONICAL_REPOSITORY,
+    schema: str = "dev-flow-release-resolver/1.0.0",
+) -> dict[str, bytes]:
+    """Render the version-agnostic first-install entries for both platforms."""
+
+    if repository != artifact.CANONICAL_REPOSITORY:
+        raise ReleaseBuildError("install entry repository is not canonical")
+    replacements = {
+        "@DEV_FLOW_BOOTSTRAP_SCHEMA@": schema,
+        "@DEV_FLOW_REPOSITORY@": repository,
+        "@DEV_FLOW_RESOLVER_B64@": base64.b64encode(resolver_bytes).decode("ascii"),
+    }
+    rendered: dict[str, bytes] = {}
+    script_root = Path(__file__).resolve().parent
+    for name in ("install.sh", "install.ps1"):
+        try:
+            document = (script_root / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ReleaseBuildError("install entry template is unavailable: {}".format(name)) from exc
+        for marker, replacement in replacements.items():
+            if document.count(marker) != 1:
+                raise ReleaseBuildError(
+                    "install entry template marker is invalid: {} {}".format(name, marker)
+                )
+            document = document.replace(marker, replacement)
+        if re.search(r"@DEV_FLOW_[A-Z_]+@", document):
+            raise ReleaseBuildError("install entry template retains an unresolved marker")
         rendered[name] = document.encode("utf-8")
     return rendered
 
@@ -689,6 +731,7 @@ def assemble_release(
         raise ReleaseBuildError("release input scan found known secret or local path: {}".format(findings))
     renderer = bootstrap_renderer or _default_bootstrap_renderer
     phase_a_source = (root / "scripts" / "release_artifact.py").read_bytes()
+    resolver_source = (root / "scripts" / "release_resolver.py").read_bytes()
     archive_name = "dev-flow-orchestrator-{}.tar.gz".format(version)
     try:
         output_dir.mkdir(parents=False, exist_ok=False)
@@ -783,10 +826,17 @@ def assemble_release(
                 index_sha256=index_digest,
                 phase_a_source=phase_a_source,
             )
+            universal = render_universal_assets(
+                resolver_source,
+                repository=artifact.CANONICAL_REPOSITORY,
+                schema=resolver.RESOLVER_SCHEMA,
+            )
             if not isinstance(install_sh, bytes) or not isinstance(install_ps1, bytes):
                 raise ReleaseBuildError("bootstrap renderer must return bytes")
-            (output_dir / "install.sh").write_bytes(install_sh)
-            (output_dir / "install.ps1").write_bytes(install_ps1)
+            (output_dir / "install-{}.sh".format(version)).write_bytes(install_sh)
+            (output_dir / "install-{}.ps1".format(version)).write_bytes(install_ps1)
+            (output_dir / "install.sh").write_bytes(universal["install.sh"])
+            (output_dir / "install.ps1").write_bytes(universal["install.ps1"])
             with tempfile.TemporaryDirectory(prefix="dev-flow-release-verify-") as verify_name:
                 verified_index = artifact.verify_release_index_bytes(
                     index_raw,
@@ -807,8 +857,10 @@ def assemble_release(
                 "lock": hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest(),
                 "plugin": _aggregate_digest(entries, "plugin"),
                 "lifecycle": _aggregate_digest(entries, "lifecycle"),
-                "install_sh": hashlib.sha256(install_sh).hexdigest(),
-                "install_ps1": hashlib.sha256(install_ps1).hexdigest(),
+                "install_sh": hashlib.sha256(universal["install.sh"]).hexdigest(),
+                "install_ps1": hashlib.sha256(universal["install.ps1"]).hexdigest(),
+                "install_versioned_sh": hashlib.sha256(install_sh).hexdigest(),
+                "install_versioned_ps1": hashlib.sha256(install_ps1).hexdigest(),
             }
             return {
                 "ok": True,
@@ -818,7 +870,14 @@ def assemble_release(
                 "release_id": verified["release_id"],
                 "plugin_release_id": plugin_seal["release_id"],
                 "output_dir": str(output_dir),
-                "assets": [archive_name, "release-index.json", "install.sh", "install.ps1"],
+                "assets": [
+                    archive_name,
+                    "release-index.json",
+                    "install.sh",
+                    "install.ps1",
+                    "install-{}.sh".format(version),
+                    "install-{}.ps1".format(version),
+                ],
                 "manifest": manifest,
                 "component_digests": component_digests,
             }

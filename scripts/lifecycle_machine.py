@@ -178,6 +178,15 @@ class LifecycleMachine:
         recovered: list[str] = []
         with self.state.lock(timeout_seconds=self.lock_timeout_seconds) as token:
             pending_transactions = self.state.non_terminal_transactions(token)
+            # A versioned activation machine must never classify or bypass a
+            # transaction owned by another lifecycle driver.  In particular,
+            # only the matching installed reinstall command may authorize its
+            # own data-removal journal while it invokes Phase B.
+            if any(
+                snapshot.journal.operation not in ACTIVATION_OPERATIONS
+                for snapshot in pending_transactions
+            ):
+                self.state.require_no_non_terminal(token)
             if len(pending_transactions) > 1:
                 for pending in pending_transactions:
                     self.state.finish_transaction(

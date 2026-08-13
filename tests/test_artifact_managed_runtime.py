@@ -263,7 +263,9 @@ class ArtifactCandidateBuildTests(unittest.TestCase):
             for name in (
                 "manage_runtime.py",
                 "release_artifact.py",
+                "release_commands.py",
                 "release_lifecycle.py",
+                "release_resolver.py",
                 "runtime_integrity.py",
                 "validate_installed_stage1.py",
                 "lifecycle_state.py",

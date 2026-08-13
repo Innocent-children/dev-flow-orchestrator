@@ -202,9 +202,34 @@ class UninstallDriverTests(unittest.TestCase):
             "stable_dispatcher.py": b"# stable dispatcher\n",
             "lifecycle_state.py": (ROOT / "scripts/lifecycle_state.py").read_bytes(),
             "uninstall_driver.py": b"# copied removal driver\n",
+            "release_commands.py": b"# release commands\n",
+            "release_resolver.py": b"# release resolver\n",
         }
         for name, raw in lifecycle_payloads.items():
             (self.lifecycle / name).write_bytes(raw)
+
+        self.data_root = self.base / "task data root's 保留"
+        self.data_root.mkdir()
+        (self.data_root / "0.4.0").mkdir()
+        self.task_file = self.data_root / "0.4.0" / "tasks.json"
+        self.task_file.write_text('{"task":"keep"}\n', encoding="utf-8")
+        (self.data_root / "web-runtime").mkdir()
+        (self.data_root / "web-runtime" / "server.log").write_text(
+            "web log\n", encoding="utf-8"
+        )
+        marker = {
+            "schema": "dev-flow-data-ownership/1.0.0",
+            "product": uninstall_driver.PLUGIN_NAME,
+            "data_root": str(self.data_root),
+            "namespace": uninstall_driver.DATA_NAMESPACE,
+            "web_runtime": uninstall_driver.WEB_RUNTIME_DIR,
+        }
+        _json(self.data_root / uninstall_driver.DATA_MARKER_NAME, marker)
+        self.data_before = {
+            str(path.relative_to(self.data_root)): path.read_bytes()
+            for path in sorted(self.data_root.rglob("*"))
+            if path.is_file()
+        }
 
         suffix = ".cmd" if os.name == "nt" else ""
         self.dispatcher_payloads = {
@@ -255,6 +280,12 @@ class UninstallDriverTests(unittest.TestCase):
                 "lifecycle_state_sha256": _sha(
                     lifecycle_payloads["lifecycle_state.py"]
                 ),
+                "release_commands_sha256": _sha(
+                    lifecycle_payloads["release_commands.py"]
+                ),
+                "release_resolver_sha256": _sha(
+                    lifecycle_payloads["release_resolver.py"]
+                ),
                 "dispatchers": {
                     name: _sha(raw)
                     for name, raw in sorted(self.dispatcher_payloads.items())
@@ -263,6 +294,13 @@ class UninstallDriverTests(unittest.TestCase):
                 "marketplace_file": str(self.marketplace),
                 "codex_home": str(self.codex_home),
                 "plugin_id": uninstall_driver.PLUGIN_ID,
+                "runtime_root": str(self.runtime),
+                "data_root": str(self.data_root),
+                "data_owned_paths": [
+                    uninstall_driver.DATA_NAMESPACE,
+                    uninstall_driver.WEB_RUNTIME_DIR,
+                ],
+                "data_marker_name": uninstall_driver.DATA_MARKER_NAME,
             },
         )
         self.evidence, observed_installation = uninstall_driver.load_installation(
@@ -432,8 +470,15 @@ class UninstallDriverTests(unittest.TestCase):
             self.unrelated_launcher,
             self.standalone_mcp,
             self.temp_sentinel,
+            self.data_root,
         ):
             self.assertTrue(preserved.exists(), str(preserved))
+        data_after = {
+            str(path.relative_to(self.data_root)): path.read_bytes()
+            for path in sorted(self.data_root.rglob("*"))
+            if path.is_file()
+        }
+        self.assertEqual(data_after, self.data_before)
         self.assertEqual(self._terminal().outcome, "committed")
 
     def test_interruption_after_release_removal_resumes_same_journal(self) -> None:
@@ -459,6 +504,35 @@ class UninstallDriverTests(unittest.TestCase):
         self.assertEqual(result.transaction_id, "uninstall-test")
         self.assertEqual(result.outcome, "committed")
         self.assertEqual(self._terminal().outcome, "committed")
+
+    def test_uninstall_preserves_pending_reinstall_for_its_own_driver(self) -> None:
+        transaction_id = "reinstall-" + "a" * 32
+        backup = self.base / "pending reinstall backup"
+        backup.mkdir()
+        with self.state.lock() as token:
+            current = self.state.read_active(token)
+            self.state.create_transaction(
+                token,
+                lifecycle_state.TransactionJournal(
+                    transaction_id=transaction_id,
+                    operation="reinstall",
+                    expected_active=self.state.expectation(current),
+                    target_release=None,
+                    previous_authority=current.record,
+                    phase="removing_data",
+                    owned_paths=(str(backup),),
+                ),
+            )
+        host = FakeHost(self.evidence)
+        result = self._driver(host).run()
+        self.assertEqual(result.outcome, "partial")
+        self.assertEqual(result.transaction_id, transaction_id)
+        self.assertEqual(host.events, [])
+        self.assertIn(str(backup), result.retained_paths)
+        with self.state.lock() as token:
+            pending = self.state.read_transaction(token, transaction_id).journal
+        self.assertIsNone(pending.outcome)
+        self.assertEqual(pending.phase, "removing_data")
 
     def test_interruption_after_cli_mcp_removal_rechecks_that_phase(self) -> None:
         host = FakeHost(self.evidence)
@@ -487,6 +561,8 @@ class UninstallDriverTests(unittest.TestCase):
             "stable_dispatcher.py": (ROOT / "scripts/stable_dispatcher.py").read_bytes(),
             "lifecycle_state.py": (ROOT / "scripts/lifecycle_state.py").read_bytes(),
             "uninstall_driver.py": (ROOT / "scripts/uninstall_driver.py").read_bytes(),
+            "release_commands.py": (ROOT / "scripts/release_commands.py").read_bytes(),
+            "release_resolver.py": (ROOT / "scripts/release_resolver.py").read_bytes(),
         }
         for name, raw in lifecycle_payloads.items():
             (self.lifecycle / name).write_bytes(raw)
@@ -509,6 +585,12 @@ class UninstallDriverTests(unittest.TestCase):
                 "lifecycle_state_sha256": _sha(
                     lifecycle_payloads["lifecycle_state.py"]
                 ),
+                "release_commands_sha256": _sha(
+                    lifecycle_payloads["release_commands.py"]
+                ),
+                "release_resolver_sha256": _sha(
+                    lifecycle_payloads["release_resolver.py"]
+                ),
                 "dispatchers": {
                     name: _sha(raw) for name, raw in sorted(rendered.items())
                 },
@@ -516,6 +598,13 @@ class UninstallDriverTests(unittest.TestCase):
                 "marketplace_file": str(self.marketplace),
                 "codex_home": str(self.codex_home),
                 "plugin_id": uninstall_driver.PLUGIN_ID,
+                "runtime_root": str(self.runtime),
+                "data_root": str(self.data_root),
+                "data_owned_paths": [
+                    uninstall_driver.DATA_NAMESPACE,
+                    uninstall_driver.WEB_RUNTIME_DIR,
+                ],
+                "data_marker_name": uninstall_driver.DATA_MARKER_NAME,
             },
         )
         lifecycle_evidence, _ = uninstall_driver.load_installation(

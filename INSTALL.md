@@ -2,17 +2,12 @@
 
 [Simplified Chinese](INSTALL_CN.md)
 
-This guide describes the versioned release-artifact lifecycle for release
-`0.6.8`. It installs the formal `dev-flow` Codex Skill as a bundled plugin and
-the local STDIO MCP server without cloning or retaining this repository. The
-persisted Controller model and task-data namespace remain `0.4.0`.
+This guide describes the release-artifact lifecycle for release `0.6.9`. It
+installs the formal `dev-flow` Codex Skill as a bundled plugin and the local
+STDIO MCP server without cloning or retaining this repository. The persisted
+Controller model and task-data namespace remain `0.4.0`.
 
 ## 1. Supported installation and registration mode
-
-Use the `install.sh` or `install.ps1` asset attached to the exact GitHub Release
-you selected. Do not invoke an installer from a repository checkout or set
-`DEV_FLOW_SOURCE_ROOT`; checkout-driven lifecycle invocation is rejected before
-product mutation.
 
 Bundled personal-marketplace plugin/Skill/MCP installation is the only
 supported registration mode. `.codex-plugin/plugin.json` registers the Skill
@@ -45,35 +40,59 @@ production uses an exact clean Git tag, but no checkout becomes installed
 authority. User-selected installation roots may contain spaces, apostrophes,
 and Unicode.
 
-## 3. Exact-version installation
+## 3. One-line first installation
 
-On macOS, download the bootstrap from the selected version-specific release
-location, inspect it if required by local policy, and execute that downloaded
-asset:
+The first-install entry accepts exactly one version argument:
+
+- `MAJOR.MINOR.PATCH` installs that exact official Release; or
+- `latest` dynamically selects the latest official (non-draft, non-prerelease)
+  Release of the canonical GitHub repository at execution time.
+
+On macOS:
 
 ```sh
-VERSION=0.6.8
-INSTALLER="${TMPDIR:-/tmp}/dev-flow-install-${VERSION}.sh"
-curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
-  -o "$INSTALLER"
-sh "$INSTALLER"
+(installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" latest)
+```
+
+To pin an exact version, pass it instead of `latest`:
+
+```sh
+(installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" 0.6.9)
 ```
 
 On native Windows:
 
 ```powershell
-$Version = '0.6.8'
-$Installer = Join-Path $env:TEMP "dev-flow-install-$Version.ps1"
-Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `
-  -OutFile $Installer
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$p=Join-Path ([IO.Path]::GetTempPath()) ("dev-flow-install-"+[guid]::NewGuid().ToString("N")+".ps1"); $status=1; try { Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.ps1" -OutFile $p; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p latest; $status=$LASTEXITCODE } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }; exit $status'
 ```
 
-A `latest` download route may help a user choose a release, but the bootstrap
-itself is version matched. After execution it constructs only URLs under
-`releases/download/v<version>/`; there is no production repository, mirror, or
-origin override.
+Replace `latest` with `0.6.9` (or another published `MAJOR.MINOR.PATCH`) to pin
+an exact version.
+
+The entry rejects any other version syntax, including prefixes, ranges,
+whitespace, and prerelease suffixes, before downloading anything. For `latest`
+it reads only the canonical GitHub repository's official release listing over
+HTTPS and requires a `vMAJOR.MINOR.PATCH` tag whose Release carries both
+versioned bootstrap assets; drafts and prereleases are never selected. It then
+downloads that Release's version-matched bootstrap
+(`install-<version>.sh` / `install-<version>.ps1`) from the exact
+`https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v<version>/`
+HTTPS locator and executes it, so both the exact and the dynamic path enter the
+same versioned Phase A and Phase B verification. No product state is modified before the versioned bootstrap
+completes its downloads and validation: an invalid version, a missing Release,
+or a download failure exits non-zero with the local installation untouched.
+Only the canonical repository, its release API, and the official GitHub HTTPS
+release delivery hosts are used; mirrors and arbitrary download URLs are
+refused.
+
+The version-matched bootstrap pins the canonical repository, version, archive
+name, and `release-index.json` digest and embeds the standard-library Phase A
+verifier described below. Forwarded options stay inside the closed Phase B
+destination set (`--runtime-root`, `--bin-dir`, `--marketplace-file`,
+`--codex-home`, `--data-root`, `--lock-timeout`). Downloading
+`install.sh`/`install.ps1` from a version-specific release locator and running
+it with the exact matching version is also supported, but the one-line entry
+above is the documented surface.
 
 ## 4. Release assets and Phase A verification
 
@@ -81,8 +100,9 @@ Each `MAJOR.MINOR.PATCH` release publishes this one identity-matched set:
 
 - `dev-flow-orchestrator-<version>.tar.gz`;
 - `release-index.json`;
-- `install.sh`;
-- `install.ps1`.
+- `install.sh` and `install.ps1` (the version-agnostic first-install entries);
+- `install-<version>.sh` and `install-<version>.ps1` (the version-matched
+  bootstraps).
 
 The platform-neutral archive contains one top-level directory with the complete
 sealed `plugin/**` tree, exactly one
@@ -94,9 +114,10 @@ assets, and installed-validation assets. The manifest inventories every
 descendant except itself; `release-index.json` pins the manifest's original
 UTF-8 bytes.
 
-Both bootstraps embed byte-identical standard-library Phase A verifier code.
-Before any artifact helper, artifact import, artifact subprocess, dependency
-installation, candidate construction, or product-state mutation, Phase A:
+Both version-matched bootstraps embed byte-identical standard-library Phase A
+verifier code. Before any artifact helper, artifact import, artifact
+subprocess, dependency installation, candidate construction, or product-state
+mutation, Phase A:
 
 1. downloads the index under a fixed hard cap and verifies the digest embedded
    in the bootstrap before JSON parsing;
@@ -137,20 +158,25 @@ installing the wheel, or executing another helper.
 ## 5. Trust boundary
 
 The bootstrap bytes chosen by the user, the canonical GitHub repository and
-its release publication permissions, HTTPS/TLS and GitHub delivery, supported
-system Python, the platform downloader, `uv`, Codex, and local account and
+its release publication permissions, HTTPS/TLS and GitHub delivery, the
+canonical repository's release listing used by `latest`, supported system
+Python, the platform downloader, `uv`, Codex, and local account and
 filesystem permissions form the initial trust boundary.
 
-The bootstrap fixes repository, version, archive name, index digest, and
-bootstrap schema. SHA-256 establishes that acquired and extracted bytes match
-the bytes pinned by the bootstrap, index, and manifest. It detects corruption,
-partial replacement, and cross-release mixing. SHA-256 is not an independent
-digital signature or an absolute proof of publication authenticity. It does
-not prove that the GitHub account was never compromised or defend against an
-attacker that can replace all of one user's bootstrap, active record,
-dispatchers, verifier, and managed runtime coherently. Source commit and tree
-values are publication assertions checked and recorded by the release builder;
-the end-user installer does not reconstruct them from a checkout.
+The version-matched bootstrap fixes repository, version, archive name, index
+digest, and bootstrap schema. SHA-256 establishes that acquired and extracted
+bytes match the bytes pinned by the bootstrap, index, and manifest. It detects
+corruption, partial replacement, and cross-release mixing. The dynamic
+`latest` path additionally trusts the canonical repository's official release
+listing to name the current Release; the Release it names is then held to the
+same pinned Phase A and Phase B verification as an exact version. SHA-256 is
+not an independent digital signature or an absolute proof of publication
+authenticity. It does not prove that the GitHub account was never compromised
+or defend against an attacker that can replace all of one user's bootstrap,
+active record, dispatchers, verifier, and managed runtime coherently. Source
+commit and tree values are publication assertions checked and recorded by the
+release builder; the end-user installer does not reconstruct them from a
+checkout.
 
 This release does not add signing, Sigstore, transparency-log verification,
 third-party mirrors, or offline fresh installation.
@@ -173,7 +199,10 @@ Within the selected absolute runtime root:
 - `releases/<release-id>/` contains each managed release;
 - `active.json` is the only local selector of the active release;
 - `transactions/` contains bounded durable lifecycle journals;
-- `lifecycle/` contains stable installation support;
+- `lifecycle/` contains stable installation support, including the update and
+  reinstall command driver and the shared release resolver;
+- `reinstall-command-guard/lifecycle.lock` serializes parent reinstall drivers
+  while their child bootstrap uses the installation lock;
 - `lifecycle.lock` is the installation-wide lock.
 
 The exact `release-id` includes the version and verified release identity; do
@@ -188,6 +217,17 @@ monotonic generation, release ID, contained absolute release path, receipt
 digest, dispatcher protocol, and committing transaction ID. Launchers,
 marketplace data, receipts, and helpers do not compete with it as active
 selectors.
+
+The closed installation record in `lifecycle/installation.json` is the
+digest-pinned evidence every lifecycle command verifies before running. It
+records the actual runtime root, dispatcher directory, Codex home, personal
+marketplace file, Controller task-data root, the Dev Flow-owned data entry
+names under that root, and the digests of all stable lifecycle support files.
+Upgrade, uninstall, and reinstall derive their exact paths from this evidence,
+so a custom data root chosen at install time is honored by every later
+lifecycle command. The frozen immediate predecessor may migrate once to this
+expanded evidence schema only when its record, stable support, and dispatchers
+all match their pinned identities; drift or older layouts are preserved.
 
 The product owns three small stable dispatchers in the selected writable PATH
 directory:
@@ -211,11 +251,14 @@ Controller task data remains in the Codex plugin data root under namespace
 
 ## 7. Activation, locking, and terminal outcomes
 
-Fresh install, repair, upgrade, migration, recovery, and uninstall share one
-installation-wide lifecycle lock. Each command acquires it before reading
-active or transaction authority and holds it until a durable terminal outcome.
-Each operation creates or resumes one bounded journal. Active creation,
-replacement, restoration, and deletion use expected generation plus
+Fresh install, repair, upgrade, reinstall, migration, recovery, and uninstall
+share one installation-wide lifecycle lock for authority reads and mutations.
+Reinstall releases it while the child bootstrap acquires the same lock; its
+pending journal blocks unrelated operations, an independent operation guard
+excludes a second reinstall driver, and only the child carrying the exact
+matching transaction authorization may proceed. Each operation creates or
+resumes one bounded journal. Active
+creation, replacement, restoration, and deletion use expected generation plus
 active-record-digest compare-and-swap; generations increase monotonically.
 
 Candidate activation follows this order:
@@ -240,19 +283,37 @@ Every lifecycle result is one of:
 No command reports success with an in-progress journal, disagreed plugin or
 marketplace state, or an unclassified provisional effect.
 
-## 8. Repair, upgrade, rollback, and recovery
+## 8. Update, repair, and recovery
 
-Repair reruns the bootstrap matching the installed version. For release
-`0.6.8`, use the exact same commands from Section 3 with `VERSION=0.6.8`.
-A healthy release is reused only after complete startup, receipt, ownership,
-and installed-content attestation. Any drift builds a new candidate from the
+`dev-flow update` upgrades the current installation to the latest official
+Release:
+
+```sh
+dev-flow update
+```
+
+The command is recognized by the stable dispatcher before the active release is
+resolved, so it remains executable when the active release cannot start. It
+resolves the latest official Release with the same shared version and
+canonical-download rules as first installation, then runs that Release's
+versioned bootstrap with the exact paths recorded in the installation evidence.
+The existing lifecycle lock, transaction journal, artifact verification,
+staged health, active CAS, public proof, and rollback machinery handle the
+upgrade, including repair-rebuilding a damaged active release whose receipt
+identity is still provable. Even when the active release is already latest,
+Phase B reruns complete runtime, installed-content, public-startup, and stable-
+infrastructure attestation. A healthy release is reused without rebuilding or
+replacing it; there is no receipt-only success shortcut. Resolution failure, a missing Release, or a download
+failure exits non-zero before any product state changes; an unrecoverable
+installation is reported as `partial`, never as success.
+
+Repair of a drifted same-version installation reuses the same machinery: run
+the first-install entry with the installed version (Section 3). A healthy
+release is reused only after complete startup, receipt, ownership, and
+installed-content attestation. Any drift builds a new candidate from the
 reacquired and reverified same-version artifact. If that version's remote
 index, archive, or manifest digest differs from the active receipt, repair
 fails with a same-version identity-change error.
-
-Upgrade runs the target version's bootstrap. For example, set `VERSION` or
-`$Version` in Section 3 to the desired `MAJOR.MINOR.PATCH`; do not run the old
-version's lifecycle helper to acquire the target.
 
 Rollback is automatic and limited to the immediate previous authority during
 the unsettled activation transaction. Failure before active commit restores
@@ -325,7 +386,10 @@ dev-flow-uninstall
 The command needs neither network access nor a repository checkout. It verifies
 stable installation evidence, copies and verifies a minimal standard-library
 removal driver outside the managed runtime, acquires the same lifecycle lock,
-and creates or resumes a durable uninstall transaction.
+and creates or resumes a durable uninstall transaction. It is dispatched before
+active-release resolution, so it still runs when the active release cannot
+start; unprovable content is then retained and reported instead of being
+deleted.
 
 Uninstall compare-and-removes only exact product-owned plugin state, the Dev
 Flow personal-marketplace member, managed-release entries, active record,
@@ -334,21 +398,64 @@ dispatcher and lifecycle support are removed last, and no product mutation
 occurs after lock removal. An interrupted run can resume or classify its
 journal without the removed runtime.
 
-Changed, unknown, concurrent, linked, reparse, special, or unprovable content
-is retained and reported by exact path. Uninstall preserves Controller task
-data, unrelated marketplace and plugin entries, unrelated launchers,
-standalone MCP registrations, and every legacy checkout. It never broadens into
-a recursive delete to force completion.
+Uninstall preserves all Dev Flow user data: Controller tasks and history,
+state, evidence, lock files, Web UI runtime state and logs, and the data-root
+ownership marker stay exactly where they were. Changed, unknown, concurrent,
+linked, reparse, special, or unprovable content is retained and reported by
+exact path. Uninstall also preserves unrelated marketplace and plugin entries,
+unrelated launchers, standalone MCP registrations, and every legacy checkout.
+It never broadens into a recursive delete to force completion.
 
-## 12. Troubleshooting and evidence limits
+## 12. Reinstall with full data reset
 
-- `DEV_FLOW_SOURCE_ROOT is not supported`: unset it and run the exact-version
-  release bootstrap, not a checkout script.
+`dev-flow reinstall` clears all Dev Flow-owned user data and installs the
+latest official Release:
+
+```sh
+dev-flow reinstall
+```
+
+Like `update`, it is dispatched before active-release resolution and always
+targets the latest official Release with the same canonical resolution and
+download rules. It uses the installation-wide lifecycle lock and one durable
+`reinstall` transaction.
+
+The cleanup is strictly limited to the recorded task-data root from the
+digest-pinned installation evidence, and only to entries provably owned by Dev
+Flow inside it: the Controller `0.4.0` namespace (tasks, history, state,
+evidence, and lock files), the `web-runtime` directory (state and logs), and
+the data-root ownership marker. The data root is first proven to contain only
+those owned top-level entries, with no links, reparse points, special files,
+unbounded inventory, or unknown content; anything else preserves the entire
+data root and reports `partial`. The proven data is moved to a
+transaction-owned backup with a digest-inventoried manifest, the target
+Release is installed through its versioned bootstrap, and only a committed
+install whose reported active identity still matches the lock-protected active
+authority deletes the backup exactly. If the install fails or is interrupted,
+the previous data bytes are verified and restored when exact rollback remains
+provable; incomplete restoration, cleanup, or active-identity proof ends as
+`partial` with exact retained paths and a non-zero exit. An interrupted
+reinstall resumes from its journal instead of starting a second removal, and a
+second concurrent reinstall driver cannot claim that journal.
+
+User repositories, worktrees, Git data, source checkouts, unrelated plugin
+data, and every other user file are never part of reinstall removal. Stop
+Dev Flow processes (for example `dev-flow web stop`) before reinstalling so
+the data move is not contended; a contended or unprovable move fails safely
+and reports what was retained.
+
+## 13. Troubleshooting and evidence limits
+
+- `DEV_FLOW_SOURCE_ROOT is not supported`: unset it and run the official
+  install entry, not a checkout script.
+- a first-install version, resolution, or download error: stop. No product
+  state was modified; pass a published `MAJOR.MINOR.PATCH` or `latest`.
 - a Phase A digest, inventory, path, tar, or resource-limit error: stop; do not
-  execute extracted helpers or adopt staging. Re-download the exact release
+  execute extracted helpers or adopt staging. Re-download the release
   bootstrap and asset set from the canonical release page.
-- startup attestation failure: rerun the bootstrap matching the active version;
-  do not substitute a different same-version digest envelope.
+- startup attestation failure: run `dev-flow update`, or rerun the first-install
+  entry with the installed version; do not substitute a different same-version
+  digest envelope.
 - lifecycle lock or non-terminal transaction: let the command perform bounded
   recovery. If it reports `partial`, preserve the listed paths and observations
   and follow the exact recovery guidance before another lifecycle mutation.
@@ -359,8 +466,9 @@ a recursive delete to force completion.
 Native Windows final-artifact validation must run on native Windows x64. Static
 PowerShell analysis, simulated adapters, macOS, WSL, or Wine are not native
 Windows evidence. Release-candidate plugin read-back, bundled Skill discovery,
-STDIO MCP startup, and uninstall must use a real Codex host. Promotion evidence
-requires permission to publish all four final assets and re-download them from
-their exact official version-specific locators. When those environments or
-permissions are unavailable, record the gate as unverified; never infer it from
-unit tests, deterministic fakes, or another platform.
+STDIO MCP startup, uninstall, update, and reinstall must use a real Codex host.
+Promotion evidence requires permission to publish all six final assets and
+re-download them from their exact official version-specific locators. When
+those environments or permissions are unavailable, record the gate as
+unverified; never infer it from unit tests, deterministic fakes, or another
+platform.

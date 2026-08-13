@@ -28,7 +28,7 @@ six mutation tools, the existing CLI, and the local read-only Web UI. The Skill
 provides activation and routing; the Controller retains all transition,
 repository, binding, assurance, review, and Delivery Dossier authority.
 
-## Release 0.6.8 delivery: hardened versioned release artifacts
+## Release 0.6.9 delivery: hardened versioned release artifacts
 
 Installed delivery is moving from a permanently retained source checkout to an
 exact-version GitHub Release asset set:
@@ -38,10 +38,16 @@ exact-version GitHub Release asset set:
   versioned lifecycle helpers, and an embedded manifest;
 - one closed `release-index.json` binding the repository, version, source
   commit/tree publication assertions, archive, and raw manifest digest;
-- version-matched `install.sh` and `install.ps1` bootstraps embedding identical
-  standard-library Phase A verification;
+- version-agnostic `install.sh` and `install.ps1` first-install entries that
+  accept `MAJOR.MINOR.PATCH` or `latest`, resolve `latest` only from the
+  canonical repository's official release listing, and then run the selected
+  Release's version-matched `install-<version>.sh` / `install-<version>.ps1`
+  bootstrap, which embeds identical standard-library Phase A verification;
 - managed releases selected only by one active record, with stable
-  `dev-flow`, `dev-flow-mcp`, and `dev-flow-uninstall` dispatchers;
+  `dev-flow`, `dev-flow-mcp`, and `dev-flow-uninstall` dispatchers plus
+  dispatcher-recognized `dev-flow update` and `dev-flow reinstall` lifecycle
+  commands that resolve the latest official Release and share the install
+  version grammar and canonical HTTPS download rules;
 - one installation-wide lifecycle lock, monotonic generation and digest CAS,
   bounded transaction journals, and only `committed`, `rolled_back`, or
   `partial` terminal outcomes;
@@ -64,26 +70,39 @@ and cancellation semantics used by POSIX. Promotion keeps uploads in a
 journaled Draft Release until authenticated official-API re-download and full
 component verification succeed.
 
+Installation evidence records the actual runtime root, dispatcher directory,
+Codex home, marketplace file, task-data root, and Dev Flow-owned data paths;
+upgrade, uninstall, and reinstall derive their paths from that digest-pinned
+evidence. `dev-flow update` is idempotent on the latest version and repair-
+capable when the active release cannot start. `dev-flow uninstall` preserves
+all Dev Flow user data. `dev-flow reinstall` clears only ownership-proven Dev
+Flow task data under a durable transaction with a digest-verified backup,
+exact restore on failure, and `partial` classification for unprovable
+content.
+
 The lifecycle preserves `.codex-plugin/plugin.json`, `.mcp.json`, the bundled
 `skills/dev-flow/**`, `dev-flow-mcp --stdio`, the Controller model, MCP tools and
 schemas, plugin ID, personal-marketplace mode, task data, unrelated Codex state,
 unknown content, and every legacy checkout.
 
 SHA-256 proves agreement with bytes pinned by the bootstrap, index, and
-manifest. It is not an independent signature or a claim that GitHub release
+manifest; the `latest` path additionally trusts the canonical repository's
+official release listing, whose selection is then held to the same pinned
+verification. It is not an independent signature or a claim that GitHub release
 publication can never be compromised. Source commit and tree values are release
 builder assertions; end-user installation does not reconstruct provenance from
 a checkout.
 
 ## Completion evidence
 
-The release-artifact change is complete only after all four final assets are
+The release-artifact change is complete only after all six final assets are
 built and re-downloaded from their exact official version-specific locators and
 all applicable repository checks pass. The bounded final-artifact journey must
 run once on native macOS and once on native Windows 10 22H2 x64 or Windows 11
-x64, covering fresh install,
-healthy and drift repair, successful upgrade, failed-activation rollback,
-interrupted recovery, startup, predecessor migration, uninstall, and task-data
+x64, covering fresh install from an exact version and from `latest`,
+healthy and drift repair, successful upgrade through `dev-flow update`,
+idempotent up-to-date update, failed-activation rollback, interrupted
+recovery, reinstall data clearing and rollback, uninstall, and task-data
 preservation.
 
 Supported Python 3.10–3.14 receives lightweight wheel-only install and

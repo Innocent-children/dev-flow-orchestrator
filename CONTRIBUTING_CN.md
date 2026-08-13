@@ -110,23 +110,39 @@ manifest、完整 inventory 和 topology，之后才能执行任何 artifact cod
 测试必须明确证明该 gate。SHA-256 证明固定字节一致性；绝不能将其描述为独立签名或
 绝对 source authenticity。
 
+`install.sh`/`install.ps1` 首次安装入口与已安装的 `dev-flow update`、
+`dev-flow reinstall` 命令共享同一个标准库 release resolver：严格的
+`MAJOR.MINOR.PATCH` 或 `latest` 语法、仅规范仓库的 HTTPS 主机、拒绝 draft 与
+prerelease 的正式 Release 过滤器，并且只从规范的 `releases/download/v<version>/`
+地址下载版本化 bootstrap。精确版本与 `latest` 安装都必须进入所选 Release 的版本化
+bootstrap，并在版本无效、Release 不存在或下载失败时于任何产品 mutation 之前以非零
+状态退出。
+
 Phase B 安装精确、要求 hash 且仅 wheel 的依赖和随附项目 wheel，不执行 sdist backend。
 Candidate health 必须先于 host activation。Active record 仍是本地唯一 release selector；
 普通 repair、upgrade 或自动 rollback 不替换稳定 `dev-flow`、`dev-flow-mcp` 和
 `dev-flow-uninstall` dispatcher。
 
-Fresh install、repair、upgrade、migration、recovery 与 uninstall 共用一把
+Fresh install、repair、upgrade、reinstall、migration、recovery 与 uninstall 共用一把
 installation-wide lock、有界 journal、单调 generation 与 generation-plus-digest CAS。
 每个 operation 必须终结为 `committed`、`rolled_back` 或 `partial`。不得在 journal
 未终结时让命令成功，也不得扩大删除范围以把不确定状态伪装成干净状态。
+
+安装证据必须记录实际使用的 runtime root、dispatcher 目录、Codex home、marketplace
+文件、任务数据根目录与 Dev Flow 自有数据路径；升级、卸载与重装都从这份 digest
+固定证据推导路径。`dev-flow update` 在已是最新版本时幂等，并在 active release 无法
+启动时仍然可执行。`dev-flow uninstall` 完整保留所有 Dev Flow 用户数据。
+`dev-flow reinstall` 只在所有权可证明时，在持久事务内清空 Dev Flow 自有任务数据，
+保留 digest 验证备份、失败或中断时精确恢复，无法证明的内容被分类为 `partial`。
 
 POSIX bootstrap 测试面向 macOS。PowerShell 保持 PowerShell 5.1 兼容、literal-path
 处理、x64 检查、安全的原生 reparse 行为，并且不依赖 POSIX。跨平台生命周期语义应
 成对维护，但不得照搬平台专属机制或把静态等价性当成原生证据。
 
-有界 final artifact journey 在原生 macOS 和原生 Windows 上各运行一次，覆盖 fresh
-install、healthy/drift repair、upgrade、failed-activation rollback、interrupted
-recovery、startup、predecessor migration、uninstall 与 task-data preservation。
+有界 final artifact journey 在原生 macOS 和原生 Windows 上各运行一次，覆盖精确版本与
+`latest` 的 fresh install、healthy/drift repair、通过 `dev-flow update` 的 upgrade、
+已是最新版本时的幂等 update、failed-activation rollback、interrupted recovery、
+reinstall 数据清空与回滚、uninstall 与 task-data preservation。
 Release-candidate evidence 使用真实 Codex host 验证 plugin read-back、bundled Skill
 discovery、`dev-flow-mcp --stdio` 与 uninstall。普通开发使用 deterministic fake。
 

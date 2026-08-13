@@ -72,6 +72,8 @@ def artifact_fixture(
         "runtime_integrity.py",
         "validate_installed_stage1.py",
         "release_artifact.py",
+        "release_commands.py",
+        "release_resolver.py",
         "lifecycle_state.py",
         "lifecycle_machine.py",
         "legacy_migration.py",

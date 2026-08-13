@@ -235,6 +235,7 @@ def _preimport_candidate_errors(root: Path) -> list[str]:
             "partial",
         ),
         "scripts/release_lifecycle.py": (
+            "dev-flow-lifecycle-installation/2.0.0",
             "dev-flow-lifecycle-installation/1.0.0",
             "dev-flow-uninstall",
             "build_artifact_candidate",
@@ -731,6 +732,7 @@ EXTERNAL_VERSION_LITERALS = {
     ),
     "scripts/release_lifecycle.py": (
         "v3 release",
+        "dev-flow-lifecycle-installation/2.0.0",
         "dev-flow-lifecycle-installation/1.0.0",
         "dev-flow-infrastructure-backup/1.0.0",
         "dev-flow-managed-runtime/1",
@@ -742,7 +744,7 @@ EXTERNAL_VERSION_LITERALS = {
     "scripts/stable_dispatcher.py": (
         "dev-flow-active-release/1.0.0",
         "dev-flow-runtime-receipt/3.0.0",
-        "dev-flow-lifecycle-installation/1.0.0",
+        "dev-flow-lifecycle-installation/2.0.0",
         "dev-flow-dispatcher/1.0.0",
     ),
     "scripts/legacy_migration.py": (
@@ -758,7 +760,7 @@ EXTERNAL_VERSION_LITERALS = {
     "scripts/uninstall_driver.py": (
         "_RECEIPT_" + "V" + "2_FIELDS",
         "_RECEIPT_" + "V" + "3_FIELDS",
-        "dev-flow-lifecycle-installation/1.0.0",
+        "dev-flow-lifecycle-installation/2.0.0",
         "dev-flow-dispatcher/1.0.0",
         "dev-flow-runtime-ownership/1.0.0",
         "dev-flow-runtime-receipt/2.0.0",
@@ -800,6 +802,7 @@ EXTERNAL_VERSION_LITERALS = {
         "dev-flow-active-generation/1.0.0",
         "dev-flow-dispatcher/1.0.0",
         "dev-flow-dispatcher/2.0.0",
+        "dev-flow-lifecycle-installation/2.0.0",
         "dev-flow-lifecycle-installation/1.0.0",
         "dev-flow-lifecycle-transaction/1.0.0",
         "dev-flow-infrastructure-backup/1.0.0",
@@ -1081,12 +1084,16 @@ def _without_external_version_literals(relative: str, document: str) -> str:
         "dev-flow-active-release/1.0.0",
         "dev-flow-active-generation/1.0.0",
         "dev-flow-dispatcher/1.0.0",
+        "dev-flow-lifecycle-installation/2.0.0",
         "dev-flow-lifecycle-installation/1.0.0",
         "dev-flow-lifecycle-transaction/1.0.0",
         "dev-flow-infrastructure-backup/1.0.0",
         "dev-flow-stable-dispatchers/1.0.0",
         "dev-flow-legacy-predecessor-fixture/1.0.0",
         "dev-flow-proven-predecessor/1.0.0",
+        "dev-flow-release-resolver/1.0.0",
+        "dev-flow-data-ownership/1.0.0",
+        "dev-flow-reinstall-backup/1.0.0",
     ):
         document = document.replace(literal, "<external-version>")
     return document
@@ -3179,10 +3186,18 @@ def _validate_public_docs(root: Path, errors: list[str]) -> None:
     lifecycle = (root / "scripts/release_lifecycle.py").read_text(encoding="utf-8") if (root / "scripts/release_lifecycle.py").is_file() else ""
     integrity = (root / "scripts/runtime_integrity.py").read_text(encoding="utf-8") if (root / "scripts/runtime_integrity.py").is_file() else ""
     _require_tokens(
-        install_ps,
+        (root / "scripts/install-versioned.ps1").read_text(encoding="utf-8")
+        if (root / "scripts/install-versioned.ps1").is_file()
+        else "",
         ("@DEV_FLOW_RELEASE_VERSION@", "@DEV_FLOW_INDEX_SHA256@", "@DEV_FLOW_PHASE_A_B64@"),
         errors,
         "Windows release bootstrap template is incomplete",
+    )
+    _require_tokens(
+        install_ps,
+        ("@DEV_FLOW_RESOLVER_B64@", "MAJOR.MINOR.PATCH|latest", "--requested"),
+        errors,
+        "Windows first-install entry is incomplete",
     )
     _require_tokens(
         dispatcher,
@@ -3397,6 +3412,13 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
     required_tokens = {
         "scripts/install.ps1": (
             "Set-StrictMode -Version Latest",
+            "@DEV_FLOW_RESOLVER_B64@",
+            "@DEV_FLOW_REPOSITORY@",
+            "DEV_FLOW_SOURCE_ROOT is not supported",
+            "-I -S $ResolverPath install",
+        ),
+        "scripts/install-versioned.ps1": (
+            "Set-StrictMode -Version Latest",
             "@DEV_FLOW_RELEASE_VERSION@",
             "@DEV_FLOW_INDEX_SHA256@",
             "@DEV_FLOW_PHASE_A_B64@",
@@ -3441,14 +3463,15 @@ def _validate_windows_product_integration(root: Path, errors: list[str]) -> None
             errors,
             "scripts/uninstall.ps1 retains the checkout-era KeepSource interface",
         )
-    windows_installer = root / "scripts" / "install.ps1"
-    if windows_installer.is_file():
-        source = windows_installer.read_text(encoding="utf-8")
-        _check(
-            not re.search(r"(?i)\\bgit(?:\\.exe)?\\b|refs/heads|--ff-only", source),
-            errors,
-            "scripts/install.ps1 depends on a Git checkout",
-        )
+    for relative in ("scripts/install.ps1", "scripts/install-versioned.ps1"):
+        installer_path = root / relative
+        if installer_path.is_file():
+            source = installer_path.read_text(encoding="utf-8")
+            _check(
+                not re.search(r"(?i)\bgit(?:\.exe)?\b|refs/heads|--ff-only", source),
+                errors,
+                relative + " depends on a Git checkout",
+            )
     document_tokens = {
         "README.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "unverified"),
         "README_CN.md": ("Windows 10 22H2 x64", "Windows 11 x64", "MCP", "未验证"),
@@ -3799,11 +3822,30 @@ def _validate_current_candidate(root: Path) -> dict:
     _validate_mcp_package(root, errors)
     _validate_package_versions(root, manifest, errors)
     installer = root / "scripts" / "install.sh"
+    versioned = root / "scripts" / "install-versioned.sh"
     uninstaller = root / "scripts" / "uninstall.sh"
     if installer.is_file():
         installer_source = installer.read_text(encoding="utf-8")
         _require_tokens(
             installer_source,
+            (
+                '@DEV_FLOW_RESOLVER_B64@',
+                'MAJOR.MINOR.PATCH|latest',
+                'DEV_FLOW_SOURCE_ROOT is not supported',
+                '-I -S "$resolver_path" install',
+            ),
+            errors,
+            "POSIX first-install entry does not preserve the canonical resolver boundary",
+        )
+        _check(
+            re.search(r"(?i)\\bgit\\b|refs/heads|--ff-only", installer_source) is None,
+            errors,
+            "scripts/install.sh depends on a Git checkout",
+        )
+    if versioned.is_file():
+        versioned_source = versioned.read_text(encoding="utf-8")
+        _require_tokens(
+            versioned_source,
             (
                 '@DEV_FLOW_RELEASE_VERSION@',
                 '@DEV_FLOW_INDEX_SHA256@',
@@ -3815,9 +3857,9 @@ def _validate_current_candidate(root: Path) -> dict:
             "POSIX bootstrap template does not preserve the pinned Phase A boundary",
         )
         _check(
-            re.search(r"(?i)\\bgit\\b|refs/heads|--ff-only", installer_source) is None,
+            re.search(r"(?i)\\bgit\\b|refs/heads|--ff-only", versioned_source) is None,
             errors,
-            "scripts/install.sh depends on a Git checkout",
+            "scripts/install-versioned.sh depends on a Git checkout",
         )
     if uninstaller.is_file():
         uninstaller_source = uninstaller.read_text(encoding="utf-8")

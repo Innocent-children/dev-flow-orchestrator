@@ -48,7 +48,7 @@ MAX_JSON_DEPTH = 12
 
 TERMINAL_OUTCOMES = frozenset({"committed", "rolled_back", "partial"})
 OPERATIONS = frozenset(
-    {"install", "repair", "upgrade", "migration", "recovery", "uninstall"}
+    {"install", "repair", "upgrade", "migration", "recovery", "uninstall", "reinstall"}
 )
 NON_TERMINAL_PHASES = frozenset(
     {
@@ -60,6 +60,7 @@ NON_TERMINAL_PHASES = frozenset(
         "public_proof",
         "restoring",
         "removing_host_state",
+        "removing_data",
         "removing_releases",
         "active_removed",
         "removing_dispatchers",
@@ -76,6 +77,7 @@ _PHASE_TRANSITIONS = {
     "created": {
         "candidate_ready",
         "removing_host_state",
+        "removing_data",
         "recovering",
         TERMINAL_PHASE,
     },
@@ -110,6 +112,7 @@ _PHASE_TRANSITIONS = {
         "recovering",
         TERMINAL_PHASE,
     },
+    "removing_data": {"recovering", TERMINAL_PHASE},
     "removing_releases": {"active_removed", "recovering", TERMINAL_PHASE},
     "active_removed": {"removing_dispatchers", "recovering", TERMINAL_PHASE},
     "removing_dispatchers": {
@@ -1225,7 +1228,10 @@ class LifecycleState:
         )
 
     def require_no_non_terminal(
-        self, token: _LockToken, *, except_transaction_id: Optional[str] = None
+        self,
+        token: _LockToken,
+        *,
+        except_transaction_id: Optional[str] = None,
     ) -> None:
         unresolved = [
             snapshot.journal.transaction_id

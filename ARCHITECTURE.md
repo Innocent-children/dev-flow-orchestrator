@@ -4,7 +4,7 @@
 
 ## Product identities
 
-Release `0.6.8` bundles a formal Codex Skill named `dev-flow` alongside the MCP
+Release `0.6.9` bundles a formal Codex Skill named `dev-flow` alongside the MCP
 interface without changing persisted model identity. `MODEL_VERSION`, the
 task-data namespace, workflows, policies, bindings, records, findings,
 snapshots, and Delivery Dossiers remain `0.4.0`.
@@ -147,20 +147,33 @@ loop replays mutations automatically.
 
 End-user lifecycle operations acquire version-addressed GitHub Release assets,
 not a source checkout. Each version publishes one platform-neutral archive,
-one closed `release-index.json`, and version-matched `install.sh` and
-`install.ps1` bootstraps. The archive contains the complete sealed plugin tree,
-one pure-Python project wheel, hash-locked `runtime-requirements.txt`, its
-`uv.lock`, versioned lifecycle helpers, and an embedded closed manifest. The
-manifest inventories every descendant except itself; the external index hashes
-the manifest's original UTF-8 bytes.
+one closed `release-index.json`, version-agnostic `install.sh` and
+`install.ps1` first-install entries, and version-matched
+`install-<version>.sh` and `install-<version>.ps1` bootstraps. The archive
+contains the complete sealed plugin tree, one pure-Python project wheel,
+hash-locked `runtime-requirements.txt`, its `uv.lock`, versioned lifecycle
+helpers, and an embedded closed manifest. The manifest inventories every
+descendant except itself; the external index hashes the manifest's original
+UTF-8 bytes.
 
-The two bootstraps embed the same standard-library Phase A verifier. It checks
-the bootstrap-pinned index digest before parsing, then the closed index,
-archive size and digest, every tar header and portable ASCII member path, fixed
-resource caps, safe exclusive extraction, raw manifest digest, complete
-inventory, and static package topology. Links, reparse ancestors, special or
-sparse members, unsupported tar extensions, traversal, path collisions, and
-missing or undeclared members fail before extraction can become authority.
+The two version-matched bootstraps embed the same standard-library Phase A
+verifier. It checks the bootstrap-pinned index digest before parsing, then the
+closed index, archive size and digest, every tar header and portable ASCII
+member path, fixed resource caps, safe exclusive extraction, raw manifest
+digest, complete inventory, and static package topology. Links, reparse
+ancestors, special or sparse members, unsupported tar extensions, traversal,
+path collisions, and missing or undeclared members fail before extraction can
+become authority.
+
+The first-install entries share one standard-library release resolver with the
+installed `update` and `reinstall` commands: one strict `MAJOR.MINOR.PATCH` or
+`latest` grammar, canonical-repository-only HTTPS hosts, an official-release
+filter that rejects drafts and prereleases, and downloads only under the
+canonical `releases/download/v<version>/` locators. `latest` resolves through
+the canonical repository's official release listing, then the selected
+Release's version-matched bootstrap runs the same pinned Phase A and Phase B
+verification as an exact version. Invalid versions, missing Releases, and
+download failures exit non-zero before any product state changes.
 
 No artifact helper, artifact import, artifact subprocess, runtime authority,
 lifecycle state, dispatcher, marketplace, plugin, MCP, Codex state, active
@@ -169,12 +182,15 @@ completes. Acquisition staging is installer-owned temporary state and never an
 installed or rollback selector.
 
 The bootstrap is the first version-specific trust input and fixes the canonical
-repository, version, asset, and index digest. SHA-256 proves byte agreement
-between the bootstrap, index, archive, and manifest; it is not an independent
-signature or an absolute proof of publication authenticity. Source commit and
-tree are release-builder publication assertions. The design does not claim to
-resist coherent replacement of all same-user trust inputs and does not add
-signing, Sigstore, transparency logs, mirrors, or offline fresh installation.
+repository, version, asset, and index digest. The dynamic `latest` path
+depends on the canonical repository's release listing, which is bounded to
+official non-draft, non-prerelease Releases carrying both versioned bootstrap
+assets. SHA-256 proves byte agreement between the bootstrap, index, archive,
+and manifest; it is not an independent signature or an absolute proof of
+publication authenticity. Source commit and tree are release-builder
+publication assertions. The design does not claim to resist coherent
+replacement of all same-user trust inputs and does not add signing, Sigstore,
+transparency logs, mirrors, or offline fresh installation.
 
 ## Managed release and startup authority
 
@@ -221,20 +237,41 @@ upgrade, and automatic rollback do not replace them. CLI and MCP dispatchers
 validate the active schema, contained path, receipt digest, protocol, managed
 Python, and versioned verifier before invoking that verifier. The verifier
 attests complete installed content before project import or MCP initialization.
+`dev-flow update` and `dev-flow reinstall` are recognized by the same stable
+dispatcher before active release resolution; they verify the copied,
+digest-pinned command driver and run it outside the managed runtime, so both
+remain executable when the active release cannot start.
 
 The plugin manifest points to root `.mcp.json`, which declares one `dev-flow`
 server invoking `dev-flow-mcp --stdio`. The personal marketplace points only to
 the exact plugin root inside the active managed release, never to downloads,
 extraction, checkout, candidate staging, or a mutable shared plugin tree.
 
+The closed installation record in `lifecycle/installation.json` is
+digest-pinned evidence verified before every lifecycle command runs. It
+records the actual runtime root, dispatcher directory, Codex home, personal
+marketplace file, Controller task-data root, the Dev Flow-owned data entry
+names under that root, and digests for all stable support files. Upgrade,
+uninstall, and reinstall derive their exact paths from this evidence, so a
+custom data root chosen at install time is honored by every later lifecycle
+command. The small data-root ownership marker proves the recorded root and its
+owned names; reinstall verifies it (or the closed owned-name layout) before
+any data mutation. An exact, frozen immediate-predecessor installation record
+may be migrated once to this expanded evidence schema; changed support bytes or
+any other historical layout are retained instead of overwritten.
+
 ## Lifecycle state machine
 
-Fresh install, repair, upgrade, predecessor migration, recovery, and uninstall
-use one installation-wide lifecycle lock. The lock is acquired before reading
-active or transaction authority and remains held until a terminal outcome is
-durable. Active creation, replacement, restoration, and deletion use expected
-generation plus active-record-digest compare-and-swap. The monotonic generation
-prevents stale writers and `A -> B -> A` identity confusion.
+Fresh install, repair, upgrade, reinstall, predecessor migration, recovery, and
+uninstall use one installation-wide lifecycle lock for every authority read and
+mutation. Reinstall cannot retain that lock while its child bootstrap acquires
+it, so its durable pending journal blocks unrelated operations and a separate
+operation guard prevents concurrent reinstall drivers. Only the child carrying
+the exact matching reinstall transaction authorization may proceed past that
+journal. Active creation, replacement, restoration, and deletion
+use expected generation plus active-record-digest compare-and-swap. The
+monotonic generation prevents stale writers and `A -> B -> A` identity
+confusion.
 
 Each operation creates or resumes a bounded transaction journal containing the
 operation and transaction ID, expected active state, target and previous
@@ -257,6 +294,23 @@ new verified same-version candidate. A different index, archive, or manifest
 digest for the same version is rejected rather than adopted. Upgrade always
 runs the target version's bootstrap.
 
+`dev-flow update` resolves the latest official Release with the shared resolver
+and runs its versioned bootstrap with the recorded paths. When the active
+release is already the latest version, Phase B still performs complete runtime,
+installed-content, public-startup, and stable-infrastructure attestation. A
+healthy release is reused without rebuilding or replacing it; a damaged release
+whose receipt identity survives is repair-rebuilt, and an unprovable state is
+reported as `partial`, never success. `dev-flow reinstall` runs one durable `reinstall`
+transaction: it proves the data root contains only Dev Flow-owned entries
+(Controller `0.4.0` namespace, `web-runtime`, and the ownership marker), moves
+them to a digest-inventoried transaction backup, installs the latest Release
+through its versioned bootstrap, and deletes the backup only after a committed
+install. Failure or interruption restores the previous data bytes when exact
+rollback can be proven; otherwise it retains both authorities and classifies
+the transaction `partial`. Activation journals pending before data removal are
+recovered first. During installation, only the transaction-matched child may
+bypass that reinstall journal; every unrelated activation is refused.
+
 ## Migration and uninstall boundaries
 
 Migration accepts only the frozen installed observations of the immediately
@@ -277,7 +331,14 @@ occurs after lock removal.
 
 Controller task data, the model namespace, unrelated marketplace and plugin
 state, unrelated launchers, standalone MCP registrations, and every legacy
-checkout are outside installation ownership and uninstall removal.
+checkout are outside installation ownership and uninstall removal. Uninstall
+also preserves all Dev Flow user data, including tasks, history, evidence,
+locks, Web UI runtime state and logs, and the data-root ownership marker. Only
+`dev-flow reinstall` clears Dev Flow-owned task data, and only inside the
+recorded data root with ownership proven, exact rollback, and `partial`
+classification for anything unprovable. User repositories, worktrees, Git
+data, checkouts, and unrelated plugin data are never part of reinstall
+removal.
 
 ## Security and residual boundary
 

@@ -26,10 +26,14 @@ class VersionedWindowsProductContractTests(unittest.TestCase):
 
     def test_powershell_template_has_no_checkout_or_source_retention_interface(self) -> None:
         install = (ROOT / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        versioned = (ROOT / "scripts" / "install-versioned.ps1").read_text(encoding="utf-8")
         uninstall = (ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
-        self.assertIn("@DEV_FLOW_INDEX_SHA256@", install)
-        self.assertIn("@DEV_FLOW_PHASE_A_B64@", install)
+        self.assertIn("@DEV_FLOW_RESOLVER_B64@", install)
+        self.assertIn("MAJOR.MINOR.PATCH|latest", install)
         self.assertIn("DEV_FLOW_SOURCE_ROOT is not supported", install)
+        self.assertIn("@DEV_FLOW_INDEX_SHA256@", versioned)
+        self.assertIn("@DEV_FLOW_PHASE_A_B64@", versioned)
+        self.assertIn("DEV_FLOW_SOURCE_ROOT is not supported", versioned)
         self.assertIn("dev-flow-uninstall", uninstall)
         for obsolete in (
             "refs/heads/$RepositoryRef",
@@ -38,7 +42,7 @@ class VersionedWindowsProductContractTests(unittest.TestCase):
             "[switch]$KeepSource",
             "[switch]$RemoveSource",
         ):
-            self.assertNotIn(obsolete, install + uninstall)
+            self.assertNotIn(obsolete, install + versioned + uninstall)
 
     def test_native_dispatcher_names_are_closed_and_source_independent(self) -> None:
         renderer = (ROOT / "scripts" / "render_dispatchers.py").read_text(

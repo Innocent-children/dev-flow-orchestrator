@@ -209,8 +209,8 @@ class ReleaseBuilderTests(unittest.TestCase):
             index_sha256=index_digest,
             version=VERSION,
         )
-        shell = assets["install.sh"].decode()
-        powershell = assets["install.ps1"].decode()
+        shell = assets["install-{}.sh".format(VERSION)].decode()
+        powershell = assets["install-{}.ps1".format(VERSION)].decode()
         shell_encoded = re.search(
             r"DEV_FLOW_PHASE_A_B64='([A-Za-z0-9+/=]+)'", shell
         )
@@ -602,6 +602,8 @@ class PromotionTests(unittest.TestCase):
                     "lifecycle",
                     "install_sh",
                     "install_ps1",
+                    "install_versioned_sh",
+                    "install_versioned_ps1",
                 },
             )
             self.assertEqual(
@@ -625,7 +627,7 @@ class PromotionTests(unittest.TestCase):
                 index for index, event in enumerate(api.events) if event.startswith("download:")
             ]
             publish_position = api.events.index("publish")
-            self.assertEqual(len(download_positions), 4)
+            self.assertEqual(len(download_positions), 6)
             self.assertTrue(all(position < publish_position for position in download_positions))
             self.assertTrue(
                 all(api.events[position].endswith(":draft") for position in download_positions)

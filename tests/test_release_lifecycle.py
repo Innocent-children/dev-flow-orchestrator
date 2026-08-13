@@ -69,7 +69,13 @@ class ReleaseLifecycleTests(unittest.TestCase):
         artifact = self.root / "artifact" / "dev-flow-orchestrator-0.6.0"
         lifecycle = artifact / "lifecycle"
         lifecycle.mkdir(parents=True)
-        for name in ("stable_dispatcher.py", "lifecycle_state.py", "uninstall_driver.py"):
+        for name in (
+            "stable_dispatcher.py",
+            "lifecycle_state.py",
+            "uninstall_driver.py",
+            "release_commands.py",
+            "release_resolver.py",
+        ):
             (lifecycle / name).write_bytes((ROOT / "scripts" / name).read_bytes())
         index_path = self.root / "download" / "release-index.json"
         index_path.parent.mkdir()
@@ -211,6 +217,114 @@ class ReleaseLifecycleTests(unittest.TestCase):
             {"dev-flow", "dev-flow-mcp", "dev-flow-uninstall"},
         )
         self.assertEqual(evidence["codex_home"], str(paths.codex_home))
+
+    @unittest.skipIf(os.name == "nt", "POSIX predecessor mode fixture")
+    def test_exact_predecessor_infrastructure_migrates_transactionally(self) -> None:
+        paths = self._paths()
+        manager = release_lifecycle.InfrastructureManager(paths)
+        desired = manager._sources()
+        manager.lifecycle_root.mkdir(parents=True)
+        predecessor = {
+            "stable_dispatcher.py": b"predecessor stable dispatcher\n",
+            "lifecycle_state.py": b"predecessor lifecycle state\n",
+            "uninstall_driver.py": b"predecessor uninstall driver\n",
+        }
+        predecessor_digests = {
+            name: hashlib.sha256(raw).hexdigest()
+            for name, raw in predecessor.items()
+        }
+        for name, raw in predecessor.items():
+            path = manager.lifecycle_root / name
+            path.write_bytes(raw)
+            path.chmod(0o600)
+        dispatcher_digests = {}
+        for name in manager.dispatcher_names:
+            path = paths.bin_dir / name
+            path.write_bytes(desired[path])
+            path.chmod(0o755)
+            dispatcher_digests[name] = hashlib.sha256(desired[path]).hexdigest()
+        old_evidence = {
+            "schema": release_lifecycle.PREDECESSOR_INSTALLATION_SCHEMA,
+            "dispatcher_protocol": lifecycle_state.DISPATCHER_PROTOCOL,
+            "uninstall_driver_sha256": predecessor_digests["uninstall_driver.py"],
+            "stable_dispatcher_sha256": predecessor_digests["stable_dispatcher.py"],
+            "lifecycle_state_sha256": predecessor_digests["lifecycle_state.py"],
+            "dispatchers": dispatcher_digests,
+            "bin_dir": str(paths.bin_dir),
+            "marketplace_file": str(paths.marketplace_file),
+            "codex_home": str(paths.codex_home),
+            "plugin_id": release_lifecycle.PLUGIN_ID,
+        }
+        evidence_path = manager.lifecycle_root / "installation.json"
+        evidence_path.write_bytes(release_lifecycle._canonical_bytes(old_evidence))
+        evidence_path.chmod(0o600)
+
+        with mock.patch.object(
+            release_lifecycle,
+            "PREDECESSOR_SUPPORT_SHA256",
+            predecessor_digests,
+        ):
+            owned = manager.ensure("tx-predecessor-upgrade", "upgrade")
+        self.assertEqual(len(owned), 1)
+        migrated = json.loads(evidence_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema"], release_lifecycle.INSTALLATION_SCHEMA)
+        self.assertEqual(migrated["data_root"], str(paths.data_root))
+
+        self.assertEqual(manager.rollback("tx-predecessor-upgrade"), ())
+        self.assertEqual(
+            json.loads(evidence_path.read_text(encoding="utf-8")), old_evidence
+        )
+        for name, raw in predecessor.items():
+            self.assertEqual((manager.lifecycle_root / name).read_bytes(), raw)
+
+    @unittest.skipIf(os.name == "nt", "POSIX predecessor mode fixture")
+    def test_drifted_predecessor_support_is_not_migrated(self) -> None:
+        paths = self._paths()
+        manager = release_lifecycle.InfrastructureManager(paths)
+        desired = manager._sources()
+        manager.lifecycle_root.mkdir(parents=True)
+        predecessor = {
+            "stable_dispatcher.py": b"expected stable\n",
+            "lifecycle_state.py": b"expected state\n",
+            "uninstall_driver.py": b"expected uninstall\n",
+        }
+        digests = {
+            name: hashlib.sha256(raw).hexdigest()
+            for name, raw in predecessor.items()
+        }
+        for name, raw in predecessor.items():
+            path = manager.lifecycle_root / name
+            path.write_bytes(raw)
+            path.chmod(0o600)
+        (manager.lifecycle_root / "stable_dispatcher.py").write_bytes(b"drifted\n")
+        dispatchers = {}
+        for name in manager.dispatcher_names:
+            path = paths.bin_dir / name
+            path.write_bytes(desired[path])
+            path.chmod(0o755)
+            dispatchers[name] = hashlib.sha256(desired[path]).hexdigest()
+        evidence = {
+            "schema": release_lifecycle.PREDECESSOR_INSTALLATION_SCHEMA,
+            "dispatcher_protocol": lifecycle_state.DISPATCHER_PROTOCOL,
+            "uninstall_driver_sha256": digests["uninstall_driver.py"],
+            "stable_dispatcher_sha256": digests["stable_dispatcher.py"],
+            "lifecycle_state_sha256": digests["lifecycle_state.py"],
+            "dispatchers": dispatchers,
+            "bin_dir": str(paths.bin_dir),
+            "marketplace_file": str(paths.marketplace_file),
+            "codex_home": str(paths.codex_home),
+            "plugin_id": release_lifecycle.PLUGIN_ID,
+        }
+        evidence_path = manager.lifecycle_root / "installation.json"
+        evidence_path.write_bytes(release_lifecycle._canonical_bytes(evidence))
+        evidence_path.chmod(0o600)
+        with mock.patch.object(
+            release_lifecycle, "PREDECESSOR_SUPPORT_SHA256", digests
+        ):
+            with self.assertRaisesRegex(
+                release_lifecycle.ReleaseLifecycleError, "not proven product-owned"
+            ):
+                manager.ensure("tx-drifted-predecessor", "upgrade")
 
     @unittest.skipIf(os.name == "nt", "POSIX infrastructure mode fixture")
     def test_active_reuse_requires_exact_stable_infrastructure(self) -> None:
@@ -555,7 +669,9 @@ class ReleaseLifecycleTests(unittest.TestCase):
             def non_terminal_transactions(self, token):
                 return ()
 
-            def require_no_non_terminal(self, token):
+            def require_no_non_terminal(
+                self, token, *, except_transaction_id=None
+            ):
                 events.append("journals-clear")
 
             def read_active(self, token):
@@ -603,6 +719,64 @@ class ReleaseLifecycleTests(unittest.TestCase):
                 "lock-released",
             ],
         )
+
+    def test_auto_driver_only_bypasses_its_matching_reinstall_journal(self) -> None:
+        paths = self._paths()
+        releases = paths.runtime_root / "releases"
+        releases.mkdir()
+        state = lifecycle_state.LifecycleState(paths.runtime_root, releases)
+        transaction_id = "reinstall-" + "a" * 32
+        with state.lock() as token:
+            active = state.read_active(token)
+            state.create_transaction(
+                token,
+                lifecycle_state.TransactionJournal(
+                    transaction_id=transaction_id,
+                    operation="reinstall",
+                    expected_active=state.expectation(active),
+                    target_release=None,
+                    previous_authority=None,
+                    phase="removing_data",
+                ),
+            )
+
+        class FakeMachine:
+            lock_timeout_seconds = 7.0
+
+            def __init__(self):
+                self.state = state
+
+            def _run_locked(self, token, request):
+                return SimpleNamespace(
+                    transaction_id=request.transaction_id,
+                    outcome="committed",
+                    active=self.state.read_active(token),
+                    reused=False,
+                    detail=None,
+                )
+
+        identity = release_lifecycle.IndexIdentity(
+            "0.6.0", "a" * 64, "b" * 64, "c" * 64, _index()
+        )
+        candidates = SimpleNamespace(
+            index=identity,
+            active_version=lambda active: None,
+        )
+        host = SimpleNamespace(product_present=lambda: False)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(release_lifecycle.REINSTALL_TRANSACTION_ENV, None)
+            with self.assertRaises(lifecycle_state.UnresolvedTransactionError):
+                release_lifecycle.run_locked_auto(
+                    FakeMachine(), candidates, host, paths, identity
+                )
+        with mock.patch.dict(
+            os.environ,
+            {release_lifecycle.REINSTALL_TRANSACTION_ENV: transaction_id},
+        ):
+            result = release_lifecycle.run_locked_auto(
+                FakeMachine(), candidates, host, paths, identity
+            )
+        self.assertEqual(result.outcome, "committed")
 
     @unittest.skipIf(os.name == "nt", "POSIX public dispatcher fixture")
     def test_public_proof_uses_real_cli_and_mcp_dispatcher_paths(self) -> None:

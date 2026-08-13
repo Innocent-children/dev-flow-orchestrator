@@ -61,8 +61,11 @@ jobs:
           tests.test_lifecycle_state
           tests.test_lifecycle_machine
           tests.test_release_lifecycle
+          tests.test_release_resolver
+          tests.test_release_commands
           tests.test_render_dispatchers
           tests.test_stable_dispatcher
+          tests.test_install_script
           tests.test_legacy_migration
           tests.test_uninstall_driver
           tests.test_windows_lifecycle

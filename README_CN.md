@@ -3,7 +3,7 @@
 [English](README.md)
 
 Dev Flow Orchestrator 让跨一个至八个用户预先准备的 Git 工作树的长期 Codex
-开发任务保持可恢复、上下文有界且可验证。`0.6.8` 版本捆绑名为 `dev-flow` 的正式
+开发任务保持可恢复、上下文有界且可验证。`0.6.9` 版本捆绑名为 `dev-flow` 的正式
 Codex Skill 和本地 STDIO MCP 服务器，同时保留持久化 `0.4.0` 模型与任务数据
 命名空间。
 
@@ -20,36 +20,50 @@ Windows 客户端是原生 Windows 10 22H2 x64 与 Windows 11 x64。Git 不是�
 目标仓库仍需提供一至八个现有且由用户预先准备的 Git 工作树根目录，因为它们是产品
 所控制的工作对象。
 
-下载并运行所选精确版本所附带的 bootstrap：
+下载并运行首次安装入口，使用 `latest` 或精确的 `MAJOR.MINOR.PATCH`（如
+`0.6.9`）：
 
 ```sh
-VERSION=0.6.8
-curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
-  -o /tmp/dev-flow-install.sh
-sh /tmp/dev-flow-install.sh
+(installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" latest)
 ```
 
-在原生 Windows 上，下载同一版本的 `install.ps1` 资产，并从 PowerShell 5.1 或
+在原生 Windows 上，下载同一入口的 `install.ps1` 资产，并从 PowerShell 5.1 或
 PowerShell 7 运行：
 
 ```powershell
-$Version = '0.6.8'
-$Installer = Join-Path $env:TEMP 'dev-flow-install.ps1'
-Invoke-WebRequest -UseBasicParsing `
-  -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `
-  -OutFile $Installer
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$p=Join-Path ([IO.Path]::GetTempPath()) ("dev-flow-install-"+[guid]::NewGuid().ToString("N")+".ps1"); $status=1; try { Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.ps1" -OutFile $p; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p latest; $status=$LASTEXITCODE } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }; exit $status'
 ```
 
-版本匹配的 bootstrap 会固定规范仓库、版本、制品名称和 `release-index.json`
-digest。在执行任何制品代码或修改任何产品状态之前，其内嵌的标准库 Phase A verifier
-会检查 index、archive、tar member、内嵌 manifest 的原始字节、完整 inventory、资源
-限制和所需包拓扑。随后 Phase B 使用随附的 pure-Python wheel 与哈希锁定、仅 wheel
-依赖构建隔离的 managed release，运行 staged health，并以事务方式激活。它会在
-密封插件快照中保留 Skill。整个过程不创建或保留源码 checkout。
+首次安装入口在下载任何内容之前校验 `MAJOR.MINOR.PATCH` 或 `latest`；当版本无效、
+目标 Release 不存在或下载失败时，以非零状态退出且本地安装保持原样。`latest` 只通过
+HTTPS 读取规范 GitHub 仓库的官方 release listing，且绝不会选中 draft 或
+prerelease。两条路径都会下载并执行所选 Release 的版本匹配 bootstrap，后者固定规范
+仓库、版本、制品名称与 `release-index.json` digest。该 bootstrap 从精确的规范地址
+`https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v<version>/install-<version>.sh`
+下载（Windows 使用对应的 `.ps1` 资产）。在执行任何制品代码或修改任何产品状态之前，
+其内嵌的标准库 Phase A verifier 会检查 index、archive、tar member、
+内嵌 manifest 的原始字节、完整 inventory、资源限制和所需包拓扑。随后 Phase B 使用
+随附的 pure-Python wheel 与哈希锁定、仅 wheel 依赖构建隔离的 managed release，
+运行 staged health，并以事务方式激活。它会在密封插件快照中保留 Skill。整个过程
+不创建或保留源码 checkout。
 
-信任边界、修复、升级、激活失败自动回滚、迁移、终态、持久路径与源码无关卸载参见
-[INSTALL_CN.md](INSTALL_CN.md)。
+已安装的生命周期命令继续从 `PATH` 提供：
+
+```sh
+dev-flow update      # 升级到最新正式 Release（幂等）
+dev-flow uninstall   # 删除产品自有安装；完整保留所有用户数据
+dev-flow reinstall   # 清空 Dev Flow 自有任务数据，然后安装最新版本
+```
+
+`update` 与 `reinstall` 由稳定 dispatcher 在解析 active release 之前处理，因此
+active release 无法启动时仍然可以运行；它们始终选择最新正式 Release。`reinstall`
+只在证明所有权后删除安装证据记录的 Dev Flow 自有任务数据条目（Controller 任务、
+历史、状态、证据、锁、Web UI runtime 状态与日志），在安装 commit 之前保留带 digest
+验证的备份；失败或中断时只有仍可证明精确回滚才会恢复之前的数据，否则会保留证据
+并报告 `partial`。
+
+信任边界、一行安装命令、修复、升级、激活失败自动回滚、迁移、终态、持久路径、数据
+边界与源码无关卸载参见 [INSTALL_CN.md](INSTALL_CN.md)。
 
 安装后启动一个新的 Codex 任务，并显式调用 Skill：
 
@@ -85,7 +99,11 @@ release ID、contained 的绝对 managed-release path、receipt digest、dispatc
 protocol 和执行提交的 transaction ID。Runtime receipt 对完整已安装 release 做证明。
 产品自有的小型 `dev-flow`、`dev-flow-mcp` 和 `dev-flow-uninstall` dispatcher 在普通
 修复、升级与自动回滚期间保持稳定；版本化验证和生命周期代码位于每个 managed
-release 内。
+release 内。`dev-flow update` 与 `dev-flow reinstall` 由稳定 dispatcher 在解析
+active release 之前识别；它们与首次安装共享相同的版本语法和规范 HTTPS release
+下载规则。digest 固定的安装记录记录 runtime root、dispatcher 目录、Codex home、
+marketplace 文件、任务数据根目录和 Dev Flow 自有数据路径，之后的每个生命周期命令
+都从该证据推导自己的精确路径。
 
 每个 lifecycle operation 都持有同一把 installation-wide lock，并且只会以以下一种
 状态结束：
@@ -143,7 +161,9 @@ Dossier 标识。
 命名空间，也位于 managed release 与 lifecycle state 之外。实时下一动作捕获覆盖完整
 集合，并返回下一次 mutation 所需的精确 binding。从第二成员仓库发现任务会返回同一
 任务；多个活动声明造成的歧义会失败关闭。现有 0.4.x 任务无需状态迁移即可恢复。
-修复、升级、迁移和卸载都不会删除或修改 Controller task data。
+修复、升级、迁移和卸载都不会删除或修改 Controller task data。只有
+`dev-flow reinstall` 会清空 Dev Flow 自有任务数据，而且只在通过记录的 data root
+与 marker 证明所有权之后执行，失败时精确回滚。
 
 ## CLI 与只读 Web UI
 
@@ -161,12 +181,14 @@ Codex 的主要执行接口。
 
 ## 信任与证据边界
 
-规范 GitHub 仓库及其 Release 发布权限是 release provenance 的一部分。Bootstrap
-固定 repository、version、asset 和 index digest。SHA-256 证明下载到的字节与
-bootstrap、index 和 manifest 所固定的字节一致；它能检测损坏及跨 release 混用。
-SHA-256 不是独立数字签名，也不能证明 GitHub 账户从未被攻破。Source commit 与 tree
-值是 release builder 验证并记录的 publication assertion，而不是最终用户机器从
-checkout 重建的 source provenance。
+规范 GitHub 仓库及其 Release 发布权限是 release provenance 的一部分。版本匹配
+bootstrap 固定 repository、version、asset 和 index digest；`latest` 路径额外信任
+规范仓库的官方 release listing 来指出当前 Release，该 Release 随后接受与固定版本
+完全相同的 Phase A、Phase B 校验。SHA-256 证明下载到的字节与 bootstrap、index 和
+manifest 所固定的字节一致；它能检测损坏及跨 release 混用。SHA-256 不是独立数字
+签名，也不能证明 GitHub 账户从未被攻破。Source commit 与 tree 值是 release builder
+验证并记录的 publication assertion，而不是最终用户机器从 checkout 重建的 source
+provenance。
 
 此设计不声称能抵御可一致替换同一用户全部本地 trust input 的攻击者。它不增加签名、
 Sigstore、transparency log、third-party mirror、offline fresh install、更新 channel 或
