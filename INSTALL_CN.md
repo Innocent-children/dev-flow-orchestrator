@@ -2,7 +2,7 @@
 
 [English](INSTALL.md)
 
-本指南说明 `0.6.0` 版本的版本化 release artifact 生命周期。它无需克隆或保留本仓库，
+本指南说明 `0.6.6` 版本的版本化 release artifact 生命周期。它无需克隆或保留本仓库，
 即可把正式 `dev-flow` Codex Skill 作为 bundled plugin 安装，并安装本地 STDIO MCP
 服务器。持久化 Controller 模型和任务数据命名空间继续为 `0.4.0`。
 
@@ -45,7 +45,7 @@ Git tag，但任何 checkout 都不会成为已安装权威。用户选择的安
 检查，再执行该下载资产：
 
 ```sh
-VERSION=0.6.0
+VERSION=0.6.6
 INSTALLER="${TMPDIR:-/tmp}/dev-flow-install-${VERSION}.sh"
 curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
   -o "$INSTALLER"
@@ -55,7 +55,7 @@ sh "$INSTALLER"
 在原生 Windows 上：
 
 ```powershell
-$Version = '0.6.0'
+$Version = '0.6.6'
 $Installer = Join-Path $env:TEMP "dev-flow-install-$Version.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `
@@ -205,8 +205,8 @@ provisional effect 时报告成功。
 
 ## 8. 修复、升级、回滚与恢复
 
-Repair 重新运行与已安装版本匹配的 bootstrap。对于 `0.6.0`，使用第 3 节中完全相同
-的命令，并设置 `VERSION=0.6.0`。只有 complete startup、receipt、ownership 与
+Repair 重新运行与已安装版本匹配的 bootstrap。对于 `0.6.6`，使用第 3 节中完全相同
+的命令，并设置 `VERSION=0.6.6`。只有 complete startup、receipt、ownership 与
 installed-content attestation 都通过时才会复用健康 release。任一 drift 都会从重新
 获取并重新验证的同版本 artifact 构建新 candidate。若该版本远端 index、archive 或
 manifest digest 与 active receipt 不同，repair 会以 same-version identity-change 错误

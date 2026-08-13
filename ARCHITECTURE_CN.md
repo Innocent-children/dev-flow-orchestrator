@@ -4,7 +4,7 @@
 
 ## 产品身份
 
-`0.6.0` 在 MCP 接口旁捆绑名为 `dev-flow` 的正式 Codex Skill，但不改变持久化
+`0.6.6` 在 MCP 接口旁捆绑名为 `dev-flow` 的正式 Codex Skill，但不改变持久化
 模型身份。`MODEL_VERSION`、任务数据命名空间、workflow、policy、binding、record、
 finding、snapshot 和 Delivery Dossier 均保持 `0.4.0`。
 

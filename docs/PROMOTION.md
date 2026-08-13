@@ -25,7 +25,7 @@ rollback, migration, or uninstall.
 From the exact tagged source, build twice into two new empty directories:
 
 ```sh
-VERSION=0.6.0
+VERSION=0.6.6
 uv sync --locked
 uv run python scripts/build_release.py \
   --version "$VERSION" \
@@ -54,7 +54,7 @@ Run the contract checks once against the candidate:
 ```sh
 uv run python -m unittest tests.test_release_artifact tests.test_release_builder
 uv run python scripts/validate_package.py
-openspec validate install-versioned-release-artifact --strict
+uv run openspec validate --all --strict
 ```
 
 ## Native and real-host gates
@@ -89,7 +89,7 @@ With an authenticated `gh` session and explicit publication authority, create
 the release once and write the promotion record outside the repository:
 
 ```sh
-VERSION=0.6.0
+VERSION=0.6.6
 uv run python scripts/promote_release.py \
   --version "$VERSION" \
   --asset-dir "/tmp/dev-flow-release-$VERSION-a" \

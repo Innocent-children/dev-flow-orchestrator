@@ -23,7 +23,7 @@ controller：一个任务、一个当前 action 和一个 Codex executor。保�
 server、现有 CLI 和本地只读 Web UI。Skill 提供激活和路由；Controller 保留所有
 transition、repository、binding、assurance、review 与 Delivery Dossier 权威。
 
-## 0.6.0 交付：版本化 release artifact
+## 0.6.6 交付：版本化 release artifact
 
 Installed delivery 正从永久保留源码 checkout 转换为精确版本 GitHub Release 资产集：
 

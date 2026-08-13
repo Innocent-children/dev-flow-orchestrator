@@ -3,7 +3,7 @@
 [Simplified Chinese](INSTALL_CN.md)
 
 This guide describes the versioned release-artifact lifecycle for release
-`0.6.0`. It installs the formal `dev-flow` Codex Skill as a bundled plugin and
+`0.6.6`. It installs the formal `dev-flow` Codex Skill as a bundled plugin and
 the local STDIO MCP server without cloning or retaining this repository. The
 persisted Controller model and task-data namespace remain `0.4.0`.
 
@@ -52,7 +52,7 @@ location, inspect it if required by local policy, and execute that downloaded
 asset:
 
 ```sh
-VERSION=0.6.0
+VERSION=0.6.6
 INSTALLER="${TMPDIR:-/tmp}/dev-flow-install-${VERSION}.sh"
 curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
   -o "$INSTALLER"
@@ -62,7 +62,7 @@ sh "$INSTALLER"
 On native Windows:
 
 ```powershell
-$Version = '0.6.0'
+$Version = '0.6.6'
 $Installer = Join-Path $env:TEMP "dev-flow-install-$Version.ps1"
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `
@@ -233,7 +233,7 @@ marketplace state, or an unclassified provisional effect.
 ## 8. Repair, upgrade, rollback, and recovery
 
 Repair reruns the bootstrap matching the installed version. For release
-`0.6.0`, use the exact same commands from Section 3 with `VERSION=0.6.0`.
+`0.6.6`, use the exact same commands from Section 3 with `VERSION=0.6.6`.
 A healthy release is reused only after complete startup, receipt, ownership,
 and installed-content attestation. Any drift builds a new candidate from the
 reacquired and reverified same-version artifact. If that version's remote
