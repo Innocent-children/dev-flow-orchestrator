@@ -20,13 +20,31 @@ The clean tagged checkout is a release-builder input only. It is never shipped
 as installed authority and is not used by end-user install, repair, upgrade,
 rollback, migration, or uninstall.
 
+## One-command version update
+
+Set all checked-in current-release references to the next version with one
+command. The version is mandatory and must use `MAJOR.MINOR.PATCH` without a
+`v` prefix:
+
+```sh
+uv run python scripts/update_version.py --version 0.6.8
+```
+
+The updater synchronizes release metadata, English and Chinese public docs,
+promotion examples, installed-release acceptance, and exact release assertions.
+It fails if the current version appears in a tracked file outside that managed
+set and reports every changed path as JSON. Review and commit those changes
+before publishing. The publisher intentionally requires that committed, clean
+source so the tag, built assets, and GitHub Release all identify the same
+commit.
+
 ## One-command release
 
 After committing the version metadata and all intended source changes, run the
 one-command publisher from the repository. The version is mandatory:
 
 ```sh
-uv run python scripts/publish_release.py --version 0.6.7
+uv run python scripts/publish_release.py --version 0.6.8
 ```
 
 The publisher requires a clean tracked and untracked worktree, validates the
@@ -45,8 +63,8 @@ one:
 
 ```sh
 uv run python scripts/publish_release.py \
-  --version 0.6.7 \
-  --record /tmp/dev-flow-promotion-0.6.7.json
+  --version 0.6.8 \
+  --record /tmp/dev-flow-promotion-0.6.8.json
 ```
 
 The lower-level build and promotion commands below remain available for manual
@@ -57,7 +75,7 @@ evidence collection and recovery.
 From the exact tagged source, build twice into two new empty directories:
 
 ```sh
-VERSION=0.6.7
+VERSION=0.6.8
 uv sync --locked
 uv run python scripts/build_release.py \
   --version "$VERSION" \
@@ -121,7 +139,7 @@ With an authenticated `gh` session and explicit publication authority, run the
 journaled promotion outside the repository:
 
 ```sh
-VERSION=0.6.7
+VERSION=0.6.8
 uv run python scripts/promote_release.py \
   --version "$VERSION" \
   --asset-dir "/tmp/dev-flow-release-$VERSION-a" \

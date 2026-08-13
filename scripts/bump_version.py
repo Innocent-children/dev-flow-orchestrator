@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 from typing import Mapping, Optional, Sequence
 
@@ -23,6 +24,29 @@ PROJECT_VERSION = re.compile(
 LOCK_VERSION = re.compile(
     r'(?m)^(\[\[package\]\]\nname = "dev-flow-orchestrator"\nversion = ")(?P<version>[^"]+)(")'
 )
+CORE_RELEASE_FILES = (
+    "src/dev_flow_orchestrator/_version.py",
+    ".codex-plugin/plugin.json",
+    "pyproject.toml",
+    "uv.lock",
+)
+# Public English sources precede their synchronized Chinese translations.
+CURRENT_RELEASE_REFERENCE_FILES = (
+    "README.md",
+    "README_CN.md",
+    "ARCHITECTURE.md",
+    "ARCHITECTURE_CN.md",
+    "ROADMAP.md",
+    "ROADMAP_CN.md",
+    "INSTALL.md",
+    "INSTALL_CN.md",
+    "docs/PROMOTION.md",
+    "scripts/validate_installed_stage1.py",
+    "tests/test_installed_journeys.py",
+    "tests/test_mcp_runtime.py",
+    "tests/test_web_ui_product_identity.py",
+)
+MANAGED_RELEASE_FILES = CORE_RELEASE_FILES + CURRENT_RELEASE_REFERENCE_FILES
 
 
 class VersionError(RuntimeError):
@@ -50,7 +74,46 @@ def _read_release_version(root: Path) -> str:
     return value
 
 
-def _candidate_documents(root: Path, version: str) -> Mapping[Path, str]:
+def _tracked_release_reference_paths(root: Path, version: str) -> tuple[str, ...]:
+    if not (root / ".git").exists():
+        return ()
+    try:
+        completed = subprocess.run(
+            ["git", "grep", "-l", "-z", "-F", "-e", version, "--", "."],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise VersionError("tracked release reference lookup could not run") from exc
+    if completed.returncode not in (0, 1):
+        diagnostic = completed.stderr.strip()
+        suffix = ": " + diagnostic if diagnostic else ""
+        raise VersionError("tracked release reference lookup failed" + suffix)
+    return tuple(
+        Path(value).as_posix()
+        for value in completed.stdout.split("\0")
+        if value
+    )
+
+
+def _require_managed_release_references(root: Path, version: str) -> None:
+    observed = set(_tracked_release_reference_paths(root, version))
+    unmanaged = sorted(observed.difference(MANAGED_RELEASE_FILES))
+    if unmanaged:
+        raise VersionError(
+            "current release version occurs in unmanaged tracked files: {}".format(
+                ", ".join(unmanaged)
+            )
+        )
+
+
+def _candidate_documents(
+    root: Path,
+    current_version: str,
+    version: str,
+) -> Mapping[Path, str]:
     version_path = root / "src/dev_flow_orchestrator/_version.py"
     pyproject_path = root / "pyproject.toml"
     lock_path = root / "uv.lock"
@@ -62,12 +125,21 @@ def _candidate_documents(root: Path, version: str) -> Mapping[Path, str]:
     if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
         raise VersionError("plugin manifest version is invalid")
     manifest["version"] = version
-    return {
+    documents = {
         version_path: _replace_exact(version_document, VERSION_ASSIGNMENT, version, "_version.py"),
         pyproject_path: _replace_exact(pyproject, PROJECT_VERSION, version, "pyproject.toml"),
         lock_path: _replace_exact(lock, LOCK_VERSION, version, "uv.lock"),
         manifest_path: json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
     }
+    for relative in CURRENT_RELEASE_REFERENCE_FILES:
+        path = root / relative
+        document = path.read_text(encoding="utf-8")
+        if current_version not in document:
+            raise VersionError(
+                "{} must contain the current release version".format(relative)
+            )
+        documents[path] = document.replace(current_version, version)
+    return documents
 
 
 def _atomic_write(path: Path, document: str) -> None:
@@ -101,13 +173,26 @@ def validate_release_files(root: Path) -> str:
     }
     if any(value != release for value in normalized.values()):
         raise VersionError("release versions differ: {}".format(normalized))
+    missing_references = tuple(
+        relative
+        for relative in CURRENT_RELEASE_REFERENCE_FILES
+        if release not in (root / relative).read_text(encoding="utf-8")
+    )
+    if missing_references:
+        raise VersionError(
+            "current release version is missing from managed files: {}".format(
+                ", ".join(missing_references)
+            )
+        )
     return release
 
 
 def bump(root: Path, version: str) -> tuple[str, ...]:
     if SEMVER.fullmatch(version) is None:
         raise VersionError("release version must be MAJOR.MINOR.PATCH without a prefix")
-    documents = _candidate_documents(root, version)
+    current_version = validate_release_files(root)
+    _require_managed_release_references(root, current_version)
+    documents = _candidate_documents(root, current_version, version)
     changed = tuple(path for path, document in documents.items() if path.read_text(encoding="utf-8") != document)
     for path in changed:
         _atomic_write(path, documents[path])

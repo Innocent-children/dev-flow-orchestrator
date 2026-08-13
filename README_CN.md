@@ -3,7 +3,7 @@
 [English](README.md)
 
 Dev Flow Orchestrator 让跨一个至八个用户预先准备的 Git 工作树的长期 Codex
-开发任务保持可恢复、上下文有界且可验证。`0.6.7` 版本捆绑名为 `dev-flow` 的正式
+开发任务保持可恢复、上下文有界且可验证。`0.6.8` 版本捆绑名为 `dev-flow` 的正式
 Codex Skill 和本地 STDIO MCP 服务器，同时保留持久化 `0.4.0` 模型与任务数据
 命名空间。
 
@@ -23,7 +23,7 @@ Windows 客户端是原生 Windows 10 22H2 x64 与 Windows 11 x64。Git 不是�
 下载并运行所选精确版本所附带的 bootstrap：
 
 ```sh
-VERSION=0.6.7
+VERSION=0.6.8
 curl -fL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v${VERSION}/install.sh" \
   -o /tmp/dev-flow-install.sh
 sh /tmp/dev-flow-install.sh
@@ -33,7 +33,7 @@ sh /tmp/dev-flow-install.sh
 PowerShell 7 运行：
 
 ```powershell
-$Version = '0.6.7'
+$Version = '0.6.8'
 $Installer = Join-Path $env:TEMP 'dev-flow-install.ps1'
 Invoke-WebRequest -UseBasicParsing `
   -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/download/v$Version/install.ps1" `

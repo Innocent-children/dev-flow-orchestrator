@@ -4,7 +4,7 @@
 
 ## Product identities
 
-Release `0.6.7` bundles a formal Codex Skill named `dev-flow` alongside the MCP
+Release `0.6.8` bundles a formal Codex Skill named `dev-flow` alongside the MCP
 interface without changing persisted model identity. `MODEL_VERSION`, the
 task-data namespace, workflows, policies, bindings, records, findings,
 snapshots, and Delivery Dossiers remain `0.4.0`.

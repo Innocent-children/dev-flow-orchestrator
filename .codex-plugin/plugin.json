@@ -1,6 +1,6 @@
 {
   "name": "dev-flow-orchestrator",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "Keep Codex development tasks resumable, verifiable, and aligned across one to eight local Git repositories.",
   "author": {
     "name": "Innocent-children",

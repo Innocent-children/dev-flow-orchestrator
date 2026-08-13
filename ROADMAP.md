@@ -28,7 +28,7 @@ six mutation tools, the existing CLI, and the local read-only Web UI. The Skill
 provides activation and routing; the Controller retains all transition,
 repository, binding, assurance, review, and Delivery Dossier authority.
 
-## Release 0.6.7 delivery: hardened versioned release artifacts
+## Release 0.6.8 delivery: hardened versioned release artifacts
 
 Installed delivery is moving from a permanently retained source checkout to an
 exact-version GitHub Release asset set:

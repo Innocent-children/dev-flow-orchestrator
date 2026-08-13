@@ -1,6 +1,6 @@
 [project]
 name = "dev-flow-orchestrator"
-version = "0.6.7"
+version = "0.6.8"
 requires-python = ">=3.10,<3.15"
 dependencies = [
     "mcp>=2,<3",

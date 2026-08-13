@@ -307,7 +307,11 @@ def publish_release(
     version = artifact.validate_version(version)
     observed_version = bump_version.validate_release_files(root)
     if observed_version != version:
-        raise PublishReleaseError("requested version differs from release metadata")
+        raise PublishReleaseError(
+            "requested version differs from release metadata; run "
+            "uv run python scripts/update_version.py --version {}, review and commit "
+            "the changes, then publish again".format(version)
+        )
     _require_clean_source(root, runner)
     _require_canonical_origin(root, runner)
     commit, tree = _head_identity(root, runner)
