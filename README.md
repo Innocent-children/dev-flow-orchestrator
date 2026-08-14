@@ -4,7 +4,7 @@
 
 Dev Flow Orchestrator keeps long-running Codex development tasks resumable,
 bounded, and verifiable across an exact set of one to eight user-prepared Git
-worktrees. Release `0.6.10` bundles a formal Codex Skill named `dev-flow` and a
+worktrees. Release `0.6.11` bundles a formal Codex Skill named `dev-flow` and a
 local STDIO MCP server while preserving the persisted `0.4.0` model and
 task-data namespace.
 
@@ -25,7 +25,7 @@ user-prepared Git worktree roots because they are the work controlled by the
 product.
 
 Download and run the first-install entry with `latest`, or with an exact
-`MAJOR.MINOR.PATCH` such as `0.6.10`:
+`MAJOR.MINOR.PATCH` such as `0.6.11`:
 
 ```sh
 (installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" latest)

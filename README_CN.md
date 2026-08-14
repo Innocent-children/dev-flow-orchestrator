@@ -3,7 +3,7 @@
 [English](README.md)
 
 Dev Flow Orchestrator 让跨一个至八个用户预先准备的 Git 工作树的长期 Codex
-开发任务保持可恢复、上下文有界且可验证。`0.6.10` 版本捆绑名为 `dev-flow` 的正式
+开发任务保持可恢复、上下文有界且可验证。`0.6.11` 版本捆绑名为 `dev-flow` 的正式
 Codex Skill 和本地 STDIO MCP 服务器，同时保留持久化 `0.4.0` 模型与任务数据
 命名空间。
 
@@ -21,7 +21,7 @@ Windows 客户端是原生 Windows 10 22H2 x64 与 Windows 11 x64。Git 不是�
 所控制的工作对象。
 
 下载并运行首次安装入口，使用 `latest` 或精确的 `MAJOR.MINOR.PATCH`（如
-`0.6.10`）：
+`0.6.11`）：
 
 ```sh
 (installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" latest)

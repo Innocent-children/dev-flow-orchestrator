@@ -437,7 +437,7 @@ def _prepare_release_command(
         raise DispatchError(
             "release command driver digest differs from installation evidence"
         )
-    temporary_root = Path(tempfile.mkdtemp(prefix=temporary_prefix))
+    temporary_root = Path(tempfile.mkdtemp(prefix=temporary_prefix)).resolve()
     copied = temporary_root / "release_commands.py"
     try:
         with copied.open("xb") as output, (

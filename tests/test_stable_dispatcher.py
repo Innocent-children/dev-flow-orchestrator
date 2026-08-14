@@ -252,6 +252,37 @@ class StableDispatcherLifecycleCommandTests(unittest.TestCase):
                         (copied_root / "release_commands.py").unlink()
                         copied_root.rmdir()
 
+    def test_release_command_copy_resolves_linked_temporary_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            runtime, lifecycle = self._support(base)
+            real_temporary = base / "real-temporary"
+            real_temporary.mkdir()
+            alias = base / "temporary-alias"
+            try:
+                alias.symlink_to(real_temporary, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("directory symlinks are unavailable")
+            created = alias / "release-command-copy"
+            created.mkdir()
+            with (
+                mock.patch.object(
+                    dispatcher, "__file__", str(lifecycle / "stable_dispatcher.py")
+                ),
+                mock.patch.object(
+                    dispatcher.tempfile, "mkdtemp", return_value=str(created)
+                ),
+            ):
+                command, copied_root = dispatcher._prepare_release_command(
+                    runtime, "update"
+                )
+            try:
+                self.assertEqual(copied_root, created.resolve())
+                self.assertEqual(Path(command[3]).parent, created.resolve())
+            finally:
+                (copied_root / "release_commands.py").unlink()
+                copied_root.rmdir()
+
     def test_update_rejects_extra_arguments_before_any_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
