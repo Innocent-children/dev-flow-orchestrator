@@ -1249,6 +1249,7 @@ def bootstrap(
         lifecycle = Path(str(verified["root"])) / "lifecycle" / "release_lifecycle.py"
         command = [
             sys.executable,
+            "-B",
             "-I",
             "-S",
             str(lifecycle),

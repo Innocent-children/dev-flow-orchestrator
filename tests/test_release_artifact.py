@@ -769,6 +769,46 @@ class ArtifactExtractionTests(unittest.TestCase):
                     )
                 run.assert_not_called()
 
+    def test_phase_b_starts_without_writing_bytecode(self) -> None:
+        verified = {"root": str(ROOT / "fixture-artifact")}
+        index = {"archive": {"size": 1}}
+        with (
+            mock.patch.object(
+                release_artifact,
+                "_download",
+                side_effect=[b"index", None],
+            ),
+            mock.patch.object(
+                release_artifact,
+                "verify_release_index_bytes",
+                return_value=index,
+            ),
+            mock.patch.object(
+                release_artifact,
+                "inspect_and_extract_artifact",
+                return_value=verified,
+            ),
+            mock.patch.object(
+                release_artifact,
+                "verify_extracted_artifact",
+                return_value=verified,
+            ),
+            mock.patch.object(
+                release_artifact.subprocess,
+                "run",
+                return_value=mock.Mock(returncode=0),
+            ) as run,
+        ):
+            result = release_artifact.bootstrap(
+                repository=release_artifact.CANONICAL_REPOSITORY,
+                version="1.2.3",
+                archive_name="dev-flow-orchestrator-1.2.3.tar.gz",
+                index_sha256="a" * 64,
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(run.call_args.args[0][1:4], ["-B", "-I", "-S"])
+
 
 class DownloadBoundaryTests(unittest.TestCase):
     class Response:
