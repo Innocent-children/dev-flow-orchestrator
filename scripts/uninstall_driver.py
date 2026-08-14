@@ -61,6 +61,75 @@ class UninstallError(RuntimeError):
     pass
 
 
+def _human_output() -> bool:
+    return (
+        os.environ.get("DEV_FLOW_OUTPUT", "auto").lower() != "json"
+        and bool(getattr(sys.stdout, "isatty", lambda: False)())
+    )
+
+
+def _paint(text: str, code: str) -> str:
+    if (
+        not _human_output()
+        or os.environ.get("NO_COLOR")
+        or os.environ.get("TERM") == "dumb"
+    ):
+        return text
+    return "\033[{}m{}\033[0m".format(code, text)
+
+
+def _symbols() -> dict[str, str]:
+    values = {"brand": "◆", "step": "◇", "end": "└─", "ok": "✓", "fail": "!"}
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        "".join(values.values()).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return {"brand": ">", "step": "+", "end": "`-", "ok": "OK", "fail": "!"}
+    return values
+
+
+def _emit_uninstall_result(payload: Mapping[str, object]) -> None:
+    if not _human_output():
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    symbols = _symbols()
+    outcome = str(payload.get("outcome", "partial"))
+    print(_paint("{} DEV FLOW // UNINSTALL".format(symbols["brand"]), "1;36"))
+    print()
+    print("  {} DETACH     personal plugin registration".format(symbols["step"]))
+    print("  {} CLEAN      managed launchers and runtime".format(symbols["step"]))
+    print()
+    if outcome == "committed":
+        print(
+            _paint(
+                "  {} {} REMOVED    Dev Flow uninstalled".format(
+                    symbols["end"], symbols["ok"]
+                ),
+                "1;32",
+            )
+        )
+    else:
+        print(
+            _paint(
+                "  {} {} SAFE STOP    {}".format(
+                    symbols["end"], symbols["fail"], outcome
+                ),
+                "1;31",
+            )
+        )
+    detail = payload.get("error") or payload.get("detail")
+    if detail:
+        print("     {}".format(str(detail)))
+    retained = payload.get("retained_paths")
+    if isinstance(retained, list) and retained:
+        print(_paint("     retained {} path(s)".format(len(retained)), "1;33"))
+        for path in retained:
+            print("       - {}".format(path))
+    transaction_id = payload.get("transaction_id")
+    if transaction_id:
+        print(_paint("     transaction {}".format(transaction_id), "2"))
+
+
 @dataclass(frozen=True)
 class InstallationEvidence:
     runtime_root: Path
@@ -2416,22 +2485,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         result = DurableUninstaller(
             evidence, state_module, CodexHostRemoval(evidence, state_module)
         ).run()
-        print(
-            json.dumps(
-                {
-                    "transaction_id": result.transaction_id,
-                    "outcome": result.outcome,
-                    "retained_paths": list(result.retained_paths),
-                    "recovered": result.recovered,
-                    "detail": result.detail,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+        _emit_uninstall_result(
+            {
+                "transaction_id": result.transaction_id,
+                "outcome": result.outcome,
+                "retained_paths": list(result.retained_paths),
+                "recovered": result.recovered,
+                "detail": result.detail,
+            }
         )
         return 0 if result.outcome == "committed" else 3
     except (OSError, UninstallError) as exc:
-        print(f"Dev Flow uninstall failed safely: {exc}", file=sys.stderr)
+        if _human_output():
+            _emit_uninstall_result(
+                {
+                    "transaction_id": None,
+                    "outcome": "partial",
+                    "retained_paths": [],
+                    "recovered": False,
+                    "error": str(exc),
+                }
+            )
+        else:
+            print(f"Dev Flow uninstall failed safely: {exc}", file=sys.stderr)
         return 3
 
 

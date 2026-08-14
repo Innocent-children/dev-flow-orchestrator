@@ -45,6 +45,52 @@ class DispatchError(RuntimeError):
     """An installed authority could not be proven without importing it."""
 
 
+def _paint(text: str, code: str, *, stream: object = sys.stderr) -> str:
+    is_terminal = bool(getattr(stream, "isatty", lambda: False)())
+    if (
+        not is_terminal
+        or os.environ.get("NO_COLOR")
+        or os.environ.get("TERM") == "dumb"
+    ):
+        return text
+    return "\033[{}m{}\033[0m".format(code, text)
+
+
+def _terminal_symbols(stream: object) -> tuple[str, str]:
+    values = ("◆", "└─")
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        "".join(values).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return (">", "`-")
+    return values
+
+
+def _emit_dispatch_failure(error: object) -> None:
+    if bool(getattr(sys.stderr, "isatty", lambda: False)()):
+        brand, end = _terminal_symbols(sys.stderr)
+        print(
+            _paint("{} DEV FLOW // LIFECYCLE".format(brand), "1;36"),
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(
+            _paint(
+                "  {} ! SAFE STOP    startup attestation".format(end), "1;31"
+            ),
+            file=sys.stderr,
+        )
+        print("     {}".format(str(error)), file=sys.stderr)
+        print("     Recovery: rerun the exact-version bootstrap.", file=sys.stderr)
+        return
+    print(
+        "Dev Flow startup attestation failed: {}. Rerun the exact-version bootstrap for repair.".format(
+            error
+        ),
+        file=sys.stderr,
+    )
+
+
 def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
@@ -572,8 +618,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     temporary_root.rmdir()
                 except OSError:
                     print(
-                        "Dev Flow temporary lifecycle helper retained at: "
-                        f"{temporary_root}",
+                        _paint(
+                            "! Dev Flow retained temporary lifecycle helper: "
+                            f"{temporary_root}",
+                            "1;33",
+                        ),
                         file=sys.stderr,
                     )
         if arguments.mode == "uninstall":
@@ -589,17 +638,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                         temporary_root.rmdir()
                     except OSError:
                         print(
-                            "Dev Flow temporary uninstall helper retained at: "
-                            f"{temporary_root}",
+                            _paint(
+                                "! Dev Flow retained temporary uninstall helper: "
+                                f"{temporary_root}",
+                                "1;33",
+                            ),
                             file=sys.stderr,
                         )
         command = prepare_active_command(arguments.runtime_root, arguments.mode, forwarded)
         os.execv(command[0], command)
     except DispatchError as exc:
-        print(
-            "Dev Flow startup attestation failed: {}. Rerun the exact-version bootstrap for repair.".format(exc),
-            file=sys.stderr,
-        )
+        _emit_dispatch_failure(exc)
         return 2
     return 0
 

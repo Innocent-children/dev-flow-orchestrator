@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import stat
 import subprocess
@@ -22,6 +24,38 @@ from scripts import lifecycle_state
 from scripts import render_dispatchers
 from scripts import stable_dispatcher
 from scripts import uninstall_driver
+
+
+class TerminalUninstallOutputTests(unittest.TestCase):
+    def test_partial_uninstall_renders_retained_paths_for_a_terminal(self) -> None:
+        payload = {
+            "transaction_id": "uninstall-output",
+            "outcome": "partial",
+            "retained_paths": ["/managed/retained"],
+            "recovered": False,
+            "detail": "content retained safely",
+        }
+        output = StringIO()
+        with (
+            mock.patch.object(uninstall_driver, "_human_output", return_value=True),
+            mock.patch.dict(os.environ, {"NO_COLOR": "1"}),
+            redirect_stdout(output),
+        ):
+            uninstall_driver._emit_uninstall_result(payload)
+        rendered = output.getvalue()
+        self.assertIn("DEV FLOW // UNINSTALL", rendered)
+        self.assertIn("SAFE STOP", rendered)
+        self.assertIn("/managed/retained", rendered)
+
+    def test_non_terminal_uninstall_result_remains_json(self) -> None:
+        payload = {"transaction_id": None, "outcome": "committed", "retained_paths": []}
+        output = StringIO()
+        with (
+            mock.patch.object(uninstall_driver, "_human_output", return_value=False),
+            redirect_stdout(output),
+        ):
+            uninstall_driver._emit_uninstall_result(payload)
+        self.assertEqual(json.loads(output.getvalue()), payload)
 
 
 def _json(path: Path, value: object) -> bytes:

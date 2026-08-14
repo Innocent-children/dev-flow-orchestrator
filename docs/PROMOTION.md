@@ -27,7 +27,7 @@ command. The version is mandatory and must use `MAJOR.MINOR.PATCH` without a
 `v` prefix:
 
 ```sh
-uv run python scripts/update_version.py --version 0.6.11
+uv run python scripts/update_version.py --version 0.6.12
 ```
 
 The updater synchronizes release metadata, English and Chinese public docs,
@@ -44,7 +44,7 @@ After committing the version metadata and all intended source changes, run the
 one-command publisher from the repository. The version is mandatory:
 
 ```sh
-uv run python scripts/publish_release.py --version 0.6.11
+uv run python scripts/publish_release.py --version 0.6.12
 ```
 
 The publisher requires a clean tracked and untracked worktree, validates the
@@ -63,8 +63,8 @@ one:
 
 ```sh
 uv run python scripts/publish_release.py \
-  --version 0.6.11 \
-  --record /tmp/dev-flow-promotion-0.6.11.json
+  --version 0.6.12 \
+  --record /tmp/dev-flow-promotion-0.6.12.json
 ```
 
 The lower-level build and promotion commands below remain available for manual
@@ -75,7 +75,7 @@ evidence collection and recovery.
 From the exact tagged source, build twice into two new empty directories:
 
 ```sh
-VERSION=0.6.11
+VERSION=0.6.12
 uv sync --locked
 uv run python scripts/build_release.py \
   --version "$VERSION" \
@@ -147,7 +147,7 @@ With an authenticated `gh` session and explicit publication authority, run the
 journaled promotion outside the repository:
 
 ```sh
-VERSION=0.6.11
+VERSION=0.6.12
 uv run python scripts/promote_release.py \
   --version "$VERSION" \
   --asset-dir "/tmp/dev-flow-release-$VERSION-a" \

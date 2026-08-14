@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import sys
 import tempfile
@@ -18,6 +20,44 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from scripts import lifecycle_state
 from scripts import release_commands
 from scripts import release_resolver
+
+
+class TerminalLifecycleCommandOutputTests(unittest.TestCase):
+    def test_update_and_reinstall_terminal_results_use_distinct_statuses(self) -> None:
+        cases = (
+            (
+                "update",
+                {"ok": True, "outcome": "committed", "version": "1.2.3", "reused": True},
+                "CURRENT",
+            ),
+            (
+                "reinstall",
+                {"ok": False, "outcome": "rolled_back", "version": "1.2.3"},
+                "ROLLED BACK",
+            ),
+        )
+        for mode, payload, expected in cases:
+            with self.subTest(mode=mode):
+                output = StringIO()
+                with (
+                    mock.patch.object(release_commands, "_human_output", return_value=True),
+                    mock.patch.dict(os.environ, {"NO_COLOR": "1"}),
+                    redirect_stdout(output),
+                ):
+                    release_commands._emit_command_result(payload, mode)
+                rendered = output.getvalue()
+                self.assertIn("DEV FLOW // " + mode.upper(), rendered)
+                self.assertIn(expected, rendered)
+
+    def test_non_terminal_update_result_remains_json(self) -> None:
+        payload = {"ok": False, "mode": "update", "outcome": "partial"}
+        output = StringIO()
+        with (
+            mock.patch.object(release_commands, "_human_output", return_value=False),
+            redirect_stdout(output),
+        ):
+            release_commands._emit_command_result(payload, "update")
+        self.assertEqual(json.loads(output.getvalue()), payload)
 
 
 def _sha(raw: bytes) -> str:

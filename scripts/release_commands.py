@@ -55,6 +55,114 @@ class ReleaseCommandError(RuntimeError):
     """Raised when an installed lifecycle command cannot complete safely."""
 
 
+def _human_output() -> bool:
+    return (
+        os.environ.get("DEV_FLOW_OUTPUT", "auto").lower() != "json"
+        and bool(getattr(sys.stdout, "isatty", lambda: False)())
+    )
+
+
+def _paint(text: str, code: str) -> str:
+    if (
+        not _human_output()
+        or os.environ.get("NO_COLOR")
+        or os.environ.get("TERM") == "dumb"
+    ):
+        return text
+    return "\033[{}m{}\033[0m".format(code, text)
+
+
+def _symbols() -> dict[str, str]:
+    values = {
+        "brand": "◆",
+        "step": "◇",
+        "end": "└─",
+        "ok": "✓",
+        "warn": "↺",
+        "fail": "!",
+    }
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        "".join(values.values()).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return {
+            "brand": ">",
+            "step": "+",
+            "end": "`-",
+            "ok": "OK",
+            "warn": "~",
+            "fail": "!",
+        }
+    return values
+
+
+def _emit_command_result(payload: Mapping[str, object], mode: str) -> None:
+    if not _human_output():
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    symbols = _symbols()
+    outcome = str(payload.get("outcome", "partial"))
+    version = payload.get("version")
+    print(
+        _paint(
+            "{} DEV FLOW // {}".format(symbols["brand"], mode.upper()),
+            "1;36",
+        )
+    )
+    print()
+    if version:
+        print("  {} TARGET     v{}".format(symbols["step"], version))
+    if mode == "reinstall":
+        print("  {} REBUILD    runtime and owned task data".format(symbols["step"]))
+    else:
+        print("  {} VERIFY     release and runtime integrity".format(symbols["step"]))
+    print()
+    if outcome == "committed":
+        if payload.get("reused") is True:
+            label, message = "CURRENT", "latest release verified"
+        elif mode == "reinstall":
+            label, message = "REBUILT", "plugin reinstalled"
+        else:
+            label, message = "ONLINE", "latest release active"
+        print(
+            _paint(
+                "  {} {} {}    {}".format(
+                    symbols["end"], symbols["ok"], label, message
+                ),
+                "1;32",
+            )
+        )
+    elif outcome == "rolled_back":
+        print(
+            _paint(
+                "  {} {} ROLLED BACK    previous installation restored".format(
+                    symbols["end"], symbols["warn"]
+                ),
+                "1;33",
+            )
+        )
+    else:
+        print(
+            _paint(
+                "  {} {} SAFE STOP    {}".format(
+                    symbols["end"], symbols["fail"], outcome
+                ),
+                "1;31",
+            )
+        )
+    detail = payload.get("error") or payload.get("detail")
+    if detail:
+        print("     {}".format(str(detail)))
+    retained = payload.get("retained_paths")
+    if isinstance(retained, list) and retained:
+        print(_paint("     retained {} path(s)".format(len(retained)), "1;33"))
+        for path in retained:
+            print("       - {}".format(path))
+    transaction_id = payload.get("transaction_id")
+    if transaction_id:
+        print(_paint("     transaction {}".format(transaction_id), "2"))
+
+
 @dataclass(frozen=True)
 class InstallationEvidence:
     runtime_root: Path
@@ -1750,36 +1858,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             result = update_command(evidence)
         else:
             result = reinstall_command(evidence)
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        _emit_command_result(result, arguments.mode)
         return 0 if result["ok"] else 1
     except (OSError, ValueError, ReleaseCommandError) as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "mode": arguments.mode,
-                    "outcome": "partial",
-                    "error": str(exc),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+        _emit_command_result(
+            {
+                "ok": False,
+                "mode": arguments.mode,
+                "outcome": "partial",
+                "error": str(exc),
+            },
+            arguments.mode,
         )
         return 1
     except Exception as exc:  # noqa: BLE001 - bounded terminal classification
         # Lifecycle-state helpers are loaded at runtime; any unclassified
         # authority error must still be reported honestly and non-zero.
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "mode": arguments.mode,
-                    "outcome": "partial",
-                    "error": str(exc)[:2048],
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+        _emit_command_result(
+            {
+                "ok": False,
+                "mode": arguments.mode,
+                "outcome": "partial",
+                "error": str(exc)[:2048],
+            },
+            arguments.mode,
         )
         return 1
 

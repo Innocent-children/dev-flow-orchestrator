@@ -968,5 +968,43 @@ class ReleaseLifecycleTests(unittest.TestCase):
             self.assertEqual(payload["ok"], result.outcome == "committed")
 
 
+class TerminalInstallOutputTests(unittest.TestCase):
+    def test_committed_install_renders_active_release_for_a_terminal(self) -> None:
+        payload = {
+            "ok": True,
+            "outcome": "committed",
+            "transaction_id": "tx-output",
+            "reused": False,
+            "recovered_transactions": [],
+            "active": {
+                "release_id": "v" + "1.2.3-digest-tx-output",
+                "generation": 2,
+            },
+            "detail": None,
+        }
+        output = StringIO()
+        with (
+            mock.patch.object(release_lifecycle, "_human_output", return_value=True),
+            mock.patch.dict(os.environ, {"NO_COLOR": "1"}),
+            redirect_stdout(output),
+        ):
+            release_lifecycle._emit_install_result(payload)
+        rendered = output.getvalue()
+        self.assertIn("DEV FLOW // INSTALL", rendered)
+        self.assertIn("RELEASE    " + "v" + "1.2.3", rendered)
+        self.assertIn("READY", rendered)
+        self.assertIn("tx-output", rendered)
+
+    def test_non_terminal_install_output_remains_json(self) -> None:
+        payload = {"ok": False, "outcome": "partial", "error": "broken"}
+        output = StringIO()
+        with (
+            mock.patch.object(release_lifecycle, "_human_output", return_value=False),
+            redirect_stdout(output),
+        ):
+            release_lifecycle._emit_install_result(payload)
+        self.assertEqual(json.loads(output.getvalue()), payload)
+
+
 if __name__ == "__main__":
     unittest.main()

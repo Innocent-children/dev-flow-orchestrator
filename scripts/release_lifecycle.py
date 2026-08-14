@@ -55,6 +55,83 @@ class ReleaseLifecycleError(RuntimeError):
     """Phase B could not reach a classified, durable lifecycle result."""
 
 
+def _human_output() -> bool:
+    return (
+        os.environ.get("DEV_FLOW_OUTPUT", "auto").lower() != "json"
+        and bool(getattr(sys.stdout, "isatty", lambda: False)())
+    )
+
+
+def _paint(text: str, code: str) -> str:
+    if (
+        not _human_output()
+        or os.environ.get("NO_COLOR")
+        or os.environ.get("TERM") == "dumb"
+    ):
+        return text
+    return "\033[{}m{}\033[0m".format(code, text)
+
+
+def _symbols() -> dict[str, str]:
+    values = {"brand": "◆", "step": "◇", "end": "└─", "ok": "✓", "fail": "!"}
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        "".join(values.values()).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return {"brand": ">", "step": "+", "end": "`-", "ok": "OK", "fail": "!"}
+    return values
+
+
+def _emit_install_result(payload: Mapping[str, object]) -> None:
+    if not _human_output():
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    symbols = _symbols()
+    outcome = str(payload.get("outcome", "partial"))
+    active = payload.get("active")
+    active_record = active if isinstance(active, Mapping) else {}
+    release_id = str(active_record.get("release_id", "unknown"))
+    version = release_id.partition("-")[0].removeprefix("v") or "unknown"
+    print(_paint("{} DEV FLOW // INSTALL".format(symbols["brand"]), "1;36"))
+    print()
+    print("  {} RELEASE    v{}".format(symbols["step"], version))
+    if active_record:
+        print(
+            "  {} ACTIVATE   generation {}".format(
+                symbols["step"], active_record.get("generation", "?")
+            )
+        )
+    recovered = payload.get("recovered_transactions")
+    if isinstance(recovered, list) and recovered:
+        print("  {} RECOVER    {} transaction(s)".format(symbols["step"], len(recovered)))
+    print()
+    if outcome == "committed":
+        status = "CURRENT" if payload.get("reused") is True else "READY"
+        print(
+            _paint(
+                "  {} {} {}    plugin active".format(
+                    symbols["end"], symbols["ok"], status
+                ),
+                "1;32",
+            )
+        )
+    else:
+        print(
+            _paint(
+                "  {} {} SAFE STOP    {}".format(
+                    symbols["end"], symbols["fail"], outcome
+                ),
+                "1;31",
+            )
+        )
+    detail = payload.get("error") or payload.get("detail")
+    if detail:
+        print("     {}".format(str(detail)))
+    transaction_id = payload.get("transaction_id")
+    if transaction_id:
+        print(_paint("     transaction {}".format(transaction_id), "2"))
+
+
 def _load_sibling(name: str) -> Any:
     """Load a packaged lifecycle helper without relying on ``sys.path``.
 
@@ -2046,20 +2123,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             ) from exc
         result = execute_install(paths, index, lock_timeout=arguments.lock_timeout)
         payload = _result_json(result)
-        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        _emit_install_result(payload)
         return 0 if result.outcome == "committed" else 1
     except (ReleaseLifecycleError, OSError, ValueError, lifecycle_state.LifecycleStateError) as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "outcome": "partial",
-                    "transaction_id": None,
-                    "error": str(exc),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+        _emit_install_result(
+            {
+                "ok": False,
+                "outcome": "partial",
+                "transaction_id": None,
+                "error": str(exc),
+            }
         )
         return 1
 

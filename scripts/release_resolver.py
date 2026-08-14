@@ -59,6 +59,51 @@ class ReleaseResolveError(RuntimeError):
     """Raised when a requested release cannot be proven official or acquired."""
 
 
+def _human_output() -> bool:
+    return (
+        os.environ.get("DEV_FLOW_OUTPUT", "auto").lower() != "json"
+        and bool(getattr(sys.stdout, "isatty", lambda: False)())
+    )
+
+
+def _paint(text: str, code: str) -> str:
+    if (
+        not _human_output()
+        or os.environ.get("NO_COLOR")
+        or os.environ.get("TERM") == "dumb"
+    ):
+        return text
+    return "\033[{}m{}\033[0m".format(code, text)
+
+
+def _terminal_symbols() -> tuple[str, str, str]:
+    values = ("◆", "◇", "└─")
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        "".join(values).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return (">", "+", "`-")
+    return values
+
+
+def _emit_resolve_failure(error: object) -> None:
+    if not _human_output():
+        print(
+            json.dumps(
+                {"ok": False, "phase": "resolve", "error": str(error)},
+                sort_keys=True,
+            )
+        )
+        return
+    brand, step, end = _terminal_symbols()
+    print(_paint("{} DEV FLOW // INSTALL".format(brand), "1;36"))
+    print()
+    print("  {} DISCOVER   official release".format(step))
+    print()
+    print(_paint("  {} ! SAFE STOP    resolve".format(end), "1;31"))
+    print("     {}".format(str(error)))
+
+
 def parse_version_request(value: object) -> str:
     """Parse ``latest`` or one strict MAJOR.MINOR.PATCH version token."""
 
@@ -409,10 +454,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return run_version_bootstrap(bootstrap, forwarded)
     except (OSError, ReleaseResolveError, subprocess.SubprocessError) as exc:
-        print(
-            json.dumps({"ok": False, "phase": "resolve", "error": str(exc)},
-                      sort_keys=True),
-        )
+        _emit_resolve_failure(exc)
         return 1
 
 

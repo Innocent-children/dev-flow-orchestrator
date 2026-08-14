@@ -101,6 +101,51 @@ class ReleaseArtifactError(RuntimeError):
     """Raised when release bytes cannot be proven to satisfy the contract."""
 
 
+def _human_output() -> bool:
+    return (
+        os.environ.get("DEV_FLOW_OUTPUT", "auto").lower() != "json"
+        and bool(getattr(sys.stdout, "isatty", lambda: False)())
+    )
+
+
+def _paint(text: str, code: str) -> str:
+    if (
+        not _human_output()
+        or os.environ.get("NO_COLOR")
+        or os.environ.get("TERM") == "dumb"
+    ):
+        return text
+    return "\033[{}m{}\033[0m".format(code, text)
+
+
+def _terminal_symbols() -> tuple[str, str, str]:
+    values = ("◆", "◇", "└─")
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        "".join(values).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return (">", "+", "`-")
+    return values
+
+
+def _emit_phase_a_failure(error: object) -> None:
+    if not _human_output():
+        print(
+            json.dumps(
+                {"error": str(error), "ok": False, "phase": "phase-a"},
+                sort_keys=True,
+            )
+        )
+        return
+    brand, step, end = _terminal_symbols()
+    print(_paint("{} DEV FLOW // INSTALL".format(brand), "1;36"))
+    print()
+    print("  {} VERIFY     release artifact".format(step))
+    print()
+    print(_paint("  {} ! SAFE STOP    phase-a".format(end), "1;31"))
+    print("     {}".format(str(error)))
+
+
 class BootstrapResult(NamedTuple):
     returncode: int
     retained_paths: tuple[str, ...] = ()
@@ -1320,20 +1365,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             index_sha256=arguments.index_sha256,
             phase_b_args=phase_b_args,
         )
-        print(
-            json.dumps(
-                {
-                    "ok": result.returncode == 0,
-                    "phase": "phase-b",
-                    "returncode": result.returncode,
-                    "retained_paths": list(result.retained_paths),
-                },
-                sort_keys=True,
+        payload = {
+            "ok": result.returncode == 0,
+            "phase": "phase-b",
+            "returncode": result.returncode,
+            "retained_paths": list(result.retained_paths),
+        }
+        if not _human_output():
+            print(json.dumps(payload, sort_keys=True))
+        elif result.retained_paths:
+            print(
+                _paint(
+                    "  ! retained {} installer staging path(s)".format(
+                        len(result.retained_paths)
+                    ),
+                    "1;33",
+                )
             )
-        )
+            for path in result.retained_paths:
+                print("    - {}".format(path))
         return result.returncode
     except (OSError, ReleaseArtifactError, subprocess.SubprocessError, tarfile.TarError) as exc:
-        print(json.dumps({"error": str(exc), "ok": False, "phase": "phase-a"}, sort_keys=True))
+        _emit_phase_a_failure(exc)
         return 1
 
 

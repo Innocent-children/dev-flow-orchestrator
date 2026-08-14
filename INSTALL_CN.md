@@ -2,7 +2,7 @@
 
 [English](INSTALL.md)
 
-本指南说明 `0.6.11` 版本的 release artifact 生命周期。它无需克隆或保留本仓库，
+本指南说明 `0.6.12` 版本的 release artifact 生命周期。它无需克隆或保留本仓库，
 即可把正式 `dev-flow` Codex Skill 作为 bundled plugin 安装，并安装本地 STDIO MCP
 服务器。持久化 Controller 模型和任务数据命名空间继续为 `0.4.0`。
 
@@ -52,7 +52,7 @@ tag，但没有任何 checkout 会成为已安装 authority。用户选择的安
 要固定精确版本，把 `latest` 换成版本号即可：
 
 ```sh
-(installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" 0.6.11)
+(installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" 0.6.12)
 ```
 
 在原生 Windows 上：
@@ -61,7 +61,13 @@ tag，但没有任何 checkout 会成为已安装 authority。用户选择的安
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$p=Join-Path ([IO.Path]::GetTempPath()) ("dev-flow-install-"+[guid]::NewGuid().ToString("N")+".ps1"); $status=1; try { Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.ps1" -OutFile $p; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p latest; $status=$LASTEXITCODE } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }; exit $status'
 ```
 
-把 `latest` 换成 `0.6.11`（或其他已发布的 `MAJOR.MINOR.PATCH`）即可固定精确版本。
+把 `latest` 换成 `0.6.12`（或其他已发布的 `MAJOR.MINOR.PATCH`）即可固定精确版本。
+
+在交互式终端中，首次安装、`dev-flow update`、`dev-flow reinstall` 和
+`dev-flow-uninstall` 会显示紧凑的生命周期状态卡。标准输出被重定向或通过管道
+传递时，或者设置了 `DEV_FLOW_OUTPUT=json` 时，仍输出现有的机器可读 JSON。
+`NO_COLOR` 只禁用 ANSI 颜色，不影响纯文本排版。这些显示选择不会改变命令退出码
+或生命周期结果。
 
 入口在下载任何内容之前就拒绝其他任何版本语法，包括前缀、区间、空白和预发布
 后缀。对于 `latest`，它只通过 HTTPS 读取规范 GitHub 仓库的官方 Release 列表，

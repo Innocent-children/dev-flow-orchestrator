@@ -2,7 +2,7 @@
 
 [Simplified Chinese](INSTALL_CN.md)
 
-This guide describes the release-artifact lifecycle for release `0.6.11`. It
+This guide describes the release-artifact lifecycle for release `0.6.12`. It
 installs the formal `dev-flow` Codex Skill as a bundled plugin and the local
 STDIO MCP server without cloning or retaining this repository. The persisted
 Controller model and task-data namespace remain `0.4.0`.
@@ -57,7 +57,7 @@ On macOS:
 To pin an exact version, pass it instead of `latest`:
 
 ```sh
-(installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" 0.6.11)
+(installer="$(mktemp "${TMPDIR:-/tmp}/dev-flow-install.XXXXXX")" && trap 'rm -f "$installer"' 0 HUP INT TERM && curl -fsSL "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.sh" -o "$installer" && /bin/sh "$installer" 0.6.12)
 ```
 
 On native Windows:
@@ -66,8 +66,16 @@ On native Windows:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$p=Join-Path ([IO.Path]::GetTempPath()) ("dev-flow-install-"+[guid]::NewGuid().ToString("N")+".ps1"); $status=1; try { Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Innocent-children/dev-flow-orchestrator/releases/latest/download/install.ps1" -OutFile $p; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p latest; $status=$LASTEXITCODE } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }; exit $status'
 ```
 
-Replace `latest` with `0.6.11` (or another published `MAJOR.MINOR.PATCH`) to pin
+Replace `latest` with `0.6.12` (or another published `MAJOR.MINOR.PATCH`) to pin
 an exact version.
+
+Interactive terminal runs of first install, `dev-flow update`,
+`dev-flow reinstall`, and `dev-flow-uninstall` render a compact lifecycle
+status card. When standard output is redirected or piped, or when
+`DEV_FLOW_OUTPUT=json` is set, the existing machine-readable JSON is emitted
+instead. `NO_COLOR` disables ANSI color without removing the readable layout.
+These presentation choices do not change command exit codes or lifecycle
+outcomes.
 
 The entry rejects any other version syntax, including prefixes, ranges,
 whitespace, and prerelease suffixes, before downloading anything. For `latest`
